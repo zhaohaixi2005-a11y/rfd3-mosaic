@@ -23,6 +23,8 @@ from rfd3_mosaic.schema.specs import (
     SymmetryTransformSetSpec,
     SymmetryType,
     Terminus,
+    InterfaceSeedSpec,
+    SymmetrySpec,
 )
 
 __all__ = [
@@ -50,4 +52,6 @@ __all__ = [
     "SymmetryTransformSetSpec",
     "SymmetryType",
     "Terminus",
+    "InterfaceSeedSpec",
+    "SymmetrySpec",
 ]

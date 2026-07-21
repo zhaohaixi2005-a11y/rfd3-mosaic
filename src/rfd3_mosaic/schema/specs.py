@@ -387,3 +387,172 @@ class ScaffoldLinkSpec(StrictModel):
             )
 
         return self
+
+class SymmetrySpec(StrictModel):
+    transform_sets: Annotated[
+        dict[Identifier, SymmetryTransformSetSpec],
+        Field(min_length=1),
+    ]
+    orbits: Annotated[
+        dict[Identifier, SymmetryOrbitSpec],
+        Field(min_length=1),
+    ]
+
+
+class InterfaceSeedSpec(StrictModel):
+    """Top-level Interface-Seed 2.0 configuration."""
+
+    schema_version: Literal[2] = 2
+    mode: Literal[
+        "se3_static",
+        "multi_interface_se3",
+        "legacy_rfd1",
+    ] = "se3_static"
+    random_seed: int | None = None
+
+    fragments: Annotated[
+        dict[Identifier, FragmentSpec],
+        Field(min_length=1),
+    ]
+    motion_groups: Annotated[
+        dict[Identifier, MotionGroupSpec],
+        Field(min_length=1),
+    ]
+    ports: Annotated[
+        dict[Identifier, InterfacePortSpec],
+        Field(min_length=1),
+    ]
+    symmetry: SymmetrySpec
+    interfaces: Annotated[
+        dict[Identifier, InterfaceEdgeSpec],
+        Field(min_length=1),
+    ]
+    scaffold_links: dict[Identifier, ScaffoldLinkSpec] = Field(
+        default_factory=dict
+    )
+
+    @model_validator(mode="after")
+    def validate_cross_references(self) -> "InterfaceSeedSpec":
+        fragment_owners: dict[str, list[str]] = {
+            fragment_id: [] for fragment_id in self.fragments
+        }
+
+        # Every motion-group member must reference an existing fragment.
+        for group_id, group in self.motion_groups.items():
+            for fragment_id in group.members:
+                if fragment_id not in self.fragments:
+                    raise ValueError(
+                        f"Motion group {group_id!r} references unknown "
+                        f"fragment {fragment_id!r}"
+                    )
+                fragment_owners[fragment_id].append(group_id)
+
+        # Every fragment must belong to exactly one motion group.
+        for fragment_id, owners in fragment_owners.items():
+            if not owners:
+                raise ValueError(
+                    f"Fragment {fragment_id!r} has no motion-group owner"
+                )
+            if len(owners) > 1:
+                raise ValueError(
+                    f"Fragment {fragment_id!r} belongs to multiple "
+                    f"motion groups: {owners}"
+                )
+
+        # Ports must reference an existing group and fragments owned by it.
+        for port_id, port in self.ports.items():
+            if port.group not in self.motion_groups:
+                raise ValueError(
+                    f"Port {port_id!r} references unknown motion group "
+                    f"{port.group!r}"
+                )
+
+            group_members = set(
+                self.motion_groups[port.group].members
+            )
+
+            for fragment_id in port.fragments:
+                if fragment_id not in self.fragments:
+                    raise ValueError(
+                        f"Port {port_id!r} references unknown fragment "
+                        f"{fragment_id!r}"
+                    )
+
+                if fragment_id not in group_members:
+                    raise ValueError(
+                        f"Fragment {fragment_id!r} is not a member of "
+                        f"port {port_id!r}'s motion group {port.group!r}"
+                    )
+
+        # Interface edges must reference existing ports.
+        for edge_id, edge in self.interfaces.items():
+            if edge.left_port not in self.ports:
+                raise ValueError(
+                    f"Interface {edge_id!r} references unknown left port "
+                    f"{edge.left_port!r}"
+                )
+
+            if edge.right_port not in self.ports:
+                raise ValueError(
+                    f"Interface {edge_id!r} references unknown right port "
+                    f"{edge.right_port!r}"
+                )
+
+        # Symmetry orbits must reference valid transform sets and groups.
+        group_orbits: dict[str, list[str]] = {
+            group_id: [] for group_id in self.motion_groups
+        }
+
+        for orbit_id, orbit in self.symmetry.orbits.items():
+            if orbit.transform_set not in self.symmetry.transform_sets:
+                raise ValueError(
+                    f"Orbit {orbit_id!r} references unknown transform set "
+                    f"{orbit.transform_set!r}"
+                )
+
+            for group_id in orbit.master_groups:
+                if group_id not in self.motion_groups:
+                    raise ValueError(
+                        f"Orbit {orbit_id!r} references unknown motion "
+                        f"group {group_id!r}"
+                    )
+                group_orbits[group_id].append(orbit_id)
+
+        # One master group cannot belong to multiple symmetry orbits.
+        for group_id, orbit_ids in group_orbits.items():
+            if len(orbit_ids) > 1:
+                raise ValueError(
+                    f"Motion group {group_id!r} belongs to multiple "
+                    f"symmetry orbits: {orbit_ids}"
+                )
+
+        # Scaffold links must reference existing fragments.
+        used_endpoints: set[tuple[str, Terminus]] = set()
+
+        for link_id, link in self.scaffold_links.items():
+            endpoints = [
+                link.from_endpoint,
+                link.to_endpoint,
+            ]
+
+            for endpoint in endpoints:
+                if endpoint.fragment not in self.fragments:
+                    raise ValueError(
+                        f"Scaffold link {link_id!r} references unknown "
+                        f"fragment {endpoint.fragment!r}"
+                    )
+
+                endpoint_key = (
+                    endpoint.fragment,
+                    endpoint.terminus,
+                )
+
+                if endpoint_key in used_endpoints:
+                    raise ValueError(
+                        f"Scaffold endpoint {endpoint.fragment!r}:"
+                        f"{endpoint.terminus.value} is used more than once"
+                    )
+
+                used_endpoints.add(endpoint_key)
+
+        return self
