@@ -1,6 +1,6 @@
 from enum import Enum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -168,4 +168,222 @@ class InterfacePortSpec(StrictModel):
     def require_unique_fragments(self) -> "InterfacePortSpec":
         if len(self.fragments) != len(set(self.fragments)):
             raise ValueError("Interface-port fragments must be unique")
+        return self
+class CopyRelationSpec(StrictModel):
+    """Identifies which symmetry-related copy a port connects to."""
+
+    orbit_offset: int | None = None
+    transform: Identifier | None = None
+
+    @model_validator(mode="after")
+    def require_exactly_one_relation(self) -> "CopyRelationSpec":
+        provided = [
+            self.orbit_offset is not None,
+            self.transform is not None,
+        ]
+        if sum(provided) != 1:
+            raise ValueError(
+                "Exactly one of orbit_offset or transform must be provided"
+            )
+        return self
+
+
+class ReferenceTransformGeometry(StrictModel):
+    """Preserves an interface pose from a reference seed."""
+
+    mode: Literal["reference_transform"] = "reference_transform"
+    from_reference_seed: bool = True
+    target_transform: list[list[float]] | None = None
+
+    translation_tolerance: Annotated[float, Field(gt=0.0)] = 2.0
+    rotation_tolerance_deg: Annotated[
+        float,
+        Field(gt=0.0, le=180.0),
+    ] = 10.0
+
+    @model_validator(mode="after")
+    def validate_reference_source(self) -> "ReferenceTransformGeometry":
+        if self.from_reference_seed and self.target_transform is not None:
+            raise ValueError(
+                "Do not provide target_transform when "
+                "from_reference_seed is true"
+            )
+
+        if not self.from_reference_seed and self.target_transform is None:
+            raise ValueError(
+                "target_transform is required when "
+                "from_reference_seed is false"
+            )
+
+        if self.target_transform is not None:
+            if len(self.target_transform) != 4:
+                raise ValueError("target_transform must be 4x4")
+            if any(len(row) != 4 for row in self.target_transform):
+                raise ValueError("target_transform must be 4x4")
+
+        return self
+
+
+class DistanceConstraint(StrictModel):
+    type: Literal[
+        "anchor",
+        "com",
+        "plane_to_plane",
+        "axis_to_axis",
+    ]
+    target: Annotated[float, Field(ge=0.0)]
+    tolerance: Annotated[float, Field(gt=0.0)]
+
+
+class AngleConstraint(StrictModel):
+    target: Annotated[float, Field(ge=0.0, le=180.0)]
+    tolerance: Annotated[float, Field(gt=0.0, le=180.0)]
+
+
+class AngleRangeConstraint(StrictModel):
+    minimum: Annotated[float, Field(ge=-180.0, le=180.0)]
+    maximum: Annotated[float, Field(ge=-180.0, le=180.0)]
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "AngleRangeConstraint":
+        if self.minimum > self.maximum:
+            raise ValueError("minimum cannot be greater than maximum")
+        return self
+
+
+class ContactConstraint(StrictModel):
+    min_heavy_atom_contacts: Annotated[int, Field(ge=0)] = 0
+    cutoff: Annotated[float, Field(gt=0.0)] = 8.0
+
+
+class GeometricConstraintsGeometry(StrictModel):
+    """Defines an exploratory interface without a reference pose."""
+
+    mode: Literal["geometric_constraints"] = "geometric_constraints"
+
+    distance: DistanceConstraint | None = None
+    normal_angle_deg: AngleConstraint | None = None
+    twist_deg: AngleRangeConstraint | None = None
+    contacts: ContactConstraint | None = None
+
+    @model_validator(mode="after")
+    def require_at_least_one_constraint(
+        self,
+    ) -> "GeometricConstraintsGeometry":
+        constraints = [
+            self.distance,
+            self.normal_angle_deg,
+            self.twist_deg,
+            self.contacts,
+        ]
+
+        if all(value is None for value in constraints):
+            raise ValueError(
+                "At least one geometric constraint must be provided"
+            )
+
+        return self
+
+
+TargetGeometrySpec = Annotated[
+    ReferenceTransformGeometry | GeometricConstraintsGeometry,
+    Field(discriminator="mode"),
+]
+
+
+class InterfaceEdgeSpec(StrictModel):
+    """Defines a target relationship between two interface ports."""
+
+    left_port: Identifier
+    right_port: Identifier
+    copy_relation: CopyRelationSpec
+    required: bool = True
+    target_geometry: TargetGeometrySpec
+
+
+class SymmetryType(str, Enum):
+    CYCLIC = "cyclic"
+    DIHEDRAL = "dihedral"
+
+
+class SymmetryTransformSetSpec(StrictModel):
+    """Defines a named set of symmetry group transformations."""
+
+    type: SymmetryType
+    order: Annotated[int, Field(ge=2)]
+    axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    center: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    @model_validator(mode="after")
+    def require_nonzero_axis(self) -> "SymmetryTransformSetSpec":
+        squared_norm = sum(component * component for component in self.axis)
+
+        if squared_norm <= 1e-12:
+            raise ValueError("Symmetry axis cannot be the zero vector")
+
+        return self
+
+
+class SymmetryOrbitSpec(StrictModel):
+    """Expands one or more master groups through a transform set."""
+
+    transform_set: Identifier
+    master_groups: Annotated[list[Identifier], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def require_unique_master_groups(self) -> "SymmetryOrbitSpec":
+        if len(self.master_groups) != len(set(self.master_groups)):
+            raise ValueError("master_groups must be unique")
+        return self
+
+
+class Terminus(str, Enum):
+    N = "N"
+    C = "C"
+
+
+class ScaffoldEndpointSpec(StrictModel):
+    fragment: Identifier
+    terminus: Terminus
+
+
+class LinkLengthSpec(StrictModel):
+    minimum: Annotated[int, Field(ge=0)]
+    maximum: Annotated[int, Field(ge=0)]
+
+    @model_validator(mode="after")
+    def validate_length_range(self) -> "LinkLengthSpec":
+        if self.minimum > self.maximum:
+            raise ValueError(
+                "Link minimum cannot be greater than maximum"
+            )
+        return self
+
+
+class ScaffoldLinkSpec(StrictModel):
+    """Defines a directed protein connection."""
+
+    from_endpoint: ScaffoldEndpointSpec
+    to_endpoint: ScaffoldEndpointSpec
+    length: LinkLengthSpec
+    tie_group: Identifier | None = None
+    chain_break: bool = False
+
+    @model_validator(mode="after")
+    def validate_direction(self) -> "ScaffoldLinkSpec":
+        if not self.chain_break:
+            if self.from_endpoint.terminus != Terminus.C:
+                raise ValueError(
+                    "A continuous scaffold link must start at C terminus"
+                )
+            if self.to_endpoint.terminus != Terminus.N:
+                raise ValueError(
+                    "A continuous scaffold link must end at N terminus"
+                )
+
+        if self.from_endpoint == self.to_endpoint:
+            raise ValueError(
+                "Scaffold link endpoints cannot be identical"
+            )
+
         return self
