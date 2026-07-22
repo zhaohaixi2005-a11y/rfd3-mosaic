@@ -117,6 +117,28 @@ def test_dihedral_even_frames_match_cyclic():
         assert np.allclose(dihedral[2 * i][0], cyclic[i][0])
 
 
+def test_dihedral_frames_are_unique_for_orders_divisible_by_three():
+    for order in (3, 6):
+        rotations = [R for R, _ in get_dihedral_frames(order)]
+        for left_index, left in enumerate(rotations):
+            for right_index, right in enumerate(rotations):
+                if left_index == right_index:
+                    continue
+                assert not np.allclose(left, right, atol=1e-9)
+
+
+def test_dihedral_frames_are_closed_under_composition():
+    for order in (2, 3, 5):
+        rotations = [R for R, _ in get_dihedral_frames(order)]
+        for left in rotations:
+            for right in rotations:
+                composed = left @ right
+                assert any(
+                    np.allclose(composed, candidate, atol=1e-9)
+                    for candidate in rotations
+                )
+
+
 # --- get_symmetry_frames_from_symmetry_id -------------------------------------
 
 

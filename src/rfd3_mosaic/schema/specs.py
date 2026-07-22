@@ -13,6 +13,14 @@ Identifier = Annotated[
     ),
 ]
 
+TransformIdentifier = Annotated[
+    str,
+    Field(
+        min_length=3,
+        pattern=r"^[A-Za-z][A-Za-z0-9_.-]*:[A-Za-z0-9_.-]+$",
+    ),
+]
+
 
 class StrictModel(BaseModel):
     """Base class for immutable, strict configuration objects."""
@@ -173,7 +181,7 @@ class CopyRelationSpec(StrictModel):
     """Identifies which symmetry-related copy a port connects to."""
 
     orbit_offset: int | None = None
-    transform: Identifier | None = None
+    transform: TransformIdentifier | None = None
 
     @model_validator(mode="after")
     def require_exactly_one_relation(self) -> "CopyRelationSpec":
@@ -312,6 +320,7 @@ class SymmetryTransformSetSpec(StrictModel):
     type: SymmetryType
     order: Annotated[int, Field(ge=2)]
     axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    secondary_axis: tuple[float, float, float] | None = None
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     @model_validator(mode="after")
@@ -320,6 +329,31 @@ class SymmetryTransformSetSpec(StrictModel):
 
         if squared_norm <= 1e-12:
             raise ValueError("Symmetry axis cannot be the zero vector")
+
+        if self.type == SymmetryType.CYCLIC:
+            if self.secondary_axis is not None:
+                raise ValueError(
+                    "secondary_axis is only valid for dihedral symmetry"
+                )
+            return self
+
+        if self.secondary_axis is not None:
+            secondary_norm = sum(
+                component * component for component in self.secondary_axis
+            )
+            if secondary_norm <= 1e-12:
+                raise ValueError("Secondary symmetry axis cannot be zero")
+            dot_product = sum(
+                left * right
+                for left, right in zip(self.axis, self.secondary_axis)
+            )
+            normalized_dot = abs(dot_product) / (
+                squared_norm * secondary_norm
+            ) ** 0.5
+            if normalized_dot > 1e-6:
+                raise ValueError(
+                    "Dihedral secondary_axis must be perpendicular to axis"
+                )
 
         return self
 
@@ -335,6 +369,130 @@ class SymmetryOrbitSpec(StrictModel):
         if len(self.master_groups) != len(set(self.master_groups)):
             raise ValueError("master_groups must be unique")
         return self
+
+
+class ObjectiveMode(str, Enum):
+    MINIMIZE = "minimize"
+    MAXIMIZE = "maximize"
+    AT_MOST = "at_most"
+    AT_LEAST = "at_least"
+    TARGET = "target"
+    RANGE = "range"
+
+
+class ObjectiveSpec(StrictModel):
+    """Backend-independent scalar objective used to rank candidate poses."""
+
+    metric: Annotated[
+        str,
+        Field(min_length=1, pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$"),
+    ]
+    mode: ObjectiveMode
+    weight: Annotated[float, Field(gt=0.0)] = 1.0
+    scale: Annotated[float, Field(gt=0.0)] = 1.0
+    required: bool = False
+    threshold: float | None = None
+    target: float | None = None
+    tolerance: Annotated[float, Field(ge=0.0)] | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+
+    @model_validator(mode="after")
+    def validate_mode_parameters(self) -> "ObjectiveSpec":
+        provided = {
+            "threshold": self.threshold,
+            "target": self.target,
+            "tolerance": self.tolerance,
+            "minimum": self.minimum,
+            "maximum": self.maximum,
+        }
+        required_fields: dict[ObjectiveMode, set[str]] = {
+            ObjectiveMode.MINIMIZE: set(),
+            ObjectiveMode.MAXIMIZE: set(),
+            ObjectiveMode.AT_MOST: {"threshold"},
+            ObjectiveMode.AT_LEAST: {"threshold"},
+            ObjectiveMode.TARGET: {"target", "tolerance"},
+            ObjectiveMode.RANGE: {"minimum", "maximum"},
+        }
+        expected = required_fields[self.mode]
+        actual = {key for key, value in provided.items() if value is not None}
+        if actual != expected:
+            raise ValueError(
+                f"Objective mode {self.mode.value!r} requires exactly "
+                f"{sorted(expected)}, got {sorted(actual)}"
+            )
+        if (
+            self.mode == ObjectiveMode.RANGE
+            and self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
+            raise ValueError("Objective minimum cannot exceed maximum")
+        if self.required and self.mode in {
+            ObjectiveMode.MINIMIZE,
+            ObjectiveMode.MAXIMIZE,
+        }:
+            raise ValueError(
+                "Directional objectives cannot be required because they "
+                "do not define a satisfaction boundary"
+            )
+        return self
+
+
+class CenterMethod(str, Enum):
+    NONE = "none"
+    INTERFACE_HEAVY_ATOM_COM = "interface_heavy_atom_com"
+
+
+class SampleRangeSpec(StrictModel):
+    """A reproducible scalar sampling interval around a mean."""
+
+    mean: float
+    range: Annotated[float, Field(ge=0.0)] = 0.0
+
+
+class FixedOrientationSpec(StrictModel):
+    """Explicit intrinsic XYZ Euler orientation for a master group."""
+
+    method: Literal["fixed"] = "fixed"
+    rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+class UniformSO3OrientationSpec(StrictModel):
+    """Haar-uniform rigid orientation sampled on SO(3)."""
+
+    method: Literal["uniform_so3"] = "uniform_so3"
+
+
+OrientationSpec = Annotated[
+    FixedOrientationSpec | UniformSO3OrientationSpec,
+    Field(discriminator="method"),
+]
+
+
+class RadialPlacementSpec(StrictModel):
+    radius: SampleRangeSpec
+    axial_offset: SampleRangeSpec = SampleRangeSpec(mean=0.0)
+    radial_direction: tuple[float, float, float] = (1.0, 0.0, 0.0)
+
+    @model_validator(mode="after")
+    def validate_radial_direction(self) -> "RadialPlacementSpec":
+        squared_norm = sum(
+            component * component for component in self.radial_direction
+        )
+        if squared_norm <= 1e-12:
+            raise ValueError("radial_direction cannot be the zero vector")
+        if self.radius.mean - self.radius.range < 0.0:
+            raise ValueError("Sampled placement radius cannot be negative")
+        return self
+
+
+class MotionGroupInitializationSpec(StrictModel):
+    """Initial master pose before applying a symmetry group action."""
+
+    center_method: CenterMethod = CenterMethod.INTERFACE_HEAVY_ATOM_COM
+    orientation: OrientationSpec = FixedOrientationSpec()
+    placement: RadialPlacementSpec
 
 
 class Terminus(str, Enum):
@@ -368,6 +526,7 @@ class ScaffoldLinkSpec(StrictModel):
     length: LinkLengthSpec
     tie_group: Identifier | None = None
     chain_break: bool = False
+    copy_relation: CopyRelationSpec = CopyRelationSpec(orbit_offset=0)
 
     @model_validator(mode="after")
     def validate_direction(self) -> "ScaffoldLinkSpec":
@@ -430,6 +589,11 @@ class InterfaceSeedSpec(StrictModel):
     scaffold_links: dict[Identifier, ScaffoldLinkSpec] = Field(
         default_factory=dict
     )
+    initialization: dict[
+        Identifier,
+        MotionGroupInitializationSpec,
+    ] = Field(default_factory=dict)
+    objectives: dict[Identifier, ObjectiveSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_cross_references(self) -> "InterfaceSeedSpec":
@@ -554,5 +718,12 @@ class InterfaceSeedSpec(StrictModel):
                     )
 
                 used_endpoints.add(endpoint_key)
+
+        for group_id in self.initialization:
+            if group_id not in self.motion_groups:
+                raise ValueError(
+                    f"Initialization references unknown motion group "
+                    f"{group_id!r}"
+                )
 
         return self

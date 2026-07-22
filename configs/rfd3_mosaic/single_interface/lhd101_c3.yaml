@@ -9,14 +9,14 @@ interface_seed:
       selection: A/165-194/*
       entity_type: protein
       role: interface_motif
-      fixed_atoms: backbone
+      fixed_atoms: all
 
     right:
       source: examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
       selection: B/211-241/*
       entity_type: protein
       role: interface_motif
-      fixed_atoms: backbone
+      fixed_atoms: all
 
   motion_groups:
     primary_seed:
@@ -61,7 +61,7 @@ interface_seed:
       left_port: left_port
       right_port: right_port
       copy_relation:
-        orbit_offset: -1
+        orbit_offset: 0
       required: true
       target_geometry:
         mode: reference_transform
@@ -82,3 +82,36 @@ interface_seed:
         maximum: 100
       tie_group: protomer_length
       chain_break: false
+      copy_relation:
+        orbit_offset: 1
+
+  initialization:
+    primary_seed:
+      center_method: interface_heavy_atom_com
+      orientation:
+        method: uniform_so3
+      placement:
+        radius:
+          mean: 25.0
+          range: 5.0
+        axial_offset:
+          mean: 0.0
+          range: 0.0
+        radial_direction: [1.0, 0.0, 0.0]
+
+  # These are GPU-independent shortlist heuristics, not claims of
+  # designability. Hard clash/interface/link-contour gates are applied by the
+  # standalone compiler before these soft objectives are compared.
+  objectives:
+    compact_scaffold_span:
+      metric: linkers.maximum_endpoint_distance
+      mode: minimize
+      weight: 1.0
+      scale: 25.0
+    central_axis_clearance_window:
+      metric: cavities.minimum_axis_clearance
+      mode: range
+      weight: 0.25
+      scale: 4.0
+      minimum: 6.0
+      maximum: 14.0

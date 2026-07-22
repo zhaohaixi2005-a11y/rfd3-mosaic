@@ -258,6 +258,14 @@ def get_dihedral_frames(order):
     """
 
     frames = []
+    # Use one fixed perpendicular two-fold generator.  The previous
+    # implementation rotated this axis by ``angle`` and then multiplied by
+    # the same cyclic rotation again.  For orders divisible by three (D3,
+    # D6, ...) that produced duplicate frames instead of the 2n elements of
+    # the proper rotational dihedral group.
+    base_phi = np.pi / order
+    base_axis = np.array([np.cos(base_phi), np.sin(base_phi), 0])
+    base_flip = -np.eye(3) + 2 * np.outer(base_axis, base_axis)
 
     for i in range(order):
         angle = 2 * np.pi * i / order
@@ -269,14 +277,9 @@ def get_dihedral_frames(order):
             ]
         )
 
-        # 180 degree rotation in the xy-plane
-        phi = angle + np.pi / order
-        u = np.array([np.cos(phi), np.sin(phi), 0])
-        flip = -np.eye(3) + 2 * np.outer(u, u)
-
         # add both frames for the dihedral
         frames.append((R, np.array([0, 0, 0])))
-        frames.append((R @ flip, np.array([0, 0, 0])))
+        frames.append((R @ base_flip, np.array([0, 0, 0])))
 
     return frames
 

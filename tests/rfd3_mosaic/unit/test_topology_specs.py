@@ -3,6 +3,7 @@ import unittest
 from pydantic import ValidationError
 
 from rfd3_mosaic.schema import (
+    MotionGroupInitializationSpec,
     CopyRelationSpec,
     GeometricConstraintsGeometry,
     InterfaceEdgeSpec,
@@ -23,6 +24,16 @@ class TopologySpecsTestCase(unittest.TestCase):
 
         self.assertEqual(relation.orbit_offset, -1)
         self.assertIsNone(relation.transform)
+
+    def test_copy_relation_accepts_named_group_transform(self) -> None:
+        relation = CopyRelationSpec(transform="D3:s0")
+
+        self.assertEqual(relation.transform, "D3:s0")
+        self.assertIsNone(relation.orbit_offset)
+
+    def test_copy_relation_rejects_malformed_transform_id(self) -> None:
+        with self.assertRaises(ValidationError):
+            CopyRelationSpec(transform="D3_s0")
 
     def test_copy_relation_rejects_two_relations(self) -> None:
         with self.assertRaises(ValidationError):
@@ -130,6 +141,43 @@ class TopologySpecsTestCase(unittest.TestCase):
             LinkLengthSpec(
                 minimum=100,
                 maximum=70,
+            )
+
+    def test_radial_initialization_accepts_explicit_pose(self) -> None:
+        initialization = MotionGroupInitializationSpec(
+            center_method="interface_heavy_atom_com",
+            orientation={
+                "method": "fixed",
+                "rotation_deg": (0.0, 0.0, 0.0),
+            },
+            placement={
+                "radius": {"mean": 25.0, "range": 0.0},
+                "axial_offset": {"mean": 0.0, "range": 0.0},
+                "radial_direction": (1.0, 0.0, 0.0),
+            },
+        )
+
+        self.assertEqual(initialization.placement.radius.mean, 25.0)
+
+    def test_radial_initialization_accepts_uniform_so3_sampling(self) -> None:
+        initialization = MotionGroupInitializationSpec(
+            orientation={"method": "uniform_so3"},
+            placement={
+                "radius": {"mean": 25.0, "range": 5.0},
+                "radial_direction": (1.0, 0.0, 0.0),
+            },
+        )
+
+        self.assertEqual(initialization.orientation.method, "uniform_so3")
+        self.assertEqual(initialization.placement.radius.range, 5.0)
+
+    def test_radial_direction_cannot_be_zero(self) -> None:
+        with self.assertRaises(ValidationError):
+            MotionGroupInitializationSpec(
+                placement={
+                    "radius": {"mean": 25.0},
+                    "radial_direction": (0.0, 0.0, 0.0),
+                }
             )
 
 
