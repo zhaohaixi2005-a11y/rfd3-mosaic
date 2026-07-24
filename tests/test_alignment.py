@@ -8,7 +8,8 @@ signature, so the tests below pin it on representative CPU inputs.
 
 Most tests use float32 to match production call sites; one float64 test guards
 that the det-correction matrix follows the input dtype rather than defaulting to
-float32 (which used to make float64 inputs raise).
+float32 (which used to make float64 inputs raise). A bfloat16 regression test
+guards RFD3 fixed-motif realignment on GPUs without low-precision SVD kernels.
 """
 
 import pytest
@@ -84,6 +85,23 @@ def test_float64_coords_with_float32_weights():
 
     assert aligned.dtype == torch.float64
     assert torch.allclose(aligned, X, atol=1e-10)
+
+
+def test_bfloat16_inputs_use_full_precision_kabsch_solve():
+    """Mixed-precision RFD3 coordinates must not call SVD in bfloat16."""
+
+    torch.manual_seed(0)
+    X_float = torch.randn(1, 16, 3)
+    R = _rotation_about_z(1.0)
+    t = torch.tensor([3.0, -2.0, 5.0])
+    X = X_float.to(torch.bfloat16)
+    X_gt = (X_float @ R.T + t).to(torch.bfloat16)
+
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        aligned = weighted_rigid_align(X, X_gt)
+
+    assert aligned.dtype == torch.bfloat16
+    assert torch.allclose(aligned.float(), X.float(), atol=2e-2)
 
 
 def test_output_is_detached_and_canonicalized():

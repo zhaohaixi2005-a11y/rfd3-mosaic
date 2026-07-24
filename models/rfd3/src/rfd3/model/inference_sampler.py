@@ -51,6 +51,12 @@ class SampleDiffusionConfig:
     cfg_scale: float = 2.0
     cfg_t_max: float | None = None
 
+    # Optional Interface-Seed scaffold guidance.  This is deliberately
+    # disabled by default so standard RFD3 sampling is unchanged.
+    interface_seed_compactness_weight: float = 0.0
+    interface_seed_compactness_end_frac: float = 0.75
+    interface_seed_compactness_max_step: float = 0.5
+
     # Recycling
     n_recycle: int | None = None  # Override model default n_recycle for inference
 
@@ -388,6 +394,108 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         return X_L
 
+    def _apply_interface_seed_compactness(
+        self,
+        X_L: torch.Tensor,
+        f: dict[str, Any],
+        is_motif_atom_with_fixed_coord: torch.Tensor,
+        *,
+        step_num: int,
+        num_steps: int,
+    ) -> torch.Tensor:
+        """Gently compact generated residues around each chain's anchors.
+
+        The update is token-rigid: every atom in a generated residue receives
+        the same translation.  Fixed motif atoms never move.  Guidance fades
+        linearly to zero before the final denoising steps so the network can
+        repair local geometry without a late external force.
+        """
+
+        weight = float(self.interface_seed_compactness_weight)
+        if weight <= 0.0 or num_steps <= 0:
+            return X_L
+        end_frac = float(self.interface_seed_compactness_end_frac)
+        if not 0.0 < end_frac <= 1.0:
+            raise ValueError(
+                "interface_seed_compactness_end_frac must be in (0, 1]"
+            )
+        max_step = float(self.interface_seed_compactness_max_step)
+        if max_step <= 0.0:
+            raise ValueError(
+                "interface_seed_compactness_max_step must be positive"
+            )
+        required = {"atom_to_token_map", "asym_id"}
+        missing = required - set(f)
+        if missing:
+            raise ValueError(
+                "Interface-Seed compactness guidance requires features "
+                f"{sorted(missing)}"
+            )
+
+        progress = step_num / max(num_steps - 1, 1)
+        if progress >= end_frac:
+            return X_L
+        schedule = 1.0 - progress / end_frac
+
+        atom_to_token = f["atom_to_token_map"].long()
+        atom_chain = f["asym_id"].long()[atom_to_token]
+        fixed = is_motif_atom_with_fixed_coord.bool()
+        guided = X_L.clone()
+
+        for chain_id in torch.unique(atom_chain):
+            chain_mask = atom_chain == chain_id
+            anchor_mask = chain_mask & fixed
+            generated_mask = chain_mask & ~fixed
+            if not torch.any(anchor_mask) or not torch.any(generated_mask):
+                continue
+            anchor_center = X_L[:, anchor_mask, :].mean(dim=1)
+            generated_tokens = torch.unique(atom_to_token[generated_mask])
+            for token_id in generated_tokens:
+                token_mask = generated_mask & (atom_to_token == token_id)
+                token_center = X_L[:, token_mask, :].mean(dim=1)
+                displacement = (
+                    anchor_center - token_center
+                ) * (weight * schedule)
+                norm = torch.linalg.vector_norm(
+                    displacement, dim=-1, keepdim=True
+                )
+                scale = torch.clamp(
+                    max_step / torch.clamp(norm, min=1e-8), max=1.0
+                )
+                guided[:, token_mask, :] += (
+                    displacement * scale
+                )[:, None, :]
+        return guided
+
+    def _finalize_with_fixed_motif(
+        self,
+        X_L: torch.Tensor,
+        coord_atom_lvl_to_be_noised: torch.Tensor,
+        is_motif_atom_with_fixed_coord: torch.Tensor,
+        f: dict[str, Any],
+    ) -> torch.Tensor:
+        """Finalize symmetry while giving the complete fixed motif precedence.
+
+        A fixed indexed motif may contain fragments on different protomers.
+        Applying symmetry after motif insertion projects those fragments
+        independently and can preserve each fragment while destroying their
+        cross-chain interface.  Symmetrize the generated scaffold first, then
+        insert and align the complete motif as one coordinate set.
+        """
+
+        X_L = self.apply_symmetry_to_X_L(X_L, f)
+        X_L, _ = centre_random_augment_around_motif(
+            X_L,
+            coord_atom_lvl_to_be_noised,
+            is_motif_atom_with_fixed_coord,
+            reinsert_motif=self.insert_motif_at_end,
+        )
+        return weighted_rigid_align(
+            coord_atom_lvl_to_be_noised,
+            X_L,
+            X_exists_L=is_motif_atom_with_fixed_coord,
+        )
+
     def sample_diffusion_like_af3(
         self,
         *,
@@ -530,6 +638,18 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             # Update the coordinates, scaled by the step size
             # delta_L should be symmetric
             X_L = X_noisy_L + step_scale * d_t * delta_L
+            if self.interface_seed_compactness_weight > 0.0:
+                X_L = self._apply_interface_seed_compactness(
+                    X_L,
+                    f,
+                    is_motif_atom_with_fixed_coord,
+                    step_num=step_num,
+                    num_steps=len(noise_schedule) - 1,
+                )
+                # Token-level translations are computed independently for
+                # each chain.  Re-project afterwards to prevent accumulated
+                # numerical or mask-induced deviations from native symmetry.
+                X_L = self.apply_symmetry_to_X_L(X_L, f)
 
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
@@ -540,22 +660,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             t_hats.append(t_hat)
 
         if torch.any(is_motif_atom_with_fixed_coord) and self.allow_realignment:
-            # Insert the gt motif at the end
-            X_L, R = centre_random_augment_around_motif(
+            X_L = self._finalize_with_fixed_motif(
                 X_L,
                 coord_atom_lvl_to_be_noised,
                 is_motif_atom_with_fixed_coord,
-                reinsert_motif=self.insert_motif_at_end,
-            )
-
-            # apply symmetry frame shift to X_L
-            X_L = self.apply_symmetry_to_X_L(X_L, f)
-
-            # Align prediction to original motif
-            X_L = weighted_rigid_align(
-                coord_atom_lvl_to_be_noised,
-                X_L,
-                X_exists_L=is_motif_atom_with_fixed_coord,
+                f,
             )
 
         return dict(

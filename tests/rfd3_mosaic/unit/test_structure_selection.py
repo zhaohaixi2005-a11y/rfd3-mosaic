@@ -4,6 +4,7 @@ from pathlib import Path
 
 from rfd3_mosaic.structure import (
     parse_atom_selection,
+    read_mmcif_atoms,
     read_pdb_atoms,
     select_atoms,
 )
@@ -67,6 +68,38 @@ class StructureSelectionTestCase(unittest.TestCase):
     def test_reverse_residue_range_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             parse_atom_selection("A/194-165/*")
+
+    def test_reads_rfd3_style_mmcif_atom_site_loop(self) -> None:
+        cif_path = Path(self.temporary_directory.name) / "result.cif"
+        cif_path.write_text(
+            """\
+data_result
+#
+loop_
+_atom_site.group_PDB
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.pdbx_PDB_model_num
+ATOM C CA ALA A 1 7 X 1.0 2.0 3.0 1
+#
+""",
+            encoding="utf-8",
+        )
+
+        atoms = read_mmcif_atoms(cif_path)
+
+        self.assertEqual(len(atoms), 1)
+        self.assertEqual(atoms[0].chain_id, "X")
+        self.assertEqual(atoms[0].residue_number, 7)
+        self.assertEqual(atoms[0].coordinate, (1.0, 2.0, 3.0))
 
 
 if __name__ == "__main__":
