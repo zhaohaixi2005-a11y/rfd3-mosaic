@@ -9,9 +9,13 @@ class _FragmentBreakingSymmetrySampler(SampleDiffusionWithSymmetry):
     """Stand-in for symmetry projection that separates two motif fragments."""
 
     def apply_symmetry_to_X_L(self, X_L, f):
+        self.symmetry_projection_calls = (
+            getattr(self, "symmetry_projection_calls", 0) + 1
+        )
         projected = X_L.clone()
         projected[:, :3] += torch.tensor([20.0, 0.0, 0.0])
         projected[:, 3:6] += torch.tensor([0.0, 20.0, 0.0])
+        projected[:, 6:] += torch.tensor([0.0, 0.0, 5.0])
         return projected
 
 
@@ -146,6 +150,96 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
         # fragments must remain the original 4 Å.
         distance = torch.linalg.norm(finalized[:, 0] - finalized[:, 3])
         self.assertAlmostEqual(float(distance), 4.0, places=4)
+
+    def test_stepwise_projection_restores_complete_fixed_motif(
+        self,
+    ) -> None:
+        coordinates = torch.tensor(
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [4.0, 0.0, 0.0],
+                    [4.0, 1.0, 0.0],
+                    [4.0, 0.0, 1.0],
+                    [8.0, 8.0, 8.0],
+                ]
+            ]
+        )
+        fixed_mask = torch.tensor(
+            [True, True, True, True, True, True, False]
+        )
+        sampler = _FragmentBreakingSymmetrySampler(
+            gamma_0=0.6,
+            preserve_fixed_motif_during_symmetry=True,
+        )
+
+        projected = sampler._apply_symmetry_preserving_fixed_motif(
+            coordinates,
+            {},
+            fixed_mask,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                projected[:, fixed_mask],
+                coordinates[:, fixed_mask],
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                projected[:, ~fixed_mask],
+                coordinates[:, ~fixed_mask]
+                + torch.tensor([0.0, 0.0, 5.0]),
+            )
+        )
+
+    def test_stepwise_mode_avoids_a_second_final_symmetry_projection(
+        self,
+    ) -> None:
+        reference = torch.tensor(
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [4.0, 0.0, 0.0],
+                    [4.0, 1.0, 0.0],
+                    [4.0, 0.0, 1.0],
+                    [8.0, 8.0, 8.0],
+                ]
+            ]
+        )
+        fixed_mask = torch.tensor(
+            [True, True, True, True, True, True, False]
+        )
+        sampler = _FragmentBreakingSymmetrySampler(
+            gamma_0=0.6,
+            allow_realignment=True,
+            insert_motif_at_end=True,
+            preserve_fixed_motif_during_symmetry=True,
+        )
+
+        torch.manual_seed(7)
+        finalized = sampler._finalize_with_fixed_motif(
+            reference.clone(),
+            reference,
+            fixed_mask,
+            {},
+        )
+
+        self.assertEqual(
+            getattr(sampler, "symmetry_projection_calls", 0),
+            0,
+        )
+        self.assertTrue(
+            torch.allclose(
+                finalized[:, fixed_mask],
+                reference[:, fixed_mask],
+                atol=1e-4,
+            )
+        )
 
 
 if __name__ == "__main__":

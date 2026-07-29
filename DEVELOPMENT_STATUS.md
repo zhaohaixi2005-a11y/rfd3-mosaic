@@ -101,6 +101,34 @@ Cluster-operation boundary:
   geometrically diverse pose manifests, followed by independent seed-integrity
   and scaffold-validity acceptance.
 
+## 2026-07-24 junction-failure diagnosis and stepwise motif preservation
+
+- Guided 200-step job `5713652` preserved all three cross-protomer seed pairs,
+  but failed scaffold validation with 114 CA clashes and nine chain breaks.
+- Every chain broke at the same motif-linker boundaries: residues 31--32 were
+  separated by about 33.9 A and residues 124--125 by about 24.1 A. This shows
+  that final-only motif reinsertion restored the interface by making a large
+  last-step coordinate change after the linker had already been generated.
+- The sampler now has an opt-in
+  `preserve_fixed_motif_during_symmetry` mode. Every symmetry projection
+  restores the complete fixed motif in the current augmented frame, and the
+  coordinate update keeps those atoms equal to the motif coordinates seen by
+  that denoising step. Later steps can therefore adapt the generated linker to
+  the true interface geometry.
+- In stepwise-preservation mode, finalization no longer performs another native
+  symmetry projection before motif reinsertion. This avoids recreating the
+  final motif-linker coordinate jump.
+- All C3 entry points enable stepwise motif preservation. The full single-GPU
+  script returns compactness guidance to a default weight of zero; guidance is
+  now an explicit environment-enabled experiment rather than the baseline.
+- New unit coverage requires symmetry projection to modify generated atoms
+  while leaving the complete multi-fragment fixed motif unchanged, and
+  requires stepwise-mode finalization not to invoke a second final projection.
+- This correction still requires LRZ CPU tests followed by one controlled
+  200-step GPU run using pose 2131, RFD3 seed 42, and compactness disabled.
+  Acceptance requires both seed integrity and junction continuity; seed
+  preservation alone is insufficient.
+
 ## Completed
 
 - Forked Foundry and established the feature branch.
@@ -679,8 +707,8 @@ git status --short --branch
 
 ## Resume point
 
-Run the selected diverse pose manifests at 200 diffusion steps. Accept a result
+Synchronize and test stepwise fixed-motif preservation. Run one controlled
+200-step job with pose 2131, RFD3 seed 42, and compactness disabled. Accept it
 only when the complete cross-chain seed passes `seed_integrity_audit.json` and
-the independently generated scaffold passes continuity, compactness, clash,
-junction, and C3-consistency review. Compare the native sampler with the
-conservative compactness-guidance experiment before tuning linker ranges.
+all motif-linker junctions pass `scaffold_validity_audit.json`. Do not resume
+multi-pose 200-step sampling until this combined gate passes.

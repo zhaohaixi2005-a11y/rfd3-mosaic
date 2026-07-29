@@ -19,7 +19,7 @@ ADAPTER_DIR="$RUN_DIR/adapter"
 CONFIG="$PROJECT_DIR/configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
 SEED="${RFD3_SEED:-42}"
 POSE_CANDIDATE_MANIFEST="${RFD3_POSE_CANDIDATE_MANIFEST:-}"
-COMPACTNESS_WEIGHT="${RFD3_COMPACTNESS_WEIGHT:-0.02}"
+COMPACTNESS_WEIGHT="${RFD3_COMPACTNESS_WEIGHT:-0.0}"
 COMPACTNESS_END_FRAC="${RFD3_COMPACTNESS_END_FRAC:-0.75}"
 COMPACTNESS_MAX_STEP="${RFD3_COMPACTNESS_MAX_STEP:-0.5}"
 
@@ -71,6 +71,7 @@ python -m rfd3_mosaic.rfd3_prevalidate \
 
 echo "RFD3_MOSAIC_INFERENCE_SAMPLER_KIND=symmetry"
 echo "RFD3_MOSAIC_FIXED_MOTIF_REINSERTION=enabled"
+echo "RFD3_MOSAIC_STEPWISE_FIXED_MOTIF_PRESERVATION=enabled"
 sha256sum "$CONFIG" "$ADAPTER_DIR/rfd3_input.json" "$ADAPTER_DIR/presymmetrized_input.cif"
 
 # RFD3 only reinserts indexed fixed motifs during sampling when
@@ -87,6 +88,7 @@ python -m rfd3.run_inference \
     inference_sampler.num_timesteps=200 \
     inference_sampler.allow_realignment=True \
     +inference_sampler.insert_motif_at_end=True \
+    ++inference_sampler.preserve_fixed_motif_during_symmetry=True \
     ++inference_sampler.interface_seed_compactness_weight="$COMPACTNESS_WEIGHT" \
     ++inference_sampler.interface_seed_compactness_end_frac="$COMPACTNESS_END_FRAC" \
     ++inference_sampler.interface_seed_compactness_max_step="$COMPACTNESS_MAX_STEP" \

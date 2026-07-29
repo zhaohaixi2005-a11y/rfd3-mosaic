@@ -65,6 +65,7 @@ python -m rfd3_mosaic.rfd3_prevalidate \
 
 echo "RFD3_MOSAIC_INFERENCE_SAMPLER_KIND=symmetry"
 echo "RFD3_MOSAIC_FIXED_MOTIF_REINSERTION=enabled"
+echo "RFD3_MOSAIC_STEPWISE_FIXED_MOTIF_PRESERVATION=enabled"
 sha256sum "$CONFIG" "$ADAPTER_DIR/rfd3_input.json" "$ADAPTER_DIR/presymmetrized_input.cif"
 
 # RFD3 only reinserts indexed fixed motifs during sampling when
@@ -81,6 +82,7 @@ python -m rfd3.run_inference \
     inference_sampler.num_timesteps=200 \
     inference_sampler.allow_realignment=True \
     +inference_sampler.insert_motif_at_end=True \
+    ++inference_sampler.preserve_fixed_motif_during_symmetry=True \
     low_memory_mode=False \
     skip_existing=False \
     dump_trajectories=False \

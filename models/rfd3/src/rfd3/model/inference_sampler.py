@@ -56,6 +56,7 @@ class SampleDiffusionConfig:
     interface_seed_compactness_weight: float = 0.0
     interface_seed_compactness_end_frac: float = 0.75
     interface_seed_compactness_max_step: float = 0.5
+    preserve_fixed_motif_during_symmetry: bool = False
 
     # Recycling
     n_recycle: int | None = None  # Override model default n_recycle for inference
@@ -394,6 +395,34 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         return X_L
 
+    def _apply_symmetry_preserving_fixed_motif(
+        self,
+        X_L: torch.Tensor,
+        f: dict[str, Any],
+        is_motif_atom_with_fixed_coord: torch.Tensor,
+        *,
+        fixed_coordinates: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Project generated coordinates while retaining the complete motif.
+
+        Indexed motif fragments may belong to different symmetry copies.  A
+        native atomwise symmetry projection can therefore change their
+        cross-chain relative pose.  For Mosaic's opt-in hard-motif mode, save
+        the complete motif in the current augmented frame, project the whole
+        structure, and restore all fixed atoms as one coordinate set.
+        """
+
+        if not self.preserve_fixed_motif_during_symmetry:
+            return self.apply_symmetry_to_X_L(X_L, f)
+        fixed = is_motif_atom_with_fixed_coord.bool()
+        if not torch.any(fixed):
+            return self.apply_symmetry_to_X_L(X_L, f)
+        if fixed_coordinates is None:
+            fixed_coordinates = X_L
+        projected = self.apply_symmetry_to_X_L(X_L, f)
+        projected[..., fixed, :] = fixed_coordinates[..., fixed, :]
+        return projected
+
     def _apply_interface_seed_compactness(
         self,
         X_L: torch.Tensor,
@@ -483,7 +512,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         insert and align the complete motif as one coordinate set.
         """
 
-        X_L = self.apply_symmetry_to_X_L(X_L, f)
+        if not self.preserve_fixed_motif_during_symmetry:
+            X_L = self.apply_symmetry_to_X_L(X_L, f)
         X_L, _ = centre_random_augment_around_motif(
             X_L,
             coord_atom_lvl_to_be_noised,
@@ -613,7 +643,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             # apply symmetry to X_denoised_L
             if "X_L" in outs and c_t > gamma_min_sym:
                 # outs["original_X_L"] = outs["X_L"].clone()
-                outs["X_L"] = self.apply_symmetry_to_X_L(outs["X_L"], f)
+                outs["X_L"] = self._apply_symmetry_preserving_fixed_motif(
+                    outs["X_L"],
+                    f,
+                    is_motif_atom_with_fixed_coord,
+                    fixed_coordinates=X_noisy_L,
+                )
 
             X_denoised_L = outs["X_L"] if "X_L" in outs else outs
 
@@ -638,6 +673,17 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             # Update the coordinates, scaled by the step size
             # delta_L should be symmetric
             X_L = X_noisy_L + step_scale * d_t * delta_L
+            if (
+                self.preserve_fixed_motif_during_symmetry
+                and torch.any(is_motif_atom_with_fixed_coord)
+            ):
+                # Keep the motif in the same randomly augmented frame seen by
+                # this denoising step.  This prevents a large last-step motif
+                # jump and gives subsequent steps time to repair both
+                # motif-linker junctions around the true interface geometry.
+                X_L[..., is_motif_atom_with_fixed_coord, :] = X_noisy_L[
+                    ..., is_motif_atom_with_fixed_coord, :
+                ]
             if self.interface_seed_compactness_weight > 0.0:
                 X_L = self._apply_interface_seed_compactness(
                     X_L,
@@ -649,7 +695,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 # Token-level translations are computed independently for
                 # each chain.  Re-project afterwards to prevent accumulated
                 # numerical or mask-induced deviations from native symmetry.
-                X_L = self.apply_symmetry_to_X_L(X_L, f)
+                X_L = self._apply_symmetry_preserving_fixed_motif(
+                    X_L,
+                    f,
+                    is_motif_atom_with_fixed_coord,
+                )
 
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
