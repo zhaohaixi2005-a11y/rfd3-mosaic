@@ -6,7 +6,17 @@ from typing import Any, Literal
 
 import torch
 from jaxtyping import Float
-from rfd3.inference.symmetry.symmetry_utils import apply_symmetry_to_xyz_atomwise
+from rfd3.inference.symmetry.motif_mobility import (
+    OrbitRigidMotifController,
+)
+from rfd3.inference.symmetry.symmetry_utils import (
+    apply_symmetry_to_xyz_atomwise,
+    build_symmetry_orbit_layout,
+    expand_symmetry_coupled_displacements,
+    project_symmetry_orbit_average,
+    symmetry_orbit_mask_mismatch_count,
+    symmetry_orbit_residual,
+)
 from rfd3.model.cfg_utils import strip_X
 
 from foundry.common import exists
@@ -57,6 +67,19 @@ class SampleDiffusionConfig:
     interface_seed_compactness_end_frac: float = 0.75
     interface_seed_compactness_max_step: float = 0.5
     preserve_fixed_motif_during_symmetry: bool = False
+    require_motif_constraint_groups: bool = False
+    motif_constraint_conflict_tolerance: float = 1e-4
+    symmetry_state_mode: Literal["legacy_asu", "orbit_average"] = "legacy_asu"
+    symmetry_noise_mode: Literal["independent", "coupled"] = "independent"
+    symmetry_orbit_max_error: float = 1e-3
+    fixed_target_symmetry_rmsd_tolerance: float = 0.01
+    fixed_target_symmetry_max_tolerance: float = 0.03
+    enable_orbit_rigid_motif_mobility: bool = False
+    motif_mobility_start_fraction: float = 0.10
+    motif_mobility_end_fraction: float = 0.85
+    motif_mobility_response: float = 0.25
+    motif_mobility_per_step_translation: float = 0.25
+    motif_mobility_per_step_rotation_degrees: float = 1.0
 
     # Recycling
     n_recycle: int | None = None  # Override model default n_recycle for inference
@@ -80,6 +103,11 @@ class SampleDiffusionWithMotif(SampleDiffusionConfig):
         Reference:
             AlphaFold 3 Supplement, Section 3.7.1.
         """
+        if self.num_timesteps < 2:
+            raise ValueError(
+                "num_timesteps must be at least two so the diffusion "
+                "sampler performs an update"
+            )
         # Create a linearly spaced tensor of timesteps between min_t and max_t
         t = torch.linspace(self.min_t, self.max_t, self.num_timesteps, device=device)
 
@@ -123,20 +151,19 @@ class SampleDiffusionWithMotif(SampleDiffusionConfig):
                 ranked_logger.warning(
                     f"No noise schedule steps found with t <= {partial_t_value}!"
                 )
-                ranked_logger.info(
-                    f"Original schedule range: [{original_min:.3f}, {original_max:.3f}]"
-                )
-                # Fallback to smallest available step
-                noise_schedule_original = self._construct_inference_noise_schedule(
-                    device=device
-                )
-                noise_schedule = noise_schedule_original[-1:]  # Just use the final step
-                ranked_logger.info(
-                    f"Using fallback: final step with t={noise_schedule[0].item():.6f}"
+                raise ValueError(
+                    "partial_t leaves no usable diffusion timesteps; "
+                    f"schedule range is [{original_min:.6f}, "
+                    f"{original_max:.6f}]"
                 )
         else:
             noise_schedule = t_hat
 
+        if len(noise_schedule) < 2:
+            raise ValueError(
+                "The effective diffusion schedule must contain at least "
+                "two timesteps after partial_t filtering"
+            )
         return noise_schedule
 
     def _get_initial_structure(
@@ -379,6 +406,96 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         ), "gamma_0 must be greater than 0.5 for symmetry sampling"
         self.sym_step_frac = sym_step_frac
         super().__init__(**kwargs)
+        self._exact_symmetry_orbit_layout = None
+        valid_state_modes = {"legacy_asu", "orbit_average"}
+        if self.symmetry_state_mode not in valid_state_modes:
+            raise ValueError(
+                "symmetry_state_mode must be one of "
+                f"{sorted(valid_state_modes)}"
+            )
+        valid_noise_modes = {"independent", "coupled"}
+        if self.symmetry_noise_mode not in valid_noise_modes:
+            raise ValueError(
+                "symmetry_noise_mode must be one of "
+                f"{sorted(valid_noise_modes)}"
+            )
+        exact_state = self.symmetry_state_mode == "orbit_average"
+        coupled_noise = self.symmetry_noise_mode == "coupled"
+        if exact_state != coupled_noise:
+            raise ValueError(
+                "Exact orbit sampling requires both "
+                "symmetry_state_mode=orbit_average and "
+                "symmetry_noise_mode=coupled"
+            )
+        if exact_state and self.allow_realignment:
+            raise ValueError(
+                "allow_realignment=True is incompatible with exact symmetry "
+                "orbits because the runtime symmetry operators are not "
+                "conjugated into the augmented coordinate frame"
+            )
+        if self.enable_orbit_rigid_motif_mobility and not exact_state:
+            raise ValueError(
+                "Orbit-rigid motif mobility requires exact orbit-average "
+                "state and coupled-noise modes"
+            )
+        if not (
+            0.0
+            <= float(self.motif_mobility_start_fraction)
+            < float(self.motif_mobility_end_fraction)
+            <= 1.0
+        ):
+            raise ValueError(
+                "Motif mobility fractions must satisfy "
+                "0 <= start < end <= 1"
+            )
+        if not 0.0 < float(self.motif_mobility_response) <= 1.0:
+            raise ValueError(
+                "motif_mobility_response must be in (0, 1]"
+            )
+        if float(self.motif_mobility_per_step_translation) <= 0.0:
+            raise ValueError(
+                "motif_mobility_per_step_translation must be positive"
+            )
+        if (
+            float(self.motif_mobility_per_step_rotation_degrees)
+            <= 0.0
+        ):
+            raise ValueError(
+                "motif_mobility_per_step_rotation_degrees must be positive"
+            )
+        if float(self.symmetry_orbit_max_error) <= 0.0:
+            raise ValueError("symmetry_orbit_max_error must be positive")
+        if float(self.fixed_target_symmetry_rmsd_tolerance) < 0.0:
+            raise ValueError(
+                "fixed_target_symmetry_rmsd_tolerance cannot be negative"
+            )
+        if float(self.fixed_target_symmetry_max_tolerance) < 0.0:
+            raise ValueError(
+                "fixed_target_symmetry_max_tolerance cannot be negative"
+            )
+
+    @property
+    def _uses_exact_symmetry_orbits(self) -> bool:
+        return self.symmetry_state_mode == "orbit_average"
+
+    @staticmethod
+    def _symmetry_features(f: dict[str, Any]) -> dict[str, Any]:
+        required = {
+            "sym_transform",
+            "sym_transform_id",
+            "sym_entity_id",
+            "is_sym_asu",
+        }
+        missing = required - set(f)
+        if missing:
+            raise ValueError(
+                f"Symmetry sampling requires features {sorted(missing)}"
+            )
+        return {
+            key: value
+            for key, value in f.items()
+            if key.startswith("sym_") or key == "is_sym_asu"
+        }
 
     def apply_symmetry_to_X_L(self, X_L, f):
         # check that we are doing symmetric inference
@@ -386,13 +503,208 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         assert "sym_transform" in f.keys(), "Symmetry transform not found in f"
 
         # update symmetric frames to correct for change in global frame
-        symmetry_feats = {k: v for k, v in f.items() if "sym" in k}
+        symmetry_feats = self._symmetry_features(f)
 
         # apply symmetry frame shift to X_L
         X_L = apply_symmetry_to_xyz_atomwise(
             X_L, symmetry_feats, partial_diffusion=("partial_t" in f)
         )
 
+        return X_L
+
+    def apply_orbit_average_to_X_L(self, X_L, f):
+        """Project coordinates using all copies in each runtime orbit."""
+
+        return project_symmetry_orbit_average(
+            X_L,
+            self._symmetry_features(f),
+            partial_diffusion=True,
+            layout=self._exact_symmetry_orbit_layout,
+        )
+
+    def _project_symmetric_state(self, X_L, f):
+        if self._uses_exact_symmetry_orbits:
+            return self.apply_orbit_average_to_X_L(X_L, f)
+        return self.apply_symmetry_to_X_L(X_L, f)
+
+    def _assert_symmetry_orbit_closed(
+        self,
+        X_L: torch.Tensor,
+        f: dict[str, Any],
+        *,
+        label: str,
+    ) -> None:
+        if not self._uses_exact_symmetry_orbits:
+            return
+        if not torch.isfinite(X_L).all():
+            raise ValueError(
+                f"{label} contains NaN or Inf coordinates"
+            )
+        rms, maximum = symmetry_orbit_residual(
+            X_L,
+            self._symmetry_features(f),
+            layout=self._exact_symmetry_orbit_layout,
+        )
+        if not (
+            torch.isfinite(rms).all()
+            and torch.isfinite(maximum).all()
+        ):
+            raise ValueError(
+                f"{label} produced a non-finite symmetry residual"
+            )
+        # A fixed 1e-3 A gate is appropriate once coordinates return to
+        # molecular scale, but float32 cannot represent an exactly idempotent
+        # rotation round-trip at the initial EDM noise scale (~2560 A).
+        # Retain the absolute scientific gate while adding only a small
+        # dtype-relative numerical floor.  This floor vanishes below the
+        # configured tolerance as denoising approaches the final structure.
+        work_dtype = (
+            torch.float64
+            if X_L.dtype == torch.float64
+            else torch.float32
+        )
+        coordinate_scale = torch.sqrt(
+            torch.mean(
+                torch.square(
+                    X_L.detach().to(dtype=work_dtype)
+                )
+            )
+        )
+        numerical_floor = (
+            32.0
+            * torch.finfo(work_dtype).eps
+            * max(float(coordinate_scale.item()), 1.0)
+        )
+        configured_tolerance = float(self.symmetry_orbit_max_error)
+        tolerance = max(configured_tolerance, numerical_floor)
+        if torch.any(maximum > tolerance):
+            raise ValueError(
+                f"{label} left the runtime symmetry orbit: "
+                f"maximum residual={float(maximum.max().item()):.6f} A, "
+                f"RMS residual={float(rms.max().item()):.6f} A, "
+                f"tolerance={tolerance:.6f} A "
+                f"(configured={configured_tolerance:.6f} A, "
+                f"roundoff_floor={numerical_floor:.6f} A)"
+            )
+
+    def _prepare_static_symmetry_target(
+        self,
+        coordinates: torch.Tensor,
+        fixed_mask: torch.Tensor,
+        f: dict[str, Any],
+        *,
+        diffusion_batch_size: int,
+    ) -> torch.Tensor:
+        """Validate and project the immutable cross-chain target onto Cn/Dn."""
+
+        if coordinates.shape[0] == 1 and diffusion_batch_size > 1:
+            coordinates = coordinates.expand(
+                diffusion_batch_size,
+                -1,
+                -1,
+            )
+        elif coordinates.shape[0] != diffusion_batch_size:
+            raise ValueError(
+                "Fixed target batch dimension must be one or match "
+                "diffusion_batch_size"
+            )
+        if not torch.isfinite(coordinates).all():
+            raise ValueError(
+                "Fixed motif target contains NaN or Inf coordinates"
+            )
+        symmetry_feats = self._symmetry_features(f)
+        mismatch_count = symmetry_orbit_mask_mismatch_count(
+            fixed_mask,
+            symmetry_feats,
+            layout=self._exact_symmetry_orbit_layout,
+        )
+        if mismatch_count:
+            raise ValueError(
+                "Fixed motif mask is not closed over the runtime symmetry "
+                f"orbits ({mismatch_count} mismatched atom slots)"
+            )
+
+        rms, maximum = symmetry_orbit_residual(
+            coordinates,
+            symmetry_feats,
+            atom_mask=fixed_mask,
+            layout=self._exact_symmetry_orbit_layout,
+        )
+        if not (
+            torch.isfinite(rms).all()
+            and torch.isfinite(maximum).all()
+        ):
+            raise ValueError(
+                "Fixed motif target produced a non-finite symmetry residual"
+            )
+        rms_tolerance = float(
+            self.fixed_target_symmetry_rmsd_tolerance
+        )
+        max_tolerance = float(
+            self.fixed_target_symmetry_max_tolerance
+        )
+        if (
+            torch.any(rms > rms_tolerance)
+            or torch.any(maximum > max_tolerance)
+        ):
+            raise ValueError(
+                "Fixed motif target is incompatible with the runtime "
+                "symmetry operators: "
+                f"RMS={float(rms.max().item()):.6f} A "
+                f"(limit {rms_tolerance:.6f}), "
+                f"max={float(maximum.max().item()):.6f} A "
+                f"(limit {max_tolerance:.6f})"
+            )
+        # Use the unique orbit-average target during sampling.  For a valid
+        # target this is a sub-CIF-precision correction, and it prevents an
+        # exact projector and a nearly symmetric hard constraint from
+        # fighting at every step.
+        projected = project_symmetry_orbit_average(
+            coordinates,
+            symmetry_feats,
+            partial_diffusion=True,
+            layout=self._exact_symmetry_orbit_layout,
+        )
+        if not torch.isfinite(projected).all():
+            raise ValueError(
+                "Projected fixed motif target contains NaN or Inf"
+            )
+        return projected
+
+    def _get_exact_symmetric_initial_structure(
+        self,
+        *,
+        c0: torch.Tensor,
+        D: int,
+        fixed_target: torch.Tensor,
+        fixed_mask: torch.Tensor,
+        f: dict[str, Any],
+    ) -> torch.Tensor:
+        raw_noise = c0 * torch.normal(
+            mean=0.0,
+            std=1.0,
+            size=fixed_target.shape,
+            device=fixed_target.device,
+        )
+        noise = expand_symmetry_coupled_displacements(
+            raw_noise,
+            self._symmetry_features(f),
+            layout=self._exact_symmetry_orbit_layout,
+        )
+        noise[..., fixed_mask, :] = 0.0
+        X_L = fixed_target + noise
+        X_L = self.apply_orbit_average_to_X_L(X_L, f)
+        X_L = self._restore_motif_constraint_groups(
+            X_L,
+            fixed_target,
+            fixed_mask,
+            f,
+        )
+        self._assert_symmetry_orbit_closed(
+            X_L,
+            f,
+            label="Initial diffusion state",
+        )
         return X_L
 
     def _apply_symmetry_preserving_fixed_motif(
@@ -413,15 +725,129 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         """
 
         if not self.preserve_fixed_motif_during_symmetry:
-            return self.apply_symmetry_to_X_L(X_L, f)
+            return self._project_symmetric_state(X_L, f)
         fixed = is_motif_atom_with_fixed_coord.bool()
         if not torch.any(fixed):
-            return self.apply_symmetry_to_X_L(X_L, f)
+            return self._project_symmetric_state(X_L, f)
         if fixed_coordinates is None:
             fixed_coordinates = X_L
-        projected = self.apply_symmetry_to_X_L(X_L, f)
-        projected[..., fixed, :] = fixed_coordinates[..., fixed, :]
-        return projected
+        projected = self._project_symmetric_state(X_L, f)
+        restored = self._restore_motif_constraint_groups(
+            projected,
+            fixed_coordinates,
+            fixed,
+            f,
+        )
+        self._assert_symmetry_orbit_closed(
+            restored,
+            f,
+            label="Fixed-motif symmetry projection",
+        )
+        return restored
+
+    def _restore_motif_constraint_groups(
+        self,
+        X_L: torch.Tensor,
+        fixed_coordinates: torch.Tensor,
+        fixed_mask: torch.Tensor,
+        f: dict[str, Any],
+    ) -> torch.Tensor:
+        """Restore complete motif groups without insertion-order dependence.
+
+        ``motif_constraint_group_membership`` is an optional boolean tensor
+        shaped ``[G, L]``.  Atoms may belong to multiple groups.  Overlapping
+        groups are merged only when their target coordinates agree within the
+        configured tolerance; conflicting hard constraints fail explicitly.
+        Without group metadata, retain the legacy one-global-mask behavior.
+        """
+
+        membership = f.get("motif_constraint_group_membership")
+        fixed = fixed_mask.bool()
+        restored = X_L.clone()
+        if membership is None:
+            if self.require_motif_constraint_groups and torch.any(fixed):
+                raise ValueError(
+                    "Motif constraint groups are required but "
+                    "motif_constraint_group_membership is absent"
+                )
+            restored[..., fixed, :] = fixed_coordinates[..., fixed, :]
+            return restored
+
+        membership = torch.as_tensor(
+            membership,
+            dtype=torch.bool,
+            device=X_L.device,
+        )
+        if membership.ndim != 2 or membership.shape[1] != X_L.shape[-2]:
+            raise ValueError(
+                "motif_constraint_group_membership must have shape [G, L]"
+            )
+        assigned = membership.any(dim=0)
+        if torch.any(assigned & ~fixed):
+            raise ValueError(
+                "Motif constraint groups may contain only fixed motif atoms"
+            )
+        if torch.any(fixed & ~assigned):
+            raise ValueError(
+                "Every fixed motif atom must belong to a constraint group"
+            )
+
+        group_targets = f.get("motif_constraint_target_coordinates")
+        if group_targets is None:
+            group_targets = fixed_coordinates[:, None, :, :].expand(
+                -1,
+                membership.shape[0],
+                -1,
+                -1,
+            )
+        else:
+            group_targets = torch.as_tensor(
+                group_targets,
+                dtype=X_L.dtype,
+                device=X_L.device,
+            )
+        expected_shape = (
+            X_L.shape[0],
+            membership.shape[0],
+            X_L.shape[1],
+            3,
+        )
+        if tuple(group_targets.shape) != expected_shape:
+            raise ValueError(
+                "motif_constraint_target_coordinates must have shape "
+                f"{expected_shape}"
+            )
+        if not torch.isfinite(group_targets).all():
+            raise ValueError(
+                "motif_constraint_target_coordinates contains NaN or Inf"
+            )
+
+        weights = membership.to(dtype=X_L.dtype)[None, :, :, None]
+        counts = weights.sum(dim=1)
+        merged = (group_targets * weights).sum(dim=1) / counts.clamp_min(1.0)
+        deviations = torch.linalg.vector_norm(
+            group_targets - merged[:, None, :, :],
+            dim=-1,
+        )
+        relevant_deviations = deviations[
+            membership[None, :, :].expand(X_L.shape[0], -1, -1)
+        ]
+        tolerance = float(self.motif_constraint_conflict_tolerance)
+        if tolerance < 0.0:
+            raise ValueError(
+                "motif_constraint_conflict_tolerance cannot be negative"
+            )
+        if (
+            relevant_deviations.numel()
+            and torch.any(relevant_deviations > tolerance)
+        ):
+            maximum = float(relevant_deviations.max().item())
+            raise ValueError(
+                "Overlapping motif constraint groups disagree: maximum "
+                f"coordinate deviation {maximum:.6f} exceeds {tolerance:.6f}"
+            )
+        restored[..., assigned, :] = merged[..., assigned, :]
+        return restored
 
     def _apply_interface_seed_compactness(
         self,
@@ -496,6 +922,49 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )[:, None, :]
         return guided
 
+    def _project_stepwise_updated_coordinates(
+        self,
+        X_L: torch.Tensor,
+        f: dict[str, Any],
+        is_motif_atom_with_fixed_coord: torch.Tensor,
+        fixed_coordinates: torch.Tensor,
+    ) -> torch.Tensor:
+        """Enforce symmetry after the stochastic coordinate update.
+
+        Projecting only the denoised prediction is insufficient because
+        ``X_noisy_L`` contains independent atomwise noise.  The Euler update
+        therefore need not remain symmetric even when ``X_denoised_L`` is
+        symmetric.  Mosaic's hard-motif mode projects the actual updated
+        coordinates and then restores complete cross-chain motif groups.
+        """
+
+        if self._uses_exact_symmetry_orbits:
+            projected = self.apply_orbit_average_to_X_L(X_L, f)
+            if (
+                self.preserve_fixed_motif_during_symmetry
+                and torch.any(is_motif_atom_with_fixed_coord)
+            ):
+                projected = self._restore_motif_constraint_groups(
+                    projected,
+                    fixed_coordinates,
+                    is_motif_atom_with_fixed_coord,
+                    f,
+                )
+            self._assert_symmetry_orbit_closed(
+                projected,
+                f,
+                label="Euler-updated diffusion state",
+            )
+            return projected
+        if not self.preserve_fixed_motif_during_symmetry:
+            return X_L
+        return self._apply_symmetry_preserving_fixed_motif(
+            X_L,
+            f,
+            is_motif_atom_with_fixed_coord,
+            fixed_coordinates=fixed_coordinates,
+        )
+
     def _finalize_with_fixed_motif(
         self,
         X_L: torch.Tensor,
@@ -539,7 +1008,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         **_,
     ) -> dict[str, Any]:
         # Motif setup to recenter the motif at every step
-        is_motif_atom_with_fixed_coord = f["is_motif_atom_with_fixed_coord"]
+        is_motif_atom_with_fixed_coord = torch.as_tensor(
+            f["is_motif_atom_with_fixed_coord"],
+            dtype=torch.bool,
+            device=coord_atom_lvl_to_be_noised.device,
+        )
         # Book-keeping
         noise_schedule = self._construct_inference_noise_schedule(
             device=coord_atom_lvl_to_be_noised.device,
@@ -548,13 +1021,80 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         L = f["ref_element"].shape[0]
         D = diffusion_batch_size
-        X_L = self._get_initial_structure(
-            c0=noise_schedule[0],
-            D=D,
-            L=L,
-            coord_atom_lvl_to_be_noised=coord_atom_lvl_to_be_noised.clone(),
-            is_motif_atom_with_fixed_coord=is_motif_atom_with_fixed_coord,
-        )  # (D, L, 3)
+        fixed_target = coord_atom_lvl_to_be_noised.clone()
+        motif_mobility_controller = None
+        if self._uses_exact_symmetry_orbits:
+            self._exact_symmetry_orbit_layout = (
+                build_symmetry_orbit_layout(
+                    self._symmetry_features(f),
+                    like=fixed_target,
+                )
+            )
+            if (
+                torch.any(is_motif_atom_with_fixed_coord)
+                and not self.preserve_fixed_motif_during_symmetry
+            ):
+                raise ValueError(
+                    "Exact symmetry-orbit sampling with fixed motif atoms "
+                    "requires preserve_fixed_motif_during_symmetry=True"
+                )
+            fixed_target = self._prepare_static_symmetry_target(
+                fixed_target,
+                is_motif_atom_with_fixed_coord,
+                f,
+                diffusion_batch_size=D,
+            )
+            if self.enable_orbit_rigid_motif_mobility:
+                ranked_logger.warning(
+                    "Orbit-rigid motif mobility is experimental: the "
+                    "formal Mosaic baselines keep this disabled until "
+                    "dynamic motif conditioning and a scaffold-derived "
+                    "pose signal are validated"
+                )
+                motif_mobility_controller = (
+                    OrbitRigidMotifController.from_features(
+                        f,
+                        fixed_target,
+                        start_fraction=float(
+                            self.motif_mobility_start_fraction
+                        ),
+                        end_fraction=float(
+                            self.motif_mobility_end_fraction
+                        ),
+                        response=float(
+                            self.motif_mobility_response
+                        ),
+                        per_step_translation=float(
+                            self.motif_mobility_per_step_translation
+                        ),
+                        per_step_rotation_degrees=float(
+                            self.motif_mobility_per_step_rotation_degrees
+                        ),
+                    )
+                )
+                if motif_mobility_controller is None:
+                    raise ValueError(
+                        "Orbit-rigid motif mobility was enabled but the "
+                        "input declares no mobile motif constraint orbit"
+                    )
+            X_L = self._get_exact_symmetric_initial_structure(
+                c0=noise_schedule[0],
+                D=D,
+                fixed_target=fixed_target,
+                fixed_mask=is_motif_atom_with_fixed_coord,
+                f=f,
+            )
+        else:
+            self._exact_symmetry_orbit_layout = None
+            X_L = self._get_initial_structure(
+                c0=noise_schedule[0],
+                D=D,
+                L=L,
+                coord_atom_lvl_to_be_noised=fixed_target,
+                is_motif_atom_with_fixed_coord=(
+                    is_motif_atom_with_fixed_coord
+                ),
+            )  # (D, L, 3)
 
         X_noisy_L_traj = []
         X_denoised_L_traj = []
@@ -597,12 +1137,22 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 * torch.sqrt(torch.square(t_hat) - torch.square(c_t_minus_1))
                 * torch.normal(mean=0.0, std=1.0, size=X_L.shape, device=X_L.device)
             )
+            if self.symmetry_noise_mode == "coupled":
+                epsilon_L = expand_symmetry_coupled_displacements(
+                    epsilon_L,
+                    self._symmetry_features(f),
+                    layout=self._exact_symmetry_orbit_layout,
+                )
             epsilon_L[..., is_motif_atom_with_fixed_coord, :] = (
                 0  # No noise injection for fixed atoms
             )
 
-            # NOTE: no symmetry applied to the noisy structure
             X_noisy_L = X_L + epsilon_L
+            self._assert_symmetry_orbit_closed(
+                X_noisy_L,
+                f,
+                label=f"Noisy diffusion state at step {step_num}",
+            )
 
             # Denoise the coordinates
             # Handle chunked mode vs standard mode (same as default sampler)
@@ -640,14 +1190,34 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     n_recycle=self.n_recycle,
                     **initializer_outputs,
                 )
+            if (
+                motif_mobility_controller is not None
+                and "X_L" in outs
+            ):
+                with torch.autocast(
+                    device_type=outs["X_L"].device.type,
+                    enabled=False,
+                ):
+                    fixed_target = motif_mobility_controller.update(
+                        outs["X_L"].detach().to(torch.float32),
+                        progress=step_num
+                        / max(len(noise_schedule) - 2, 1),
+                    )
             # apply symmetry to X_denoised_L
-            if "X_L" in outs and c_t > gamma_min_sym:
+            if "X_L" in outs and (
+                self._uses_exact_symmetry_orbits
+                or c_t > gamma_min_sym
+            ):
                 # outs["original_X_L"] = outs["X_L"].clone()
                 outs["X_L"] = self._apply_symmetry_preserving_fixed_motif(
                     outs["X_L"],
                     f,
                     is_motif_atom_with_fixed_coord,
-                    fixed_coordinates=X_noisy_L,
+                    fixed_coordinates=(
+                        fixed_target
+                        if self._uses_exact_symmetry_orbits
+                        else X_noisy_L
+                    ),
                 )
 
             X_denoised_L = outs["X_L"] if "X_L" in outs else outs
@@ -671,19 +1241,21 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 sequence_entropy_traj.append(seq_entropy)
 
             # Update the coordinates, scaled by the step size
-            # delta_L should be symmetric
             X_L = X_noisy_L + step_scale * d_t * delta_L
-            if (
-                self.preserve_fixed_motif_during_symmetry
-                and torch.any(is_motif_atom_with_fixed_coord)
-            ):
-                # Keep the motif in the same randomly augmented frame seen by
-                # this denoising step.  This prevents a large last-step motif
-                # jump and gives subsequent steps time to repair both
-                # motif-linker junctions around the true interface geometry.
-                X_L[..., is_motif_atom_with_fixed_coord, :] = X_noisy_L[
-                    ..., is_motif_atom_with_fixed_coord, :
-                ]
+            # Independent noise in X_noisy_L means this Euler update is not
+            # guaranteed to be symmetric even when X_denoised_L was
+            # projected. Project the actual state that advances to the next
+            # denoising step, then restore the complete interface groups.
+            X_L = self._project_stepwise_updated_coordinates(
+                X_L,
+                f,
+                is_motif_atom_with_fixed_coord,
+                (
+                    fixed_target
+                    if self._uses_exact_symmetry_orbits
+                    else X_noisy_L
+                ),
+            )
             if self.interface_seed_compactness_weight > 0.0:
                 X_L = self._apply_interface_seed_compactness(
                     X_L,
@@ -699,6 +1271,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     X_L,
                     f,
                     is_motif_atom_with_fixed_coord,
+                    fixed_coordinates=(
+                        fixed_target
+                        if self._uses_exact_symmetry_orbits
+                        else None
+                    ),
                 )
 
             # Append the results to the trajectory (for visualization of the diffusion process)
@@ -709,7 +1286,24 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             X_denoised_L_traj.append(X_denoised_L)
             t_hats.append(t_hat)
 
-        if torch.any(is_motif_atom_with_fixed_coord) and self.allow_realignment:
+        if self._uses_exact_symmetry_orbits:
+            X_L = self.apply_orbit_average_to_X_L(X_L, f)
+            if torch.any(is_motif_atom_with_fixed_coord):
+                X_L = self._restore_motif_constraint_groups(
+                    X_L,
+                    fixed_target,
+                    is_motif_atom_with_fixed_coord,
+                    f,
+                )
+            self._assert_symmetry_orbit_closed(
+                X_L,
+                f,
+                label="Final diffusion state",
+            )
+        elif (
+            torch.any(is_motif_atom_with_fixed_coord)
+            and self.allow_realignment
+        ):
             X_L = self._finalize_with_fixed_motif(
                 X_L,
                 coord_atom_lvl_to_be_noised,
@@ -745,6 +1339,29 @@ class ConditionalDiffusionSampler:
         ranked_logger.info(
             f"Initializing ConditionalDiffusionSampler with kind: {kind}"
         )
+        if kind == "default":
+            unsupported = []
+            if kwargs.get("symmetry_state_mode", "legacy_asu") != "legacy_asu":
+                unsupported.append("symmetry_state_mode")
+            if kwargs.get("symmetry_noise_mode", "independent") != "independent":
+                unsupported.append("symmetry_noise_mode")
+            for flag in (
+                "preserve_fixed_motif_during_symmetry",
+                "require_motif_constraint_groups",
+                "enable_orbit_rigid_motif_mobility",
+            ):
+                if kwargs.get(flag, False):
+                    unsupported.append(flag)
+            if float(
+                kwargs.get("interface_seed_compactness_weight", 0.0)
+            ) > 0.0:
+                unsupported.append("interface_seed_compactness_weight")
+            if unsupported:
+                raise ValueError(
+                    "Symmetry-only inference options require "
+                    "inference_sampler.kind=symmetry: "
+                    + ", ".join(sorted(unsupported))
+                )
         try:
             SamplerCls = self._registry[kind]
             # remove kwargs that the sampler cannot take

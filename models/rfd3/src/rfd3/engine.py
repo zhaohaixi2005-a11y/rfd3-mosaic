@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
-from typing import Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 import torch
 import yaml
@@ -38,6 +38,111 @@ from rfd3.utils.io import (
 
 logging.basicConfig(level=logging.INFO)
 ranked_logger = RankedLogger(__name__, rank_zero_only=True)
+
+
+def _requires_true_precision(inference_sampler: dict | None) -> bool:
+    """Return whether the sampler carries exact coordinate invariants."""
+
+    return bool(
+        inference_sampler
+        and inference_sampler.get("symmetry_state_mode") == "orbit_average"
+    )
+
+
+def _snapshot_inference_geometry(pipeline_output: dict) -> dict:
+    """Clone inference geometry before Fabric can replace nested tensors."""
+
+    snapshot: dict[str, Any] = {}
+    for key in ("coord_atom_lvl_to_be_noised", "noise"):
+        value = pipeline_output.get(key)
+        if isinstance(value, torch.Tensor):
+            snapshot[key] = value.detach().clone()
+
+    features = pipeline_output.get("feats")
+    if not isinstance(features, dict):
+        return snapshot
+    snapshot_features: dict[str, Any] = {}
+    transforms = features.get("sym_transform")
+    if isinstance(transforms, dict):
+        snapshot_features["sym_transform"] = {
+            transform_id: (
+                rotation.detach().clone(),
+                translation.detach().clone(),
+            )
+            for transform_id, (rotation, translation) in transforms.items()
+        }
+    targets = features.get("motif_constraint_target_coordinates")
+    if isinstance(targets, torch.Tensor):
+        snapshot_features["motif_constraint_target_coordinates"] = (
+            targets.detach().clone()
+        )
+    snapshot["feats"] = snapshot_features
+    return snapshot
+
+
+def _restore_inference_geometry_precision(
+    pipeline_output: dict,
+    *,
+    source: dict | None = None,
+) -> dict:
+    """Restore float32 geometry after Fabric mixed-precision device transfer.
+
+    Fabric's bf16 precision plugin may convert floating tensors while moving a
+    batch to the accelerator.  That is appropriate for network activations,
+    but it loses up to ~0.1 A in molecular coordinates and degrades stored
+    symmetry frames before the exact-orbit sampler validates them.
+    """
+
+    source = pipeline_output if source is None else source
+    for key in ("coord_atom_lvl_to_be_noised", "noise"):
+        value = source.get(key)
+        if isinstance(value, torch.Tensor) and value.is_floating_point():
+            target = pipeline_output.get(key)
+            device = (
+                target.device
+                if isinstance(target, torch.Tensor)
+                else value.device
+            )
+            pipeline_output[key] = value.to(
+                device=device,
+                dtype=torch.float32,
+            )
+
+    features = pipeline_output.get("feats")
+    source_features = source.get("feats")
+    if not isinstance(features, dict) or not isinstance(source_features, dict):
+        return pipeline_output
+
+    transforms = source_features.get("sym_transform")
+    if isinstance(transforms, dict):
+        target_transforms = features.get("sym_transform", {})
+        features["sym_transform"] = {
+            transform_id: (
+                rotation.to(
+                    device=target_transforms[transform_id][0].device,
+                    dtype=torch.float32,
+                ),
+                translation.to(
+                    device=target_transforms[transform_id][1].device,
+                    dtype=torch.float32,
+                ),
+            )
+            for transform_id, (rotation, translation) in transforms.items()
+        }
+
+    targets = source_features.get("motif_constraint_target_coordinates")
+    if isinstance(targets, torch.Tensor) and targets.is_floating_point():
+        target_targets = features.get("motif_constraint_target_coordinates")
+        device = (
+            target_targets.device
+            if isinstance(target_targets, torch.Tensor)
+            else targets.device
+        )
+        features["motif_constraint_target_coordinates"] = targets.to(
+            device=device,
+            dtype=torch.float32,
+        )
+    return pipeline_output
 
 
 @dataclass(kw_only=True)
@@ -162,6 +267,9 @@ class RFD3InferenceEngine(BaseInferenceEngine):
         low_memory_mode: bool,
         **kwargs,
     ):
+        exact_orbit_precision = _requires_true_precision(
+            inference_sampler
+        )
         super().__init__(
             transform_overrides={"diffusion_batch_size": diffusion_batch_size},
             inference_sampler_overrides={**inference_sampler},
@@ -170,9 +278,19 @@ class RFD3InferenceEngine(BaseInferenceEngine):
                 "cleanup_virtual_atoms": cleanup_virtual_atoms,
                 "read_sequence_from_sequence_head": read_sequence_from_sequence_head,
                 "output_full_json": output_full_json,
+                **(
+                    {"precision": "32-true"}
+                    if exact_orbit_precision
+                    else {}
+                ),
             },
             **kwargs,
         )
+        if exact_orbit_precision:
+            print(
+                "RFD3_MOSAIC_FABRIC_PRECISION=32-true",
+                flush=True,
+            )
         # save
         self.specification_overrides = dict(specification or {})
         self.inference_sampler_overrides = dict(inference_sampler or {})
@@ -277,7 +395,24 @@ class RFD3InferenceEngine(BaseInferenceEngine):
         # Wraps around the trainer validation step to create atom arrays for saving.
         t0 = time.time()
         with torch.no_grad():
+            full_precision_geometry = _snapshot_inference_geometry(
+                pipeline_output
+            )
             pipeline_output = self.trainer.fabric.to_device(pipeline_output)
+            pipeline_output = _restore_inference_geometry_precision(
+                pipeline_output,
+                source=full_precision_geometry,
+            )
+            source_dtype = full_precision_geometry[
+                "coord_atom_lvl_to_be_noised"
+            ].dtype
+            device_dtype = pipeline_output[
+                "coord_atom_lvl_to_be_noised"
+            ].dtype
+            ranked_logger.warning(
+                "Inference geometry precision restored: "
+                f"source={source_dtype}, device={device_dtype}"
+            )
             output_val = self.trainer.validation_step(
                 batch=pipeline_output,
                 batch_idx=0,

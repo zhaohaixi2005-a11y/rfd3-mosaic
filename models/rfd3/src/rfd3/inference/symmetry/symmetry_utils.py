@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Optional
 
 import biotite.structure as struc
@@ -36,6 +37,21 @@ from foundry.utils.components import fetch_mask_from_component
 from foundry.utils.ddp import RankedLogger
 
 ranked_logger = RankedLogger(__name__, rank_zero_only=True)
+
+
+@dataclass(frozen=True)
+class SymmetryOrbitLayout:
+    """Validated runtime orbit indices and transforms for one coordinate batch."""
+
+    sym_entity_id: torch.Tensor
+    sym_transform_id: torch.Tensor
+    is_sym_asu: torch.Tensor
+    sym_orbit_slot: torch.Tensor | None
+    sym_transforms: dict[int, tuple[torch.Tensor, torch.Tensor]]
+    entity_orbits: tuple[
+        tuple[int, int, tuple[tuple[int, torch.Tensor], ...]],
+        ...,
+    ]
 
 
 class SymmetryConfig(BaseModel):
@@ -329,6 +345,583 @@ def center_symmetric_src_atom_array(src_atom_array):
     return src_atom_array
 
 
+def _runtime_symmetry_features(X_L, sym_feats):
+    """Normalize atomwise symmetry features onto the coordinate device.
+
+    RFD3's data pipeline may leave atom annotations as NumPy arrays while the
+    transforms are torch tensors.  Symmetry operations run in the coordinate
+    dtype/device and use one convention throughout:
+
+        x_copy = x_canonical @ R.T + T
+
+    This is the same row-vector convention used when AtomArray copies are
+    constructed in :mod:`rfd3.inference.symmetry.atom_array`.
+    """
+
+    device = X_L.device
+    dtype = X_L.dtype
+    sym_entity_id = torch.as_tensor(
+        sym_feats["sym_entity_id"],
+        dtype=torch.long,
+        device=device,
+    )
+    sym_transform_id = torch.as_tensor(
+        sym_feats["sym_transform_id"],
+        dtype=torch.long,
+        device=device,
+    )
+    is_sym_asu = torch.as_tensor(
+        sym_feats["is_sym_asu"],
+        dtype=torch.bool,
+        device=device,
+    )
+    raw_orbit_slots = sym_feats.get("sym_orbit_slot")
+    sym_orbit_slot = (
+        None
+        if raw_orbit_slots is None
+        else torch.as_tensor(
+            raw_orbit_slots,
+            dtype=torch.long,
+            device=device,
+        )
+    )
+    if any(
+        feature.ndim != 1 or feature.shape[0] != X_L.shape[-2]
+        for feature in (
+            sym_entity_id,
+            sym_transform_id,
+            is_sym_asu,
+            *(() if sym_orbit_slot is None else (sym_orbit_slot,)),
+        )
+    ):
+        raise ValueError(
+            "Atomwise symmetry features must be one-dimensional and match "
+            "the coordinate atom dimension"
+        )
+
+    sym_transforms = {}
+    for raw_transform_id, raw_transform in sym_feats["sym_transform"].items():
+        transform_id = int(raw_transform_id)
+        if transform_id == FIXED_TRANSFORM_ID:
+            continue
+        if len(raw_transform) != 2:
+            raise ValueError(
+                f"Symmetry transform {transform_id} must contain (R, T)"
+            )
+        rotation = torch.as_tensor(
+            raw_transform[0],
+            dtype=dtype,
+            device=device,
+        )
+        translation = torch.as_tensor(
+            raw_transform[1],
+            dtype=dtype,
+            device=device,
+        )
+        if rotation.shape != (3, 3) or translation.shape != (3,):
+            raise ValueError(
+                f"Symmetry transform {transform_id} must have shapes "
+                "(3, 3) and (3,)"
+            )
+        sym_transforms[transform_id] = (rotation, translation)
+
+    return (
+        sym_entity_id,
+        sym_transform_id,
+        is_sym_asu,
+        sym_orbit_slot,
+        sym_transforms,
+    )
+
+
+def _symmetry_entity_orbits(
+    sym_entity_id,
+    sym_transform_id,
+    is_sym_asu,
+    sym_orbit_slot,
+    sym_transforms,
+):
+    """Yield validated, position-corresponding indices for every orbit."""
+
+    unique_entity_ids = torch.unique(sym_entity_id)
+    unique_entity_ids = unique_entity_ids[
+        unique_entity_ids != FIXED_ENTITY_ID
+    ]
+    for entity_id in unique_entity_ids.tolist():
+        entity_mask = sym_entity_id == entity_id
+        transform_ids = sorted(
+            int(value)
+            for value in torch.unique(
+                sym_transform_id[entity_mask]
+            ).tolist()
+        )
+        if not transform_ids:
+            continue
+        copy_indices = []
+        expected_count = None
+        for transform_id in transform_ids:
+            if transform_id not in sym_transforms:
+                raise ValueError(
+                    f"Missing symmetry transform {transform_id} for "
+                    f"entity {entity_id}"
+                )
+            transform_mask = entity_mask & (
+                sym_transform_id == transform_id
+            )
+            indices = torch.nonzero(
+                transform_mask,
+                as_tuple=False,
+            ).flatten()
+            if sym_orbit_slot is not None:
+                copy_slots = sym_orbit_slot[indices]
+                order = torch.argsort(copy_slots)
+                indices = indices[order]
+                copy_slots = copy_slots[order]
+                if not torch.equal(
+                    copy_slots,
+                    torch.arange(
+                        len(indices),
+                        dtype=torch.long,
+                        device=copy_slots.device,
+                    ),
+                ):
+                    raise ValueError(
+                        "sym_orbit_slot must contain each integer from zero "
+                        f"once per copy: entity={entity_id}, "
+                        f"transform={transform_id}"
+                    )
+            count = len(indices)
+            if expected_count is None:
+                expected_count = count
+            elif count != expected_count:
+                raise ValueError(
+                    "Symmetry entity subunits must contain the same number "
+                    f"of atoms: entity={entity_id}, transform={transform_id}, "
+                    f"expected={expected_count}, observed={count}"
+                )
+            copy_indices.append((transform_id, indices))
+
+        asu_transform_ids = torch.unique(
+            sym_transform_id[entity_mask & is_sym_asu]
+        ).tolist()
+        if len(asu_transform_ids) != 1:
+            raise ValueError(
+                f"Symmetry entity {entity_id} must have exactly one ASU "
+                f"transform, observed {asu_transform_ids}"
+            )
+        asu_transform_id = int(asu_transform_ids[0])
+        asu_indices = next(
+            indices
+            for transform_id, indices in copy_indices
+            if transform_id == asu_transform_id
+        )
+        annotated_asu_indices = torch.nonzero(
+            entity_mask & is_sym_asu,
+            as_tuple=False,
+        ).flatten()
+        if not torch.equal(
+            torch.sort(annotated_asu_indices).values,
+            torch.sort(asu_indices).values,
+        ):
+            raise ValueError(
+                f"ASU annotation does not cover the complete transform "
+                f"{asu_transform_id} for entity {entity_id}"
+            )
+        yield entity_id, asu_transform_id, copy_indices
+
+
+def _apply_frame(points, rotation, translation):
+    """Apply a column-convention SE(3) frame to row-vector coordinates."""
+
+    return torch.matmul(points, rotation.transpose(-1, -2)) + translation
+
+
+def _invert_frame(points, rotation, translation):
+    """Map row-vector coordinates from a symmetry copy to canonical space."""
+
+    return torch.matmul(points - translation, rotation)
+
+
+def _symmetry_work_dtype(coordinates):
+    """Keep float64 diagnostics exact and promote lower precision to float32."""
+
+    return (
+        torch.float64
+        if coordinates.dtype == torch.float64
+        else torch.float32
+    )
+
+
+def _nearest_proper_rotation(
+    rotation: torch.Tensor,
+    *,
+    transform_id: int,
+    maximum_correction: float = 1e-3,
+) -> torch.Tensor:
+    """Project a nearly rigid runtime frame onto SO(3).
+
+    RFD3 stores a frame as three virtual points and reconstructs it with an
+    epsilon-stabilized Gram-Schmidt pass.  Even an exact C3 frame therefore
+    returns with a small scale/shear error.  Using ``R.T`` as its inverse then
+    makes the orbit projector non-idempotent, and the error is amplified by
+    the large initial diffusion noise.  Polar projection removes only that
+    numerical frame-serialization error; transforms that require a material
+    correction are rejected.
+    """
+
+    left, _, right_t = torch.linalg.svd(rotation)
+    handedness = torch.linalg.det(left @ right_t)
+    sign = torch.eye(
+        3,
+        dtype=rotation.dtype,
+        device=rotation.device,
+    )
+    if float(handedness.item()) < 0.0:
+        sign[-1, -1] = -1.0
+    normalized = left @ sign @ right_t
+    correction = torch.max(torch.abs(normalized - rotation))
+    if float(correction.item()) > maximum_correction:
+        raise ValueError(
+            f"Symmetry transform {transform_id} requires an excessive "
+            f"SO(3) correction ({float(correction.item()):.6g})"
+        )
+    return normalized
+
+
+def build_symmetry_orbit_layout(
+    sym_feats,
+    *,
+    like,
+) -> SymmetryOrbitLayout:
+    """Build one reusable orbit layout outside the denoising loop."""
+
+    work_like = torch.empty(
+        (1, like.shape[-2], 3),
+        dtype=_symmetry_work_dtype(like),
+        device=like.device,
+    )
+    (
+        sym_entity_id,
+        sym_transform_id,
+        is_sym_asu,
+        sym_orbit_slot,
+        sym_transforms,
+    ) = _runtime_symmetry_features(work_like, sym_feats)
+    if sym_orbit_slot is None:
+        raise ValueError(
+            "Exact symmetry-orbit operations require the explicit "
+            "sym_orbit_slot feature"
+        )
+    verified_slots = torch.as_tensor(
+        sym_feats.get("sym_orbit_slot_verified", False),
+        dtype=torch.bool,
+        device=work_like.device,
+    )
+    if verified_slots.numel() != 1 or not bool(verified_slots.item()):
+        raise ValueError(
+            "Exact symmetry-orbit operations require atom-key-verified "
+            "sym_orbit_slot correspondence"
+        )
+    identity = torch.eye(
+        3,
+        dtype=work_like.dtype,
+        device=work_like.device,
+    )
+    # RFD3 calls the sampler from an outer bfloat16 autocast context.  The
+    # C3 sine/cosine entries lose enough precision in bfloat16 to look
+    # non-orthogonal at the strict runtime tolerance, so both validation and
+    # projection must explicitly stay in float32/float64.
+    with torch.autocast(
+        device_type=work_like.device.type,
+        enabled=False,
+    ):
+        normalized_transforms = {}
+        for transform_id, (rotation, translation) in sym_transforms.items():
+            if not (
+                torch.isfinite(rotation).all()
+                and torch.isfinite(translation).all()
+            ):
+                raise ValueError(
+                    f"Symmetry transform {transform_id} contains NaN or Inf"
+                )
+            # Lightning may recursively cast feature tensors, including
+            # ``sym_transform``, to bfloat16 before sampler entry.  A C3
+            # rotation rounded that way has ~2e-3 orthogonality/determinant
+            # error even though its nearest SO(3) correction is below 1e-3.
+            # Prevalidation audits the original runtime frames strictly.
+            # Here, use the bounded polar-correction test below as the single
+            # acceptance gate instead of rejecting the lossy transport
+            # representation before it can be normalized.
+            normalized_rotation = _nearest_proper_rotation(
+                rotation,
+                transform_id=transform_id,
+            )
+            normalized_orthogonality_error = torch.max(
+                torch.abs(
+                    normalized_rotation @ normalized_rotation.T
+                    - identity
+                )
+            )
+            normalized_determinant_error = torch.abs(
+                torch.linalg.det(normalized_rotation) - 1.0
+            )
+            if (
+                float(normalized_orthogonality_error.item()) > 1e-5
+                or float(normalized_determinant_error.item()) > 1e-5
+            ):
+                raise ValueError(
+                    f"Symmetry transform {transform_id} could not be "
+                    "normalized to a proper rotation"
+                )
+            normalized_transforms[transform_id] = (
+                normalized_rotation,
+                translation,
+            )
+    sym_transforms = normalized_transforms
+    entity_orbits = tuple(
+        (
+            entity_id,
+            asu_transform_id,
+            tuple(copies),
+        )
+        for entity_id, asu_transform_id, copies
+        in _symmetry_entity_orbits(
+            sym_entity_id,
+            sym_transform_id,
+            is_sym_asu,
+            sym_orbit_slot,
+            sym_transforms,
+        )
+    )
+    return SymmetryOrbitLayout(
+        sym_entity_id=sym_entity_id,
+        sym_transform_id=sym_transform_id,
+        is_sym_asu=is_sym_asu,
+        sym_orbit_slot=sym_orbit_slot,
+        sym_transforms=sym_transforms,
+        entity_orbits=entity_orbits,
+    )
+
+
+def _resolve_symmetry_orbit_layout(sym_feats, like, layout):
+    if layout is None:
+        return build_symmetry_orbit_layout(sym_feats, like=like)
+    if layout.sym_entity_id.shape[0] != like.shape[-2]:
+        raise ValueError(
+            "Cached symmetry orbit layout does not match atom dimension"
+        )
+    if layout.sym_entity_id.device != like.device:
+        raise ValueError(
+            "Cached symmetry orbit layout is on a different device"
+        )
+    return layout
+
+
+def expand_symmetry_coupled_displacements(
+    displacements,
+    sym_feats,
+    *,
+    layout: SymmetryOrbitLayout | None = None,
+):
+    """Copy one ASU displacement sample through each symmetry orbit.
+
+    Translations are intentionally omitted for displacement vectors.  When
+    the ASU frame is not identity, samples are first mapped into the canonical
+    frame and then rotated into every target frame.  Fixed/unsymmetrized
+    entities retain their input displacement and can be zeroed by the caller.
+    """
+
+    work = displacements.to(dtype=_symmetry_work_dtype(displacements))
+    with torch.autocast(
+        device_type=displacements.device.type,
+        enabled=False,
+    ):
+        resolved_layout = _resolve_symmetry_orbit_layout(
+            sym_feats,
+            work,
+            layout,
+        )
+        coupled = work.clone()
+        for _, asu_transform_id, copies in (
+            resolved_layout.entity_orbits
+        ):
+            asu_indices = next(
+                indices
+                for transform_id, indices in copies
+                if transform_id == asu_transform_id
+            )
+            asu_rotation = resolved_layout.sym_transforms[
+                asu_transform_id
+            ][0]
+            canonical = torch.matmul(
+                work[:, asu_indices, :],
+                asu_rotation,
+            )
+            for transform_id, target_indices in copies:
+                target_rotation = resolved_layout.sym_transforms[
+                    transform_id
+                ][0]
+                coupled[:, target_indices, :] = torch.matmul(
+                    canonical,
+                    target_rotation.transpose(-1, -2),
+                )
+    # Exact sampler states remain float32 when the model emits fp16/bfloat16;
+    # casting back would quantize 20--30 A coordinates by much more than the
+    # 1e-3 A symmetry-closure tolerance.
+    return coupled
+
+
+def project_symmetry_orbit_average(
+    X_L,
+    sym_feats,
+    partial_diffusion=False,
+    *,
+    layout: SymmetryOrbitLayout | None = None,
+):
+    """Orthogonally average all copies in canonical orbit coordinates.
+
+    Unlike the historical ASU-only projector, this Reynolds-style projection
+    does not privilege chain/copy zero.  Every copy is inverse-transformed,
+    averaged in the canonical frame, and expanded through the exact runtime
+    transforms.
+    """
+
+    working_X_L = X_L.to(dtype=_symmetry_work_dtype(X_L))
+    with torch.autocast(
+        device_type=X_L.device.type,
+        enabled=False,
+    ):
+        resolved_layout = _resolve_symmetry_orbit_layout(
+            sym_feats,
+            working_X_L,
+            layout,
+        )
+        projected = working_X_L.clone()
+
+        for _, _, copies in resolved_layout.entity_orbits:
+            canonical_copies = []
+            for transform_id, indices in copies:
+                rotation, translation = resolved_layout.sym_transforms[
+                    transform_id
+                ]
+                canonical_copies.append(
+                    _invert_frame(
+                        working_X_L[:, indices, :],
+                        rotation,
+                        translation,
+                    )
+                )
+            canonical_mean = torch.stack(
+                canonical_copies,
+                dim=0,
+            ).mean(dim=0)
+            for transform_id, indices in copies:
+                rotation, translation = resolved_layout.sym_transforms[
+                    transform_id
+                ]
+                projected[:, indices, :] = _apply_frame(
+                    canonical_mean,
+                    rotation,
+                    translation,
+                )
+    # Preserve the working precision for exact orbit states.  The legacy ASU
+    # projector below retains its historical input-dtype behavior.
+    return projected
+
+
+def symmetry_orbit_residual(
+    X_L,
+    sym_feats,
+    *,
+    atom_mask=None,
+    layout: SymmetryOrbitLayout | None = None,
+):
+    """Return per-batch RMS and maximum distance to the orbit-average space."""
+
+    resolved_layout = _resolve_symmetry_orbit_layout(
+        sym_feats,
+        X_L.to(dtype=_symmetry_work_dtype(X_L)),
+        layout,
+    )
+    projectable = (
+        resolved_layout.sym_entity_id != FIXED_ENTITY_ID
+    )
+    if atom_mask is not None:
+        normalized_mask = torch.as_tensor(
+            atom_mask,
+            dtype=torch.bool,
+            device=X_L.device,
+        )
+        if (
+            normalized_mask.ndim != 1
+            or normalized_mask.shape[0] != X_L.shape[-2]
+        ):
+            raise ValueError(
+                "symmetry residual atom_mask must have shape [L]"
+            )
+        projectable &= normalized_mask
+    if not torch.any(projectable):
+        zeros = torch.zeros(
+            X_L.shape[0],
+            dtype=_symmetry_work_dtype(X_L),
+            device=X_L.device,
+        )
+        return zeros, zeros
+
+    work = X_L.to(dtype=_symmetry_work_dtype(X_L))
+    projected = project_symmetry_orbit_average(
+        work,
+        sym_feats,
+        partial_diffusion=True,
+        layout=resolved_layout,
+    )
+    with torch.autocast(
+        device_type=X_L.device.type,
+        enabled=False,
+    ):
+        error = torch.linalg.vector_norm(
+            projected[:, projectable, :]
+            - work[:, projectable, :],
+            dim=-1,
+        )
+        rms = torch.sqrt(torch.mean(torch.square(error), dim=-1))
+        maximum = torch.max(error, dim=-1).values
+    return rms, maximum
+
+
+def symmetry_orbit_mask_mismatch_count(
+    atom_mask,
+    sym_feats,
+    *,
+    layout: SymmetryOrbitLayout | None = None,
+):
+    """Count atom slots whose boolean mask is not repeated over an orbit."""
+
+    mask = torch.as_tensor(atom_mask, dtype=torch.bool)
+    dummy = torch.zeros(
+        (1, mask.shape[0], 3),
+        dtype=torch.float32,
+        device=mask.device,
+    )
+    resolved_layout = _resolve_symmetry_orbit_layout(
+        sym_feats,
+        dummy,
+        layout,
+    )
+    mismatches = 0
+    for _, asu_transform_id, copies in resolved_layout.entity_orbits:
+        reference = next(
+            mask[indices]
+            for transform_id, indices in copies
+            if transform_id == asu_transform_id
+        )
+        for _, indices in copies:
+            mismatches += int(
+                torch.count_nonzero(mask[indices] != reference).item()
+            )
+    return mismatches
+
+
 def apply_symmetry_to_xyz_atomwise(X_L, sym_feats, partial_diffusion=False):
     """
     Apply symmetry to the xyz coordinates.
@@ -338,43 +931,61 @@ def apply_symmetry_to_xyz_atomwise(X_L, sym_feats, partial_diffusion=False):
     Returns:
         X_L: [B, L, 3] xyz coordinates with symmetry applied
     """
-    sym_entity_id = sym_feats["sym_entity_id"]
-    sym_transform_id = sym_feats["sym_transform_id"]
-    is_sym_asu = sym_feats["is_sym_asu"]
-    fixed_motif_mask = sym_entity_id == FIXED_ENTITY_ID
-    sym_transforms = {
-        int(k): v
-        for k, v in sym_feats["sym_transform"].items()
-        if int(k) != FIXED_TRANSFORM_ID
-    }  # {str(id): tensor(3,3)} -> {int(id): tensor(3,3)}
-    # COM correction (in case there is drift)
-    if not partial_diffusion:
-        X_L[:, ~fixed_motif_mask, :] = X_L[:, ~fixed_motif_mask, :] - X_L[
-            :, ~fixed_motif_mask, :
-        ].mean(dim=1, keepdim=True)
-    sym_X_L = X_L.clone()
+    # Work out-of-place: callers also retain X_L as the denoising reference,
+    # so COM correction must not mutate it as a hidden side effect.
+    output_dtype = X_L.dtype
+    # ``Tensor.to()`` aliases its input when dtype/device already match.
+    working_X_L = X_L.to(
+        dtype=_symmetry_work_dtype(X_L)
+    ).clone()
+    with torch.autocast(
+        device_type=X_L.device.type,
+        enabled=False,
+    ):
+        (
+            sym_entity_id,
+            sym_transform_id,
+            is_sym_asu,
+            sym_orbit_slot,
+            sym_transforms,
+        ) = _runtime_symmetry_features(working_X_L, sym_feats)
+        fixed_motif_mask = sym_entity_id == FIXED_ENTITY_ID
+        # Preserve the historical COM correction in the legacy ASU
+        # projector only.  The orbit-average projector intentionally has no
+        # centering side effect.
+        if not partial_diffusion and torch.any(~fixed_motif_mask):
+            working_X_L[:, ~fixed_motif_mask, :] -= working_X_L[
+                :, ~fixed_motif_mask, :
+            ].mean(dim=1, keepdim=True)
+        sym_X_L = working_X_L.clone()
 
-    # Loop through each symmetry entity id - making sure that we apply the matching symmetry transform to asu id
-    unique_entity_id = torch.unique(sym_entity_id)
-    unique_entity_id = unique_entity_id[unique_entity_id != FIXED_ENTITY_ID]
-    for entity_id in unique_entity_id:
-        # Mask for this entity id
-        entity_id_mask = sym_entity_id == entity_id  # [L]
-        # ASU that corresponds to this transform only
-        entity_asu_mask = is_sym_asu & entity_id_mask
-        if entity_asu_mask.sum() == 0:
-            continue
-        asu_xyz = X_L[:, entity_asu_mask, :]  # [B, Lasu, 3]
-        # Transforms
-        unique_transform_id = torch.unique(sym_transform_id[entity_id_mask]).tolist()
-        for (
-            target_id
-        ) in unique_transform_id:  # Open to suggestions for making this more efficient
-            # Get a mask that corresponds to this specific transform in the entire atom array
-            this_subunit = entity_id_mask & (sym_transform_id == target_id)
-            # Apply this subunit's symmetry transform to its corresponding ASU
-            sym_X_L[:, this_subunit, :] = torch.einsum(
-                "blc,cd->bld", asu_xyz, sym_transforms[target_id][0].to(asu_xyz.dtype)
-            ) + sym_transforms[target_id][1].to(asu_xyz.dtype)
+        for _, asu_transform_id, copies in _symmetry_entity_orbits(
+            sym_entity_id,
+            sym_transform_id,
+            is_sym_asu,
+            sym_orbit_slot,
+            sym_transforms,
+        ):
+            entity_asu_indices = next(
+                indices
+                for transform_id, indices in copies
+                if transform_id == asu_transform_id
+            )
+            asu_xyz = working_X_L[:, entity_asu_indices, :]
+            asu_rotation, asu_translation = sym_transforms[
+                asu_transform_id
+            ]
+            canonical_asu = _invert_frame(
+                asu_xyz,
+                asu_rotation,
+                asu_translation,
+            )
+            for target_id, target_indices in copies:
+                rotation, translation = sym_transforms[target_id]
+                sym_X_L[:, target_indices, :] = _apply_frame(
+                    canonical_asu,
+                    rotation,
+                    translation,
+                )
 
-    return sym_X_L
+    return sym_X_L.to(dtype=output_dtype)

@@ -9,6 +9,8 @@ from rfd3_mosaic.schema import (
     FrameMethod,
     InterfacePortFrameSpec,
     InterfacePortSpec,
+    InterfaceMobilityMode,
+    InterfaceMobilitySpec,
     MotionBounds,
     MotionGroupSpec,
     MotionMode,
@@ -107,6 +109,44 @@ class SpecsTestCase(unittest.TestCase):
 
         self.assertEqual(port.group, "primary_seed")
         self.assertEqual(port.fragments, ["left"])
+
+    def test_interface_mobility_defaults_to_fixed(self) -> None:
+        mobility = InterfaceMobilitySpec()
+
+        self.assertEqual(mobility.mode, InterfaceMobilityMode.FIXED)
+        self.assertIsNone(mobility.bounds)
+
+    def test_orbit_rigid_interface_requires_bounds(self) -> None:
+        with self.assertRaises(ValidationError):
+            InterfaceMobilitySpec(
+                mode=InterfaceMobilityMode.ORBIT_RIGID,
+            )
+
+    def test_orbit_rigid_interface_accepts_cumulative_bounds(
+        self,
+    ) -> None:
+        mobility = InterfaceMobilitySpec(
+            mode=InterfaceMobilityMode.ORBIT_RIGID,
+            bounds=MotionBounds(
+                max_translation=2.0,
+                max_rotation_deg=10.0,
+            ),
+        )
+
+        self.assertEqual(
+            mobility.mode,
+            InterfaceMobilityMode.ORBIT_RIGID,
+        )
+
+    def test_orbit_rigid_interface_rejects_zero_motion(self) -> None:
+        with self.assertRaises(ValidationError):
+            InterfaceMobilitySpec(
+                mode=InterfaceMobilityMode.ORBIT_RIGID,
+                bounds=MotionBounds(
+                    max_translation=0.0,
+                    max_rotation_deg=0.0,
+                ),
+            )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,8 @@
+from dataclasses import replace
+import math
 import unittest
+
+import numpy as np
 
 from rfd3_mosaic.structure import AtomRecord
 from rfd3_mosaic.validation import audit_scaffold_geometry
@@ -11,6 +15,7 @@ def _atom(
     x: float,
     y: float = 0.0,
     z: float = 0.0,
+    chain: str = "A",
 ) -> AtomRecord:
     return AtomRecord(
         record_type="ATOM",
@@ -18,7 +23,7 @@ def _atom(
         atom_name=name,
         alternate_location="",
         residue_name="GLY",
-        chain_id="A",
+        chain_id=chain,
         residue_number=residue,
         insertion_code="",
         coordinate=(x, y, z),
@@ -63,6 +68,166 @@ class ScaffoldValidityTestCase(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["summary"]["chain_break_count"], 1)
         self.assertFalse(report["summary"]["passed_compactness"])
+
+    def test_declared_c3_transforms_are_the_symmetry_hard_gate(
+        self,
+    ) -> None:
+        transforms = []
+        for copy_index in range(3):
+            angle = 2.0 * math.pi * copy_index / 3.0
+            matrix = np.eye(4)
+            matrix[:3, :3] = np.asarray(
+                [
+                    [math.cos(angle), -math.sin(angle), 0.0],
+                    [math.sin(angle), math.cos(angle), 0.0],
+                    [0.0, 0.0, 1.0],
+                ]
+            )
+            transforms.append(matrix)
+
+        atoms = []
+        serial = 1
+        for chain_index, chain_id in enumerate(("A", "B", "C")):
+            for residue, base in enumerate(
+                (10.0, 13.78, 17.56),
+                start=1,
+            ):
+                source_coordinates = (
+                    (base, 0.0, 0.0),
+                    (base + 1.45, 0.0, 0.0),
+                    (base + 2.45, 0.0, 0.0),
+                )
+                transformed = [
+                    np.asarray(coordinate)
+                    @ transforms[chain_index][:3, :3].T
+                    for coordinate in source_coordinates
+                ]
+                atoms.extend(
+                    (
+                        _atom(
+                            serial,
+                            "N",
+                            residue,
+                            *transformed[0],
+                            chain=chain_id,
+                        ),
+                        _atom(
+                            serial + 1,
+                            "CA",
+                            residue,
+                            *transformed[1],
+                            chain=chain_id,
+                        ),
+                        _atom(
+                            serial + 2,
+                            "C",
+                            residue,
+                            *transformed[2],
+                            chain=chain_id,
+                        ),
+                    )
+                )
+                serial += 3
+
+        report = audit_scaffold_geometry(
+            tuple(atoms),
+            expected_symmetry_multiplicity=3,
+            expected_symmetry_transforms=tuple(transforms),
+        )
+
+        self.assertTrue(report["summary"]["passed_symmetry"])
+        self.assertLess(
+            report["summary"]["maximum_symmetry_coordinate_rmsd"],
+            1e-10,
+        )
+
+        # Pure translations retain each chain's internal distance matrix but
+        # do not satisfy the declared C3 transforms.
+        translated = []
+        for atom in atoms:
+            chain_offset = 20.0 * ("ABC".index(atom.chain_id))
+            translated.append(
+                replace(
+                    atom,
+                    coordinate=(
+                        atom.coordinate[0] + chain_offset,
+                        atom.coordinate[1],
+                        atom.coordinate[2],
+                    ),
+                )
+            )
+        translated_report = audit_scaffold_geometry(
+            tuple(translated),
+            expected_symmetry_multiplicity=3,
+            expected_symmetry_transforms=tuple(transforms),
+        )
+        self.assertFalse(
+            translated_report["summary"]["passed_symmetry"]
+        )
+        self.assertLess(
+            translated_report["summary"][
+                "maximum_copy_internal_distance_matrix_rmsd"
+            ],
+            1e-10,
+        )
+
+        broken = list(atoms)
+        atom = broken[-2]
+        broken[-2] = replace(
+            atom,
+            coordinate=(
+                atom.coordinate[0] + 0.2,
+                atom.coordinate[1],
+                atom.coordinate[2],
+            ),
+        )
+        broken_report = audit_scaffold_geometry(
+            tuple(broken),
+            expected_symmetry_multiplicity=3,
+            expected_symmetry_transforms=tuple(transforms),
+        )
+        self.assertFalse(broken_report["summary"]["passed_symmetry"])
+
+    def test_symmetry_audit_fails_closed_without_transforms(self) -> None:
+        atoms = (
+            _atom(1, "CA", 1, 0.0, chain="A"),
+            _atom(2, "CA", 1, 0.0, chain="B"),
+            _atom(3, "CA", 1, 0.0, chain="C"),
+        )
+
+        report = audit_scaffold_geometry(
+            atoms,
+            expected_symmetry_multiplicity=3,
+        )
+
+        self.assertFalse(report["summary"]["passed_symmetry"])
+        self.assertIn(
+            "expected symmetry transforms were not provided",
+            report["symmetry"]["failures"],
+        )
+
+    def test_symmetry_audit_rejects_non_rigid_transform(self) -> None:
+        atoms = (
+            _atom(1, "CA", 1, 1.0, chain="A"),
+            _atom(2, "CA", 1, 1.0, chain="B"),
+            _atom(3, "CA", 1, 1.0, chain="C"),
+        )
+        transforms = [np.eye(4) for _ in range(3)]
+        transforms[1][0, 0] = 0.0
+
+        report = audit_scaffold_geometry(
+            atoms,
+            expected_symmetry_multiplicity=3,
+            expected_symmetry_transforms=tuple(transforms),
+        )
+
+        self.assertFalse(report["summary"]["passed_symmetry"])
+        self.assertTrue(
+            any(
+                "not a proper rigid rotation" in failure
+                for failure in report["symmetry"]["failures"]
+            )
+        )
 
 
 if __name__ == "__main__":

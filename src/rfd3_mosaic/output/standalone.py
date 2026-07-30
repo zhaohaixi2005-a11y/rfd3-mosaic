@@ -755,6 +755,69 @@ def _atom_mapping(atom: _CompiledAtom) -> dict[str, Any]:
     }
 
 
+def _interface_constraint_groups(
+    atoms: list[_CompiledAtom],
+    instances,
+) -> list[dict[str, Any]]:
+    """Compile each concrete interface into one cross-chain motif unit."""
+
+    atom_indices_by_fragment: dict[str, list[int]] = {}
+    for atom in atoms:
+        atom_indices_by_fragment.setdefault(
+            atom.fragment_instance_id,
+            [],
+        ).append(atom.atom_index)
+
+    groups: list[dict[str, Any]] = []
+    for edge in instances.interfaces.values():
+        left_port = instances.ports[edge.left_port_instance_id]
+        right_port = instances.ports[edge.right_port_instance_id]
+        left_fragments = tuple(left_port.fragment_instance_ids)
+        right_fragments = tuple(right_port.fragment_instance_ids)
+        left_atoms = tuple(
+            sorted(
+                atom_index
+                for fragment_id in left_fragments
+                for atom_index in atom_indices_by_fragment.get(fragment_id, ())
+            )
+        )
+        right_atoms = tuple(
+            sorted(
+                atom_index
+                for fragment_id in right_fragments
+                for atom_index in atom_indices_by_fragment.get(fragment_id, ())
+            )
+        )
+        if not left_atoms or not right_atoms:
+            raise ValueError(
+                f"Interface constraint group {edge.id!r} must contain atoms "
+                "on both sides"
+            )
+        overlap = sorted(set(left_atoms) & set(right_atoms))
+        if overlap:
+            raise ValueError(
+                f"Interface constraint group {edge.id!r} assigns atoms to "
+                f"both sides: {overlap[:8]}"
+            )
+        groups.append(
+            {
+                "group_id": edge.id,
+                "source_interface_id": edge.source_id,
+                "orbit_id": edge.orbit_id,
+                "source_copy_index": edge.source_copy_index,
+                "target_copy_index": edge.target_copy_index,
+                "left_port_instance_id": edge.left_port_instance_id,
+                "right_port_instance_id": edge.right_port_instance_id,
+                "left_fragment_instance_ids": list(left_fragments),
+                "right_fragment_instance_ids": list(right_fragments),
+                "left_atom_indices": list(left_atoms),
+                "right_atom_indices": list(right_atoms),
+                "atom_indices": sorted((*left_atoms, *right_atoms)),
+            }
+        )
+    return groups
+
+
 def compile_standalone(
     config_path: str | Path,
     output_directory: str | Path,
@@ -787,6 +850,10 @@ def compile_standalone(
         "schema_version": 1,
         "coordinate_indexing": "zero_based",
         "object_registry": compilation["registry"].model_dump(mode="json"),
+        "interface_constraint_groups": _interface_constraint_groups(
+            atoms,
+            instances,
+        ),
         "fragment_ranges": compilation["fragment_ranges"],
         "port_frames": compilation["frames"],
         "master_transforms": compilation["master_transforms"],

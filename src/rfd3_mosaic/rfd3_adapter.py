@@ -38,6 +38,15 @@ def main() -> None:
             "candidate manifest and fail on config/structure SHA mismatch."
         ),
     )
+    parser.add_argument(
+        "--linker-length",
+        type=int,
+        help=(
+            "Materialize a continuous linker at this exact length. It must "
+            "fall inside the configured range. By default the deterministic "
+            "midpoint of that range is used."
+        ),
+    )
     arguments = parser.parse_args()
     outputs = compile_rfd3_input(
         arguments.config,
@@ -46,6 +55,7 @@ def main() -> None:
         example_id=arguments.example_id,
         pose_seed=arguments.pose_seed,
         pose_candidate_manifest=arguments.pose_candidate_manifest,
+        linker_length=arguments.linker_length,
     )
     print(f"RFD3 input: {outputs.input_path}")
     print(f"structure:  {outputs.structure_path}")

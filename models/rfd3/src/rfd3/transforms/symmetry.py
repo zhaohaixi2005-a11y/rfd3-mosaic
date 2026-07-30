@@ -18,13 +18,15 @@ class AddSymmetryFeats(Transform):
 
     def __init__(
         self,
-        symmetry_features=[
+        symmetry_features=(
             "sym_transform_id",
             "sym_entity_id",
             "is_sym_asu",
-        ],
+        ),
+        optional_symmetry_features=("motif_constraint_group_id",),
     ):
-        self.symmetry_feats = symmetry_features
+        self.symmetry_feats = tuple(symmetry_features)
+        self.optional_symmetry_feats = tuple(optional_symmetry_features)
 
     def forward(self, data):
         atom_array = data["atom_array"]
@@ -35,42 +37,525 @@ class AddSymmetryFeats(Transform):
         for feature_name in self.symmetry_feats:
             feature_array = atom_array.get_annotation(feature_name)
             data["feats"][feature_name] = feature_array
+        (
+            orbit_slots,
+            orbit_slots_verified,
+        ) = self.make_symmetry_orbit_slots(
+            atom_array,
+            return_verification=True,
+        )
+        data["feats"]["sym_orbit_slot"] = orbit_slots
+        data["feats"]["sym_orbit_slot_verified"] = torch.tensor(
+            orbit_slots_verified,
+            dtype=torch.bool,
+        )
+        runtime_groups = (
+            data.get("specification", {})
+            .get("extra", {})
+            .get("motif_constraint_groups")
+        )
+        runtime_orbits = (
+            data.get("specification", {})
+            .get("extra", {})
+            .get("motif_constraint_orbits")
+        )
+        if runtime_groups:
+            membership = (
+                self.make_motif_constraint_group_membership(
+                    atom_array,
+                    runtime_groups,
+                )
+            )
+            data["feats"]["motif_constraint_group_membership"] = membership
+            if runtime_orbits:
+                data["feats"].update(
+                    self.make_motif_constraint_orbit_features(
+                        atom_array,
+                        runtime_groups,
+                        runtime_orbits,
+                        membership,
+                    )
+                )
+            return data
+        annotation_categories = set(atom_array.get_annotation_categories())
+        for feature_name in self.optional_symmetry_feats:
+            if feature_name not in annotation_categories:
+                continue
+            feature_array = atom_array.get_annotation(feature_name)
+            data["feats"][feature_name] = feature_array
+            if feature_name == "motif_constraint_group_id":
+                group_ids = torch.as_tensor(feature_array, dtype=torch.long)
+                unique_group_ids = torch.unique(group_ids)
+                unique_group_ids = unique_group_ids[unique_group_ids >= 0]
+                data["feats"]["motif_constraint_group_membership"] = (
+                    unique_group_ids[:, None] == group_ids[None, :]
+                )
         return data
 
-    def make_transforms_dict(self, atom_array):
-        transforms_dict = {}
-        # get decomposed frames from atom array (unpacking the vectorized frames)
-        Oris = torch.tensor(
-            [
-                np.asarray(unpack_vector(Ori)).tolist()
-                for Ori in atom_array.get_annotation("sym_transform_Ori")
-            ]
-        )
-        Xs = torch.tensor(
-            [
-                np.asarray(unpack_vector(X)).tolist()
-                for X in atom_array.get_annotation("sym_transform_X")
-            ]
-        )
-        Ys = torch.tensor(
-            [
-                np.asarray(unpack_vector(Y)).tolist()
-                for Y in atom_array.get_annotation("sym_transform_Y")
-            ]
-        )
-        TIDs = torch.from_numpy(atom_array.get_annotation("sym_transform_id"))
+    @staticmethod
+    def make_symmetry_orbit_slots(
+        atom_array,
+        *,
+        return_verification: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, bool]:
+        """Assign atom-keyed within-copy slots for orbit correspondence.
 
-        Oris = torch.unique_consecutive(Oris, dim=0)
-        Xs = torch.unique_consecutive(Xs, dim=0)
-        Ys = torch.unique_consecutive(Ys, dim=0)
-        TIDs = torch.unique_consecutive(TIDs, dim=0)
-        # the case in which there is only rotation (no translation), Ori = [0,0,0]
-        if len(Oris) == 1 and (Oris == 0).all():
-            Oris = Oris.repeat(len(Xs), 1)
+        Native symmetry expansion normally preserves atom order, but exact
+        projection must not rely on that incidental ordering.  The
+        copy-invariant ``(src_component, res_id, insertion, atom_name)`` key
+        identifies each atom within an entity; every transform copy must
+        contain the same unique key set.  ``res_id`` is essential for generated
+        contig blocks because all residues in one ``70-100`` component share
+        the same ``src_component``.
+        """
+
+        transform_ids = np.asarray(
+            atom_array.get_annotation("sym_transform_id")
+        )
+        entity_ids = np.asarray(
+            atom_array.get_annotation("sym_entity_id")
+        )
+        categories = set(atom_array.get_annotation_categories())
+        required_key_annotations = {"src_component", "atom_name"}
+        missing = required_key_annotations - categories
+        if missing:
+            # Preserve the historical transform for generic Foundry inputs,
+            # but mark the positional correspondence as unverified.  Exact
+            # orbit sampling rejects that flag before diffusion.
+            slots = np.full(atom_array.shape[0], -1, dtype=np.int64)
+            for entity_id in sorted(
+                int(value)
+                for value in np.unique(entity_ids)
+                if int(value) >= 0
+            ):
+                entity_mask = entity_ids == entity_id
+                expected_count: int | None = None
+                for transform_id in sorted(
+                    int(value)
+                    for value in np.unique(transform_ids[entity_mask])
+                    if int(value) >= 0
+                ):
+                    indices = np.flatnonzero(
+                        entity_mask & (transform_ids == transform_id)
+                    )
+                    if expected_count is None:
+                        expected_count = len(indices)
+                    elif len(indices) != expected_count:
+                        raise ValueError(
+                            "Symmetry copies must have equal atom counts"
+                        )
+                    slots[indices] = np.arange(
+                        len(indices),
+                        dtype=np.int64,
+                    )
+            result = torch.from_numpy(slots)
+            return (
+                (result, False)
+                if return_verification
+                else result
+            )
+        source_components = np.asarray(
+            atom_array.get_annotation("src_component")
+        )
+        residue_ids = (
+            np.asarray(atom_array.get_annotation("res_id"))
+            if "res_id" in categories
+            else None
+        )
+        insertion_codes = (
+            np.asarray(atom_array.get_annotation("ins_code"))
+            if "ins_code" in categories
+            else None
+        )
+        atom_names = np.asarray(
+            atom_array.get_annotation("atom_name")
+        )
+        slots = np.full(atom_array.shape[0], -1, dtype=np.int64)
+        for entity_id in sorted(
+            int(value)
+            for value in np.unique(entity_ids)
+            if int(value) >= 0
+        ):
+            entity_mask = entity_ids == entity_id
+            reference_keys: tuple[tuple[str, ...], ...] | None = None
+            for transform_id in sorted(
+                int(value)
+                for value in np.unique(transform_ids[entity_mask])
+                if int(value) >= 0
+            ):
+                indices = np.flatnonzero(
+                    entity_mask & (transform_ids == transform_id)
+                )
+                keys = []
+                for index in indices:
+                    key_parts = [str(source_components[index])]
+                    if residue_ids is not None:
+                        key_parts.append(str(residue_ids[index]))
+                        key_parts.append(
+                            (
+                                str(insertion_codes[index])
+                                if insertion_codes is not None
+                                else ""
+                            )
+                        )
+                    key_parts.append(str(atom_names[index]))
+                    keys.append(tuple(key_parts))
+                if len(keys) != len(set(keys)):
+                    raise ValueError(
+                        "Symmetry copy contains duplicate atom correspondence "
+                        f"keys: entity={entity_id}, transform={transform_id}"
+                    )
+                ordered_keys = tuple(sorted(keys))
+                if reference_keys is None:
+                    reference_keys = ordered_keys
+                elif ordered_keys != reference_keys:
+                    raise ValueError(
+                        "Symmetry copies do not contain the same atom "
+                        f"correspondence keys: entity={entity_id}, "
+                        f"transform={transform_id}"
+                    )
+                slot_by_key = {
+                    key: slot for slot, key in enumerate(reference_keys)
+                }
+                slots[indices] = np.asarray(
+                    [slot_by_key[key] for key in keys],
+                    dtype=np.int64,
+                )
+        result = torch.from_numpy(slots)
+        return (result, True) if return_verification else result
+
+    @staticmethod
+    def make_motif_constraint_group_membership(
+        atom_array,
+        groups,
+    ) -> torch.Tensor:
+        """Resolve cross-chain groups after native symmetry expansion."""
+
+        categories = set(atom_array.get_annotation_categories())
+        required = {
+            "src_component",
+            "sym_transform_id",
+            "is_motif_atom_with_fixed_coord",
+        }
+        missing = required - categories
+        if missing:
+            raise ValueError(
+                "Runtime motif constraint groups require AtomArray "
+                f"annotations {sorted(missing)}"
+            )
+
+        source_components = np.asarray(
+            atom_array.get_annotation("src_component")
+        )
+        transform_ids = np.asarray(
+            atom_array.get_annotation("sym_transform_id")
+        )
+        fixed = np.asarray(
+            atom_array.get_annotation(
+                "is_motif_atom_with_fixed_coord"
+            ),
+            dtype=bool,
+        )
+        membership = np.zeros(
+            (len(groups), atom_array.shape[0]),
+            dtype=bool,
+        )
+        for group_index, group in enumerate(groups):
+            roles_with_atoms: set[str] = set()
+            for member in group.get("members", ()):
+                member_mask = (
+                    np.isin(
+                        source_components,
+                        member["src_components"],
+                    )
+                    & (
+                        transform_ids
+                        == int(member["sym_transform_id"])
+                    )
+                    & fixed
+                )
+                if not np.any(member_mask):
+                    raise ValueError(
+                        f"Motif constraint group {group.get('group_id')!r} "
+                        "member matched no fixed atoms: "
+                        f"src_components={member['src_components']!r}, "
+                        f"sym_transform_id={member['sym_transform_id']}"
+                    )
+                membership[group_index] |= member_mask
+                roles_with_atoms.add(member["role"])
+            if roles_with_atoms != {"left", "right"}:
+                raise ValueError(
+                    f"Motif constraint group {group.get('group_id')!r} "
+                    "must resolve fixed atoms on both interface sides"
+                )
+
+        assigned = membership.any(axis=0)
+        if np.any(assigned & ~fixed):
+            raise ValueError(
+                "Motif constraint groups resolved non-fixed atoms"
+            )
+        if np.any(fixed & ~assigned):
+            raise ValueError(
+                "Runtime motif constraint groups do not cover every fixed "
+                "motif atom"
+            )
+        return torch.from_numpy(membership)
+
+    @staticmethod
+    def make_motif_constraint_orbit_features(
+        atom_array,
+        groups,
+        orbits,
+        membership: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Build stable atom slots and numeric orbit-control metadata."""
+
+        source_components = np.asarray(
+            atom_array.get_annotation("src_component")
+        )
+        atom_names = np.asarray(
+            atom_array.get_annotation("atom_name")
+        )
+        transform_ids = np.asarray(
+            atom_array.get_annotation("sym_transform_id")
+        )
+        fixed = np.asarray(
+            atom_array.get_annotation(
+                "is_motif_atom_with_fixed_coord"
+            ),
+            dtype=bool,
+        )
+
+        keys_by_group: list[tuple[tuple[str, ...], ...]] = []
+        indices_by_group: list[list[int]] = []
+        group_id_to_index: dict[str, int] = {}
+        for group_index, group in enumerate(groups):
+            group_id = str(group["group_id"])
+            if group_id in group_id_to_index:
+                raise ValueError(
+                    f"Duplicate motif constraint group ID {group_id!r}"
+                )
+            group_id_to_index[group_id] = group_index
+            key_to_index: dict[tuple[str, ...], int] = {}
+            for member in group.get("members", ()):
+                member_mask = (
+                    np.isin(
+                        source_components,
+                        member["src_components"],
+                    )
+                    & (
+                        transform_ids
+                        == int(member["sym_transform_id"])
+                    )
+                    & fixed
+                )
+                for atom_index in np.flatnonzero(member_mask):
+                    key = (
+                        str(member["role"]),
+                        str(member["source_fragment_id"]),
+                        str(source_components[atom_index]),
+                        str(atom_names[atom_index]),
+                    )
+                    if key in key_to_index:
+                        raise ValueError(
+                            f"Constraint group {group_id!r} has duplicate "
+                            f"atom correspondence key {key!r}"
+                        )
+                    key_to_index[key] = int(atom_index)
+            ordered_keys = tuple(sorted(key_to_index))
+            ordered_indices = [
+                key_to_index[key] for key in ordered_keys
+            ]
+            if set(ordered_indices) != set(
+                torch.nonzero(
+                    membership[group_index],
+                    as_tuple=False,
+                ).flatten().tolist()
+            ):
+                raise ValueError(
+                    f"Stable atom slots for group {group_id!r} do not "
+                    "match its membership mask"
+                )
+            keys_by_group.append(ordered_keys)
+            indices_by_group.append(ordered_indices)
+
+        maximum_group_size = max(
+            (len(indices) for indices in indices_by_group),
+            default=0,
+        )
+        group_atom_indices = torch.full(
+            (len(groups), maximum_group_size),
+            -1,
+            dtype=torch.long,
+        )
+        group_atom_mask = torch.zeros_like(
+            group_atom_indices,
+            dtype=torch.bool,
+        )
+        for group_index, indices in enumerate(indices_by_group):
+            group_atom_indices[
+                group_index,
+                : len(indices),
+            ] = torch.tensor(indices, dtype=torch.long)
+            group_atom_mask[group_index, : len(indices)] = True
+
+        group_orbit_index = torch.full(
+            (len(groups),),
+            -1,
+            dtype=torch.long,
+        )
+        group_orbit_transform_id = torch.full_like(
+            group_orbit_index,
+            -1,
+        )
+        master_group_indices = []
+        mobility_modes = []
+        orbit_bounds = []
+        atoms_by_orbit: list[set[int]] = []
+        mobile_orbit_indices: set[int] = set()
+        for orbit_index, orbit in enumerate(orbits):
+            orbit_group_ids = [
+                str(group_id) for group_id in orbit["group_ids"]
+            ]
+            try:
+                orbit_group_indices = [
+                    group_id_to_index[group_id]
+                    for group_id in orbit_group_ids
+                ]
+                master_group_index = group_id_to_index[
+                    str(orbit["master_group_id"])
+                ]
+            except KeyError as error:
+                raise ValueError(
+                    "Motif constraint orbit references an unknown group"
+                ) from error
+            reference_keys = keys_by_group[master_group_index]
+            for group_index in orbit_group_indices:
+                if keys_by_group[group_index] != reference_keys:
+                    raise ValueError(
+                        "All motif groups in one constraint orbit must "
+                        "have identical stable atom keys"
+                    )
+            transform_values = orbit["group_transform_ids"]
+            if len(transform_values) != len(orbit_group_indices):
+                raise ValueError(
+                    "Constraint orbit group/action counts do not match"
+                )
+            for group_index, transform_id in zip(
+                orbit_group_indices,
+                transform_values,
+            ):
+                if group_orbit_index[group_index] >= 0:
+                    raise ValueError(
+                        "One motif constraint group cannot belong to "
+                        "multiple constraint orbits"
+                    )
+                group_orbit_index[group_index] = orbit_index
+                group_orbit_transform_id[group_index] = int(transform_id)
+            master_group_indices.append(master_group_index)
+            is_mobile = orbit.get("mobility_mode") == "orbit_rigid"
+            mobility_modes.append(1 if is_mobile else 0)
+            orbit_bounds.append(
+                [
+                    float(orbit.get("max_translation") or 0.0),
+                    float(orbit.get("max_rotation_deg") or 0.0),
+                ]
+            )
+            if is_mobile:
+                mobile_orbit_indices.add(orbit_index)
+            atoms_by_orbit.append(
+                set(
+                    group_atom_indices[
+                        orbit_group_indices
+                    ][
+                        group_atom_mask[orbit_group_indices]
+                    ].tolist()
+                )
+            )
+
+        if torch.any(group_orbit_index < 0):
+            raise ValueError(
+                "Every motif constraint group must belong to an orbit"
+            )
+        for mobile_index in mobile_orbit_indices:
+            for other_index, other_atoms in enumerate(atoms_by_orbit):
+                if (
+                    other_index != mobile_index
+                    and atoms_by_orbit[mobile_index] & other_atoms
+                ):
+                    raise ValueError(
+                        "A mobile motif constraint orbit cannot overlap "
+                        "any other constraint orbit"
+                    )
+
+        return {
+            "motif_constraint_group_atom_indices": group_atom_indices,
+            "motif_constraint_group_atom_mask": group_atom_mask,
+            "motif_constraint_group_orbit_index": group_orbit_index,
+            "motif_constraint_group_orbit_transform_id": (
+                group_orbit_transform_id
+            ),
+            "motif_constraint_orbit_master_group_index": torch.tensor(
+                master_group_indices,
+                dtype=torch.long,
+            ),
+            "motif_constraint_orbit_mobility_mode": torch.tensor(
+                mobility_modes,
+                dtype=torch.long,
+            ),
+            "motif_constraint_orbit_bounds": torch.tensor(
+                orbit_bounds,
+                dtype=torch.float32,
+            ),
+        }
+
+    def make_transforms_dict(self, atom_array):
+        transform_ids = np.asarray(
+            atom_array.get_annotation("sym_transform_id")
+        )
+        origins = atom_array.get_annotation("sym_transform_Ori")
+        x_axes = atom_array.get_annotation("sym_transform_X")
+        y_axes = atom_array.get_annotation("sym_transform_Y")
+
+        unique_transform_ids = sorted(
+            int(value)
+            for value in np.unique(transform_ids)
+            if int(value) != -1
+        )
+        frame_origins: list[list[float]] = []
+        frame_x_axes: list[list[float]] = []
+        frame_y_axes: list[list[float]] = []
+        for transform_id in unique_transform_ids:
+            indices = np.flatnonzero(transform_ids == transform_id)
+            unpacked_origins = np.asarray(
+                [unpack_vector(origins[index]) for index in indices]
+            )
+            unpacked_x_axes = np.asarray(
+                [unpack_vector(x_axes[index]) for index in indices]
+            )
+            unpacked_y_axes = np.asarray(
+                [unpack_vector(y_axes[index]) for index in indices]
+            )
+            for name, values in (
+                ("origin", unpacked_origins),
+                ("x-axis", unpacked_x_axes),
+                ("y-axis", unpacked_y_axes),
+            ):
+                if not np.allclose(values, values[0], atol=1e-6):
+                    raise ValueError(
+                        f"Symmetry transform {transform_id} has inconsistent "
+                        f"{name} annotations"
+                    )
+            frame_origins.append(unpacked_origins[0].tolist())
+            frame_x_axes.append(unpacked_x_axes[0].tolist())
+            frame_y_axes.append(unpacked_y_axes[0].tolist())
+
+        Oris = torch.tensor(frame_origins)
+        Xs = torch.tensor(frame_x_axes)
+        Ys = torch.tensor(frame_y_axes)
         Rs, Ts = framecoords_to_RTs(Oris, Xs, Ys)
 
-        for R, T, transform_id in zip(Rs, Ts, TIDs):
-            if transform_id.item() == -1:
-                continue
-            transforms_dict[str(transform_id.item())] = (R, T)
-        return transforms_dict
+        return {
+            str(transform_id): (R, T)
+            for transform_id, R, T in zip(unique_transform_ids, Rs, Ts)
+        }

@@ -21,6 +21,7 @@ ADAPTER_DIR="$RUN_DIR/adapter"
 CONFIG="$PROJECT_DIR/configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
 SEED="${RFD3_SEED:-45}"
 POSE_CANDIDATE_MANIFEST="${RFD3_POSE_CANDIDATE_MANIFEST:-}"
+LINKER_LENGTH="${RFD3_LINKER_LENGTH:-}"
 
 if [[ -n "$POSE_CANDIDATE_MANIFEST" ]]; then
     ADAPTER_POSE_ARGS=(
@@ -28,6 +29,15 @@ if [[ -n "$POSE_CANDIDATE_MANIFEST" ]]; then
     )
 else
     ADAPTER_POSE_ARGS=(--pose-seed "$SEED")
+fi
+if [[ -n "$LINKER_LENGTH" ]]; then
+    if [[ ! "$LINKER_LENGTH" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: RFD3_LINKER_LENGTH must be a non-negative integer"
+        exit 2
+    fi
+    ADAPTER_LINKER_ARGS=(--linker-length "$LINKER_LENGTH")
+else
+    ADAPTER_LINKER_ARGS=()
 fi
 
 cd "$PROJECT_DIR"
@@ -44,6 +54,7 @@ conda activate "$RC_FOUNDRY_ENV"
 
 echo "=== RFD3 Mosaic native C3 smoke test, seed $SEED ==="
 echo "RFD3_POSE_CANDIDATE_MANIFEST=${POSE_CANDIDATE_MANIFEST:-<seed-sampled>}"
+echo "RFD3_LINKER_LENGTH=${LINKER_LENGTH:-<config-midpoint>}"
 date
 hostname
 if ! nvidia-smi; then
@@ -52,10 +63,17 @@ fi
 python --version
 python -c "import rfd3; print(rfd3.__file__)"
 
+echo "=== Repository unit validation on allocated compute node ==="
+python -m unittest discover \
+    -s tests/rfd3_mosaic/unit \
+    -p 'test_*.py' \
+    -v
+
 python -m rfd3_mosaic.rfd3_adapter \
     --config "$CONFIG" \
     --output-dir "$ADAPTER_DIR" \
     --base-directory "$PROJECT_DIR" \
+    "${ADAPTER_LINKER_ARGS[@]}" \
     "${ADAPTER_POSE_ARGS[@]}"
 
 ls -lh "$CHECKPOINT" "$ADAPTER_DIR/rfd3_input.json" "$ADAPTER_DIR/presymmetrized_input.cif"
@@ -67,11 +85,14 @@ python -m rfd3_mosaic.rfd3_prevalidate \
     --report "$RUN_DIR/rfd3_prevalidation.json"
 
 echo "RFD3_MOSAIC_INFERENCE_SAMPLER_KIND=symmetry"
-echo "RFD3_MOSAIC_FIXED_MOTIF_REINSERTION=enabled"
-echo "RFD3_MOSAIC_STEPWISE_FIXED_MOTIF_PRESERVATION=enabled"
+echo "RFD3_MOSAIC_SYMMETRY_STATE_MODE=orbit_average"
+echo "RFD3_MOSAIC_SYMMETRY_NOISE_MODE=coupled"
+echo "RFD3_MOSAIC_REALIGNMENT=disabled"
+echo "RFD3_MOSAIC_STATIC_MASTER_MOTIF=enabled"
+echo "RFD3_MOSAIC_INTERFACE_CONSTRAINT_GROUPS=required"
 sha256sum "$CONFIG" "$ADAPTER_DIR/rfd3_input.json" "$ADAPTER_DIR/presymmetrized_input.cif"
 
-# Use the same per-step fixed-motif reinsertion as production inference.
+# Use the same exact orbit-constrained state evolution as full inference.
 python -m rfd3.run_inference \
     inference_sampler.kind=symmetry \
     out_dir="$RUN_DIR" \
@@ -82,9 +103,11 @@ python -m rfd3.run_inference \
     diffusion_batch_size=1 \
     n_batches=1 \
     inference_sampler.num_timesteps=10 \
-    inference_sampler.allow_realignment=True \
-    +inference_sampler.insert_motif_at_end=True \
+    inference_sampler.allow_realignment=False \
     ++inference_sampler.preserve_fixed_motif_during_symmetry=True \
+    ++inference_sampler.require_motif_constraint_groups=True \
+    ++inference_sampler.symmetry_state_mode=orbit_average \
+    ++inference_sampler.symmetry_noise_mode=coupled \
     low_memory_mode=True \
     skip_existing=False \
     dump_trajectories=False \
@@ -103,6 +126,17 @@ python -m rfd3_mosaic.rfd3_seed_audit \
     --base-directory "$PROJECT_DIR" \
     --output "$RUN_DIR/seed_integrity_audit.json" \
     --report-only
+
+python -m rfd3_mosaic.rfd3_scaffold_audit \
+    --result-json "$RESULT_JSON" \
+    --rfd3-input "$ADAPTER_DIR/rfd3_input.json" \
+    --output "$RUN_DIR/scaffold_validity_audit.json" \
+    --expected-symmetry-multiplicity 3 \
+    --report-only
+
+python -m rfd3_mosaic.rfd3_audit_gate \
+    --report "$RUN_DIR/seed_integrity_audit.json" \
+    --report "$RUN_DIR/scaffold_validity_audit.json"
 
 echo "=== Native C3 smoke test completed ==="
 date

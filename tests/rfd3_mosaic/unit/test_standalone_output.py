@@ -65,6 +65,39 @@ class StandaloneOutputTestCase(unittest.TestCase):
         ]
         self.assertEqual(indices, list(range(1488)))
 
+    def test_mapping_compiles_complete_cross_chain_constraint_groups(
+        self,
+    ) -> None:
+        payload = json.loads(
+            self.outputs.mapping_path.read_text(encoding="utf-8")
+        )
+        groups = payload["interface_constraint_groups"]
+
+        self.assertEqual(len(groups), 3)
+        self.assertEqual(
+            [group["source_copy_index"] for group in groups],
+            [0, 1, 2],
+        )
+        self.assertEqual(
+            [group["target_copy_index"] for group in groups],
+            [0, 1, 2],
+        )
+        claimed_atoms: set[int] = set()
+        for group in groups:
+            self.assertEqual(group["orbit_id"], "primary_orbit")
+            self.assertEqual(len(group["left_fragment_instance_ids"]), 1)
+            self.assertEqual(len(group["right_fragment_instance_ids"]), 1)
+            self.assertTrue(group["left_atom_indices"])
+            self.assertTrue(group["right_atom_indices"])
+            self.assertFalse(
+                set(group["left_atom_indices"])
+                & set(group["right_atom_indices"])
+            )
+            self.assertEqual(len(group["atom_indices"]), 496)
+            self.assertFalse(claimed_atoms & set(group["atom_indices"]))
+            claimed_atoms.update(group["atom_indices"])
+        self.assertEqual(claimed_atoms, set(range(1488)))
+
     def test_manifest_is_explicit_about_unbuilt_linkers(self) -> None:
         manifest = json.loads(
             self.outputs.manifest_path.read_text(encoding="utf-8")

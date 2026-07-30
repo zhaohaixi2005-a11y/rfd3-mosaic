@@ -53,6 +53,11 @@ class MotionMode(str, Enum):
     SOFT_RIGID = "soft_rigid"
 
 
+class InterfaceMobilityMode(str, Enum):
+    FIXED = "fixed"
+    ORBIT_RIGID = "orbit_rigid"
+
+
 class FrameMethod(str, Enum):
     ANCHORS = "anchors"
     REFERENCE_INTERFACE_PCA = "reference_interface_pca"
@@ -299,6 +304,46 @@ TargetGeometrySpec = Annotated[
 ]
 
 
+class InterfaceMobilitySpec(StrictModel):
+    """Optional rigid motion of one complete cross-chain motif orbit."""
+
+    mode: InterfaceMobilityMode = InterfaceMobilityMode.FIXED
+    bounds: MotionBounds | None = None
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "InterfaceMobilitySpec":
+        if (
+            self.mode == InterfaceMobilityMode.ORBIT_RIGID
+            and self.bounds is None
+        ):
+            raise ValueError(
+                "orbit_rigid interface mobility requires cumulative bounds"
+            )
+        if (
+            self.mode == InterfaceMobilityMode.ORBIT_RIGID
+            and self.bounds is not None
+            and not any(
+                value is not None and value > 0.0
+                for value in (
+                    self.bounds.max_translation,
+                    self.bounds.max_rotation_deg,
+                )
+            )
+        ):
+            raise ValueError(
+                "orbit_rigid interface mobility requires at least one "
+                "strictly positive bound"
+            )
+        if (
+            self.mode == InterfaceMobilityMode.FIXED
+            and self.bounds is not None
+        ):
+            raise ValueError(
+                "fixed interface mobility cannot define motion bounds"
+            )
+        return self
+
+
 class InterfaceEdgeSpec(StrictModel):
     """Defines a target relationship between two interface ports."""
 
@@ -307,6 +352,7 @@ class InterfaceEdgeSpec(StrictModel):
     copy_relation: CopyRelationSpec
     required: bool = True
     target_geometry: TargetGeometrySpec
+    mobility: InterfaceMobilitySpec = InterfaceMobilitySpec()
 
 
 class SymmetryType(str, Enum):

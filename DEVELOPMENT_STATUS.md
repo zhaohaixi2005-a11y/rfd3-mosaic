@@ -1,6 +1,6 @@
 # RFD3 Mosaic Development Status
 
-Last updated: 2026-07-24
+Last updated: 2026-07-30
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
@@ -52,6 +52,268 @@ Cluster-operation boundary:
 - Providing a command must never be described as having synchronized,
   submitted, cancelled, pushed, or executed it.
 
+## 2026-07-30 end-to-end milestone achieved
+
+The static exact-C3 Interface-Seed pipeline has now completed end to end on
+LRZ, including compilation, deterministic linker materialization, native RFD3
+input construction, runtime prevalidation, checkpoint inference, result
+serialization, seed-integrity auditing, transform-aware scaffold auditing, and
+the final audit gate.
+
+The principal 200-step result is job `5721371`:
+
+```text
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/native_c3_full/5721371
+```
+
+Key result:
+
+- all three cross-protomer seed pairs passed;
+- maximum all-atom seed RMSD was `0.000511 A`;
+- maximum CA seed RMSD was `0.000489 A`;
+- atom completeness and contact retention were both `1.0`;
+- all three 146-residue chains were continuous with zero chain breaks;
+- compactness passed with maximum CA radius of gyration `23.460 A`;
+- declared-transform C3 symmetry passed with coordinate RMSD `0.000119 A`
+  and maximum coordinate error `0.000236 A`;
+- copy-internal distance-matrix RMSD was `6.18e-6 A`.
+
+This establishes the end-to-end engineering result: the complete cross-chain
+interface seed can remain fixed while RFD3 generates a continuous, compact,
+exact-C3 scaffold around it. The strict scaffold report is a near-pass rather
+than a clean final acceptance because one local generated-linker/right-motif
+CA overlap (`2.253 A`) is reproduced in all three C3 copies, producing three
+reported clashes. This remaining candidate-quality issue does not invalidate
+the demonstrated end-to-end pipeline, but a clash-free pose or diffusion seed
+is still required before calling a design scientifically final.
+
+## 2026-07-29 exact orbit-state refactor
+
+The previous hard-motif patches preserved the interface seed but did not keep
+the generated scaffold in one C3-invariant state. The current local refactor
+replaces that bridge with an explicit orbit-space path:
+
+- Fixed and generated coordinates use the same row-vector convention as
+  AtomArray expansion: `x_copy = x_master @ R.T + T`. The previous runtime
+  projector used `R` instead of `R.T`; for C3 this silently exchanged the
+  `r1/r2` direction even though the unordered copy set still looked symmetric.
+- `symmetry_state_mode=orbit_average` inverse-maps every copy, averages all
+  copies in the master frame, and re-expands them. Noise is sampled once per
+  master atom and rotation-copied to the other transforms. Initial, noisy,
+  denoised, Euler-updated, compactness-guided, and final states are all checked
+  for orbit closure.
+- Exact operations require atom-key-verified `sym_orbit_slot` correspondence,
+  run outside bfloat16 autocast, and retain float32 state precision instead of
+  quantizing a 1e-3 A closure check back to bfloat16.
+- Runtime frames reconstructed from RFD3's epsilon-stabilized virtual-frame
+  encoding are validated and projected to the nearest proper SO(3) rotation
+  before orbit operations. Online closure retains the 1e-3 A absolute gate at
+  molecular scale and adds a float32/coordinate-scale roundoff floor only at
+  the very large initial EDM noise scale.
+- Arbitrary per-step realignment is disabled because the stored symmetry
+  operators are not conjugated into the augmented frame.
+- Adapter output now embeds the actual registry matrices and explicit
+  constraint-orbit actions. Prevalidation calls the real
+  `DesignInputSpecification.build -> AddSymmetryFeats.forward` path, matches
+  runtime matrices one-to-one to the registry, and evaluates the same
+  all-copy orbit projector used during inference. Missing groups/orbits,
+  malformed matrices, non-finite targets, mask non-closure, or target
+  residuals above threshold fail before checkpoint loading.
+- A continuous linker range is materialized once by the adapter as an exact
+  `N-N` contig length. The default is the configured integer midpoint
+  (`70--100 -> 85-85` for LHD101), and `RFD3_LINKER_LENGTH` can select another
+  in-range value. This prevents prevalidation and the separate inference
+  process from independently sampling different AtomArray lengths. The
+  standalone endpoint spans are rechecked against that exact materialized
+  length rather than only the configured maximum.
+- Scaffold symmetry acceptance is transform-aware. Copy-internal CA distance
+  matrices remain a diagnostic only; final acceptance compares each copy's CA
+  coordinates with the declared C3 transform of the master chain. A translated
+  or wrongly rotated but internally congruent copy therefore fails. The current
+  output-chain association is validated for the one-chain-ASU C3 baseline; it
+  still uses sorted output chain order and is not yet a provenance-aware
+  multi-chain/Dn audit.
+- Smoke and full scripts write both seed and scaffold reports, then a separate
+  audit gate fails the job if either report is scientifically rejected.
+- The 10-step smoke job runs the complete repository unit suite on its
+  allocated compute node before adapter/prevalidation or checkpoint loading.
+  This avoids the observed DSS-backed `torch` import stalls on LRZ login
+  nodes and makes a unit failure stop the same job before GPU inference.
+- Complete-interface `orbit_rigid` schema, atom correspondence, and bounded
+  SE(3) controller are connected through an explicit, default-off experimental
+  sampler hook. Formal scripts do not enable it and keep the interface static:
+  moving coordinates without
+  updating RFD3's precomputed motif pair-conditioning creates contradictory
+  geometry, and raw fixed-atom denoiser output is not yet a validated scaffold
+  pose signal.
+
+Local `compileall`, Slurm shell parsing, and `git diff --check` pass. The local
+base Python lacks `pydantic` and the RFD3 runtime, so the new suite and the real
+C3 build-forward-prevalidation chain still require LRZ validation. Job
+`5720844` is retained as historical evidence for the old sampler only; it
+cannot validate the corrected transform direction or exact-state path.
+
+The next gate is: targeted CPU tests -> complete CPU discovery -> adapter plus
+prevalidation (including deterministic linker provenance) -> 10-step static
+smoke -> 50-step static pose screen -> 200-step static validation. Dynamic
+motif mobility remains blocked until its
+conditioning and pose signal are designed and tested explicitly.
+
+LRZ smoke validation update: the synchronized exact-path suite reached 216
+tests; 214 passed and two regressions stopped the job before inference. One
+was a real aliasing bug in the legacy atomwise projector (`Tensor.to()` can
+return the input, so its in-place COM correction mutated the caller); the
+projector now clones before centering. The other was a test harness error: the
+full fake sampler test called an inference API that correctly requires
+`torch.no_grad()` without that context. Both fixes are local and require one
+fresh LRZ smoke rerun; no GPU/scaffold result from that stopped job is valid.
+
+## 2026-07-29 group-aware constraints and symmetry diagnosis
+
+- The adapter now compiles every concrete interface-edge instance into a
+  two-sided motif constraint group and records both standalone atom indices
+  and post-symmetry RFD3 source-component/transform membership.
+- `AddSymmetryFeats` resolves these groups only after RFD3 has constructed and
+  expanded the AtomArray. It requires both interface sides to match and every
+  fixed motif atom to be covered.
+- The symmetry sampler restores complete groups at every opted-in denoising
+  step. Overlapping groups are order-independent when their coordinates agree
+  and fail explicitly when hard constraints conflict.
+- C3 entry scripts require group metadata. `rfd3_prevalidate` now resolves the
+  same runtime memberships before checkpoint loading and reports group counts,
+  sizes, and fixed-atom coverage.
+- Symmetry projection now works out-of-place, verifies equal atom counts for
+  ASU/target subunits, and transform-frame construction no longer assumes
+  atoms are consecutively ordered by transform ID.
+- Local compilation, shell parsing, and whitespace checks pass. LRZ
+  `rc-foundry` validation subsequently passed all 168 unit tests on
+  2026-07-29, including runtime cross-chain group resolution, transform-order
+  independence, complete fixed-atom coverage, and conflicting-overlap
+  rejection.
+- LRZ adapter prevalidation then passed with three resolved C3 constraint
+  groups of 496 atoms each, covering all 1488 fixed motif atoms, with no
+  failures. One unguided 200-step LRZ run remains required; these CPU checks
+  are not yet an end-to-end scientific result.
+- The single-design entry point accepts `RFD3_NUM_TIMESTEPS` in the range
+  2--200 while retaining 200 as its default. Shorter runs are diagnostic only;
+  the next intermediate screen uses three geometrically distinct poses at
+  50 steps before the definitive 200-step gate.
+- Full 200-step job `5720844` passed all three interface-seed pairs
+  (maximum CA RMSD 0.038 A, maximum all-atom RMSD 0.041 A, minimum contact
+  retention 0.975, and complete atom coverage) but failed scaffold geometry.
+  Chain A had only three continuity failures, whereas chains B and C each had
+  94, mostly implausibly short generated-region bonds; the output also had
+  3031 intra-chain and 613 inter-chain CA clashes. This chain-asymmetric
+  collapse is incompatible with rigid C3 copies and points to a remaining
+  ASU-to-copy atom/coordinate correspondence problem, not merely insufficient
+  diffusion or a need for motif rigid-body mobility.
+- Pairwise CA distance-matrix comparison confirmed the loss of rigid C3
+  geometry (A--B RMSD 14.636 A; A--C RMSD 19.128 A). The concrete sampler
+  cause is that upstream projects the denoised prediction, then combines it
+  with independently noised coordinates in the Euler update; the actual
+  state advancing to the next step is therefore not guaranteed symmetric.
+  Hard-motif mode now reprojects that updated state at every step and restores
+  the complete cross-chain groups afterwards, including when compactness is
+  disabled. LRZ subsequently passed all 169 unit tests, including the
+  compactness-disabled updated-state projection regression. A single
+  pose-2131 50-step controlled rerun was the next gate at that historical
+  stage; the exact orbit-state refactor above now requires CPU/preflight
+  validation and a fresh 10-step smoke first.
+
+## 2026-07-29 difficulty assessment and revised sampler architecture
+
+The problem is not a single motif-write ordering bug. Three constraints must
+hold simultaneously:
+
+1. each cross-chain interface retains its internal all-atom geometry;
+2. the full generated assembly remains exactly C3;
+3. generated scaffold junctions remain continuous and physically plausible.
+
+The earlier patches exposed the following interactions:
+
+- A final native symmetry projection restores C3 but may reconstruct the two
+  sides of an indexed cross-chain interface separately.
+- Final-only motif reinsertion preserves the seed but creates a late
+  motif-linker coordinate jump.
+- Stepwise static motif restoration preserves the seed throughout diffusion,
+  but skipping the native final projection allowed non-symmetric Euler-state
+  errors to survive.
+- Projecting the denoised prediction alone is insufficient because
+  `X_noisy_L` contains independent atomwise noise.
+- The pre-refactor C3 scripts set `allow_realignment=True`. That applied an
+  arbitrary global rotation/translation every step, while the stored symmetry
+  operators remain in their original frame. Unless the operators are
+  conjugated by the same global transform, the scaffold projector and motif
+  targets are expressed in incompatible coordinate systems. Upstream defaults
+  `allow_realignment` to false; this is a local integration hazard, not
+  evidence that ordinary upstream C3 generation is broken.
+- The 169 passing tests cover group resolution and update-state projection,
+  but do not yet prove true C3 closure with real transforms or the
+  realignment/frame invariant.
+
+The LHD101 constraints themselves are mathematically C3-compatible. With
+`B=right(0)` and `C=left(1)` in the selected ASU, the runtime interface groups
+must be:
+
+```text
+group(0) = B@0 + C@2
+group(1) = B@1 + C@0
+group(2) = B@2 + C@1
+```
+
+The adapter emits exactly this relation. The remaining risk is transform
+matrix numbering/direction inferred by RFD3, which is not established merely
+by observing transform IDs `[0, 1, 2]`.
+
+The recommended formal design is orbit-space constrained diffusion:
+
+- maintain the full-copy tensor projected onto one master-equivalent degree
+  of freedom rather than three independently drifting copies;
+- sample Gaussian displacement noise once on the ASU and rotate-copy it to
+  the other C3 members (translations do not apply to displacement vectors);
+- project predictions by inverse-transforming all copies to the master frame,
+  averaging them, and re-expanding them, rather than copying Chain A alone;
+- keep all diffusion states inside the C3-invariant subspace so the Euler
+  update is closed by construction;
+- initially disable arbitrary realignment; a future augmented frame must use
+  conjugated operators `A S_k A^-1`;
+- represent one cross-chain master interface with a pose `Q_t in SE(3)` and
+  generate its orbit as `S_k Q_t P`;
+- first hold `Q_t` static, then add bounded Kabsch-derived rigid motion so the
+  interface can adapt during diffusion without changing its internal geometry
+  or breaking C3.
+
+Required new preflight/online gates:
+
+- match Mosaic transforms to actual RFD3 matrices, allowing explicit
+  permutation/direction resolution;
+- fixed-target projection RMSD <= 0.01 A and maximum atom error <= 0.03 A;
+- per-step orbit-equivariance residual below numerical tolerance;
+- final transform-aware C3 coordinate RMSD <= 0.01 A and maximum error
+  <= 0.03 A; copy-internal distance matrices are diagnostic only;
+- motif rigidity, contact retention, continuity, compactness, and clash gates
+  all pass independently.
+
+Implementation should proceed in three stages:
+
+1. static master orbit with realignment disabled and exact C3 invariants;
+2. bounded master-interface SE(3) mobility with an early/middle/late schedule;
+3. multiple independent motif orbits with overlap merging or explicit conflict
+   rejection.
+
+The historical post-Euler-only patch was a diagnostic bridge. It is now
+superseded by the exact all-copy orbit-average implementation described above;
+that implementation has completed LRZ/GPU end-to-end validation for the
+LHD101 one-chain-ASU C3 baseline. It is not yet a scientifically final general
+architecture for Dn, multiple independent motif orbits, or dynamic mobility.
+
+## Historical archive boundary
+
+All dated sections below preserve the sequence of earlier experiments. Words
+such as “current”, “latest”, and “next” inside those sections describe that
+historical stage and are superseded by the exact-orbit status and gate at the
+top of this file.
+
 ## 2026-07-24 scaffold-generation diagnosis and guided experiment
 
 - Job `5712555` is a positive seed-preservation result only.  Its complete
@@ -70,7 +332,8 @@ Cluster-operation boundary:
   fixed motif atoms untouched, fades to zero before the final denoising
   quarter, and reprojects coordinates to native symmetry after each guided
   update.
-- `lhd101_c3_full_single.sbatch` enables the first conservative diagnostic
+- At that stage, `lhd101_c3_full_single.sbatch` enabled the first conservative
+  diagnostic
   setting with `RFD3_COMPACTNESS_WEIGHT=0.02`,
   `RFD3_COMPACTNESS_END_FRAC=0.75`, and
   `RFD3_COMPACTNESS_MAX_STEP=0.5`.  All are environment-overridable and the
@@ -467,7 +730,8 @@ Cluster-operation boundary:
   unless the rebuilt CIF SHA256 exactly matches the searched candidate. All C3
   Slurm entry points accept `RFD3_POSE_CANDIDATE_MANIFEST` and otherwise retain
   their legacy seed-based behavior.
-- The C3 inference entry points explicitly set
+- Historical, now superseded: the earlier C3 inference entry points explicitly
+  set
   `inference_sampler.allow_realignment=True` and
   `+inference_sampler.insert_motif_at_end=True` (Hydra append syntax), in
   addition to compiling every
@@ -475,8 +739,9 @@ Cluster-operation boundary:
   this is required to reinsert the ground-truth indexed motif during diffusion
   and at the final step. `allow_realignment=False` only suppresses coordinate
   noise; it does not make an indexed motif a hard positional constraint.
-  The post-generation coordinate/contact audit now verifies the cross-chain
-  interface seed directly.
+  The post-generation coordinate/contact audit verified the cross-chain
+  interface seed directly. Current exact-orbit entry points instead disable
+  realignment and do not rely on end-only motif insertion.
 - Added `rfd3_mosaic.rfd3_seed_audit`, a generator-output audit that combines
   the adapter mapping with RFD3's `diffused_index_map`, recovers the two
   original source fragments, and searches for the best one-to-one cross-chain
@@ -492,10 +757,9 @@ Cluster-operation boundary:
   all-atom RMSD 3.246 A, and minimum contact retention 0.473. This confirms the
   audit detects the original fixed-motif failure instead of passing it through
   symmetry alone.
-- All three C3 Slurm entry points run the seed audit after inference and write
-  `seed_integrity_audit.json` inside the job directory. They use report-only
-  mode so a scientifically rejected design remains distinguishable from a
-  failed GPU job.
+- All three C3 Slurm entry points run seed and transform-aware scaffold audits
+  after inference. Both JSON reports are written before a separate audit gate
+  marks the job failed when either scientific check is rejected.
 - Corrected seed-2153 job 5712416 reached the first realignment step but P100
   rejected `torch.linalg.svd` on a bfloat16 covariance
   (`svd_cuda_gesvdjBatched not implemented for BFloat16`). The shared Kabsch
@@ -642,35 +906,84 @@ Key rules:
 
 ## Not completed yet
 
-Priority order follows the final project plan:
+Current priority order:
 
-1. Run 200-step C3 jobs for the selected diverse pose manifests while holding
-   the RFD3 diffusion seed constant for the first comparison.
-2. Require both `seed_integrity_audit.json` and the independent scaffold audit
-   for every result; reject seed-preserving outputs with broken, clashing, or
-   excessively dispersed generated scaffolds.
-3. Compare the default sampler against the conservative, default-off
-   compactness-guidance experiment before tuning guidance strength or linker
-   ranges.
-4. Extend the invariant report to compare the standalone compiled copies and
-   RFD3-built fixed motif explicitly, in addition to the now-implemented final
-   model versus reference audit.
-5. Determine whether native RFD3 expects one ASU seed or a fully expanded seed
-   when `is_symmetric_motif=True`, and remove any double-expansion semantics.
-6. Locate the three internal chain breaks and three backbone clashes in the
-   completed seed-42 result and determine whether they lie in generated linker
-   regions or at motif/linker junctions.
-7. Run native versus legacy versus corrected LHD101 comparisons.
-8. Complete native RFD3 generation validation for the general Dn
-   implementation while C3 sampling experiments run independently; its full
-   server unit-test suite has passed.
-9. Continue validating the optional compactness sampler hook before treating
-   it as a design method rather than a diagnostic experiment.
-10. Implement a single-interface controller, then generalize it to multiple
-   non-equivalent interfaces.
-11. Add soft-rigid motion, ligand/metal constraints, negative design, and an
-   explicit transform registry; then extend finite polyhedral and helical
-   transform families.
+1. Exact-sampler targeted and complete LRZ CPU validation passed on
+   2026-07-29: all 216 tests passed. Intermediate and final symmetry checks
+   call the production scale-aware orbit-closure gate, while the independent
+   fixed-motif coordinate comparison retains its strict `1e-5 A` regression
+   check.
+2. Rebuild the LHD101 adapter input and pass real
+   `DesignInputSpecification.build -> AddSymmetryFeats.forward` prevalidation.
+   This passed on LRZ: the linker materialized to 85 residues, three 496-atom
+   constraint groups covered all 1488 fixed atoms, maximum fixed-target orbit
+   error was `6.93e-5 A`, RMSD was `3.28e-5 A`, and both transform and orbit
+   audits reported no failures.
+3. Run one 10-step static exact-C3 smoke. Both seed and transform-aware
+   scaffold audits must pass; the smoke is a wiring gate, not a fold-quality
+   claim. Job `5721328` stopped before denoising because Lightning transported
+   C3 feature matrices as bfloat16: the resulting ~`2e-3` raw orthogonality
+   error was rejected before bounded polar normalization. The duplicate raw
+   gate is removed locally; strict prevalidation of the original frame,
+   maximum `1e-3` polar correction, and strict normalized-SO(3) checks remain.
+   A bfloat16 C3 transport regression test was added before rerunning.
+   Job `5721335` then reached fixed-target validation and exposed the same
+   Fabric conversion on coordinates (RMS `0.040 A`, max `0.148 A`). The local
+   engine now retains the pre-transfer geometry and restores only exact-orbit
+   coordinates, noise, transforms, and constraint targets as float32 on the
+   accelerator; the neural network remains bf16 mixed precision and no
+   scientific threshold is relaxed.
+   Job `5721339` reproduced the identical residual because the first engine
+   implementation retained only a shallow alias to the nested batch. The
+   correction now takes detached tensor clones before Fabric transfer and has
+   a regression test that replaces tensors inside the same nested object.
+   Job `5721344` showed the same residual and no precision-restoration log:
+   the engine-side Hydra override copy was not a reliable runtime-mode
+   detector. Exact geometry is now detected from the verified batch contract
+   (`sym_transform`, `sym_orbit_slot`, and `sym_orbit_slot_verified=true`),
+   which is symmetry-family independent and leaves ordinary batches unchanged.
+   The synchronized correction passed all 220 LRZ unit tests.
+   Job `5721348` still lacked the restoration log because the full orbit
+   contract is not yet present at the engine precision boundary. Geometry
+   preservation is therefore now unconditional for RFD3 inference:
+   coordinates/noise and any present transforms/targets are restored as
+   float32 after Fabric transfer, while model operations remain under bf16
+   autocast.
+   Job `5721355` proved from the stack that Lightning `_FabricModule.forward`
+   still sits after the engine restoration point and reapplies the trainer
+   precision policy to model arguments. Exact-orbit inference now overrides
+   Fabric trainer precision to `32-true` at engine construction; non-exact
+   samplers retain checkpoint precision. This is keyed by orbit-average mode,
+   not by a C3 symmetry ID. A constructor-wiring regression test now checks
+   the actual `RFD3InferenceEngine -> BaseInferenceEngine` trainer override,
+   rather than testing only the mode predicate.
+   Job `5721362` then crossed the runtime compatibility gate and preserved the
+   complete interface seed. Declared-transform symmetry passed with maximum
+   coordinate RMSD `1.21e-4 A` and maximum error `2.37e-4 A`; copy internal
+   distance-matrix RMSD was `6.57e-6 A`. Compactness also passed and CA clashes
+   fell to 9. The 10-step scaffold itself remained chemically under-denoised:
+   every symmetry-identical 146-residue chain had 73 continuity failures
+   (219 total), so the audit correctly failed. This result validates exact
+   C3 state propagation but is not a valid final scaffold.
+   Convergence jobs `5721369`, `5721370`, and `5721371` then tested the same
+   seed-45 pose at 50, 100, and 200 steps. All three preserved the complete
+   interface seed with 100% contact retention, had zero chain breaks, passed
+   compactness, and retained declared-transform C3 coordinate RMSD near
+   `1.2e-4 A`. Each failed only one intra-protomer CA clash copied through the
+   exact C3 orbit: a generated-linker residue contacted the terminal residue
+   of the right fixed motif. The 200-step case was best (`2.253 A`) but still
+   below the hard `3.0 A` cutoff. The threshold must not be relaxed; the next
+   scientific task is pose/diffusion-seed screening for a clash-free scaffold.
+4. Screen selected pose manifests and diffusion seeds at 50 steps for a
+   clash-free scaffold, then promote the best candidate to 200 steps.
+5. Replace sorted-chain output association with provenance-aware copy mapping
+   before claiming general multi-chain or Dn scaffold auditing.
+6. Validate D2/D3 through the real build/prevalidation and GPU paths.
+7. Design dynamic motif pair-conditioning and a scaffold-derived pose signal
+   before enabling the experimental orbit-rigid hook in formal scripts.
+8. Only after those gates, extend to multiple independent motif orbits,
+   soft-rigid motion, ligand/metal constraints, negative design, and additional
+   symmetry families.
 
 ## Current limitations
 
@@ -690,10 +1003,17 @@ Priority order follows the final project plan:
   that every requested cross-copy interface pose is optimal; explicit
   interface-edge geometry validation remains required before RFD3 inference.
 - No RFD3 model architecture or checkpoint has been modified or retrained.
-- Native C3 input construction and one 10-step seed-preservation validation
-  have succeeded. A structurally valid 200-step scaffold that also preserves
-  the complete two-fragment interface has not yet been demonstrated. This must
-  pass before claiming Interface-Seed reproduction, design robustness, or
+- The exact static C3 sampler path has passed LRZ runtime and GPU end-to-end
+  validation for the one-chain-ASU LHD101 C3 baseline.
+- Transform-aware output auditing currently assumes transform-major sorted
+  chain IDs for the one-chain-ASU C3 baseline.
+- Orbit-rigid mobility is an unvalidated, explicit opt-in experiment and is
+  disabled in every formal Slurm entry point.
+- Native C3 input construction and 10/50/100/200-step inference have
+  succeeded. The 200-step candidate preserves the complete two-fragment
+  interface, exact C3, continuity, and compactness, but retains one local
+  linker/motif CA overlap copied threefold. A clash-free candidate is still
+  required before claiming a scientifically final design, robustness, or
   generalization to Dn and multi-interface cases.
 
 ## Verification commands
@@ -707,8 +1027,10 @@ git status --short --branch
 
 ## Resume point
 
-Synchronize and test stepwise fixed-motif preservation. Run one controlled
-200-step job with pose 2131, RFD3 seed 42, and compactness disabled. Accept it
-only when the complete cross-chain seed passes `seed_integrity_audit.json` and
-all motif-linker junctions pass `scaffold_validity_audit.json`. Do not resume
-multi-pose 200-step sampling until this combined gate passes.
+The exact all-copy orbit-average implementation is synchronized and has passed
+CPU, adapter/prevalidation, and GPU end-to-end validation. Resume by screening
+the selected diverse pose manifests and/or diffusion seeds at 50 steps. Keep
+the interface-seed, continuity, compactness, and declared-transform C3 gates
+unchanged; promote only a clash-free candidate to a definitive 200-step run.
+After that, replace sorted-chain output association with provenance-aware copy
+mapping and begin native D2/D3 validation.
