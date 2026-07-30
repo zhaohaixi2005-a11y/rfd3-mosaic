@@ -21,6 +21,13 @@ LHD101_D3_DRYRUN_CONFIG = (
     REPOSITORY_ROOT
     / "configs/rfd3_mosaic/dihedral/lhd101_d3_dryrun.yaml"
 )
+LHD101_CYCLIC_CONFIGS = {
+    order: (
+        REPOSITORY_ROOT
+        / f"configs/rfd3_mosaic/cyclic/lhd101_c{order}.yaml"
+    )
+    for order in (5, 6, 7)
+}
 
 
 class RFD3AdapterTestCase(unittest.TestCase):
@@ -394,6 +401,44 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 self.assertEqual(
                     emitted["extra"]["registry_transform_order"],
                     transform_order,
+                )
+
+    def test_c5_c6_c7_compile_to_native_cyclic_inputs(self) -> None:
+        for order, config in LHD101_CYCLIC_CONFIGS.items():
+            with self.subTest(order=order):
+                outputs = compile_rfd3_input(
+                    config,
+                    self.output_directory / f"tracked-c{order}",
+                    base_directory=REPOSITORY_ROOT,
+                    example_id=f"lhd101_c{order}_interface_seed",
+                )
+                emitted = json.loads(
+                    outputs.input_path.read_text(encoding="utf-8")
+                )[outputs.example_id]
+                extra = emitted["extra"]
+
+                self.assertEqual(emitted["symmetry"]["id"], f"C{order}")
+                self.assertEqual(
+                    extra["symmetry_multiplicity"],
+                    order,
+                )
+                self.assertEqual(
+                    extra["registry_transform_order"],
+                    [
+                        f"C{order}:e",
+                        *[
+                            f"C{order}:r{copy_index}"
+                            for copy_index in range(1, order)
+                        ],
+                    ],
+                )
+                self.assertEqual(
+                    len(
+                        extra["materialized_linker_contour_preflight"][
+                            "evaluated_link_instances"
+                        ]
+                    ),
+                    order,
                 )
 
 

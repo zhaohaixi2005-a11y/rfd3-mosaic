@@ -126,11 +126,25 @@ class ObjectiveScoringTestCase(unittest.TestCase):
                         "within_maximum_contour": False,
                         "endpoint_distance": 30.0,
                         "minimum_required_residues_at_3_8A": 7,
+                        "from_terminal_tangent_to_chord_angle_deg": 30.0,
+                        "to_terminal_tangent_to_chord_angle_deg": 40.0,
+                        "terminal_tangent_relative_angle_deg": 50.0,
+                        "terminal_plane_normal_relative_angle_deg": 20.0,
+                        "endpoint_chord_out_of_plane_angle_deg": 10.0,
+                        "minimum_endpoint_chord_axis_clearance": 4.0,
+                        "minimum_interior_chord_fixed_atom_clearance": 6.0,
                     },
                     {
                         "within_maximum_contour": True,
                         "endpoint_distance": 20.0,
                         "minimum_required_residues_at_3_8A": 5,
+                        "from_terminal_tangent_to_chord_angle_deg": 25.0,
+                        "to_terminal_tangent_to_chord_angle_deg": 35.0,
+                        "terminal_tangent_relative_angle_deg": 45.0,
+                        "terminal_plane_normal_relative_angle_deg": 15.0,
+                        "endpoint_chord_out_of_plane_angle_deg": 8.0,
+                        "minimum_endpoint_chord_axis_clearance": 5.0,
+                        "minimum_interior_chord_fixed_atom_clearance": 7.0,
                     },
                 ],
             },
@@ -159,6 +173,22 @@ class ObjectiveScoringTestCase(unittest.TestCase):
         self.assertEqual(
             metrics["cavities.minimum_central_void_radius"],
             4.0,
+        )
+        self.assertEqual(
+            metrics[
+                "scaffolds.maximum_terminal_tangent_to_chord_angle_deg"
+            ],
+            40.0,
+        )
+        self.assertEqual(
+            metrics["scaffolds.minimum_chord_axis_clearance"],
+            4.0,
+        )
+        self.assertEqual(
+            metrics[
+                "scaffolds.minimum_interior_chord_fixed_atom_clearance"
+            ],
+            6.0,
         )
 
 

@@ -14,6 +14,15 @@ from typing import Any
 
 import torch
 
+from rfd3.inference.symmetry.scaffold_guidance import (
+    BoundaryTopology,
+    CyclicAxis,
+    ScaffoldGuidanceConfig,
+    insert_master_orbit,
+    propose_bounded_se3_step,
+    scaffold_orbit_energy,
+)
+
 
 def mobility_window_weight(
     progress: float,
@@ -34,10 +43,6 @@ def mobility_window_weight(
         end_fraction - start_fraction
     )
     return math.sin(math.pi * unit) ** 2
-
-
-def _apply_frame(points, rotation, translation):
-    return torch.matmul(points, rotation.transpose(-1, -2)) + translation
 
 
 def _invert_frame(points, rotation, translation):
@@ -201,6 +206,7 @@ class OrbitRigidMotif:
     group_indices: torch.Tensor
     group_atom_indices: torch.Tensor
     group_transform_ids: torch.Tensor
+    master_atom_indices: torch.Tensor
     template_master: torch.Tensor
     maximum_translation: float
     maximum_rotation_degrees: float
@@ -241,6 +247,10 @@ class OrbitRigidMotifController:
         self.response = response
         self.per_step_translation = per_step_translation
         self.per_step_rotation_degrees = per_step_rotation_degrees
+        self.update_calls = 0
+        self.active_window_calls = 0
+        self.last_update_applied = False
+        self._diagnostic_trajectory: list[dict[str, Any]] = []
 
     @classmethod
     def from_features(
@@ -349,6 +359,7 @@ class OrbitRigidMotifController:
                     group_transform_ids=group_transform_ids[
                         orbit_group_indices
                     ],
+                    master_atom_indices=master_indices,
                     template_master=template_master,
                     maximum_translation=float(bounds[orbit_index, 0]),
                     maximum_rotation_degrees=float(
@@ -395,6 +406,39 @@ class OrbitRigidMotifController:
             + motif.state.translation[:, None, :]
         )
 
+    @staticmethod
+    def _master_coordinates_for_pose(
+        motif: OrbitRigidMotif,
+        rotation: torch.Tensor,
+        translation: torch.Tensor,
+    ) -> torch.Tensor:
+        if motif.template_master.shape[0] != 1:
+            raise ValueError(
+                "Scaffold-derived motif guidance supports one pose batch"
+            )
+        center = motif.template_master[0].mean(dim=0)
+        centered = motif.template_master[0] - center[None, :]
+        return (
+            centered @ rotation.T
+            + center[None, :]
+            + translation[None, :]
+        )
+
+    def materialize_target(self) -> torch.Tensor:
+        """Return the dense fixed target for the current master poses."""
+
+        target = self.base_target.clone()
+        for motif in self.motifs:
+            master_coordinates = self._master_coordinates(motif)
+            target = insert_master_orbit(
+                target,
+                master_coordinates,
+                motif.group_atom_indices,
+                motif.group_transform_ids,
+                self.sym_transforms,
+            )
+        return target
+
     def _inverse_average_proposal(self, motif, raw_coordinates):
         canonical_copies = []
         for group_row, transform_id_tensor in enumerate(
@@ -433,12 +477,15 @@ class OrbitRigidMotifController:
             raise ValueError(
                 "Mobility proposal coordinates contain NaN or Inf"
             )
+        self.update_calls += 1
+        self.last_update_applied = False
         window = mobility_window_weight(
             progress,
             start_fraction=self.start_fraction,
             end_fraction=self.end_fraction,
         )
         if window > 0.0:
+            self.active_window_calls += 1
             for motif in self.motifs:
                 proposal = self._inverse_average_proposal(
                     motif,
@@ -504,22 +551,241 @@ class OrbitRigidMotifController:
                     translation=torch.stack(updated_translations),
                     last_proposal_rmsd=proposal_rmsd,
                 )
+                self.last_update_applied = True
+        target = self.materialize_target()
+        self._diagnostic_trajectory.append(
+            self._diagnostic_snapshot(
+                progress=progress,
+                window_weight=window,
+                extra={
+                    "proposal_source": "denoiser",
+                    "applied": self.last_update_applied,
+                },
+            )
+        )
+        return target
 
-        target = self.base_target.clone()
-        for motif in self.motifs:
-            master_coordinates = self._master_coordinates(motif)
-            for group_row, transform_id_tensor in enumerate(
-                motif.group_transform_ids
-            ):
-                transform_id = int(transform_id_tensor.item())
-                rotation, translation = self.sym_transforms[transform_id]
-                target[
-                    :,
-                    motif.group_atom_indices[group_row],
-                    :,
-                ] = _apply_frame(
-                    master_coordinates,
+    def update_from_scaffold(
+        self,
+        scaffold_coordinates: torch.Tensor,
+        *,
+        progress: float,
+        topology: BoundaryTopology,
+        axis: CyclicAxis,
+        principal_axis: torch.Tensor,
+        config: ScaffoldGuidanceConfig,
+        apply_update: bool,
+    ) -> torch.Tensor:
+        """Propose one scaffold-derived pose step for a single cyclic orbit."""
+
+        if len(self.motifs) != 1:
+            raise ValueError(
+                "Scaffold-derived motif guidance currently supports exactly "
+                "one mobile motif orbit"
+            )
+        motif = self.motifs[0]
+        if self.base_target.shape[0] != 1:
+            raise ValueError(
+                "Scaffold-derived motif guidance supports one pose batch"
+            )
+        scaffold = scaffold_coordinates.to(
+            dtype=self.base_target.dtype,
+            device=self.base_target.device,
+        )
+        if scaffold.shape != self.base_target.shape:
+            raise ValueError(
+                "Scaffold guidance coordinates must match the fixed target "
+                "shape"
+            )
+        if not torch.isfinite(scaffold).all():
+            raise ValueError(
+                "Scaffold guidance coordinates contain NaN or Inf"
+            )
+
+        self.update_calls += 1
+        self.last_update_applied = False
+        window = mobility_window_weight(
+            progress,
+            start_fraction=self.start_fraction,
+            end_fraction=self.end_fraction,
+        )
+        extra: dict[str, Any] = {
+            "proposal_source": "scaffold_boundary",
+            "proposal_only": not apply_update,
+            "accepted": False,
+            "applied": False,
+        }
+        if window > 0.0:
+            self.active_window_calls += 1
+            current_rotation = motif.state.rotation[0]
+            current_translation = motif.state.translation[0]
+
+            def energy_function(rotation, translation):
+                master = self._master_coordinates_for_pose(
+                    motif,
                     rotation,
                     translation,
                 )
+                candidate_target = insert_master_orbit(
+                    self.base_target[0],
+                    master,
+                    motif.group_atom_indices,
+                    motif.group_transform_ids,
+                    self.sym_transforms,
+                )
+                return scaffold_orbit_energy(
+                    candidate_target,
+                    scaffold[0],
+                    topology,
+                    axis,
+                    principal_axis=principal_axis,
+                    pose_rotation=rotation,
+                    pose_translation=translation,
+                    config=config,
+                )
+
+            proposal = propose_bounded_se3_step(
+                current_rotation,
+                current_translation,
+                energy_function,
+                maximum_step_translation=(
+                    self.per_step_translation * window
+                ),
+                maximum_step_rotation_degrees=(
+                    self.per_step_rotation_degrees * window
+                ),
+                maximum_total_translation=motif.maximum_translation,
+                maximum_total_rotation_degrees=(
+                    motif.maximum_rotation_degrees
+                ),
+                translation_step_size=(
+                    self.per_step_translation
+                    * self.response
+                    * window
+                ),
+                rotation_step_size_degrees=(
+                    self.per_step_rotation_degrees
+                    * self.response
+                    * window
+                ),
+            )
+            with torch.no_grad():
+                initial_terms = energy_function(
+                    current_rotation,
+                    current_translation,
+                ).detached_dict()
+                proposed_terms = energy_function(
+                    proposal.rotation,
+                    proposal.translation,
+                ).detached_dict()
+            extra.update(
+                {
+                    "accepted": proposal.accepted,
+                    "line_search_scale": proposal.line_search_scale,
+                    "initial_energy": initial_terms,
+                    "proposed_energy": proposed_terms,
+                    "proposed_translation": [
+                        float(value)
+                        for value in (
+                            proposal.translation.detach().cpu().tolist()
+                        )
+                    ],
+                    "proposed_delta_translation": [
+                        float(value)
+                        for value in (
+                            proposal.delta_translation.detach().cpu().tolist()
+                        )
+                    ],
+                    "proposed_delta_rotation_degrees": math.degrees(
+                        float(
+                            _axis_angle(
+                                proposal.delta_rotation
+                            )[1].detach().cpu().item()
+                        )
+                    ),
+                }
+            )
+            if apply_update and proposal.accepted:
+                motif.state = OrbitRigidPoseState(
+                    rotation=proposal.rotation[None, ...],
+                    translation=proposal.translation[None, ...],
+                    last_proposal_rmsd=torch.zeros_like(
+                        motif.state.last_proposal_rmsd
+                    ),
+                )
+                self.last_update_applied = True
+                extra["applied"] = True
+
+        target = self.materialize_target()
+        self._diagnostic_trajectory.append(
+            self._diagnostic_snapshot(
+                progress=progress,
+                window_weight=window,
+                extra=extra,
+            )
+        )
         return target
+
+    @staticmethod
+    def _pose_diagnostics(motif: OrbitRigidMotif) -> dict[str, Any]:
+        rotation_degrees = []
+        for rotation in motif.state.rotation:
+            _, angle = _axis_angle(rotation)
+            rotation_degrees.append(math.degrees(float(angle.item())))
+        translation_norms = torch.linalg.vector_norm(
+            motif.state.translation,
+            dim=-1,
+        )
+        return {
+            "translation_norms": [
+                float(value)
+                for value in translation_norms.detach().cpu().tolist()
+            ],
+            "rotation_degrees": rotation_degrees,
+            "proposal_rmsd": [
+                float(value)
+                for value in (
+                    motif.state.last_proposal_rmsd.detach().cpu().tolist()
+                )
+            ],
+            "maximum_translation": motif.maximum_translation,
+            "maximum_rotation_degrees": motif.maximum_rotation_degrees,
+        }
+
+    def _diagnostic_snapshot(
+        self,
+        *,
+        progress: float,
+        window_weight: float,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        snapshot = {
+            "progress": float(progress),
+            "window_weight": float(window_weight),
+            "orbits": [
+                {
+                    "orbit_index": orbit_index,
+                    **self._pose_diagnostics(motif),
+                }
+                for orbit_index, motif in enumerate(self.motifs)
+            ],
+        }
+        if extra:
+            snapshot.update(extra)
+        return snapshot
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return JSON-serializable pose and proposal diagnostics."""
+
+        return {
+            "update_calls": self.update_calls,
+            "active_window_calls": self.active_window_calls,
+            "orbits": [
+                {
+                    "orbit_index": orbit_index,
+                    **self._pose_diagnostics(motif),
+                }
+                for orbit_index, motif in enumerate(self.motifs)
+            ],
+            "trajectory": list(self._diagnostic_trajectory),
+        }

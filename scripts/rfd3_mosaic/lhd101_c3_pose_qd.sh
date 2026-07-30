@@ -1,0 +1,36 @@
+#!/bin/bash
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: $0 OUTPUT_DIRECTORY"
+    exit 2
+fi
+
+PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+OUTPUT_DIR=$1
+SAMPLE_COUNT=${RFD3_POSE_SAMPLES:-256}
+SEED_START=${RFD3_POSE_SEED_START:-2000}
+MAX_SELECTED=${RFD3_QD_MAX_SELECTED:-16}
+MIN_SO3_SEPARATION=${RFD3_QD_MIN_SO3_SEPARATION:-20}
+QUALITY_POOL_FRACTION=${RFD3_QD_QUALITY_POOL_FRACTION:-0.25}
+CONFIG="$PROJECT_DIR/configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
+
+cd "$PROJECT_DIR"
+export PYTHONPATH="$PROJECT_DIR/src:$PROJECT_DIR/models/rfd3/src:${PYTHONPATH:-}"
+
+python -m rfd3_mosaic.pose_ensemble \
+    --config "$CONFIG" \
+    --output-dir "$OUTPUT_DIR" \
+    --base-directory "$PROJECT_DIR" \
+    --samples "$SAMPLE_COUNT" \
+    --seed-start "$SEED_START" \
+    --sampling-strategy latin_hypercube
+
+python -m rfd3_mosaic.pose_qd \
+    --ensemble "$OUTPUT_DIR/pose_ensemble.json" \
+    --max-selected "$MAX_SELECTED" \
+    --quality-pool-fraction "$QUALITY_POOL_FRACTION" \
+    --min-orientation-separation-deg "$MIN_SO3_SEPARATION"
+
+echo "Quality-diversity shortlist: $OUTPUT_DIR/pose_qd_shortlist.json"

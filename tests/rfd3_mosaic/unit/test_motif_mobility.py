@@ -1,3 +1,4 @@
+import json
 import math
 import unittest
 
@@ -7,6 +8,11 @@ from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
     fit_centered_rigid_pose,
     mobility_window_weight,
+)
+from rfd3.inference.symmetry.scaffold_guidance import (
+    BoundaryTopology,
+    CyclicAxis,
+    ScaffoldGuidanceConfig,
 )
 
 
@@ -166,6 +172,49 @@ class MotifMobilityTestCase(unittest.TestCase):
         assert controller is not None
         return template, target, transforms, controller
 
+    @staticmethod
+    def _scaffold_guidance_case():
+        template, target, transforms, controller = (
+            MotifMobilityTestCase._controller_case()
+        )
+        scaffold = target.clone()
+        scaffold[0, 1] = torch.tensor(
+            [6.0, 0.0, 0.0],
+            dtype=scaffold.dtype,
+        )
+        generated_mask = torch.zeros(12, dtype=torch.bool)
+        generated_mask[1] = True
+        topology = BoundaryTopology(
+            junction_pairs=torch.tensor([[0, 1]]),
+            fixed_ca_atom_indices=torch.tensor([0]),
+            generated_ca_atom_indices=torch.tensor([1]),
+            generated_atom_mask=generated_mask,
+        )
+        axis = CyclicAxis(
+            point=torch.zeros(3, dtype=torch.float64),
+            direction=torch.tensor(
+                [0.0, 0.0, 1.0],
+                dtype=torch.float64,
+            ),
+            transform_ids=(0, 1, 2),
+        )
+        config = ScaffoldGuidanceConfig(
+            junction_weight=1.0,
+            clash_weight=0.0,
+            tilt_weight=0.0,
+            prior_weight=0.0,
+        )
+        return (
+            template,
+            target,
+            transforms,
+            controller,
+            scaffold,
+            topology,
+            axis,
+            config,
+        )
+
     def test_controller_moves_one_master_pose_with_bounded_c3_copies(
         self,
     ) -> None:
@@ -291,6 +340,132 @@ class MotifMobilityTestCase(unittest.TestCase):
                 frozen_translation,
             )
         )
+
+    def test_controller_diagnostics_are_json_serializable(self) -> None:
+        template, _, transforms, controller = self._controller_case()
+        desired_master = template + torch.tensor(
+            [[[1.0, 0.0, 0.0]]],
+            dtype=torch.float64,
+        )
+        raw = torch.empty((1, 12, 3), dtype=torch.float64)
+        for transform_id in range(3):
+            raw[:, 4 * transform_id : 4 * (transform_id + 1)] = (
+                _apply(
+                    desired_master,
+                    transforms[str(transform_id)][0],
+                    transforms[str(transform_id)][1],
+                )
+            )
+
+        controller.update(raw, progress=0.5)
+        diagnostics = controller.diagnostics()
+
+        self.assertEqual(diagnostics["update_calls"], 1)
+        self.assertEqual(diagnostics["active_window_calls"], 1)
+        self.assertEqual(len(diagnostics["orbits"]), 1)
+        self.assertEqual(len(diagnostics["trajectory"]), 1)
+        self.assertGreater(
+            diagnostics["orbits"][0]["translation_norms"][0],
+            0.0,
+        )
+        json.dumps(diagnostics)
+
+    def test_scaffold_proposal_only_does_not_change_target(self) -> None:
+        (
+            _,
+            target,
+            _,
+            controller,
+            scaffold,
+            topology,
+            axis,
+            config,
+        ) = self._scaffold_guidance_case()
+        initial_rotation = (
+            controller.motifs[0].state.rotation.clone()
+        )
+        initial_translation = (
+            controller.motifs[0].state.translation.clone()
+        )
+
+        observed = controller.update_from_scaffold(
+            scaffold,
+            progress=0.5,
+            topology=topology,
+            axis=axis,
+            principal_axis=axis.direction,
+            config=config,
+            apply_update=False,
+        )
+
+        self.assertTrue(torch.equal(observed, target))
+        self.assertTrue(
+            torch.equal(
+                controller.motifs[0].state.rotation,
+                initial_rotation,
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                controller.motifs[0].state.translation,
+                initial_translation,
+            )
+        )
+        self.assertFalse(controller.last_update_applied)
+        snapshot = controller.diagnostics()["trajectory"][-1]
+        self.assertTrue(snapshot["proposal_only"])
+        self.assertTrue(snapshot["accepted"])
+        self.assertFalse(snapshot["applied"])
+        self.assertLess(
+            snapshot["proposed_energy"]["total"],
+            snapshot["initial_energy"]["total"],
+        )
+
+    def test_scaffold_update_lowers_energy_and_preserves_exact_c3(
+        self,
+    ) -> None:
+        (
+            _,
+            target,
+            transforms,
+            controller,
+            scaffold,
+            topology,
+            axis,
+            config,
+        ) = self._scaffold_guidance_case()
+
+        observed = controller.update_from_scaffold(
+            scaffold,
+            progress=0.5,
+            topology=topology,
+            axis=axis,
+            principal_axis=axis.direction,
+            config=config,
+            apply_update=True,
+        )
+
+        snapshot = controller.diagnostics()["trajectory"][-1]
+        self.assertTrue(snapshot["accepted"])
+        self.assertTrue(snapshot["applied"])
+        self.assertTrue(controller.last_update_applied)
+        self.assertLess(
+            snapshot["proposed_energy"]["total"],
+            snapshot["initial_energy"]["total"],
+        )
+        self.assertFalse(torch.allclose(observed[:, :4], target[:, :4]))
+
+        master = observed[:, :4]
+        for transform_id in range(3):
+            group = observed[
+                :,
+                4 * transform_id : 4 * (transform_id + 1),
+            ]
+            rotation, translation = transforms[str(transform_id)]
+            canonical = (group - translation) @ rotation
+            self.assertTrue(
+                torch.allclose(canonical, master, atol=1e-6)
+            )
 
     def test_controller_rejects_nonfinite_proposal(self) -> None:
         _, target, _, controller = self._controller_case()

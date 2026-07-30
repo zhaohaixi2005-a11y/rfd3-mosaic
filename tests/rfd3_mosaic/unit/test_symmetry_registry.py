@@ -46,8 +46,8 @@ class CyclicSymmetryRegistryTestCase(unittest.TestCase):
             "C3:e",
         )
 
-    def test_c3_c4_c5_are_closed(self) -> None:
-        for order in (3, 4, 5):
+    def test_c3_through_c7_are_closed(self) -> None:
+        for order in range(3, 8):
             with self.subTest(order=order):
                 validate_group_closure(build_cyclic_registry(order))
 

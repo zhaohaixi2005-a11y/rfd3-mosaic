@@ -365,6 +365,15 @@ class AADesignTrainer(FabricTrainer):
             i: {"metrics": {}} for i in range(len(arrays))
         }
 
+        mobility_diagnostics = network_output.get(
+            "motif_mobility_diagnostics"
+        )
+        if mobility_diagnostics is not None:
+            for i in range(len(arrays)):
+                metadata_dict[i]["motif_mobility_diagnostics"] = (
+                    mobility_diagnostics
+                )
+
         # Add the seed to the metadata dictionary if provided
         if self.seed is not None:
             for i in range(len(arrays)):

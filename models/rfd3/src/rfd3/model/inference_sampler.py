@@ -9,6 +9,12 @@ from jaxtyping import Float
 from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
 )
+from rfd3.inference.symmetry.scaffold_guidance import (
+    ScaffoldGuidanceConfig,
+    build_boundary_topology,
+    extract_cyclic_axis,
+    principal_axis_from_points,
+)
 from rfd3.inference.symmetry.symmetry_utils import (
     apply_symmetry_to_xyz_atomwise,
     build_symmetry_orbit_layout,
@@ -80,6 +86,18 @@ class SampleDiffusionConfig:
     motif_mobility_response: float = 0.25
     motif_mobility_per_step_translation: float = 0.25
     motif_mobility_per_step_rotation_degrees: float = 1.0
+    motif_mobility_proposal_source: Literal[
+        "denoiser", "scaffold_boundary"
+    ] = "denoiser"
+    motif_mobility_apply_updates: bool = True
+    motif_mobility_update_interval: int = 5
+    motif_mobility_target_max_tilt_degrees: float = 20.0
+    motif_mobility_junction_weight: float = 1.0
+    motif_mobility_clash_weight: float = 1.0
+    motif_mobility_tilt_weight: float = 0.25
+    motif_mobility_prior_weight: float = 0.05
+    motif_mobility_junction_target_distance: float = 3.8
+    motif_mobility_clash_distance: float = 3.0
 
     # Recycling
     n_recycle: int | None = None  # Override model default n_recycle for inference
@@ -438,6 +456,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Orbit-rigid motif mobility requires exact orbit-average "
                 "state and coupled-noise modes"
             )
+        if (
+            self.enable_orbit_rigid_motif_mobility
+            and not self.preserve_fixed_motif_during_symmetry
+        ):
+            raise ValueError(
+                "Orbit-rigid motif mobility requires "
+                "preserve_fixed_motif_during_symmetry=True"
+            )
         if not (
             0.0
             <= float(self.motif_mobility_start_fraction)
@@ -463,6 +489,30 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             raise ValueError(
                 "motif_mobility_per_step_rotation_degrees must be positive"
             )
+        valid_proposal_sources = {"denoiser", "scaffold_boundary"}
+        if self.motif_mobility_proposal_source not in valid_proposal_sources:
+            raise ValueError(
+                "motif_mobility_proposal_source must be one of "
+                f"{sorted(valid_proposal_sources)}"
+            )
+        if int(self.motif_mobility_update_interval) <= 0:
+            raise ValueError(
+                "motif_mobility_update_interval must be positive"
+            )
+        if (
+            self.enable_orbit_rigid_motif_mobility
+            and self.motif_mobility_proposal_source
+            == "scaffold_boundary"
+            and float(self.interface_seed_compactness_weight) > 0.0
+        ):
+            raise ValueError(
+                "Scaffold-derived motif mobility cannot be combined with "
+                "interface_seed_compactness_weight"
+            )
+        if self.motif_mobility_proposal_source == "scaffold_boundary":
+            # Constructing the config here validates every user-controlled
+            # weight and geometric target before model inference starts.
+            self._scaffold_guidance_config()
         if float(self.symmetry_orbit_max_error) <= 0.0:
             raise ValueError("symmetry_orbit_max_error must be positive")
         if float(self.fixed_target_symmetry_rmsd_tolerance) < 0.0:
@@ -477,6 +527,182 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
     @property
     def _uses_exact_symmetry_orbits(self) -> bool:
         return self.symmetry_state_mode == "orbit_average"
+
+    def _scaffold_guidance_config(self) -> ScaffoldGuidanceConfig:
+        return ScaffoldGuidanceConfig(
+            junction_weight=float(
+                self.motif_mobility_junction_weight
+            ),
+            clash_weight=float(self.motif_mobility_clash_weight),
+            tilt_weight=float(self.motif_mobility_tilt_weight),
+            prior_weight=float(self.motif_mobility_prior_weight),
+            junction_target_distance=float(
+                self.motif_mobility_junction_target_distance
+            ),
+            clash_distance=float(self.motif_mobility_clash_distance),
+            maximum_tilt_degrees=float(
+                self.motif_mobility_target_max_tilt_degrees
+            ),
+        )
+
+    @staticmethod
+    def _declared_mobile_motif_orbit_count(
+        f: dict[str, Any],
+    ) -> int:
+        mobility_modes = f.get("motif_constraint_orbit_mobility_mode")
+        if mobility_modes is None:
+            return 0
+        mobility_modes = torch.as_tensor(mobility_modes, dtype=torch.long)
+        if mobility_modes.ndim != 1:
+            raise ValueError(
+                "motif_constraint_orbit_mobility_mode must be one-dimensional"
+            )
+        if torch.any((mobility_modes != 0) & (mobility_modes != 1)):
+            raise ValueError(
+                "motif_constraint_orbit_mobility_mode may contain only 0 or 1"
+            )
+        return int(torch.count_nonzero(mobility_modes == 1).item())
+
+    def _validate_motif_mobility_runtime(
+        self,
+        f: dict[str, Any],
+        *,
+        diffusion_batch_size: int,
+        initializer_outputs: dict[str, Any],
+    ) -> int:
+        """Fail closed when the input and sampler mobility modes disagree."""
+
+        mobile_orbit_count = self._declared_mobile_motif_orbit_count(f)
+        if mobile_orbit_count and not self.enable_orbit_rigid_motif_mobility:
+            raise ValueError(
+                "The input declares orbit-rigid motif mobility but "
+                "enable_orbit_rigid_motif_mobility=False"
+            )
+        if self.enable_orbit_rigid_motif_mobility and not mobile_orbit_count:
+            raise ValueError(
+                "Orbit-rigid motif mobility was enabled but the input "
+                "declares no mobile motif constraint orbit"
+            )
+        if not self.enable_orbit_rigid_motif_mobility:
+            return 0
+        if diffusion_batch_size != 1:
+            raise ValueError(
+                "Dynamic motif conditioning currently requires "
+                "diffusion_batch_size=1"
+            )
+        if not self._uses_exact_symmetry_orbits:
+            raise ValueError(
+                "Dynamic motif conditioning requires "
+                "symmetry_state_mode=orbit_average"
+            )
+        if self.symmetry_noise_mode != "coupled":
+            raise ValueError(
+                "Dynamic motif conditioning requires "
+                "symmetry_noise_mode=coupled"
+            )
+        if not self.preserve_fixed_motif_during_symmetry:
+            raise ValueError(
+                "Dynamic motif conditioning requires "
+                "preserve_fixed_motif_during_symmetry=True"
+            )
+        if "chunked_pairwise_embedder" not in initializer_outputs:
+            raise ValueError(
+                "Dynamic motif conditioning currently requires the "
+                "chunked/low-memory P_LL path"
+            )
+        if (
+            self.motif_mobility_proposal_source == "scaffold_boundary"
+            and mobile_orbit_count != 1
+        ):
+            raise ValueError(
+                "Scaffold-derived motif mobility currently supports exactly "
+                "one mobile motif orbit"
+            )
+        if (
+            self.motif_mobility_proposal_source == "denoiser"
+            and not self.motif_mobility_apply_updates
+        ):
+            raise ValueError(
+                "Proposal-only motif mobility requires "
+                "motif_mobility_proposal_source=scaffold_boundary"
+            )
+        return mobile_orbit_count
+
+    @staticmethod
+    def _copy_motif_mobility_runtime_features(
+        f: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Detach mutable runtime conditioning from the input feature mapping."""
+
+        if "motif_pos" not in f:
+            raise ValueError(
+                "Dynamic motif conditioning requires f['motif_pos']"
+            )
+        runtime_f = dict(f)
+        runtime_f["motif_pos"] = torch.as_tensor(f["motif_pos"]).clone()
+        return runtime_f
+
+    @staticmethod
+    def _synchronize_mobile_motif_conditioning(
+        f: dict[str, Any],
+        fixed_target: torch.Tensor,
+        fixed_mask: torch.Tensor,
+    ) -> None:
+        """Synchronize pair conditioning and hard group targets to one pose."""
+
+        if fixed_target.ndim != 3 or fixed_target.shape[0] != 1:
+            raise ValueError(
+                "Dynamic motif target must have shape [1, L, 3]"
+            )
+        if not torch.isfinite(fixed_target).all():
+            raise ValueError(
+                "Dynamic motif target contains NaN or Inf"
+            )
+        fixed = torch.as_tensor(
+            fixed_mask,
+            dtype=torch.bool,
+            device=fixed_target.device,
+        )
+        if fixed.ndim != 1 or fixed.shape[0] != fixed_target.shape[1]:
+            raise ValueError(
+                "Dynamic motif fixed mask must have shape [L]"
+            )
+        motif_pos = torch.as_tensor(
+            f["motif_pos"],
+            device=fixed_target.device,
+        )
+        if tuple(motif_pos.shape) != tuple(fixed_target.shape[1:]):
+            raise ValueError(
+                "f['motif_pos'] must have shape [L, 3] for dynamic "
+                "motif conditioning"
+            )
+        updated_motif_pos = motif_pos.clone()
+        updated_motif_pos[fixed] = fixed_target[0, fixed].to(
+            dtype=updated_motif_pos.dtype
+        )
+        f["motif_pos"] = updated_motif_pos
+
+        membership = f.get("motif_constraint_group_membership")
+        if membership is None:
+            f.pop("motif_constraint_target_coordinates", None)
+            return
+        membership = torch.as_tensor(
+            membership,
+            dtype=torch.bool,
+            device=fixed_target.device,
+        )
+        if (
+            membership.ndim != 2
+            or membership.shape[1] != fixed_target.shape[1]
+        ):
+            raise ValueError(
+                "motif_constraint_group_membership must have shape [G, L]"
+            )
+        f["motif_constraint_target_coordinates"] = (
+            fixed_target[:, None, :, :]
+            .expand(-1, membership.shape[0], -1, -1)
+            .clone()
+        )
 
     @staticmethod
     def _symmetry_features(f: dict[str, Any]) -> dict[str, Any]:
@@ -1021,8 +1247,20 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         L = f["ref_element"].shape[0]
         D = diffusion_batch_size
+        mobile_orbit_count = self._validate_motif_mobility_runtime(
+            f,
+            diffusion_batch_size=D,
+            initializer_outputs=initializer_outputs,
+        )
+        if mobile_orbit_count:
+            f = self._copy_motif_mobility_runtime_features(f)
         fixed_target = coord_atom_lvl_to_be_noised.clone()
         motif_mobility_controller = None
+        scaffold_guidance_topology = None
+        scaffold_guidance_axis = None
+        scaffold_guidance_principal_axis = None
+        scaffold_guidance_config = None
+        motif_conditioning_refresh_count = 0
         if self._uses_exact_symmetry_orbits:
             self._exact_symmetry_orbit_layout = (
                 build_symmetry_orbit_layout(
@@ -1076,6 +1314,53 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     raise ValueError(
                         "Orbit-rigid motif mobility was enabled but the "
                         "input declares no mobile motif constraint orbit"
+                    )
+                self._synchronize_mobile_motif_conditioning(
+                    f,
+                    fixed_target,
+                    is_motif_atom_with_fixed_coord,
+                )
+                motif_conditioning_refresh_count += 1
+                if (
+                    self.motif_mobility_proposal_source
+                    == "scaffold_boundary"
+                ):
+                    scaffold_guidance_topology = (
+                        build_boundary_topology(
+                            f,
+                            is_motif_atom_with_fixed_coord,
+                        )
+                    )
+                    scaffold_guidance_axis = extract_cyclic_axis(
+                        f["sym_transform"]
+                    )
+                    mobile_motif = motif_mobility_controller.motifs[0]
+                    is_ca = torch.as_tensor(
+                        f["is_ca"],
+                        dtype=torch.bool,
+                        device=fixed_target.device,
+                    )
+                    master_ca_mask = is_ca[
+                        mobile_motif.master_atom_indices
+                    ]
+                    scaffold_guidance_principal_axis = (
+                        principal_axis_from_points(
+                            mobile_motif.template_master[
+                                0,
+                                master_ca_mask,
+                            ]
+                        )
+                    )
+                    scaffold_guidance_config = (
+                        self._scaffold_guidance_config()
+                    )
+                    ranked_logger.info(
+                        "Scaffold-derived motif guidance initialized: "
+                        f"junctions={len(scaffold_guidance_topology.junction_pairs)}, "
+                        "proposal_only="
+                        f"{not self.motif_mobility_apply_updates}, "
+                        "update_interval="
+                        f"{self.motif_mobility_update_interval}"
                     )
             X_L = self._get_exact_symmetric_initial_structure(
                 c0=noise_schedule[0],
@@ -1194,15 +1479,78 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 motif_mobility_controller is not None
                 and "X_L" in outs
             ):
-                with torch.autocast(
-                    device_type=outs["X_L"].device.type,
-                    enabled=False,
-                ):
-                    fixed_target = motif_mobility_controller.update(
-                        outs["X_L"].detach().to(torch.float32),
-                        progress=step_num
-                        / max(len(noise_schedule) - 2, 1),
-                    )
+                progress = step_num / max(
+                    len(noise_schedule) - 2,
+                    1,
+                )
+                should_update = (
+                    self.motif_mobility_proposal_source == "denoiser"
+                    or step_num
+                    % int(self.motif_mobility_update_interval)
+                    == 0
+                )
+                if should_update:
+                    with torch.autocast(
+                        device_type=outs["X_L"].device.type,
+                        enabled=False,
+                    ):
+                        if (
+                            self.motif_mobility_proposal_source
+                            == "scaffold_boundary"
+                        ):
+                            if (
+                                scaffold_guidance_topology is None
+                                or scaffold_guidance_axis is None
+                                or scaffold_guidance_principal_axis is None
+                                or scaffold_guidance_config is None
+                            ):
+                                raise RuntimeError(
+                                    "Scaffold guidance was not initialized"
+                                )
+                            guidance_coordinates = (
+                                self
+                                ._apply_symmetry_preserving_fixed_motif(
+                                    outs["X_L"].detach().to(torch.float32),
+                                    f,
+                                    is_motif_atom_with_fixed_coord,
+                                    fixed_coordinates=fixed_target,
+                                )
+                            )
+                            fixed_target = (
+                                motif_mobility_controller
+                                .update_from_scaffold(
+                                    guidance_coordinates,
+                                    progress=progress,
+                                    topology=scaffold_guidance_topology,
+                                    axis=scaffold_guidance_axis,
+                                    principal_axis=(
+                                        scaffold_guidance_principal_axis
+                                    ),
+                                    config=scaffold_guidance_config,
+                                    apply_update=bool(
+                                        self
+                                        .motif_mobility_apply_updates
+                                    ),
+                                )
+                            )
+                        else:
+                            fixed_target = (
+                                motif_mobility_controller.update(
+                                    outs["X_L"]
+                                    .detach()
+                                    .to(torch.float32),
+                                    progress=progress,
+                                )
+                            )
+                        if (
+                            motif_mobility_controller.last_update_applied
+                        ):
+                            self._synchronize_mobile_motif_conditioning(
+                                f,
+                                fixed_target,
+                                is_motif_atom_with_fixed_coord,
+                            )
+                            motif_conditioning_refresh_count += 1
             # apply symmetry to X_denoised_L
             if "X_L" in outs and (
                 self._uses_exact_symmetry_orbits
@@ -1311,7 +1659,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f,
             )
 
-        return dict(
+        result = dict(
             X_L=X_L,  # (D, L, 3)
             X_noisy_L_traj=X_noisy_L_traj,  # list[Tensor[D, L, 3]]
             X_denoised_L_traj=X_denoised_L_traj,  # list[Tensor[D, L, 3]]
@@ -1320,6 +1668,56 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             sequence_indices_I=outs.get("sequence_indices_I"),  # (D, I, 32)
             sequence_entropy_traj=sequence_entropy_traj,  # list[Tensor[D, I]]
         )
+        if motif_mobility_controller is not None:
+            mobility_diagnostics = motif_mobility_controller.diagnostics()
+            mobility_diagnostics["conditioning_refresh_count"] = (
+                motif_conditioning_refresh_count
+            )
+            mobility_diagnostics["mobile_orbit_count"] = mobile_orbit_count
+            mobility_diagnostics["proposal_source"] = (
+                self.motif_mobility_proposal_source
+            )
+            mobility_diagnostics["apply_updates"] = bool(
+                self.motif_mobility_apply_updates
+            )
+            mobility_diagnostics["update_interval"] = int(
+                self.motif_mobility_update_interval
+            )
+            if scaffold_guidance_config is not None:
+                mobility_diagnostics["scaffold_guidance_config"] = {
+                    key: value
+                    for key, value in vars(
+                        scaffold_guidance_config
+                    ).items()
+                }
+            result["motif_mobility_diagnostics"] = mobility_diagnostics
+            final_orbits = mobility_diagnostics["orbits"]
+            maximum_translation = max(
+                (
+                    max(orbit["translation_norms"], default=0.0)
+                    for orbit in final_orbits
+                ),
+                default=0.0,
+            )
+            maximum_rotation = max(
+                (
+                    max(orbit["rotation_degrees"], default=0.0)
+                    for orbit in final_orbits
+                ),
+                default=0.0,
+            )
+            ranked_logger.info(
+                "Orbit-rigid motif mobility completed: "
+                f"orbits={mobile_orbit_count}, "
+                f"updates={mobility_diagnostics['update_calls']}, "
+                "active_window_updates="
+                f"{mobility_diagnostics['active_window_calls']}, "
+                "conditioning_refreshes="
+                f"{motif_conditioning_refresh_count}, "
+                f"max_translation={maximum_translation:.6f} A, "
+                f"max_rotation={maximum_rotation:.6f} deg"
+            )
+        return result
 
 
 class ConditionalDiffusionSampler:

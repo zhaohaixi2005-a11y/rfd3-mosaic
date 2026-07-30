@@ -33,6 +33,100 @@
 > 使用 CPU 搜索得到的同一个 LHS pose，RFD3 adapter 现可直接读取 candidate
 > manifest，校验 config SHA256、恢复精确 unit samples，并要求重建 CIF 的
 > SHA256 与候选完全一致；仅传相同整数 seed 不再被视为足够 provenance。
+> 在不改变 Haar SO(3) 与 joint LHS 的前提下，当前进一步加入实验性的
+> `rfd3_mosaic.pose_qd`。它沿用 ensemble ranking 作为静态调度优先级，同时
+> 使用中心轴间隙与轴向/径向形态比建立 ring/cage morphology cells，并在
+> 每个 cell 内保留最佳候选；全局再施加 quaternion SO(3) 最小角分离。
+> 为避免稀有但低质量的极端 cell 强行占用 GPU，只有 ensemble 排名前
+> 25% 的 accepted candidates 默认有资格进入 QD archive。
+> 这使实验能够同时比较优先候选与形态覆盖，而不会让单一
+> compactness 分数把候选全部压缩到相似的扁平、小半径构型。形态描述符
+> 是 GPU 预算分配工具，不是可折叠性或 designability 结论。
+
+### 当前候选筛选的严格逻辑与证据边界
+
+设计者未声明目标 ring/cage 尺寸时，不存在“generated-scaffold endpoint
+越短越好”
+或“空洞越大越好”的普适优化方向。当前 CPU 阶段必须区分三件事：
+
+1. **admissibility（硬门槛）**：无 hard motif clash、required interface
+   geometry 通过、待生成 scaffold segment 的端点 span 不超过最大 contour、
+   required constraints 全部满足。失败者不得进入 GPU 实验。
+2. **coverage（实验覆盖）**：合格姿态按 axis clearance 与
+   axial/radial aspect ratio 分箱，并施加 quaternion SO(3) 最小角分离。
+   未配置目标尺寸时，各 cell 是并列的实验条件，而不是从小到大的质量等级。
+3. **empirical quality（经验质量）**：同一 pose 必须用相同的一组 diffusion
+   seeds 做配对 50-step 实验。只有 fixed-seed、exact symmetry、zero chain
+   breaks 和 zero hard clashes 同时通过，才记为一次成功。pose 质量由重复成功率
+   定义，而不能由 CPU endpoint span 单独定义。
+
+当前配置中的静态 penalty 为：
+
+```text
+P_static = d_max / 25
+         + 0.25 * (distance(c_axis, [6, 14]) / 4)^2
+```
+
+其中 `d_max` 是同一 protomer 内、待生成 scaffold segment 两端固定片段之间
+的最大 endpoint distance；它不是亚基间 linker。`c_axis` 是最小 axis
+clearance。第一项仅表达“在相同待生成残基预算下减少几何闭合负担”的启发式，
+不是生物物理最优性；第二项表达 LHD101 示例的可配置空洞窗口，也不是通用
+Cn 定律。因此 `P_static` 只能用于 CPU 调度优先级，不能被汇报为设计质量分数。
+
+该拓扑必须表述为：
+
+```text
+fixed interface pair k
+    -> generated protomer segment k
+    -> fixed interface pair k+1
+```
+
+每个 fixed interface pair 的两侧属于两个不同 protomers，并负责相邻 units
+之间的自组装；每段 70--100 aa 生成区域则把两个相邻 interface 位置上、属于
+同一个 protomer 的固定片段连接为完整 unit。不存在连接三个 units 的独立
+柔性 linker。
+
+正式 pose-position 对照采用配对实验。对 pose `i` 和共享 diffusion seed
+`s`，定义：
+
+```text
+H(i,s) = 1
+```
+
+当且仅当 seed integrity、declared-transform symmetry、continuity 和 hard-clash
+四个 audit 同时通过，否则 `H(i,s) = 0`。若共有 `S` 个共享 diffusion seeds：
+
+```text
+success_rate(i) = sum_s H(i,s) / S
+```
+
+只有 `success_rate` 和通过后的结构指标能够支持“该 seed position 更优”的
+结论。推荐第一阶段对每个 morphology cell 的代表使用同一组至少三个 diffusion
+seeds；随后只将重复成功且形态符合设计目标的 pose 提升到 200 steps。若设计者
+之后明确给出目标直径、空洞或厚度，则应把这些目标写成显式 window objective，
+而不是继续使用隐含的单调 compactness 假设。
+
+### GPU 前可计算的 unit-boundary 几何
+
+GPU 前并非只能检查 endpoint distance。对每一段同一 protomer 内的
+`C-fixed -> generated scaffold -> N-fixed` 边界，standalone compiler 还应
+报告：
+
+- C 端 `CA->C` continuation tangent 与 endpoint chord 的夹角；
+- N 端 `N->CA` continuation tangent 与 endpoint chord 的夹角；
+- 两端 continuation tangents 的相对夹角；
+- 两个 terminal peptide-plane normals 的 sign-invariant 相对夹角；
+- endpoint chord 相对于 symmetry plane 的轴向分量和角度；
+- endpoint chord 到 symmetry axis 的最小距离；
+- 去除本 protomer 两个端点 fragments 后，chord 中央 80% 到其余 fixed
+  motif atoms 的最小距离。
+
+这些指标分别描述 terminal-frame compatibility、生成主体的空间跨越方向和
+直线路径风险。它们可以在配置中作为显式 window/threshold objective，也可以
+作为 QD exploration coordinates。由于 70--100 aa 主体可以折叠成非直线路径，
+chord clearance 只能作为风险代理，不能单独硬判 folded scaffold 是否成功。
+在首批配对 50-step 数据建立成功区间前，默认只记录并分层这些指标，不擅自设置
+“越小”或“越大”的普适方向。
 
 > 文档状态：最终设计基线（implementation baseline）
 > 目标平台：RFD3
@@ -1646,6 +1740,51 @@ compiled = compile_interface_seed(
 ```
 
 LHD101 是第一道回归测试，不是终点。真正的方法贡献是在保持旧功能可复现的基础上，把双片段启发式脚本升级为数量无硬编码、接口显式、对称严格、来源可追踪、可独立测试并能接入 RFD3 的通用多界面设计框架。
+
+---
+
+## 26. C5/C6/C7 native cyclic capability extension
+
+C3 端到端通过后，下一组 cyclic capability 实验固定方法学，只改变
+symmetry order。C5、C6、C7 均使用同一个 Interface-Seed compiler、
+Haar SO(3)、joint LHS、QD、native RFD3 symmetry sampler 和结果审计。
+
+不能直接复制 C3 的半径区间。为保持相邻 copy 的弦长尺度，采用：
+
+```text
+R_n = R_3 * sin(pi / 3) / sin(pi / n)
+```
+
+对应配置中心半径约为 C5 `36.84 A`、C6 `43.30 A`、C7 `49.90 A`，
+并同比缩放半径采样范围。该缩放只保持初始相邻 copy 的几何尺度，不保证
+折叠成功。
+
+为避免把 C3 的绝对 cavity 尺度错误套到更高阶环，absolute
+axis-clearance objective window 与 scale 使用同一个阶数缩放因子；
+QD 分箱则使用无量纲的
+`minimum_axis_clearance / sampled_radius`。因此更高阶环不会仅因半径更大
+而被系统性惩罚或全部落入同一个 clearance cell。
+
+完整运行说明见
+`docs/rfd3_mosaic/C5_C6_C7_200STEP_RUNBOOK.md`。C5/C6/C7 只有在
+200-step 结果同时通过 interface-seed、连续性、hard clash、compactness
+和 declared-transform symmetry gate 后，才能声明 native cyclic
+capability 已扩展；目前这些仍是待验证实验。
+
+### 26.1 高阶 Cn 的表达能力不等于 native RFD3 运行能力
+
+当前 schema、symmetry registry 与 instance compiler 的阶数是参数化的，
+因此可以表达 C12/C20。native symmetric-motif inference 则有两道独立边界：
+Mosaic adapter 对 multiplicity `> 10` fail closed，官方 Foundry RFD3 在
+motif-frame recovery 中同样定义 `MAX_TRANSFORMS = 10`。所以当前 native
+输入的理论上限是 C10 / D5，而仓库实际追踪的 GPU cyclic 路径仍是
+C3、C5、C6、C7。
+
+不能把两处常数删除后称为高阶支持。显式 all-copy token-pair state 随
+assembly size 二次增长；checkpoint relative-chain encoding、超过单字符的
+chain-ID 路径、高阶 seed pairing 和 clash audit 也都尚未验证。C12/C20
+因此属于后续 ASU-only 或 local-neighborhood 高阶架构任务，不进入当前
+P100 50/200-step 矩阵。
 
 ---
 

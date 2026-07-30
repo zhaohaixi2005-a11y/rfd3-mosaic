@@ -85,6 +85,40 @@ def _candidate_summary(
         for link in link_reports
         if link.get("endpoint_distance") is not None
     ]
+    terminal_tangent_to_chord_angles = [
+        float(value)
+        for link in link_reports
+        for value in (
+            link.get("from_terminal_tangent_to_chord_angle_deg"),
+            link.get("to_terminal_tangent_to_chord_angle_deg"),
+        )
+        if value is not None
+    ]
+    terminal_tangent_relative_angles = [
+        float(link["terminal_tangent_relative_angle_deg"])
+        for link in link_reports
+        if link.get("terminal_tangent_relative_angle_deg") is not None
+    ]
+    terminal_plane_relative_angles = [
+        float(link["terminal_plane_normal_relative_angle_deg"])
+        for link in link_reports
+        if link.get("terminal_plane_normal_relative_angle_deg") is not None
+    ]
+    scaffold_chord_out_of_plane_angles = [
+        float(link["endpoint_chord_out_of_plane_angle_deg"])
+        for link in link_reports
+        if link.get("endpoint_chord_out_of_plane_angle_deg") is not None
+    ]
+    scaffold_chord_axis_clearances = [
+        float(link["minimum_endpoint_chord_axis_clearance"])
+        for link in link_reports
+        if link.get("minimum_endpoint_chord_axis_clearance") is not None
+    ]
+    scaffold_chord_fixed_atom_clearances = [
+        float(link["minimum_interior_chord_fixed_atom_clearance"])
+        for link in link_reports
+        if link.get("minimum_interior_chord_fixed_atom_clearance") is not None
+    ]
     cavity_orbits = validation.get("symmetry_cavities", {}).get(
         "orbits", []
     )
@@ -93,6 +127,26 @@ def _candidate_summary(
         for orbit in cavity_orbits
         if orbit.get("minimum_axis_clearance") is not None
     ]
+    axial_spans = [
+        float(orbit["axial_span"])
+        for orbit in cavity_orbits
+        if orbit.get("axial_span") is not None
+    ]
+    aspect_ratios = [
+        float(orbit["axial_to_radial_aspect_ratio"])
+        for orbit in cavity_orbits
+        if orbit.get("axial_to_radial_aspect_ratio") is not None
+    ]
+    radial_thickness_fractions = [
+        float(orbit["radial_thickness_fraction"])
+        for orbit in cavity_orbits
+        if orbit.get("radial_thickness_fraction") is not None
+    ]
+    shape_sphericities = [
+        float(orbit["shape_sphericity"])
+        for orbit in cavity_orbits
+        if orbit.get("shape_sphericity") is not None
+    ]
     accepted = (
         hard_clashes == 0
         and interface_ok
@@ -100,6 +154,21 @@ def _candidate_summary(
         and required_failures == 0
     )
     samples = manifest.get("initialization_samples", {})
+    sampled_radii = [
+        float(sample["sampled_radius"])
+        for sample in samples.values()
+        if sample.get("sampled_radius") is not None
+        and float(sample["sampled_radius"]) > 0.0
+    ]
+    minimum_axis_clearance = (
+        min(axis_clearances) if axis_clearances else None
+    )
+    normalized_axis_clearance = (
+        minimum_axis_clearance / sampled_radii[0]
+        if minimum_axis_clearance is not None
+        and len(sampled_radii) == 1
+        else None
+    )
     principal_tilts = [
         float(sample["principal_axis_tilt_deg"])
         for sample in samples.values()
@@ -125,9 +194,70 @@ def _candidate_summary(
         "maximum_linker_endpoint_distance": (
             max(endpoint_distances) if endpoint_distances else None
         ),
-        "minimum_axis_clearance": (
-            min(axis_clearances) if axis_clearances else None
+        "maximum_terminal_tangent_to_chord_angle_deg": (
+            max(terminal_tangent_to_chord_angles)
+            if terminal_tangent_to_chord_angles
+            else None
         ),
+        "maximum_terminal_tangent_relative_angle_deg": (
+            max(terminal_tangent_relative_angles)
+            if terminal_tangent_relative_angles
+            else None
+        ),
+        "maximum_terminal_plane_normal_relative_angle_deg": (
+            max(terminal_plane_relative_angles)
+            if terminal_plane_relative_angles
+            else None
+        ),
+        "maximum_scaffold_chord_out_of_plane_angle_deg": (
+            max(scaffold_chord_out_of_plane_angles)
+            if scaffold_chord_out_of_plane_angles
+            else None
+        ),
+        "minimum_scaffold_chord_axis_clearance": (
+            min(scaffold_chord_axis_clearances)
+            if scaffold_chord_axis_clearances
+            else None
+        ),
+        "minimum_scaffold_chord_fixed_atom_clearance": (
+            min(scaffold_chord_fixed_atom_clearances)
+            if scaffold_chord_fixed_atom_clearances
+            else None
+        ),
+        "minimum_axis_clearance": minimum_axis_clearance,
+        "minimum_axis_clearance_fraction_of_sampled_radius": (
+            normalized_axis_clearance
+        ),
+        "maximum_axial_span": max(axial_spans) if axial_spans else None,
+        "maximum_axial_to_radial_aspect_ratio": (
+            max(aspect_ratios) if aspect_ratios else None
+        ),
+        "maximum_radial_thickness_fraction": (
+            max(radial_thickness_fractions)
+            if radial_thickness_fractions
+            else None
+        ),
+        "minimum_shape_sphericity": (
+            min(shape_sphericities) if shape_sphericities else None
+        ),
+        "morphology_by_orbit": {
+            str(orbit["orbit_id"]): {
+                key: orbit.get(key)
+                for key in (
+                    "minimum_axis_clearance",
+                    "mean_axis_clearance",
+                    "maximum_axis_extent",
+                    "radial_thickness",
+                    "radial_thickness_fraction",
+                    "axial_span",
+                    "axial_to_radial_aspect_ratio",
+                    "shape_covariance_eigenvalues",
+                    "shape_sphericity",
+                )
+            }
+            for orbit in cavity_orbits
+            if orbit.get("orbit_id") is not None
+        },
         "maximum_principal_axis_tilt_deg": (
             max(principal_tilts) if principal_tilts else None
         ),
@@ -276,6 +406,12 @@ def main() -> None:
         maximum_span = candidate["maximum_linker_endpoint_distance"]
         axis_clearance = candidate["minimum_axis_clearance"]
         principal_tilt = candidate["maximum_principal_axis_tilt_deg"]
+        tangent_angle = candidate[
+            "maximum_terminal_tangent_to_chord_angle_deg"
+        ]
+        corridor_clearance = candidate[
+            "minimum_scaffold_chord_fixed_atom_clearance"
+        ]
         radius_text = f"{radius:.3f}" if radius is not None else "NA"
         maximum_span_text = (
             f"{maximum_span:.3f}" if maximum_span is not None else "NA"
@@ -290,12 +426,22 @@ def main() -> None:
             if principal_tilt is not None
             else "NA"
         )
+        tangent_angle_text = (
+            f"{tangent_angle:.3f}" if tangent_angle is not None else "NA"
+        )
+        corridor_clearance_text = (
+            f"{corridor_clearance:.3f}"
+            if corridor_clearance is not None
+            else "NA"
+        )
         print(
             f"seed={candidate['pose_seed']} "
             f"accepted={candidate['accepted']} "
             f"clashes={candidate['hard_clashes']} "
             f"radius={radius_text} "
-            f"max_link_span={maximum_span_text} "
+            f"max_scaffold_span={maximum_span_text} "
+            f"max_terminal_chord_angle={tangent_angle_text} "
+            f"min_chord_clearance={corridor_clearance_text} "
             f"axis_clearance={axis_clearance_text} "
             f"principal_tilt={principal_tilt_text} "
             f"penalty={candidate['objective_penalty']:.6g}"

@@ -1,5 +1,7 @@
 import math
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import torch
 
@@ -43,6 +45,67 @@ class _AsymmetricFakeDiffusion(torch.nn.Module):
             device=prediction.device,
         )
         return {"X_L": prediction}
+
+
+class _RecordingScaffoldController:
+    def __init__(self, fixed_target: torch.Tensor) -> None:
+        self.fixed_target = fixed_target.clone()
+        self.calls = []
+        self.last_update_applied = False
+        self.motifs = [
+            SimpleNamespace(
+                master_atom_indices=torch.tensor([0, 1]),
+                template_master=fixed_target[:, :2].clone(),
+            )
+        ]
+
+    def update_from_scaffold(
+        self,
+        scaffold_coordinates,
+        *,
+        progress,
+        topology,
+        axis,
+        principal_axis,
+        config,
+        apply_update,
+    ):
+        active = 0.10 < float(progress) < 0.85
+        applied = bool(apply_update) and active
+        self.calls.append(
+            {
+                "progress": float(progress),
+                "apply_update": bool(apply_update),
+                "active": active,
+                "applied": applied,
+                "coordinates": scaffold_coordinates.clone(),
+                "topology": topology,
+                "axis": axis,
+                "principal_axis": principal_axis.clone(),
+                "config": config,
+            }
+        )
+        self.last_update_applied = applied
+        return self.fixed_target.clone()
+
+    def diagnostics(self):
+        return {
+            "update_calls": len(self.calls),
+            "active_window_calls": sum(
+                call["active"] for call in self.calls
+            ),
+            "orbits": [
+                {
+                    "orbit_index": 0,
+                    "translation_norms": [0.0],
+                    "rotation_degrees": [0.0],
+                    "proposal_rmsd": [0.0],
+                    "maximum_translation": 2.0,
+                    "maximum_rotation_degrees": 10.0,
+                }
+            ],
+            "trajectory": [],
+        }
 
 
 class SymmetryMotifFinalizationTestCase(unittest.TestCase):
@@ -148,6 +211,190 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 gamma_0=0.6,
                 enable_orbit_rigid_motif_mobility=True,
             )
+
+    def test_orbit_rigid_mobility_requires_fixed_motif_preservation(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "preserve_fixed_motif_during_symmetry=True",
+        ):
+            SampleDiffusionWithSymmetry(
+                gamma_0=0.6,
+                enable_orbit_rigid_motif_mobility=True,
+                symmetry_state_mode="orbit_average",
+                symmetry_noise_mode="coupled",
+            )
+
+    @staticmethod
+    def _mobile_sampler() -> SampleDiffusionWithSymmetry:
+        return SampleDiffusionWithSymmetry(
+            gamma_0=0.6,
+            enable_orbit_rigid_motif_mobility=True,
+            preserve_fixed_motif_during_symmetry=True,
+            symmetry_state_mode="orbit_average",
+            symmetry_noise_mode="coupled",
+        )
+
+    def test_mobile_feature_requires_sampler_opt_in(self) -> None:
+        sampler = SampleDiffusionWithSymmetry(
+            gamma_0=0.6,
+            preserve_fixed_motif_during_symmetry=True,
+            symmetry_state_mode="orbit_average",
+            symmetry_noise_mode="coupled",
+        )
+        features = {
+            "motif_constraint_orbit_mobility_mode": torch.tensor([1])
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "input declares orbit-rigid",
+        ):
+            sampler._validate_motif_mobility_runtime(
+                features,
+                diffusion_batch_size=1,
+                initializer_outputs={
+                    "chunked_pairwise_embedder": object()
+                },
+            )
+
+    def test_mobile_sampler_requires_mobile_feature(self) -> None:
+        sampler = self._mobile_sampler()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "declares no mobile",
+        ):
+            sampler._validate_motif_mobility_runtime(
+                {
+                    "motif_constraint_orbit_mobility_mode": torch.tensor(
+                        [0]
+                    )
+                },
+                diffusion_batch_size=1,
+                initializer_outputs={
+                    "chunked_pairwise_embedder": object()
+                },
+            )
+
+    def test_dynamic_conditioning_rejects_batched_poses(self) -> None:
+        sampler = self._mobile_sampler()
+        features = {
+            "motif_constraint_orbit_mobility_mode": torch.tensor([1])
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "diffusion_batch_size=1",
+        ):
+            sampler._validate_motif_mobility_runtime(
+                features,
+                diffusion_batch_size=2,
+                initializer_outputs={
+                    "chunked_pairwise_embedder": object()
+                },
+            )
+
+    def test_dynamic_conditioning_rejects_full_pll_path(self) -> None:
+        sampler = self._mobile_sampler()
+        features = {
+            "motif_constraint_orbit_mobility_mode": torch.tensor([1])
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "chunked/low-memory",
+        ):
+            sampler._validate_motif_mobility_runtime(
+                features,
+                diffusion_batch_size=1,
+                initializer_outputs={},
+            )
+
+    def test_dynamic_conditioning_syncs_pair_and_group_targets(
+        self,
+    ) -> None:
+        original_features = {
+            "motif_pos": torch.tensor(
+                [
+                    [10.0, 10.0, 10.0],
+                    [20.0, 20.0, 20.0],
+                    [30.0, 30.0, 30.0],
+                ]
+            ),
+            "motif_constraint_group_membership": torch.tensor(
+                [
+                    [True, True, False],
+                    [False, True, True],
+                ]
+            ),
+            "motif_constraint_target_coordinates": torch.full(
+                (1, 2, 3, 3),
+                -999.0,
+            ),
+        }
+        runtime_features = (
+            SampleDiffusionWithSymmetry
+            ._copy_motif_mobility_runtime_features(
+                original_features
+            )
+        )
+        fixed_target = torch.tensor(
+            [
+                [
+                    [1.0, 2.0, 3.0],
+                    [4.0, 5.0, 6.0],
+                    [7.0, 8.0, 9.0],
+                ]
+            ]
+        )
+        fixed_mask = torch.tensor([True, False, True])
+
+        SampleDiffusionWithSymmetry._synchronize_mobile_motif_conditioning(
+            runtime_features,
+            fixed_target,
+            fixed_mask,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                original_features["motif_pos"],
+                torch.tensor(
+                    [
+                        [10.0, 10.0, 10.0],
+                        [20.0, 20.0, 20.0],
+                        [30.0, 30.0, 30.0],
+                    ]
+                ),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                runtime_features["motif_pos"],
+                torch.tensor(
+                    [
+                        [1.0, 2.0, 3.0],
+                        [20.0, 20.0, 20.0],
+                        [7.0, 8.0, 9.0],
+                    ]
+                ),
+            )
+        )
+        expected_group_targets = fixed_target[:, None].expand(
+            -1,
+            2,
+            -1,
+            -1,
+        )
+        self.assertTrue(
+            torch.equal(
+                runtime_features[
+                    "motif_constraint_target_coordinates"
+                ],
+                expected_group_targets,
+            )
+        )
 
     def test_static_fixed_target_is_projected_once_into_exact_c3(
         self,
@@ -347,6 +594,131 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 features,
                 label=f"Denoised trajectory state {index}",
             )
+
+    def test_scaffold_source_honors_interval_and_refreshes_only_on_apply(
+        self,
+    ) -> None:
+        canonical = torch.tensor(
+            [[[5.0, 0.0, 0.0], [7.0, 1.0, 0.5]]]
+        )
+        for apply_updates, expected_refreshes in (
+            (False, 1),
+            (True, 2),
+        ):
+            with self.subTest(apply_updates=apply_updates):
+                features = self._c3_features()
+                coordinates = apply_symmetry_to_xyz_atomwise(
+                    canonical.repeat(1, 3, 1),
+                    features,
+                    partial_diffusion=True,
+                )
+                fixed = torch.ones(6, dtype=torch.bool)
+                features.update(
+                    {
+                        "is_motif_atom_with_fixed_coord": fixed,
+                        "ref_element": torch.zeros(
+                            6,
+                            dtype=torch.long,
+                        ),
+                        "motif_pos": coordinates[0].clone(),
+                        "motif_constraint_orbit_mobility_mode": (
+                            torch.tensor([1])
+                        ),
+                        "is_ca": torch.ones(
+                            6,
+                            dtype=torch.bool,
+                        ),
+                    }
+                )
+                controller = _RecordingScaffoldController(coordinates)
+                topology = SimpleNamespace(
+                    junction_pairs=torch.tensor([[0, 1]])
+                )
+                module = _AsymmetricFakeDiffusion()
+                sampler = SampleDiffusionWithSymmetry(
+                    gamma_0=0.6,
+                    num_timesteps=6,
+                    preserve_fixed_motif_during_symmetry=True,
+                    require_motif_constraint_groups=True,
+                    symmetry_state_mode="orbit_average",
+                    symmetry_noise_mode="coupled",
+                    enable_orbit_rigid_motif_mobility=True,
+                    motif_mobility_proposal_source=(
+                        "scaffold_boundary"
+                    ),
+                    motif_mobility_apply_updates=apply_updates,
+                    motif_mobility_update_interval=2,
+                )
+
+                with (
+                    mock.patch(
+                        "rfd3.model.inference_sampler."
+                        "OrbitRigidMotifController.from_features",
+                        return_value=controller,
+                    ),
+                    mock.patch(
+                        "rfd3.model.inference_sampler."
+                        "build_boundary_topology",
+                        return_value=topology,
+                    ),
+                    mock.patch(
+                        "rfd3.model.inference_sampler."
+                        "extract_cyclic_axis",
+                        return_value=object(),
+                    ),
+                    torch.no_grad(),
+                ):
+                    result = sampler.sample_diffusion_like_af3(
+                        f=features,
+                        diffusion_module=module,
+                        diffusion_batch_size=1,
+                        coord_atom_lvl_to_be_noised=coordinates,
+                        initializer_outputs={
+                            "chunked_pairwise_embedder": object()
+                        },
+                        ref_initializer_outputs=None,
+                        f_ref=None,
+                    )
+
+                self.assertEqual(module.calls, 5)
+                self.assertEqual(len(controller.calls), 3)
+                self.assertEqual(
+                    [
+                        call["progress"]
+                        for call in controller.calls
+                    ],
+                    [0.0, 0.5, 1.0],
+                )
+                self.assertTrue(
+                    all(
+                        call["apply_update"] is apply_updates
+                        for call in controller.calls
+                    )
+                )
+                self.assertEqual(
+                    [
+                        call["applied"]
+                        for call in controller.calls
+                    ],
+                    [False, apply_updates, False],
+                )
+                diagnostics = result[
+                    "motif_mobility_diagnostics"
+                ]
+                self.assertEqual(diagnostics["update_calls"], 3)
+                self.assertEqual(
+                    diagnostics["conditioning_refresh_count"],
+                    expected_refreshes,
+                )
+                self.assertEqual(diagnostics["update_interval"], 2)
+                self.assertEqual(
+                    diagnostics["proposal_source"],
+                    "scaffold_boundary",
+                )
+                self.assertIs(
+                    diagnostics["apply_updates"],
+                    apply_updates,
+                )
 
     def test_compactness_moves_generated_tokens_but_not_fixed_motif(
         self,

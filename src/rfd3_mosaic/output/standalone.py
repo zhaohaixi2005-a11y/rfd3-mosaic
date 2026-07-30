@@ -198,11 +198,135 @@ def _terminal_anchor(
     return coordinates.mean(axis=0), "residue_centroid", label_seq_id
 
 
+def _unit_vector(vector: np.ndarray) -> np.ndarray | None:
+    norm = float(np.linalg.norm(vector))
+    return vector / norm if norm > 1e-8 else None
+
+
+def _vector_angle_degrees(
+    left: np.ndarray | None,
+    right: np.ndarray | None,
+    *,
+    sign_invariant: bool = False,
+) -> float | None:
+    if left is None or right is None:
+        return None
+    cosine = float(np.clip(np.dot(left, right), -1.0, 1.0))
+    if sign_invariant:
+        cosine = abs(cosine)
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _terminal_backbone_geometry(
+    atoms: list[_CompiledAtom],
+    *,
+    terminus: str,
+) -> dict[str, Any]:
+    anchor, anchor_name, label_seq_id = _terminal_anchor(
+        atoms,
+        terminus=terminus,
+    )
+    residue_atoms = {
+        atom.source_atom.atom_name.strip().upper(): np.asarray(
+            atom.coordinate, dtype=np.float64
+        )
+        for atom in atoms
+        if atom.label_seq_id == label_seq_id
+    }
+    n_coordinate = residue_atoms.get("N")
+    ca_coordinate = residue_atoms.get("CA")
+    c_coordinate = residue_atoms.get("C")
+    if terminus == "C":
+        tangent = (
+            _unit_vector(c_coordinate - ca_coordinate)
+            if c_coordinate is not None and ca_coordinate is not None
+            else None
+        )
+    else:
+        tangent = (
+            _unit_vector(ca_coordinate - n_coordinate)
+            if n_coordinate is not None and ca_coordinate is not None
+            else None
+        )
+    plane_normal = (
+        _unit_vector(
+            np.cross(
+                ca_coordinate - n_coordinate,
+                c_coordinate - ca_coordinate,
+            )
+        )
+        if (
+            n_coordinate is not None
+            and ca_coordinate is not None
+            and c_coordinate is not None
+        )
+        else None
+    )
+    return {
+        "anchor": anchor,
+        "anchor_name": anchor_name,
+        "label_seq_id": label_seq_id,
+        "tangent": tangent,
+        "plane_normal": plane_normal,
+    }
+
+
+def _minimum_point_to_segment_distance(
+    coordinates: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+) -> float | None:
+    if not coordinates.size:
+        return None
+    segment = end - start
+    squared_length = float(np.dot(segment, segment))
+    if squared_length <= 1e-12:
+        return float(np.linalg.norm(coordinates - start, axis=1).min())
+    fractions = np.clip(
+        ((coordinates - start) @ segment) / squared_length,
+        0.0,
+        1.0,
+    )
+    projections = start + fractions[:, None] * segment
+    return float(np.linalg.norm(coordinates - projections, axis=1).min())
+
+
+def _minimum_segment_axis_clearance(
+    start: np.ndarray,
+    end: np.ndarray,
+    *,
+    axis: np.ndarray,
+    center: np.ndarray,
+) -> float:
+    relative_start = start - center
+    segment = end - start
+    radial_start = relative_start - np.dot(relative_start, axis) * axis
+    radial_segment = segment - np.dot(segment, axis) * axis
+    squared_radial_length = float(
+        np.dot(radial_segment, radial_segment)
+    )
+    fraction = (
+        float(
+            np.clip(
+                -np.dot(radial_start, radial_segment)
+                / squared_radial_length,
+                0.0,
+                1.0,
+            )
+        )
+        if squared_radial_length > 1e-12
+        else 0.0
+    )
+    closest_radial = radial_start + fraction * radial_segment
+    return float(np.linalg.norm(closest_radial))
+
+
 def _analyze_scaffold_link_geometry(
     atoms: list[_CompiledAtom],
     instances: Any,
+    spec: Any,
 ) -> dict[str, Any]:
-    """Report endpoint spans before RFD3 generates missing scaffold atoms."""
+    """Report unit-boundary geometry before RFD3 generates scaffold atoms."""
 
     atoms_by_fragment: dict[str, list[_CompiledAtom]] = {}
     for atom in atoms:
@@ -211,17 +335,21 @@ def _analyze_scaffold_link_geometry(
     reports: list[dict[str, Any]] = []
     infeasible_links: list[str] = []
     for link in instances.scaffold_links.values():
-        from_coordinate, from_anchor, from_residue = _terminal_anchor(
+        from_geometry = _terminal_backbone_geometry(
             atoms_by_fragment[link.from_fragment_instance_id],
             terminus=link.from_terminus.value,
         )
-        to_coordinate, to_anchor, to_residue = _terminal_anchor(
+        to_geometry = _terminal_backbone_geometry(
             atoms_by_fragment[link.to_fragment_instance_id],
             terminus=link.to_terminus.value,
         )
+        from_coordinate = from_geometry["anchor"]
+        to_coordinate = to_geometry["anchor"]
+        endpoint_vector = to_coordinate - from_coordinate
         endpoint_distance = float(
-            np.linalg.norm(to_coordinate - from_coordinate)
+            np.linalg.norm(endpoint_vector)
         )
+        endpoint_direction = _unit_vector(endpoint_vector)
         minimum_required_residues = max(
             0,
             int(np.ceil(endpoint_distance / 3.8)) - 1,
@@ -231,6 +359,54 @@ def _analyze_scaffold_link_geometry(
         )
         if not within_maximum_contour and not link.chain_break:
             infeasible_links.append(link.id)
+        excluded_fragments = {
+            link.from_fragment_instance_id,
+            link.to_fragment_instance_id,
+        }
+        corridor_coordinates = np.asarray(
+            [
+                atom.coordinate
+                for atom in atoms
+                if atom.fragment_instance_id not in excluded_fragments
+            ],
+            dtype=np.float64,
+        )
+        corridor_start = from_coordinate + 0.1 * endpoint_vector
+        corridor_end = from_coordinate + 0.9 * endpoint_vector
+        interior_chord_clearance = _minimum_point_to_segment_distance(
+            corridor_coordinates,
+            corridor_start,
+            corridor_end,
+        )
+        chord_axis_clearance: float | None = None
+        chord_axial_fraction: float | None = None
+        chord_out_of_plane_angle: float | None = None
+        if link.orbit_id is not None:
+            orbit = spec.symmetry.orbits[link.orbit_id]
+            transform_set = spec.symmetry.transform_sets[
+                orbit.transform_set
+            ]
+            axis = np.asarray(transform_set.axis, dtype=np.float64)
+            axis /= np.linalg.norm(axis)
+            center = np.asarray(transform_set.center, dtype=np.float64)
+            chord_axis_clearance = _minimum_segment_axis_clearance(
+                from_coordinate,
+                to_coordinate,
+                axis=axis,
+                center=center,
+            )
+            if endpoint_distance > 1e-8:
+                chord_axial_fraction = float(
+                    abs(np.dot(endpoint_vector, axis))
+                    / endpoint_distance
+                )
+                chord_out_of_plane_angle = float(
+                    np.degrees(
+                        np.arcsin(
+                            np.clip(chord_axial_fraction, 0.0, 1.0)
+                        )
+                    )
+                )
         reports.append(
             {
                 "link_instance_id": link.id,
@@ -239,11 +415,49 @@ def _analyze_scaffold_link_geometry(
                     link.from_fragment_instance_id
                 ),
                 "to_fragment_instance_id": link.to_fragment_instance_id,
-                "from_anchor": from_anchor,
-                "to_anchor": to_anchor,
-                "from_label_seq_id": from_residue,
-                "to_label_seq_id": to_residue,
+                "from_anchor": from_geometry["anchor_name"],
+                "to_anchor": to_geometry["anchor_name"],
+                "from_label_seq_id": from_geometry["label_seq_id"],
+                "to_label_seq_id": to_geometry["label_seq_id"],
                 "endpoint_distance": endpoint_distance,
+                "from_terminal_tangent_to_chord_angle_deg": (
+                    _vector_angle_degrees(
+                        from_geometry["tangent"],
+                        endpoint_direction,
+                    )
+                ),
+                "to_terminal_tangent_to_chord_angle_deg": (
+                    _vector_angle_degrees(
+                        to_geometry["tangent"],
+                        endpoint_direction,
+                    )
+                ),
+                "terminal_tangent_relative_angle_deg": (
+                    _vector_angle_degrees(
+                        from_geometry["tangent"],
+                        to_geometry["tangent"],
+                    )
+                ),
+                "terminal_plane_normal_relative_angle_deg": (
+                    _vector_angle_degrees(
+                        from_geometry["plane_normal"],
+                        to_geometry["plane_normal"],
+                        sign_invariant=True,
+                    )
+                ),
+                "endpoint_chord_axial_fraction": chord_axial_fraction,
+                "endpoint_chord_out_of_plane_angle_deg": (
+                    chord_out_of_plane_angle
+                ),
+                "minimum_endpoint_chord_axis_clearance": (
+                    chord_axis_clearance
+                ),
+                "minimum_interior_chord_fixed_atom_clearance": (
+                    interior_chord_clearance
+                ),
+                "corridor_excluded_fragment_instance_ids": sorted(
+                    excluded_fragments
+                ),
                 "configured_minimum_length": link.minimum_length,
                 "configured_maximum_length": link.maximum_length,
                 "minimum_required_residues_at_3_8A": (
@@ -258,8 +472,9 @@ def _analyze_scaffold_link_geometry(
         "infeasible_link_instances": infeasible_links,
         "links": reports,
         "note": (
-            "Contour feasibility is a necessary geometric check, not a "
-            "prediction that RFD3 will generate a folded linker."
+            "These are fixed-boundary and straight-chord proxy descriptors "
+            "for one generated protomer segment. They are necessary CPU "
+            "checks, not predictions of the folded RFD3 scaffold path."
         ),
     }
 
@@ -289,6 +504,32 @@ def _analyze_symmetry_cavities(
         relative = orbit_coordinates - center
         axial_coordinates = relative @ axis
         radial_vectors = relative - axial_coordinates[:, None] * axis
+        radial_distances = np.linalg.norm(radial_vectors, axis=1)
+        axial_span = float(
+            axial_coordinates.max() - axial_coordinates.min()
+        )
+        maximum_axis_extent = float(radial_distances.max())
+        radial_thickness = float(
+            maximum_axis_extent - radial_distances.min()
+        )
+        centered_coordinates = orbit_coordinates - orbit_coordinates.mean(
+            axis=0
+        )
+        covariance = (
+            centered_coordinates.T @ centered_coordinates
+        ) / len(centered_coordinates)
+        shape_eigenvalues = np.linalg.eigvalsh(covariance)
+        largest_eigenvalue = float(shape_eigenvalues[-1])
+        shape_sphericity = (
+            float(
+                np.sqrt(
+                    max(float(shape_eigenvalues[0]), 0.0)
+                    / largest_eigenvalue
+                )
+            )
+            if largest_eigenvalue > 0.0
+            else 0.0
+        )
         reports.append(
             {
                 "orbit_id": orbit_id,
@@ -306,17 +547,36 @@ def _analyze_symmetry_cavities(
                     np.linalg.norm(relative, axis=1).min()
                 ),
                 "minimum_axis_clearance": float(
-                    np.linalg.norm(radial_vectors, axis=1).min()
+                    radial_distances.min()
+                ),
+                "mean_axis_clearance": float(radial_distances.mean()),
+                "maximum_axis_extent": maximum_axis_extent,
+                "radial_thickness": radial_thickness,
+                "radial_thickness_fraction": (
+                    radial_thickness / maximum_axis_extent
+                    if maximum_axis_extent > 0.0
+                    else 0.0
                 ),
                 "minimum_axial_coordinate": float(axial_coordinates.min()),
                 "maximum_axial_coordinate": float(axial_coordinates.max()),
+                "axial_span": axial_span,
+                "axial_to_radial_aspect_ratio": (
+                    axial_span / (2.0 * maximum_axis_extent)
+                    if maximum_axis_extent > 0.0
+                    else 0.0
+                ),
+                "shape_covariance_eigenvalues": [
+                    float(value) for value in shape_eigenvalues
+                ],
+                "shape_sphericity": shape_sphericity,
             }
         )
     return {
         "orbits": reports,
         "note": (
-            "Clearance values are geometric descriptors of motif atoms, "
-            "not solvent-accessible cavity calculations."
+            "Clearance and morphology values are geometric descriptors of "
+            "motif atoms, not solvent-accessible cavity or designability "
+            "calculations."
         ),
     }
 
@@ -623,6 +883,7 @@ def _compile_atoms(
         _analyze_scaffold_link_geometry(
             compiled_atoms,
             instances,
+            spec,
         )
     )
     compilation["symmetry_cavity_report"] = _analyze_symmetry_cavities(
@@ -934,7 +1195,7 @@ def compile_standalone(
             "objectives": compilation["objective_report"],
         },
         "limitations": [
-            "Scaffold linker coordinates are not generated in this artifact.",
+            "Scaffold segment coordinates are not generated in this artifact.",
             "Compiled indices are RFD3-independent until adapter validation.",
         ],
     }

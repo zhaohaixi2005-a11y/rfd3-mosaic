@@ -16,6 +16,24 @@ new login or a new Codex session. Update it whenever a milestone changes.
   RFD3-native, generator-independent framework for Cn/multi-chain and
   multi-interface design.
 
+## Project reading order
+
+To understand the project without replaying the full development history, read
+these files in order:
+
+1. `DEVELOPMENT_STATUS.md` — current evidence, limitations, operational
+   boundary, and exact resume point.
+2. `docs/rfd3_mosaic/RFD3_MULTI_INTERFACE_SEED_FINAL_PLAN.md` — method
+   architecture, data model, compiler/runtime separation, and success criteria.
+3. `docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md` — the current
+   opt-in experiment that allows bounded scaffold-guided seed motion.
+4. `docs/rfd3_mosaic/C5_C6_C7_200STEP_RUNBOOK.md` — reproducible C5/C6/C7
+   pose generation, P100 inference, and audit commands.
+
+For historical comparison with Interface-Seed 1.0, then read
+`docs/rfd3_mosaic/INTERFACE_SEED_RFD1_UPGRADE_AUDIT.md`. The evolution plan is
+design history rather than the current execution contract.
+
 ## Environment contract
 
 The shared `rc-foundry` environment must not be modified with editable
@@ -976,6 +994,56 @@ Current priority order:
    scientific task is pose/diffusion-seed screening for a clash-free scaffold.
 4. Screen selected pose manifests and diffusion seeds at 50 steps for a
    clash-free scaffold, then promote the best candidate to 200 steps.
+   The next screening set should use the experimental morphology-aware
+   `rfd3_mosaic.pose_qd` shortlist. It preserves the validated Haar SO(3) and
+   joint Latin-hypercube generator, keeps the existing ensemble rank as the
+   quality order, and distributes GPU candidates across axis-clearance and
+   axial/radial-aspect cells with a global SO(3) separation gate. The standalone
+   manifest now records axial span, radial thickness, aspect ratio, covariance
+   eigenvalues, and shape sphericity for each symmetry orbit. These descriptors
+   are exploration coordinates, not designability thresholds.
+   The first 512-pose trial accepted 506 candidates and covered 13 morphology
+   cells, but unconstrained cell filling admitted ensemble ranks 480 and 492.
+   QD eligibility is therefore now restricted by default to the top 25% of
+   accepted ensemble-ranked poses before morphology and SO(3) diversification.
+   This top-quarter rule remains a compute-priority heuristic, not a claim that
+   shorter generated-scaffold endpoint spans are universally better. These
+   spans connect fixed fragments belonging to one protomer across adjacent
+   interface positions; they are not flexible linkers between assembled units.
+   The preserved cross-protomer interface seeds mediate unit self-assembly.
+   Without an explicit target assembly size, morphology cells are parallel
+   experimental conditions.
+   Position quality must be estimated with a paired 50-step screen that uses
+   the same set of at least three diffusion seeds for every pose; a replicate
+   succeeds only if seed integrity, declared-transform symmetry, continuity,
+   and hard-clash audits all pass. Promote positions by replicate success rate
+   and declared morphology goals, not by endpoint span alone.
+CPU pre-screening now goes beyond span/contour: every generated-protomer
+   boundary reports C/N terminal-tangent-to-chord angles, tangent and peptide
+   plane relative angles, chord axial fraction/out-of-plane angle, minimum
+   chord-to-axis clearance, and an interior straight-chord clearance from the
+   other fixed motif atoms. These are configurable boundary-condition and path
+   risk descriptors, not claims that the generated 70--100-residue scaffold
+   will follow a straight line or fold successfully.
+   A C5/C6/C7 capability suite is now prepared. Each order has an explicit
+   config, the same Haar-SO(3) plus Latin-hypercube pose generator, the same
+   QD selection policy, and one generic P100 200-step entry point. The radial
+   distributions are not copied from C3: they use
+   `R_n = R_3 sin(pi/3) / sin(pi/n)` so the sampled adjacent-copy chord range
+   is preserved when the cyclic order changes. Absolute cavity objective
+   windows are scaled by the same factor, while QD uses the dimensionless
+   `minimum_axis_clearance / sampled_radius` descriptor. This prevents larger
+   cyclic orders from being penalized or collapsed into one morphology bin
+   merely because their ring radii are larger. The C5/C6/C7 runs remain
+   capability experiments until their adapter prevalidation, full inference,
+   seed, continuity, clash, compactness, and declared-transform symmetry
+   audits all pass.
+   A tracked H100 robustness-screen entry point now submits the controlled
+   matrix C5/C6/C7 x top three QD poses x five diffusion seeds x 50 steps
+   (45 jobs). It records every job ID and exact pose manifest in a timestamped
+   TSV. This is the first large-scale estimate of pose- and diffusion-seed
+   robustness; it does not replace the existing convergence controls or
+   downstream sequence/structure validation.
 5. Replace sorted-chain output association with provenance-aware copy mapping
    before claiming general multi-chain or Dn scaffold auditing.
 6. Validate D2/D3 through the real build/prevalidation and GPU paths.
@@ -1005,6 +1073,22 @@ Current priority order:
 - No RFD3 model architecture or checkpoint has been modified or retrained.
 - The exact static C3 sampler path has passed LRZ runtime and GPU end-to-end
   validation for the one-chain-ASU LHD101 C3 baseline.
+- Native C5/C6/C7 configs and run scripts exist, but no C5/C6/C7 GPU result
+  has yet been validated. The requested P100 entry point uses low-memory
+  mode; memory feasibility, especially for C7, remains an explicit runtime
+  gate. These orders must not be described as established capability before
+  the full audit gate passes.
+- The schema, symmetry registry, and instance compiler can express higher
+  orders such as C12 and C20, but the native symmetric-motif path cannot
+  currently run them. Both the Mosaic adapter and official Foundry RFD3 enforce
+  a maximum of 10 transforms. The native input boundary is therefore at most
+  C10 or D5 before considering model validity. Removing those guards would not
+  establish support: dense token-pair memory remains quadratic in assembly
+  size, the checkpoint's relative-chain encoding saturates beyond nearby
+  copies, high-order chain-ID paths are unvalidated, and the current
+  seed-integrity audit has factorial pairing cost. C12/C20 must not be
+  submitted as native P100 diffusion jobs until a separate high-order strategy
+  and audit path exist.
 - Transform-aware output auditing currently assumes transform-major sorted
   chain IDs for the one-chain-ASU C3 baseline.
 - Orbit-rigid mobility is an unvalidated, explicit opt-in experiment and is
@@ -1015,6 +1099,56 @@ Current priority order:
   linker/motif CA overlap copied threefold. A clash-free candidate is still
   required before claiming a scientifically final design, robustness, or
   generalization to Dn and multi-interface cases.
+
+## 2026-07-30 scaffold-aware mobility pilot
+
+- A separate, default-off experiment now closes the missing dynamic
+  conditioning loop: a moved interface target also refreshes RFD3
+  `motif_pos` and group target coordinates before the next denoising step.
+- The pilot fails closed unless it uses one design, the low-memory/chunked
+  pair path, exact orbit-average state, coupled noise, and fixed-motif
+  preservation. Input mobility declarations and sampler opt-in must agree.
+- The proposed scaffold-derived controller treats the complete cross-chain
+  seed as one master SE(3) object, expands its copies through the declared Cn
+  actions, and scores generated/fixed junctions, coarse CA clashes, excessive
+  axis tilt, and displacement from the sampled pose.
+- The first C5 configuration permits at most `1 A / 5 deg` cumulative motion.
+  Proposal-only is the default; applying motion requires an explicit flag.
+  Formal static C3/C5/C6/C7 entry points remain unchanged.
+- This is local refinement, not a high-tilt rescue mechanism and not a
+  retrained RFD3 model. Targeted LRZ tests, a full unit run, and paired
+  static/mobile GPU validation are still required before treating the
+  experiment as successful.
+
+The concise design and validation boundary is recorded in
+`docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md`.
+
+### Selected low-tilt P100 comparison
+
+The first retained C5 mobility candidate is pose seed `3419`:
+
+```text
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/lhd101_c5_mobile_lhs_v1/candidate_0419_seed_3419/manifest.json
+```
+
+`scripts/rfd3_mosaic/submit_lhd101_c5_mobile_pair_p100.sh` submits a controlled
+comparison on only the P100 partitions:
+
+```text
+same candidate + same diffusion seed 42
+-> proposal-only 50 steps
+-> applied-mobility 50 steps
+-> matching 200-step jobs, each held by afterok on its own 50-step result
+```
+
+The wrapper records every job and dependency in
+`c5_mobile_seed3419_p100_v1.tsv` under the run base, rejects incompatible
+resume files, and can resume safely after the Slurm QOS submission limit. Its
+experiment fingerprint includes the manifest, config and pilot-script SHA256,
+diffusion seed, mobility interval, target tilt, and linker length, so a changed
+shell environment cannot silently mix conditions. These jobs are prepared but
+are not recorded as executed or validated until their result audit files are
+inspected.
 
 ## Verification commands
 
@@ -1027,10 +1161,11 @@ git status --short --branch
 
 ## Resume point
 
-The exact all-copy orbit-average implementation is synchronized and has passed
-CPU, adapter/prevalidation, and GPU end-to-end validation. Resume by screening
-the selected diverse pose manifests and/or diffusion seeds at 50 steps. Keep
-the interface-seed, continuity, compactness, and declared-transform C3 gates
-unchanged; promote only a clash-free candidate to a definitive 200-step run.
-After that, replace sorted-chain output association with provenance-aware copy
-mapping and begin native D2/D3 validation.
+The exact all-copy orbit-average implementation has passed CPU,
+adapter/prevalidation, and C3 GPU end-to-end validation. Resume with the
+selected C5 seed-3419 P100 proposal/applied comparison and the already prepared
+C5/C6/C7 capability runs. Keep interface-seed, continuity, hard-clash,
+compactness, and declared-transform symmetry gates unchanged. Treat C12/C20 as
+a separate high-order architecture problem rather than widening the current
+P100 matrix. After the C5 comparison, replace sorted-chain output association
+with provenance-aware copy mapping and begin native D2/D3 validation.

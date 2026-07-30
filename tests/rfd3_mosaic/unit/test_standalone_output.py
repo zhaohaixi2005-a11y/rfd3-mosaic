@@ -98,7 +98,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
             claimed_atoms.update(group["atom_indices"])
         self.assertEqual(claimed_atoms, set(range(1488)))
 
-    def test_manifest_is_explicit_about_unbuilt_linkers(self) -> None:
+    def test_manifest_is_explicit_about_unbuilt_scaffold_segments(self) -> None:
         manifest = json.loads(
             self.outputs.manifest_path.read_text(encoding="utf-8")
         )
@@ -171,6 +171,48 @@ class StandaloneOutputTestCase(unittest.TestCase):
             self.assertEqual(link["to_anchor"], "N")
             self.assertGreater(link["endpoint_distance"], 0.0)
             self.assertTrue(link["within_maximum_contour"])
+            self.assertGreaterEqual(
+                link["from_terminal_tangent_to_chord_angle_deg"], 0.0
+            )
+            self.assertLessEqual(
+                link["from_terminal_tangent_to_chord_angle_deg"], 180.0
+            )
+            self.assertGreaterEqual(
+                link["to_terminal_tangent_to_chord_angle_deg"], 0.0
+            )
+            self.assertLessEqual(
+                link["to_terminal_tangent_to_chord_angle_deg"], 180.0
+            )
+            self.assertGreaterEqual(
+                link["terminal_plane_normal_relative_angle_deg"], 0.0
+            )
+            self.assertLessEqual(
+                link["terminal_plane_normal_relative_angle_deg"], 90.0
+            )
+            self.assertGreaterEqual(
+                link["endpoint_chord_axial_fraction"], 0.0
+            )
+            self.assertLessEqual(
+                link["endpoint_chord_axial_fraction"], 1.0
+            )
+            self.assertGreaterEqual(
+                link["minimum_endpoint_chord_axis_clearance"], 0.0
+            )
+            self.assertGreaterEqual(
+                link["minimum_interior_chord_fixed_atom_clearance"], 0.0
+            )
+        for metric in (
+            "endpoint_distance",
+            "from_terminal_tangent_to_chord_angle_deg",
+            "to_terminal_tangent_to_chord_angle_deg",
+            "terminal_tangent_relative_angle_deg",
+            "terminal_plane_normal_relative_angle_deg",
+            "endpoint_chord_out_of_plane_angle_deg",
+            "minimum_endpoint_chord_axis_clearance",
+            "minimum_interior_chord_fixed_atom_clearance",
+        ):
+            values = [float(link[metric]) for link in report["links"]]
+            self.assertLess(max(values) - min(values), 1e-5)
 
     def test_manifest_reports_symmetry_axis_and_central_clearance(self) -> None:
         manifest = json.loads(
@@ -185,6 +227,18 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self.assertEqual(orbit["copy_count"], 3)
         self.assertGreater(orbit["central_void_radius"], 0.0)
         self.assertGreaterEqual(orbit["minimum_axis_clearance"], 0.0)
+        self.assertGreater(
+            orbit["maximum_axis_extent"],
+            orbit["minimum_axis_clearance"],
+        )
+        self.assertGreaterEqual(orbit["radial_thickness"], 0.0)
+        self.assertGreaterEqual(orbit["axial_span"], 0.0)
+        self.assertGreaterEqual(
+            orbit["axial_to_radial_aspect_ratio"], 0.0
+        )
+        self.assertEqual(len(orbit["shape_covariance_eigenvalues"]), 3)
+        self.assertGreaterEqual(orbit["shape_sphericity"], 0.0)
+        self.assertLessEqual(orbit["shape_sphericity"], 1.0)
 
     def test_dihedral_pair_classes_distinguish_cosets(self) -> None:
         self.assertEqual(

@@ -59,6 +59,54 @@ def build_static_metric_map(
         metrics["linkers.maximum_minimum_required_residues"] = max(
             required_residues
         )
+    link_metric_definitions = {
+        "scaffolds.maximum_terminal_tangent_to_chord_angle_deg": (
+            "from_terminal_tangent_to_chord_angle_deg",
+            "to_terminal_tangent_to_chord_angle_deg",
+            max,
+        ),
+        "scaffolds.maximum_terminal_tangent_relative_angle_deg": (
+            "terminal_tangent_relative_angle_deg",
+            None,
+            max,
+        ),
+        "scaffolds.maximum_terminal_plane_normal_relative_angle_deg": (
+            "terminal_plane_normal_relative_angle_deg",
+            None,
+            max,
+        ),
+        "scaffolds.maximum_chord_out_of_plane_angle_deg": (
+            "endpoint_chord_out_of_plane_angle_deg",
+            None,
+            max,
+        ),
+        "scaffolds.minimum_chord_axis_clearance": (
+            "minimum_endpoint_chord_axis_clearance",
+            None,
+            min,
+        ),
+        "scaffolds.minimum_interior_chord_fixed_atom_clearance": (
+            "minimum_interior_chord_fixed_atom_clearance",
+            None,
+            min,
+        ),
+    }
+    for metric_name, (
+        primary_key,
+        secondary_key,
+        reduction,
+    ) in link_metric_definitions.items():
+        values = [
+            float(value)
+            for link in links
+            for value in (
+                link.get(primary_key),
+                link.get(secondary_key) if secondary_key is not None else None,
+            )
+            if value is not None
+        ]
+        if values:
+            metrics[metric_name] = reduction(values)
     if orbits:
         metrics["cavities.minimum_central_void_radius"] = min(
             float(orbit["central_void_radius"]) for orbit in orbits
