@@ -5,7 +5,11 @@ import unittest
 import yaml
 
 from rfd3_mosaic.cli import _parser, _write_quick_experiment
-from rfd3_mosaic.experiment import render_submission, resolve_experiment
+from rfd3_mosaic.experiment import (
+    build_execution_plan,
+    render_submission,
+    resolve_experiment,
+)
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
@@ -79,6 +83,15 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertTrue(sampler["preserve_fixed_motif_during_symmetry"])
         self.assertEqual(sampler["symmetry_state_mode"], "orbit_average")
         self.assertEqual(resolved.payload["resources"]["slurm"]["cpus"], 4)
+        provenance = resolved.payload["provenance"]
+        self.assertIn("repository", provenance)
+        self.assertIn("commit", provenance["repository"])
+        compatibility = provenance["foundry_compatibility"]
+        self.assertEqual(
+            compatibility["manifest"]["engine_id"],
+            "mosaic-rfd3",
+        )
+        self.assertEqual(len(compatibility["sha256"]), 64)
 
     def test_rendered_sbatch_delegates_to_worker(self) -> None:
         config = self._write_experiment(
@@ -104,6 +117,46 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertNotIn("python -m rfd3.run_inference", text)
         self.assertTrue((script.parent / "resolved_config.yaml").is_file())
         self.assertTrue((script.parent / "provenance.json").is_file())
+
+    def test_builds_a_read_only_user_auditable_plan(self) -> None:
+        config = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "plan-test",
+                "topology": {
+                    "kind": "central_motif",
+                    "template_input": self.template_input.name,
+                    "fixed_selector": "B1-31",
+                    "n_terminal_length": 20,
+                    "c_terminal_length": 25,
+                },
+                "sampling": {"timesteps": 50, "seed": 7},
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs", "campaign": "test"},
+            }
+        )
+
+        plan = build_execution_plan(resolve_experiment(config))
+
+        self.assertEqual(plan["design"]["topology"], "central_motif")
+        constraint = plan["design"]["effective_constraints"][0]
+        self.assertEqual(constraint["operator"], "fixed_xyz")
+        self.assertEqual(constraint["selector"], "B1-31")
+        self.assertEqual(
+            constraint["orbit_scope"],
+            "complete_symmetry_orbit",
+        )
+        self.assertEqual(plan["sampling"]["timesteps"], 50)
+        self.assertEqual(plan["execution"]["profile"], "test-gpu")
+        self.assertEqual(plan["software"]["compatibility_id"], "mosaic-rfd3")
+
+    def test_plan_command_supports_machine_readable_output(self) -> None:
+        arguments = _parser().parse_args(
+            ["plan", "design.yaml", "--format", "json"]
+        )
+
+        self.assertEqual(arguments.command, "plan")
+        self.assertEqual(arguments.format, "json")
 
     def test_resolves_official_rfd3_control_preset(self) -> None:
         config = self._write_experiment(
@@ -173,6 +226,30 @@ class ExperimentConfigTestCase(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "must be true or false"):
+            resolve_experiment(config)
+
+    def test_invalid_declared_checkpoint_digest_is_rejected(self) -> None:
+        profile = yaml.safe_load(self.profile.read_text(encoding="utf-8"))
+        profile["checkpoint_sha256"] = "not-a-digest"
+        self.profile.write_text(
+            yaml.safe_dump(profile, sort_keys=False),
+            encoding="utf-8",
+        )
+        config = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "bad-checkpoint-digest",
+                "topology": {
+                    "kind": "central_motif",
+                    "template_input": self.template_input.name,
+                    "fixed_selector": "B1-31",
+                },
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs"},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "64-character SHA256"):
             resolve_experiment(config)
 
     def test_profile_override_accepts_a_path(self) -> None:

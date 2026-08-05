@@ -1,0 +1,50 @@
+schema_version: 1
+engine_id: mosaic-rfd3
+
+foundry:
+  repository: https://github.com/RosettaCommons/foundry
+  base_commit: 551a90103a51d0bff27e269fe454fdba4aefb274
+  base_commit_basis: merge-base with the tracked production branch when the validated snapshot was frozen
+  imported_references:
+    - commit: 3b739a2318398f71f5d446cef6bc8d3ca3bd1295
+      mode: reference_change_transplanted
+      note: >-
+        Only the relevant behavior was transferred into the existing Mosaic
+        Foundry checkout; the complete referenced Foundry tree was not installed.
+
+patch_layers:
+  - id: compatibility
+    purpose: declared symmetry frames and feature transport
+  - id: exact_constraints
+    purpose: complete motif restoration, coupled noise, and exact orbit state
+  - id: runtime_hooks
+    purpose: sampler lifecycle integration for Mosaic constraint execution
+  - id: memory
+    purpose: chunking and local-neighbourhood symmetry execution
+  - id: experimental_guidance
+    purpose: bounded motif mobility and scaffold-derived guidance
+
+capabilities:
+  stable:
+    - exact_c3_central_motif
+    - exact_c3_cross_protomer_interface_seed
+    - declared_frame_symmetry
+    - motif_and_scaffold_audit_gate
+  engineering:
+    - exact_c5_c6_c7_static_sampling
+    - d3_two_orbit_compilation_and_prevalidation
+    - local_neighbourhood_kernel
+  experimental:
+    - bounded_motif_se3_mobility
+    - scaffold_guidance
+    - high_order_cyclic_execution
+    - polyhedral_symmetry
+
+upgrade_policy:
+  require_clean_integration_branch: true
+  require_patch_layer_replay: true
+  require_unit_contract_tests: true
+  require_cpu_prevalidation: true
+  require_central_motif_gpu_canary: true
+  require_interface_seed_gpu_canary: true
+  require_200_step_golden_before_promotion: true

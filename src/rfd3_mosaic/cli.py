@@ -12,7 +12,11 @@ from typing import Sequence
 
 import yaml
 
-from rfd3_mosaic.experiment import render_submission, resolve_experiment
+from rfd3_mosaic.experiment import (
+    build_execution_plan,
+    render_submission,
+    resolve_experiment,
+)
 
 
 def _add_quick_runtime_arguments(parser: argparse.ArgumentParser) -> None:
@@ -43,6 +47,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     validate.add_argument("config", type=Path)
     validate.add_argument("--profile")
+
+    plan = commands.add_parser(
+        "plan",
+        help="Resolve and display the execution plan without writing files.",
+    )
+    plan.add_argument("config", type=Path)
+    plan.add_argument("--profile")
+    plan.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+    )
 
     render = commands.add_parser(
         "render",
@@ -160,6 +176,38 @@ def _write_quick_experiment(arguments: argparse.Namespace) -> Path:
     return path
 
 
+def _print_execution_plan(plan: dict, *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return
+
+    design = plan["design"]
+    sampling = plan["sampling"]
+    execution = plan["execution"]
+    software = plan["software"]
+    print("RFD3-Mosaic execution plan")
+    print(f"name:       {plan['name']}")
+    print(f"topology:   {design['topology']}")
+    print(f"timesteps:  {sampling['timesteps']}")
+    print(f"seed:       {sampling['seed']}")
+    print(f"preset:     {sampling['preset']}")
+    print(f"backend:    {sampling['execution_backend']}")
+    print(f"profile:    {execution['profile']}")
+    print(f"partitions: {execution['slurm']['partition']}")
+    print(f"run root:   {plan['output']['run_root']}")
+    print("effective constraints:")
+    for constraint in design["effective_constraints"]:
+        print(
+            "  - "
+            + constraint["operator"]
+            + f" [{constraint['orbit_scope']}]"
+            + f" selector={constraint['selector']}"
+        )
+    print(f"Mosaic commit: {software['commit']}")
+    print(f"Foundry base:  {software['foundry_base_commit']}")
+    print(f"tracked dirty: {software['tracked_dirty']}")
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = _parser()
     arguments = parser.parse_args(argv)
@@ -182,6 +230,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"topology: {experiment.payload['topology']['kind']}")
         print(f"profile:  {experiment.payload['resources']['profile_name']}")
         print(f"run root: {experiment.run_root}")
+        return
+
+    if arguments.command == "plan":
+        _print_execution_plan(
+            build_execution_plan(experiment),
+            output_format=arguments.format,
+        )
         return
 
     if quick_command:

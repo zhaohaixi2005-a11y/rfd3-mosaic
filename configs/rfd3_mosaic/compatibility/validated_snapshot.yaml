@@ -1,0 +1,37 @@
+schema_version: 1
+snapshot_id: validated-mosaic-2026-08-05
+snapshot_commit: f63c6b0137fc7201dde24f29cccb80180a97d69c
+foundry_base_commit: 551a90103a51d0bff27e269fe454fdba4aefb274
+status: provisional_known_good
+
+evidence:
+  unit_tests:
+    environment: LRZ rc-foundry
+    result: passed
+    count: 318
+    elapsed_seconds: 10.666
+    exact_snapshot_replay_pending: true
+  central_motif_c3:
+    result: passed
+    jobs: [5729451, 5729452, 5729453]
+    required_audits:
+      - central_motif_audit.json
+      - scaffold_validity_audit.json
+    notes:
+      - zero chain breaks
+      - zero CA clashes
+      - maximum symmetry coordinate error below 0.00005 angstrom
+      - compatibility frontend result; unified-compiler GPU replay remains required
+  cross_protomer_interface_seed_c3:
+    result: engineering_demonstration
+    principal_job: 5721371
+    notes:
+      - complete interface seed preserved
+      - exact C3 symmetry and continuity passed
+      - one local CA overlap propagated through all three copies remained
+
+promotion_requirements:
+  - replay the complete unit suite from snapshot_commit
+  - run one native unified-compiler central-motif GPU regression
+  - run one clash-free native interface-seed GPU regression
+  - record the RFD3 checkpoint SHA256 and runtime environment

@@ -13,6 +13,11 @@ from typing import Any
 
 import yaml
 
+from rfd3_mosaic.provenance.software import (
+    collect_repository_provenance,
+    load_compatibility_manifest,
+)
+
 
 SCHEMA_VERSION = 1
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -106,6 +111,15 @@ def _single_line(value: Any, label: str) -> str:
     return value
 
 
+def _optional_sha256(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    result = _single_line(value, label).lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", result):
+        raise ValueError(f"{label} must be one 64-character SHA256 digest")
+    return result
+
+
 def _resolve_path(value: Any, *, base: Path, label: str) -> Path:
     if not isinstance(value, (str, Path)) or not str(value):
         raise ValueError(f"{label} must be a non-empty path")
@@ -175,6 +189,88 @@ class ResolvedExperiment:
     def run_root(self) -> Path:
         output = self.payload["output"]
         return Path(output["root"]) / output["campaign"] / self.name
+
+
+def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
+    """Return a read-only, user-auditable description of one experiment."""
+
+    payload = experiment.payload
+    topology = payload["topology"]
+    sampling = payload["sampling"]
+    resources = payload["resources"]
+    if topology["kind"] == "central_motif":
+        effective_constraints = [
+            {
+                "operator": "fixed_xyz",
+                "selector": topology["fixed_selector"],
+                "atom_scope": "all_motif_atoms",
+                "orbit_scope": "complete_symmetry_orbit",
+                "source": "central_motif compatibility preset",
+            }
+        ]
+        generation = {
+            "n_terminal_length": topology["n_terminal_length"],
+            "c_terminal_length": topology["c_terminal_length"],
+        }
+        input_record = {"template_input": topology["template_input"]}
+    else:
+        effective_constraints = [
+            {
+                "operator": "fixed_xyz",
+                "selector": "compiled interface-seed constraint groups",
+                "atom_scope": "all_seed_atoms",
+                "orbit_scope": "complete_symmetry_orbits",
+                "source": "interface_seed compatibility preset",
+            }
+        ]
+        generation = {"linker_length": topology["linker_length"]}
+        input_record = {
+            "config": topology["config"],
+            "pose_candidate_manifest": topology["pose_candidate_manifest"],
+            "pose_seed": topology["pose_seed"],
+        }
+
+    compatibility = payload["provenance"]["foundry_compatibility"]
+    repository = payload["provenance"]["repository"]
+    return {
+        "schema_version": 1,
+        "name": experiment.name,
+        "design": {
+            "topology": topology["kind"],
+            "input": input_record,
+            "generation": generation,
+            "effective_constraints": effective_constraints,
+        },
+        "sampling": {
+            "preset": sampling["preset"],
+            "timesteps": sampling["timesteps"],
+            "seed": sampling["seed"],
+            "execution_backend": sampling["execution_backend"],
+            "neighbour_radius": sampling["neighbour_radius"],
+            "low_memory_mode": sampling["low_memory_mode"],
+            "effective_sampler": sampling["sampler"],
+        },
+        "execution": {
+            "profile": resources["profile_name"],
+            "slurm": resources["slurm"],
+            "checkpoint": resources["checkpoint"],
+            "checkpoint_sha256": resources["checkpoint_sha256"],
+        },
+        "output": {"run_root": str(experiment.run_root)},
+        "software": {
+            "commit": repository["commit"],
+            "branch": repository["branch"],
+            "tracked_dirty": repository["tracked_dirty"],
+            "working_tree_diff_sha256": repository[
+                "working_tree_diff_sha256"
+            ],
+            "compatibility_id": compatibility["manifest"]["engine_id"],
+            "foundry_base_commit": compatibility["manifest"]["foundry"][
+                "base_commit"
+            ],
+            "compatibility_manifest_sha256": compatibility["sha256"],
+        },
+    }
 
 
 def resolve_experiment(
@@ -369,6 +465,7 @@ def resolve_experiment(
             "slurm",
             "setup_commands",
             "checkpoint",
+            "checkpoint_sha256",
             "foundry_checkpoint_dirs",
         },
         "execution profile",
@@ -423,6 +520,10 @@ def resolve_experiment(
         base=profile_path.parent,
         label="profile.foundry_checkpoint_dirs",
     )
+    checkpoint_sha256 = _optional_sha256(
+        profile.get("checkpoint_sha256"),
+        "profile.checkpoint_sha256",
+    )
 
     output = raw.get("output")
     if not isinstance(output, dict):
@@ -452,6 +553,7 @@ def resolve_experiment(
             "slurm": resolved_slurm,
             "setup_commands": list(setup_commands),
             "checkpoint": str(checkpoint),
+            "checkpoint_sha256": checkpoint_sha256,
             "foundry_checkpoint_dirs": str(foundry_dirs),
         },
         "output": resolved_output,
@@ -461,6 +563,14 @@ def resolve_experiment(
             "experiment_sha256": _sha256(source_path),
             "profile_source": str(profile_path),
             "profile_sha256": _sha256(profile_path),
+            "repository": collect_repository_provenance(repository_root),
+            "foundry_compatibility": load_compatibility_manifest(
+                repository_root
+                / "configs"
+                / "rfd3_mosaic"
+                / "compatibility"
+                / "foundry.yaml"
+            ),
         },
     }
     return ResolvedExperiment(source_path, profile_path, payload)

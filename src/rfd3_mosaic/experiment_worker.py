@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from rfd3_mosaic.assembly_compiler import compile_experiment_assembly
+from rfd3_mosaic.provenance.software import collect_runtime_provenance
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -62,11 +63,28 @@ def execute(resolved_config: Path, run_dir: Path) -> None:
     if source_provenance.is_file():
         shutil.copy2(source_provenance, run_dir / "provenance.json")
 
+    resources = config["resources"]
+    runtime_provenance_path = run_dir / "runtime_provenance.json"
+    runtime_provenance_path.write_text(
+        json.dumps(
+            collect_runtime_provenance(
+                Path(config["project_directory"]),
+                checkpoint=Path(resources["checkpoint"]),
+                checkpoint_sha256=resources.get("checkpoint_sha256"),
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     started = {
         "status": "running",
         "experiment": config["name"],
         "topology": config["topology"]["kind"],
         "resolved_config_sha256": _sha256(frozen),
+        "runtime_provenance": str(runtime_provenance_path),
     }
     summary_path = run_dir / "experiment_summary.json"
     summary_path.write_text(
@@ -76,7 +94,6 @@ def execute(resolved_config: Path, run_dir: Path) -> None:
 
     topology = config["topology"]
     sampling = config["sampling"]
-    resources = config["resources"]
     project = Path(config["project_directory"])
     input_directory = run_dir / "input"
     input_directory.mkdir()
@@ -184,6 +201,7 @@ def execute(resolved_config: Path, run_dir: Path) -> None:
         "resolved_config_sha256": _sha256(frozen),
         "result_json": str(result_json),
         "reports": [str(path) for path in reports],
+        "runtime_provenance": str(runtime_provenance_path),
     }
     summary_path.write_text(
         json.dumps(completion, indent=2, sort_keys=True) + "\n",

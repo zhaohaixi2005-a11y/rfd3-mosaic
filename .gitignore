@@ -200,6 +200,10 @@ lib
 *.bmp
 *.tiff
 
+# Molecular-visualization and local diagnostic artifacts
+*.pse
+/axis_check
+
 # Versioning
 **/version.py
 

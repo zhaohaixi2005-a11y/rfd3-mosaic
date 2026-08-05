@@ -1,5 +1,21 @@
 # RFD3-Mosaic user CLI
 
+Before rendering or submitting a job, inspect the fully resolved plan:
+
+```bash
+rfd3-mosaic plan design.yaml
+```
+
+For machine-readable output:
+
+```bash
+rfd3-mosaic plan design.yaml --format json
+```
+
+`plan` does not create a run directory or submit a job. It reports the
+effective motif constraints, sampler preset, timesteps, execution backend,
+Slurm profile, output root, Mosaic commit and Foundry base commit.
+
 The routine public interface is one command. Users should not copy or edit
 long implementation-oriented Slurm scripts, and they do not need to write
 `topology.kind` or exact-symmetry sampler settings themselves.
