@@ -26,7 +26,10 @@ from rfd3_mosaic.objectives import (
 )
 from rfd3_mosaic.provenance import build_mapping_registry
 from rfd3_mosaic.structure import AtomRecord, load_selected_atoms
-from rfd3_mosaic.topology import compile_scaffold_graph
+from rfd3_mosaic.topology import (
+    compiled_scaffold_links,
+    compile_scaffold_graph,
+)
 
 
 @dataclass(frozen=True)
@@ -334,7 +337,7 @@ def _analyze_scaffold_link_geometry(
 
     reports: list[dict[str, Any]] = []
     infeasible_links: list[str] = []
-    for link in instances.scaffold_links.values():
+    for link in compiled_scaffold_links(instances).values():
         from_geometry = _terminal_backbone_geometry(
             atoms_by_fragment[link.from_fragment_instance_id],
             terminus=link.from_terminus.value,
@@ -1171,7 +1174,9 @@ def compile_standalone(
             "motion_group_instances": len(instances.motion_groups),
             "port_instances": len(instances.ports),
             "interface_edge_instances": len(instances.interfaces),
-            "scaffold_link_instances": len(instances.scaffold_links),
+            "scaffold_link_instances": len(
+                compiled_scaffold_links(instances)
+            ),
         },
         "interface_edges": [
             edge.model_dump(mode="json")
@@ -1179,7 +1184,7 @@ def compile_standalone(
         ],
         "scaffold_links": [
             link.model_dump(mode="json")
-            for link in instances.scaffold_links.values()
+            for link in compiled_scaffold_links(instances).values()
         ],
         "validation": {
             "strict_validation": compilation["strict_validation"],

@@ -11,7 +11,7 @@
 set -euo pipefail
 
 PROJECT_DIR=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic
-RUN_BASE=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+RUN_BASE=${RFD3_RUN_BASE:-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic}
 CHECKPOINT=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints/rfd3_latest.ckpt
 
 ORDER="${RFD3_CYCLIC_ORDER:?Set RFD3_CYCLIC_ORDER to 5, 6, or 7}"
@@ -23,7 +23,18 @@ fi
 SYMMETRY_ID="C${ORDER}"
 EXAMPLE_ID="lhd101_c${ORDER}_interface_seed"
 CONFIG="$PROJECT_DIR/configs/rfd3_mosaic/cyclic/lhd101_c${ORDER}.yaml"
-RUN_ROOT="$RUN_BASE/native_c${ORDER}_full"
+RUN_CAMPAIGN="${RFD3_RUN_CAMPAIGN:-}"
+if [[ -n "$RUN_CAMPAIGN" ]]; then
+    if [[ ! "$RUN_CAMPAIGN" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || [[ "$RUN_CAMPAIGN" == "." || "$RUN_CAMPAIGN" == ".." ]]; then
+        echo "ERROR: RFD3_RUN_CAMPAIGN must be one safe directory name"
+        exit 2
+    fi
+    CAMPAIGN_ROOT="$RUN_BASE/$RUN_CAMPAIGN"
+else
+    CAMPAIGN_ROOT="$RUN_BASE"
+fi
+RUN_ROOT="$CAMPAIGN_ROOT/native_c${ORDER}_full"
 RUN_DIR="$RUN_ROOT/$SLURM_JOB_ID"
 ADAPTER_DIR="$RUN_DIR/adapter"
 SEED="${RFD3_SEED:-42}"
@@ -34,6 +45,8 @@ COMPACTNESS_END_FRAC="${RFD3_COMPACTNESS_END_FRAC:-0.75}"
 COMPACTNESS_MAX_STEP="${RFD3_COMPACTNESS_MAX_STEP:-0.5}"
 LINKER_LENGTH="${RFD3_LINKER_LENGTH:-}"
 ACCELERATOR_LABEL="${RFD3_ACCELERATOR_LABEL:-P100}"
+EXECUTION_BACKEND="${RFD3_SYMMETRY_EXECUTION_BACKEND:-explicit_all_copy}"
+NEIGHBOUR_RADIUS="${RFD3_SYMMETRY_NEIGHBOUR_RADIUS:-1}"
 
 if [[ ! "$NUM_TIMESTEPS" =~ ^[1-9][0-9]*$ ]] \
     || (( NUM_TIMESTEPS < 2 || NUM_TIMESTEPS > 200 )); then
@@ -42,6 +55,15 @@ if [[ ! "$NUM_TIMESTEPS" =~ ^[1-9][0-9]*$ ]] \
 fi
 if [[ ! -f "$POSE_CANDIDATE_MANIFEST" ]]; then
     echo "ERROR: pose candidate manifest does not exist: $POSE_CANDIDATE_MANIFEST"
+    exit 2
+fi
+if [[ "$EXECUTION_BACKEND" != "explicit_all_copy" \
+    && "$EXECUTION_BACKEND" != "local_neighbourhood" ]]; then
+    echo "ERROR: RFD3_SYMMETRY_EXECUTION_BACKEND must be explicit_all_copy or local_neighbourhood"
+    exit 2
+fi
+if [[ ! "$NEIGHBOUR_RADIUS" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: RFD3_SYMMETRY_NEIGHBOUR_RADIUS must be a non-negative integer"
     exit 2
 fi
 if [[ -n "$LINKER_LENGTH" ]]; then
@@ -58,6 +80,10 @@ cd "$PROJECT_DIR"
 export PYTHONPATH="$PROJECT_DIR/src:$PROJECT_DIR/models/rfd3/src:${PYTHONPATH:-}"
 export FOUNDRY_CHECKPOINT_DIRS=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints
 
+if [[ -e "$RUN_DIR" ]]; then
+    echo "ERROR: refusing to reuse existing job directory: $RUN_DIR"
+    exit 2
+fi
 mkdir -p "$RUN_DIR" "$ADAPTER_DIR"
 exec >"$RUN_DIR/slurm-${SLURM_JOB_NAME}-${SLURM_JOB_ID}.out" \
     2>"$RUN_DIR/slurm-${SLURM_JOB_NAME}-${SLURM_JOB_ID}.err"
@@ -71,11 +97,16 @@ echo "RFD3_CYCLIC_ORDER=$ORDER"
 echo "RFD3_SEED=$SEED"
 echo "RFD3_NUM_TIMESTEPS=$NUM_TIMESTEPS"
 echo "RFD3_POSE_CANDIDATE_MANIFEST=$POSE_CANDIDATE_MANIFEST"
+echo "RFD3_RUN_CAMPAIGN=${RUN_CAMPAIGN:-<legacy-layout>}"
 echo "RFD3_COMPACTNESS_WEIGHT=$COMPACTNESS_WEIGHT"
 echo "RFD3_LINKER_LENGTH=${LINKER_LENGTH:-<config-midpoint>}"
+echo "RFD3_SYMMETRY_EXECUTION_BACKEND=$EXECUTION_BACKEND"
+echo "RFD3_SYMMETRY_NEIGHBOUR_RADIUS=$NEIGHBOUR_RADIUS"
 date
 hostname
-nvidia-smi
+if ! nvidia-smi; then
+    echo "WARNING: nvidia-smi returned non-zero; continuing to the fatal PyTorch CUDA probe"
+fi
 python --version
 python -c "import rfd3; print(rfd3.__file__)"
 python -c "import torch; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('gpu', torch.cuda.get_device_name(0)); print('capability', torch.cuda.get_device_capability(0))"
@@ -117,6 +148,8 @@ python -m rfd3.run_inference \
     ++inference_sampler.require_motif_constraint_groups=True \
     ++inference_sampler.symmetry_state_mode=orbit_average \
     ++inference_sampler.symmetry_noise_mode=coupled \
+    ++inference_sampler.symmetry_execution_backend="$EXECUTION_BACKEND" \
+    ++inference_sampler.symmetry_neighbour_radius="$NEIGHBOUR_RADIUS" \
     ++inference_sampler.interface_seed_compactness_weight="$COMPACTNESS_WEIGHT" \
     ++inference_sampler.interface_seed_compactness_end_frac="$COMPACTNESS_END_FRAC" \
     ++inference_sampler.interface_seed_compactness_max_step="$COMPACTNESS_MAX_STEP" \

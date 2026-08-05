@@ -233,7 +233,10 @@ def create_attention_indices(
         chain_ids is not None and len(torch.unique(chain_ids)) > 3
     ):  # Multi-chain structure
         # Reserve 25% of attention keys for inter-chain interactions
-        k_inter_chain = max(32, k_actual // 4)  # At least 32 inter-chain keys
+        k_inter_chain = min(
+            max(32, k_actual // 4),
+            max(k_actual - 1, 1),
+        )
         k_intra_chain = k_actual - k_inter_chain
 
         attn_indices = get_sparse_attention_indices_with_inter_chain(
@@ -287,18 +290,24 @@ def get_sparse_attention_indices_with_inter_chain(
 
     # Get inter-chain indices for clash avoidance
     inter_indices = torch.zeros(B, L, k_inter, dtype=torch.long, device=D_LL.device)
-    unique_chains = torch.unique(chain_id)
     for b in range(B):
-        for c in unique_chains:
-            query_chain = chain_id[c]
+        for query_index in range(L):
+            query_chain = chain_id[query_index]
 
             # Find atoms from different chains
-            other_chain_mask = (chain_id != query_chain) & base_mask[c, :]
+            other_chain_mask = (
+                (chain_id != query_chain)
+                & base_mask[query_index, :]
+            )
             other_chain_atoms = torch.where(other_chain_mask)[0]
 
             if len(other_chain_atoms) > 0:
                 # Get distances to other chains
-                distances_to_other = D_LL[b, c, other_chain_atoms]
+                distances_to_other = D_LL[
+                    b,
+                    query_index,
+                    other_chain_atoms,
+                ]
 
                 # Select k_inter closest atoms from other chains
                 n_select = min(k_inter, len(other_chain_atoms))
@@ -306,18 +315,34 @@ def get_sparse_attention_indices_with_inter_chain(
                 selected_atoms = other_chain_atoms[closest_idx]
 
                 # Fill inter-chain indices
-                inter_indices[b, c, :n_select] = selected_atoms
-                # Pad with random atoms if needed
+                inter_indices[
+                    b,
+                    query_index,
+                    :n_select,
+                ] = selected_atoms
+                # Preserve the inter-chain guarantee even for very small
+                # structures by deterministically repeating valid keys.
                 if n_select < k_inter:
-                    padding = torch.randint(
-                        0, L, (k_inter - n_select,), device=D_LL.device
-                    )
-                    inter_indices[b, c, n_select:] = padding
+                    repeat_count = (
+                        k_inter - n_select + n_select - 1
+                    ) // n_select
+                    padding = selected_atoms.repeat(repeat_count)[
+                        : k_inter - n_select
+                    ]
+                    inter_indices[
+                        b,
+                        query_index,
+                        n_select:,
+                    ] = padding
             else:
-                # No other chains found, fill with random indices
-                inter_indices[b, c, :] = torch.randint(
-                    0, L, (k_inter,), device=D_LL.device
-                )
+                # Some unindexed atoms can have no valid cross-chain pair.
+                # Keep their row well-defined without inventing a permitted
+                # cross-chain edge.
+                inter_indices[
+                    b,
+                    query_index,
+                    :,
+                ] = query_index
 
     # Combine intra and inter chain indices
     combined_indices = torch.cat(

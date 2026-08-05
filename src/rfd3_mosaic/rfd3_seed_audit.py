@@ -16,7 +16,7 @@ from rfd3_mosaic.structure import (
     select_atoms,
 )
 from rfd3_mosaic.validation import (
-    audit_two_fragment_seed,
+    audit_interface_seed_pairs,
     infer_fragment_placements,
 )
 
@@ -134,11 +134,49 @@ def _load_references(
     return references
 
 
+def _derive_fragment_pairs(
+    config_path: Path,
+) -> tuple[tuple[str, str], ...]:
+    """Resolve each configured interface to one explicit fragment pair."""
+
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    seed = payload["interface_seed"]
+    ports = seed.get("ports", {})
+    interfaces = seed.get("interfaces", {})
+    pairs: list[tuple[str, str]] = []
+    for interface_id, interface in interfaces.items():
+        left_port_id = interface["left_port"]
+        right_port_id = interface["right_port"]
+        try:
+            left_fragments = ports[left_port_id]["fragments"]
+            right_fragments = ports[right_port_id]["fragments"]
+        except KeyError as error:
+            raise ValueError(
+                f"Interface {interface_id!r} references an unknown port"
+            ) from error
+        if len(left_fragments) != 1 or len(right_fragments) != 1:
+            raise ValueError(
+                f"Interface {interface_id!r} must resolve to exactly one "
+                "fragment on each side for the seed-integrity audit"
+            )
+        pair = (str(left_fragments[0]), str(right_fragments[0]))
+        if pair[0] == pair[1]:
+            raise ValueError(
+                f"Interface {interface_id!r} uses the same fragment twice"
+            )
+        pairs.append(pair)
+    if not pairs:
+        raise ValueError("Config does not define an interface to audit")
+    if len(set(pairs)) != len(pairs):
+        raise ValueError("Config defines duplicate interface fragment pairs")
+    return tuple(pairs)
+
+
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate that a two-fragment cross-chain Interface-Seed is "
-            "rigidly preserved in an RFD3 result."
+            "Validate that every configured two-fragment cross-chain "
+            "Interface-Seed is rigidly preserved in an RFD3 result."
         )
     )
     parser.add_argument("--result-json", required=True, type=Path)
@@ -146,8 +184,14 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--adapter-mapping", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--base-directory", type=Path)
-    parser.add_argument("--left-fragment", default="left")
-    parser.add_argument("--right-fragment", default="right")
+    parser.add_argument(
+        "--left-fragment",
+        help="Audit one explicit pair instead of all configured interfaces.",
+    )
+    parser.add_argument(
+        "--right-fragment",
+        help="Audit one explicit pair instead of all configured interfaces.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--contact-cutoff", type=float, default=4.5)
     parser.add_argument("--max-ca-rmsd", type=float, default=0.5)
@@ -202,12 +246,20 @@ def main() -> None:
             else None
         ),
     )
-    report = audit_two_fragment_seed(
+    if bool(arguments.left_fragment) != bool(arguments.right_fragment):
+        raise ValueError(
+            "--left-fragment and --right-fragment must be provided together"
+        )
+    fragment_pairs = (
+        ((arguments.left_fragment, arguments.right_fragment),)
+        if arguments.left_fragment
+        else _derive_fragment_pairs(config_path)
+    )
+    report = audit_interface_seed_pairs(
         output_atoms=read_structure_atoms(result_structure),
         references=references,
         placements=placements,
-        left_fragment_id=arguments.left_fragment,
-        right_fragment_id=arguments.right_fragment,
+        fragment_pairs=fragment_pairs,
         contact_cutoff=arguments.contact_cutoff,
         max_ca_rmsd=arguments.max_ca_rmsd,
         max_all_atom_rmsd=arguments.max_all_atom_rmsd,
@@ -228,6 +280,11 @@ def main() -> None:
 
     summary = report["summary"]
     print(f"Interface-Seed audit: {'PASSED' if report['passed'] else 'FAILED'}")
+    if "interface_seeds" in summary:
+        print(
+            "interface seeds:        "
+            f"{summary['passed_interface_seeds']}/{summary['interface_seeds']}"
+        )
     print(f"cross-chain seed pairs: {summary['seed_pairs']}")
     print(f"maximum CA RMSD:       {summary['maximum_ca_rmsd']:.4f} A")
     print(

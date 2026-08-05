@@ -101,6 +101,21 @@ ATOM C CA ALA A 1 7 X 1.0 2.0 3.0 1
         self.assertEqual(atoms[0].residue_number, 7)
         self.assertEqual(atoms[0].coordinate, (1.0, 2.0, 3.0))
 
+        label_atoms = read_mmcif_atoms(
+            cif_path,
+            identifier_namespace="label",
+        )
+
+        self.assertEqual(label_atoms[0].chain_id, "A")
+        self.assertEqual(label_atoms[0].residue_number, 1)
+
+    def test_rejects_unknown_mmcif_identifier_namespace(self) -> None:
+        with self.assertRaisesRegex(ValueError, "identifier_namespace"):
+            read_mmcif_atoms(
+                self.path,
+                identifier_namespace="rfd3",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,6 @@ from rfd3.transforms.conditioning_base import get_motif_features
 from foundry.utils.ddp import RankedLogger
 
 MIN_ATOMS_ALIGN = 30
-MAX_TRANSFORMS = 10
 RMSD_CUT = 1.0  # Angstroms
 
 ranked_logger = RankedLogger(__name__, rank_zero_only=True)
@@ -245,19 +244,6 @@ def check_min_atoms_to_align(natm_per_unique, reference_entity) -> None:
         raise ValueError(
             f"Not enough atoms to align < {MIN_ATOMS_ALIGN} atoms."
             f"Please provide a input with at least {MIN_ATOMS_ALIGN} atoms."
-        )
-
-
-def check_max_transforms(chains_to_consider) -> None:
-    """
-    Check that we are not exceeding the max number of transforms.
-    Arguments:
-        chains_to_consider: list of chains to consider
-        max_transforms: max number of transforms
-    """
-    if len(chains_to_consider) > MAX_TRANSFORMS:
-        raise ValueError(
-            f"Number of transforms exceeds the max number of transforms ({MAX_TRANSFORMS})."
         )
 
 

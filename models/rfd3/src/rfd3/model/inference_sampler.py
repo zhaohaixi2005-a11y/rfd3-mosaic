@@ -9,6 +9,13 @@ from jaxtyping import Float
 from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
 )
+from rfd3.inference.symmetry.local_neighbourhood import (
+    LocalSymmetryRuntimeContext,
+    build_local_symmetry_neighbourhood,
+    crop_features_to_local_neighbourhood,
+    expand_local_prediction_to_full_orbit,
+    expand_local_token_prediction_to_full_orbit,
+)
 from rfd3.inference.symmetry.scaffold_guidance import (
     ScaffoldGuidanceConfig,
     build_boundary_topology,
@@ -22,7 +29,9 @@ from rfd3.inference.symmetry.symmetry_utils import (
     project_symmetry_orbit_average,
     symmetry_orbit_mask_mismatch_count,
     symmetry_orbit_residual,
+    symmetry_orbit_tolerance,
 )
+from rfd3.inference.symmetry.joint_projector import UnifiedJointProjector
 from rfd3.model.cfg_utils import strip_X
 
 from foundry.common import exists
@@ -75,8 +84,16 @@ class SampleDiffusionConfig:
     preserve_fixed_motif_during_symmetry: bool = False
     require_motif_constraint_groups: bool = False
     motif_constraint_conflict_tolerance: float = 1e-4
+    fixed_motif_finalization_mode: Literal[
+        "official_reinsert_then_project", "motif_precedence"
+    ] = "motif_precedence"
     symmetry_state_mode: Literal["legacy_asu", "orbit_average"] = "legacy_asu"
     symmetry_noise_mode: Literal["independent", "coupled"] = "independent"
+    symmetry_execution_backend: Literal[
+        "explicit_all_copy", "local_neighbourhood"
+    ] = "explicit_all_copy"
+    symmetry_neighbour_radius: int = 1
+    symmetry_include_dihedral_mate: bool = True
     symmetry_orbit_max_error: float = 1e-3
     fixed_target_symmetry_rmsd_tolerance: float = 0.01
     fixed_target_symmetry_max_tolerance: float = 0.03
@@ -431,6 +448,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "symmetry_state_mode must be one of "
                 f"{sorted(valid_state_modes)}"
             )
+        valid_finalization_modes = {
+            "official_reinsert_then_project",
+            "motif_precedence",
+        }
+        if self.fixed_motif_finalization_mode not in valid_finalization_modes:
+            raise ValueError(
+                "fixed_motif_finalization_mode must be one of "
+                f"{sorted(valid_finalization_modes)}"
+            )
         valid_noise_modes = {"independent", "coupled"}
         if self.symmetry_noise_mode not in valid_noise_modes:
             raise ValueError(
@@ -523,10 +549,84 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             raise ValueError(
                 "fixed_target_symmetry_max_tolerance cannot be negative"
             )
+        valid_backends = {"explicit_all_copy", "local_neighbourhood"}
+        if self.symmetry_execution_backend not in valid_backends:
+            raise ValueError(
+                "symmetry_execution_backend must be one of "
+                f"{sorted(valid_backends)}"
+            )
+        if int(self.symmetry_neighbour_radius) < 0:
+            raise ValueError("symmetry_neighbour_radius cannot be negative")
+        if self._uses_local_symmetry_neighbourhood:
+            if not exact_state:
+                raise ValueError(
+                    "local_neighbourhood requires symmetry_state_mode="
+                    "orbit_average and symmetry_noise_mode=coupled"
+                )
+            if not self.preserve_fixed_motif_during_symmetry:
+                raise ValueError(
+                    "local_neighbourhood requires "
+                    "preserve_fixed_motif_during_symmetry=True"
+                )
+            if self.enable_orbit_rigid_motif_mobility:
+                raise ValueError(
+                    "local_neighbourhood does not yet support dynamic motif "
+                    "mobility"
+                )
 
     @property
     def _uses_exact_symmetry_orbits(self) -> bool:
         return self.symmetry_state_mode == "orbit_average"
+
+    @property
+    def _uses_local_symmetry_neighbourhood(self) -> bool:
+        return self.symmetry_execution_backend == "local_neighbourhood"
+
+    def prepare_local_network_view(
+        self,
+        f: dict[str, Any],
+        coordinates: torch.Tensor,
+    ) -> LocalSymmetryRuntimeContext | None:
+        """Build the bounded feature view before TokenInitializer runs."""
+
+        if not self._uses_local_symmetry_neighbourhood:
+            return None
+        symmetry_id = f.get("symmetry_id")
+        if not isinstance(symmetry_id, str) or not symmetry_id:
+            raise ValueError(
+                "local_neighbourhood requires the runtime symmetry_id feature"
+            )
+        layout = build_symmetry_orbit_layout(
+            self._symmetry_features(f),
+            like=coordinates,
+        )
+        neighbourhood = build_local_symmetry_neighbourhood(
+            self._symmetry_features(f),
+            symmetry_id,
+            like=coordinates,
+            neighbour_radius=int(self.symmetry_neighbour_radius),
+            include_dihedral_mate=bool(
+                self.symmetry_include_dihedral_mate
+            ),
+            layout=layout,
+        )
+        feature_view = crop_features_to_local_neighbourhood(
+            f,
+            neighbourhood,
+        )
+        ranked_logger.info(
+            "Local symmetry network view prepared: "
+            f"symmetry={symmetry_id}, "
+            f"copies={neighbourhood.copy_count}, "
+            f"atoms={len(neighbourhood.atom_indices)}/"
+            f"{neighbourhood.full_atom_count}, "
+            f"tokens={len(feature_view.token_indices)}"
+        )
+        return LocalSymmetryRuntimeContext(
+            layout=layout,
+            neighbourhood=neighbourhood,
+            feature_view=feature_view,
+        )
 
     def _scaffold_guidance_config(self) -> ScaffoldGuidanceConfig:
         return ScaffoldGuidanceConfig(
@@ -753,6 +853,33 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             return self.apply_orbit_average_to_X_L(X_L, f)
         return self.apply_symmetry_to_X_L(X_L, f)
 
+    def _joint_projector(
+        self,
+        f: dict[str, Any],
+    ) -> UnifiedJointProjector:
+        """Bind runtime features to the topology-neutral projection contract."""
+
+        return UnifiedJointProjector(
+            project_symmetry=lambda coordinates: (
+                self._project_symmetric_state(coordinates, f)
+            ),
+            restore_constraints=lambda coordinates, target, mask: (
+                self._restore_motif_constraint_groups(
+                    coordinates,
+                    target,
+                    mask,
+                    f,
+                )
+            ),
+            validate_closure=lambda coordinates, label: (
+                self._assert_symmetry_orbit_closed(
+                    coordinates,
+                    f,
+                    label=label,
+                )
+            ),
+        )
+
     def _assert_symmetry_orbit_closed(
         self,
         X_L: torch.Tensor,
@@ -784,25 +911,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         # Retain the absolute scientific gate while adding only a small
         # dtype-relative numerical floor.  This floor vanishes below the
         # configured tolerance as denoising approaches the final structure.
-        work_dtype = (
-            torch.float64
-            if X_L.dtype == torch.float64
-            else torch.float32
-        )
-        coordinate_scale = torch.sqrt(
-            torch.mean(
-                torch.square(
-                    X_L.detach().to(dtype=work_dtype)
-                )
-            )
-        )
-        numerical_floor = (
-            32.0
-            * torch.finfo(work_dtype).eps
-            * max(float(coordinate_scale.item()), 1.0)
-        )
         configured_tolerance = float(self.symmetry_orbit_max_error)
-        tolerance = max(configured_tolerance, numerical_floor)
+        tolerance, numerical_floor = symmetry_orbit_tolerance(
+            X_L,
+            configured_tolerance=configured_tolerance,
+        )
         if torch.any(maximum > tolerance):
             raise ValueError(
                 f"{label} left the runtime symmetry orbit: "
@@ -957,19 +1070,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             return self._project_symmetric_state(X_L, f)
         if fixed_coordinates is None:
             fixed_coordinates = X_L
-        projected = self._project_symmetric_state(X_L, f)
-        restored = self._restore_motif_constraint_groups(
-            projected,
-            fixed_coordinates,
-            fixed,
-            f,
-        )
-        self._assert_symmetry_orbit_closed(
-            restored,
-            f,
+        return self._joint_projector(f).project(
+            X_L,
+            constraint_target=fixed_coordinates,
+            constraint_mask=fixed,
+            restore=True,
             label="Fixed-motif symmetry projection",
         )
-        return restored
 
     def _restore_motif_constraint_groups(
         self,
@@ -1165,23 +1272,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         """
 
         if self._uses_exact_symmetry_orbits:
-            projected = self.apply_orbit_average_to_X_L(X_L, f)
-            if (
-                self.preserve_fixed_motif_during_symmetry
-                and torch.any(is_motif_atom_with_fixed_coord)
-            ):
-                projected = self._restore_motif_constraint_groups(
-                    projected,
-                    fixed_coordinates,
-                    is_motif_atom_with_fixed_coord,
-                    f,
-                )
-            self._assert_symmetry_orbit_closed(
-                projected,
-                f,
+            return self._joint_projector(f).project(
+                X_L,
+                constraint_target=fixed_coordinates,
+                constraint_mask=is_motif_atom_with_fixed_coord,
+                restore=self.preserve_fixed_motif_during_symmetry,
                 label="Euler-updated diffusion state",
             )
-            return projected
         if not self.preserve_fixed_motif_during_symmetry:
             return X_L
         return self._apply_symmetry_preserving_fixed_motif(
@@ -1207,6 +1304,23 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         insert and align the complete motif as one coordinate set.
         """
 
+        if (
+            self.fixed_motif_finalization_mode
+            == "official_reinsert_then_project"
+        ):
+            X_L, _ = centre_random_augment_around_motif(
+                X_L,
+                coord_atom_lvl_to_be_noised,
+                is_motif_atom_with_fixed_coord,
+                reinsert_motif=self.insert_motif_at_end,
+            )
+            X_L = self.apply_symmetry_to_X_L(X_L, f)
+            return weighted_rigid_align(
+                coord_atom_lvl_to_be_noised,
+                X_L,
+                X_exists_L=is_motif_atom_with_fixed_coord,
+            )
+
         if not self.preserve_fixed_motif_during_symmetry:
             X_L = self.apply_symmetry_to_X_L(X_L, f)
         X_L, _ = centre_random_augment_around_motif(
@@ -1225,6 +1339,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         self,
         *,
         f: dict[str, Any],
+        network_f: dict[str, Any] | None = None,
+        local_symmetry_context: LocalSymmetryRuntimeContext | None = None,
         diffusion_module: torch.nn.Module,
         diffusion_batch_size: int,
         coord_atom_lvl_to_be_noised: Float[torch.Tensor, "D L 3"],
@@ -1247,6 +1363,21 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         L = f["ref_element"].shape[0]
         D = diffusion_batch_size
+        denoiser_f = f if network_f is None else network_f
+        if self._uses_local_symmetry_neighbourhood:
+            if local_symmetry_context is None or network_f is None:
+                raise ValueError(
+                    "local_neighbourhood requires a prepared local network "
+                    "feature view"
+                )
+            if "chunked_pairwise_embedder" not in initializer_outputs:
+                raise ValueError(
+                    "local_neighbourhood currently requires low_memory_mode=True"
+                )
+        elif local_symmetry_context is not None or network_f is not None:
+            raise ValueError(
+                "A local network view was supplied to explicit_all_copy"
+            )
         mobile_orbit_count = self._validate_motif_mobility_runtime(
             f,
             diffusion_batch_size=D,
@@ -1263,7 +1394,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         motif_conditioning_refresh_count = 0
         if self._uses_exact_symmetry_orbits:
             self._exact_symmetry_orbit_layout = (
-                build_symmetry_orbit_layout(
+                local_symmetry_context.layout
+                if local_symmetry_context is not None
+                else build_symmetry_orbit_layout(
                     self._symmetry_features(f),
                     like=fixed_target,
                 )
@@ -1439,7 +1572,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 label=f"Noisy diffusion state at step {step_num}",
             )
 
-            # Denoise the coordinates
+            # Denoise either the complete assembly or the bounded local view.
+            denoiser_X_noisy_L = X_noisy_L
+            if local_symmetry_context is not None:
+                denoiser_X_noisy_L = X_noisy_L[
+                    :,
+                    local_symmetry_context.neighbourhood.atom_indices,
+                    :,
+                ]
             # Handle chunked mode vs standard mode (same as default sampler)
             if "chunked_pairwise_embedder" in initializer_outputs:
                 # Chunked mode: explicitly provide P_LL=None
@@ -1453,9 +1593,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     if k != "chunked_pairwise_embedder"
                 }
                 outs = diffusion_module(
-                    X_noisy_L=X_noisy_L,
+                    X_noisy_L=denoiser_X_noisy_L,
                     t=t_hat.tile(D),
-                    f=f,
+                    f=denoiser_f,
                     P_LL=None,  # Not used in chunked mode
                     chunked_pairwise_embedder=chunked_embedder,
                     initializer_outputs=other_outputs,
@@ -1469,12 +1609,37 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             else:
                 # Standard mode: P_LL is included in initializer_outputs
                 outs = diffusion_module(
-                    X_noisy_L=X_noisy_L,
+                    X_noisy_L=denoiser_X_noisy_L,
                     t=t_hat.tile(D),
-                    f=f,
+                    f=denoiser_f,
                     n_recycle=self.n_recycle,
                     **initializer_outputs,
                 )
+            if local_symmetry_context is not None:
+                if "X_L" not in outs:
+                    raise ValueError(
+                        "local_neighbourhood requires dictionary model output "
+                        "with X_L"
+                    )
+                outs["X_L"] = expand_local_prediction_to_full_orbit(
+                    outs["X_L"],
+                    X_noisy_L,
+                    local_symmetry_context.neighbourhood,
+                    layout=local_symmetry_context.layout,
+                )
+                if exists(outs.get("sequence_logits_I")):
+                    outs["sequence_logits_I"] = (
+                        expand_local_token_prediction_to_full_orbit(
+                            outs["sequence_logits_I"],
+                            f,
+                            local_symmetry_context.feature_view,
+                        )
+                    )
+                    outs["sequence_indices_I"] = (
+                        diffusion_module.sequence_head.decode(
+                            outs["sequence_logits_I"]
+                        )
+                    )
             if (
                 motif_mobility_controller is not None
                 and "X_L" in outs
@@ -1635,17 +1800,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             t_hats.append(t_hat)
 
         if self._uses_exact_symmetry_orbits:
-            X_L = self.apply_orbit_average_to_X_L(X_L, f)
-            if torch.any(is_motif_atom_with_fixed_coord):
-                X_L = self._restore_motif_constraint_groups(
-                    X_L,
-                    fixed_target,
-                    is_motif_atom_with_fixed_coord,
-                    f,
-                )
-            self._assert_symmetry_orbit_closed(
+            X_L = self._joint_projector(f).project(
                 X_L,
-                f,
+                constraint_target=fixed_target,
+                constraint_mask=is_motif_atom_with_fixed_coord,
+                restore=True,
                 label="Final diffusion state",
             )
         elif (
@@ -1743,6 +1902,14 @@ class ConditionalDiffusionSampler:
                 unsupported.append("symmetry_state_mode")
             if kwargs.get("symmetry_noise_mode", "independent") != "independent":
                 unsupported.append("symmetry_noise_mode")
+            if (
+                kwargs.get(
+                    "symmetry_execution_backend",
+                    "explicit_all_copy",
+                )
+                != "explicit_all_copy"
+            ):
+                unsupported.append("symmetry_execution_backend")
             for flag in (
                 "preserve_fixed_motif_during_symmetry",
                 "require_motif_constraint_groups",

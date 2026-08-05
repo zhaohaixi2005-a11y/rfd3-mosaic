@@ -1,7 +1,7 @@
-"""Bounded rigid motion for complete cross-chain motif symmetry orbits.
+"""Bounded rigid motion for complete motif symmetry orbits.
 
 The controller is deliberately separate from atomwise diffusion.  One master
-interface pose is estimated from all symmetry-related observations, clamped,
+master pose is estimated from all symmetry-related observations, clamped,
 and then expanded through the runtime group action.  Individual fragments or
 copies never receive independent rigid motions.
 """
@@ -14,6 +14,9 @@ from typing import Any
 
 import torch
 
+from rfd3.inference.symmetry.constraint_orbit import (
+    ConstraintOrbitLayout,
+)
 from rfd3.inference.symmetry.scaffold_guidance import (
     BoundaryTopology,
     CyclicAxis,
@@ -210,11 +213,19 @@ class OrbitRigidMotif:
     template_master: torch.Tensor
     maximum_translation: float
     maximum_rotation_degrees: float
+    mobility_subspace: str
+    proposal_source: str
+    objective_ids: tuple[str, ...]
+    start_fraction: float
+    end_fraction: float
+    response: float
+    per_step_translation: float
+    per_step_rotation_degrees: float
     state: OrbitRigidPoseState
 
 
 class OrbitRigidMotifController:
-    """Maintain bounded master-interface poses and exact symmetry copies."""
+    """Maintain bounded master-orbit poses and exact symmetry copies."""
 
     def __init__(
         self,
@@ -259,51 +270,13 @@ class OrbitRigidMotifController:
         fixed_target: torch.Tensor,
         **kwargs,
     ) -> "OrbitRigidMotifController | None":
-        mobility_modes = f.get("motif_constraint_orbit_mobility_mode")
-        if mobility_modes is None:
+        layout = ConstraintOrbitLayout.from_features(
+            f,
+            atom_count=fixed_target.shape[1],
+            device=fixed_target.device,
+        )
+        if layout is None or not layout.mobile_orbits:
             return None
-        mobility_modes = torch.as_tensor(
-            mobility_modes,
-            dtype=torch.long,
-            device=fixed_target.device,
-        )
-        mobile_orbits = torch.nonzero(
-            mobility_modes == 1,
-            as_tuple=False,
-        ).flatten()
-        if not len(mobile_orbits):
-            return None
-
-        group_orbits = torch.as_tensor(
-            f["motif_constraint_group_orbit_index"],
-            dtype=torch.long,
-            device=fixed_target.device,
-        )
-        group_transform_ids = torch.as_tensor(
-            f["motif_constraint_group_orbit_transform_id"],
-            dtype=torch.long,
-            device=fixed_target.device,
-        )
-        group_atom_indices = torch.as_tensor(
-            f["motif_constraint_group_atom_indices"],
-            dtype=torch.long,
-            device=fixed_target.device,
-        )
-        group_atom_mask = torch.as_tensor(
-            f["motif_constraint_group_atom_mask"],
-            dtype=torch.bool,
-            device=fixed_target.device,
-        )
-        master_group_indices = torch.as_tensor(
-            f["motif_constraint_orbit_master_group_index"],
-            dtype=torch.long,
-            device=fixed_target.device,
-        )
-        bounds = torch.as_tensor(
-            f["motif_constraint_orbit_bounds"],
-            dtype=torch.float32,
-            device=fixed_target.device,
-        )
         sym_transforms = {
             int(transform_id): (
                 torch.as_tensor(
@@ -321,26 +294,47 @@ class OrbitRigidMotifController:
         }
 
         motifs = []
-        for orbit_index_tensor in mobile_orbits:
-            orbit_index = int(orbit_index_tensor.item())
-            orbit_group_indices = torch.nonzero(
-                group_orbits == orbit_index,
-                as_tuple=False,
-            ).flatten()
-            master_group_index = int(
-                master_group_indices[orbit_index].item()
+        default_schedule = (
+            float(kwargs.get("start_fraction", 0.10)),
+            float(kwargs.get("end_fraction", 0.85)),
+            float(kwargs.get("response", 0.25)),
+            float(kwargs.get("per_step_translation", 0.25)),
+            float(kwargs.get("per_step_rotation_degrees", 1.0)),
+        )
+        for orbit in layout.mobile_orbits:
+            if orbit.mobility_subspace != "bounded_se3":
+                raise ValueError(
+                    "Dynamic motif conditioning currently executes only "
+                    "mobility_subspace='bounded_se3'; radial and tilt "
+                    "subspaces require a topology-defined reference frame"
+                )
+            if orbit.proposal_source == "hoyeung_drag_compat":
+                raise ValueError(
+                    "hoyeung_drag_compat is an explicit migration marker, "
+                    "not a native RFD3 runtime proposal; use "
+                    "denoiser_fit or scaffold_objectives"
+                )
+            if orbit.proposal_source not in {
+                "denoiser_fit",
+                "scaffold_objectives",
+            }:
+                raise ValueError(
+                    "A mobile constraint orbit has no executable proposal "
+                    "source"
+                )
+            schedule = orbit.schedule or default_schedule
+            orbit_group_indices = torch.tensor(
+                orbit.group_indices,
+                dtype=torch.long,
+                device=fixed_target.device,
             )
-            master_mask = group_atom_mask[master_group_index]
-            master_indices = group_atom_indices[
-                master_group_index,
-                master_mask,
-            ]
+            master_indices = layout.groups[
+                orbit.master_group_index
+            ].atom_indices
             atom_count = len(master_indices)
             compact_indices = []
-            for group_index_tensor in orbit_group_indices:
-                group_index = int(group_index_tensor.item())
-                valid = group_atom_mask[group_index]
-                indices = group_atom_indices[group_index, valid]
+            for group_index in orbit.group_indices:
+                indices = layout.groups[group_index].atom_indices
                 if len(indices) != atom_count:
                     raise ValueError(
                         "All mobile motif groups must have equal atom counts"
@@ -356,15 +350,25 @@ class OrbitRigidMotifController:
                 OrbitRigidMotif(
                     group_indices=orbit_group_indices,
                     group_atom_indices=compact_indices_tensor,
-                    group_transform_ids=group_transform_ids[
-                        orbit_group_indices
-                    ],
+                    group_transform_ids=torch.tensor(
+                        orbit.transform_ids,
+                        dtype=torch.long,
+                        device=fixed_target.device,
+                    ),
                     master_atom_indices=master_indices,
                     template_master=template_master,
-                    maximum_translation=float(bounds[orbit_index, 0]),
-                    maximum_rotation_degrees=float(
-                        bounds[orbit_index, 1]
+                    maximum_translation=orbit.maximum_translation,
+                    maximum_rotation_degrees=(
+                        orbit.maximum_rotation_degrees
                     ),
+                    mobility_subspace=orbit.mobility_subspace,
+                    proposal_source=orbit.proposal_source,
+                    objective_ids=orbit.objective_ids,
+                    start_fraction=schedule[0],
+                    end_fraction=schedule[1],
+                    response=schedule[2],
+                    per_step_translation=schedule[3],
+                    per_step_rotation_degrees=schedule[4],
                     state=OrbitRigidPoseState(
                         rotation=torch.eye(
                             3,
@@ -479,14 +483,20 @@ class OrbitRigidMotifController:
             )
         self.update_calls += 1
         self.last_update_applied = False
-        window = mobility_window_weight(
-            progress,
-            start_fraction=self.start_fraction,
-            end_fraction=self.end_fraction,
-        )
+        windows = [
+            mobility_window_weight(
+                progress,
+                start_fraction=motif.start_fraction,
+                end_fraction=motif.end_fraction,
+            )
+            for motif in self.motifs
+        ]
+        window = max(windows, default=0.0)
         if window > 0.0:
             self.active_window_calls += 1
-            for motif in self.motifs:
+            for motif, motif_window in zip(self.motifs, windows):
+                if motif_window <= 0.0:
+                    continue
                 proposal = self._inverse_average_proposal(
                     motif,
                     raw_coordinates,
@@ -516,9 +526,9 @@ class OrbitRigidMotifController:
                     increment = _scaled_rotation(
                         relative_rotation,
                         math.radians(
-                            self.per_step_rotation_degrees * window
+                            motif.per_step_rotation_degrees * motif_window
                         ),
-                        self.response * window,
+                        motif.response * motif_window,
                     )
                     rotation = increment @ current_rotation
                     rotation = _scaled_rotation(
@@ -531,10 +541,10 @@ class OrbitRigidMotifController:
                     delta_translation = (
                         desired_translation[batch_index]
                         - motif.state.translation[batch_index]
-                    ) * (self.response * window)
+                    ) * (motif.response * motif_window)
                     delta_translation = _clamp_vector(
                         delta_translation,
-                        self.per_step_translation * window,
+                        motif.per_step_translation * motif_window,
                     )
                     translation = (
                         motif.state.translation[batch_index]
@@ -606,8 +616,8 @@ class OrbitRigidMotifController:
         self.last_update_applied = False
         window = mobility_window_weight(
             progress,
-            start_fraction=self.start_fraction,
-            end_fraction=self.end_fraction,
+            start_fraction=motif.start_fraction,
+            end_fraction=motif.end_fraction,
         )
         extra: dict[str, Any] = {
             "proposal_source": "scaffold_boundary",
@@ -649,23 +659,23 @@ class OrbitRigidMotifController:
                 current_translation,
                 energy_function,
                 maximum_step_translation=(
-                    self.per_step_translation * window
+                    motif.per_step_translation * window
                 ),
                 maximum_step_rotation_degrees=(
-                    self.per_step_rotation_degrees * window
+                    motif.per_step_rotation_degrees * window
                 ),
                 maximum_total_translation=motif.maximum_translation,
                 maximum_total_rotation_degrees=(
                     motif.maximum_rotation_degrees
                 ),
                 translation_step_size=(
-                    self.per_step_translation
-                    * self.response
+                    motif.per_step_translation
+                    * motif.response
                     * window
                 ),
                 rotation_step_size_degrees=(
-                    self.per_step_rotation_degrees
-                    * self.response
+                    motif.per_step_rotation_degrees
+                    * motif.response
                     * window
                 ),
             )
@@ -750,6 +760,18 @@ class OrbitRigidMotifController:
             ],
             "maximum_translation": motif.maximum_translation,
             "maximum_rotation_degrees": motif.maximum_rotation_degrees,
+            "mobility_subspace": motif.mobility_subspace,
+            "proposal_source": motif.proposal_source,
+            "objective_ids": list(motif.objective_ids),
+            "schedule": {
+                "start_fraction": motif.start_fraction,
+                "end_fraction": motif.end_fraction,
+                "response": motif.response,
+                "max_step_translation": motif.per_step_translation,
+                "max_step_rotation_degrees": (
+                    motif.per_step_rotation_degrees
+                ),
+            },
         }
 
     def _diagnostic_snapshot(

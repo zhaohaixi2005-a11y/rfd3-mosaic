@@ -73,10 +73,97 @@ class SymmetryConfig(BaseModel):
         description="If True, the input motifs are expected to be already symmetric and won't be symmetrized. \
         If False, the all input motifs are expected to be ASU and will be symmetrized.",
     )
+    use_declared_frames: bool = Field(
+        False,
+        description=(
+            "Use the frames declared by the symmetry ID instead of "
+            "recovering frames from a pre-symmetrized motif. This is for "
+            "compiler-owned inputs whose frame registry has already been "
+            "validated, including multiple identical entities per ASU."
+        ),
+    )
+    declared_transform_order: Optional[list[str]] = Field(
+        None,
+        description=(
+            "Ordered transform identifiers for compiler-declared symmetry "
+            "frames. Required together with declared_transform_matrices "
+            "when use_declared_frames is true."
+        ),
+    )
+    declared_transform_matrices: Optional[dict[str, list[list[float]]]] = Field(
+        None,
+        description=(
+            "Compiler-validated homogeneous 4x4 symmetry transforms keyed "
+            "by declared transform identifier."
+        ),
+    )
 
 
 def convery_sym_conf_to_symmetry_config(sym_conf: dict) -> SymmetryConfig:
     return SymmetryConfig(**sym_conf)
+
+
+def _resolve_symmetry_frames(
+    sym_conf: SymmetryConfig,
+    src_atom_array,
+):
+    """Resolve runtime frames without conflating entities with transforms."""
+
+    frames = get_symmetry_frames_from_symmetry_id(sym_conf)
+    if not sym_conf.is_symmetric_motif:
+        return frames
+    assert (
+        src_atom_array is not None
+    ), "Source atom array must be provided for symmetric motifs"
+    if sym_conf.use_declared_frames:
+        order = sym_conf.declared_transform_order
+        matrices = sym_conf.declared_transform_matrices
+        if not order or not matrices:
+            raise ValueError(
+                "use_declared_frames requires declared_transform_order and "
+                "declared_transform_matrices"
+            )
+        if len(order) != len(matrices) or set(order) != set(matrices):
+            raise ValueError(
+                "Declared symmetry transform order does not cover the "
+                "declared matrix set"
+            )
+        expected_count = len(get_symmetry_frames_from_symmetry_id(sym_conf))
+        if len(order) != expected_count:
+            raise ValueError(
+                "Declared symmetry transform count does not match symmetry "
+                f"ID {sym_conf.id}: {len(order)} != {expected_count}"
+            )
+        frames = []
+        for transform_id in order:
+            matrix = np.asarray(matrices[transform_id], dtype=np.float64)
+            if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+                raise ValueError(
+                    f"Declared symmetry transform {transform_id!r} must be "
+                    "a finite 4x4 matrix"
+                )
+            if not np.allclose(matrix[3], [0.0, 0.0, 0.0, 1.0], atol=1e-6):
+                raise ValueError(
+                    f"Declared symmetry transform {transform_id!r} has an "
+                    "invalid homogeneous row"
+                )
+            rotation = matrix[:3, :3]
+            if not np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-6):
+                raise ValueError(
+                    f"Declared symmetry transform {transform_id!r} is not "
+                    "orthogonal"
+                )
+            if not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-6):
+                raise ValueError(
+                    f"Declared symmetry transform {transform_id!r} is not "
+                    "a proper rotation"
+                )
+            frames.append((rotation, matrix[:3, 3].copy()))
+        ranked_logger.info(
+            "Using compiler-declared symmetry matrices in declared order."
+        )
+        return frames
+    return get_symmetry_frames_from_atom_array(src_atom_array, frames)
 
 
 def make_symmetric_atom_array(
@@ -113,15 +200,9 @@ def make_symmetric_atom_array(
     if has_dist_cond:  # NB: this will only work for asymmetric motifs at the moment - need to add functionality for symmetric motifs
         asu_atom_array = add_2d_entity_annotations(asu_atom_array)
 
-    frames = get_symmetry_frames_from_symmetry_id(sym_conf)
+    frames = _resolve_symmetry_frames(sym_conf, src_atom_array)
 
-    # If the motif is symmetric, we get the frames instead from the source atom array.
-    if sym_conf.is_symmetric_motif:
-        assert (
-            src_atom_array is not None
-        ), "Source atom array must be provided for symmetric motifs"
-        frames = get_symmetry_frames_from_atom_array(src_atom_array, frames)
-    else:
+    if not sym_conf.is_symmetric_motif:
         # At this point, asym case would have been caught by the check_symmetry_config function.
         ranked_logger.info(
             "No motifs found in atom array. Generating unconditional symmetric proteins."
@@ -550,6 +631,39 @@ def _symmetry_work_dtype(coordinates):
         if coordinates.dtype == torch.float64
         else torch.float32
     )
+
+
+def symmetry_orbit_tolerance(
+    coordinates: torch.Tensor,
+    *,
+    configured_tolerance: float,
+) -> tuple[float, float]:
+    """Return the absolute orbit gate and its float roundoff component.
+
+    Exact orbit projection contains rotation/inverse-rotation round trips.
+    For float32 coordinates at the large initial EDM noise scale, demanding a
+    fixed sub-machine-precision residual makes tests and runtime checks depend
+    on random draw order.  Keep the configured scientific gate, adding only a
+    scale-aware numerical floor that becomes negligible at molecular scale.
+    """
+
+    configured = float(configured_tolerance)
+    if configured <= 0.0:
+        raise ValueError("configured_tolerance must be positive")
+    if not torch.isfinite(coordinates).all():
+        raise ValueError("Cannot derive symmetry tolerance from NaN or Inf")
+    work_dtype = _symmetry_work_dtype(coordinates)
+    coordinate_scale = torch.sqrt(
+        torch.mean(
+            torch.square(coordinates.detach().to(dtype=work_dtype))
+        )
+    )
+    numerical_floor = (
+        32.0
+        * torch.finfo(work_dtype).eps
+        * max(float(coordinate_scale.item()), 1.0)
+    )
+    return max(configured, numerical_floor), numerical_floor
 
 
 def _nearest_proper_rotation(

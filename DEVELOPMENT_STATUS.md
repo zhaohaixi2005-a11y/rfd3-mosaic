@@ -1,6 +1,6 @@
 # RFD3 Mosaic Development Status
 
-Last updated: 2026-07-30
+Last updated: 2026-08-04
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
@@ -12,9 +12,368 @@ new login or a new Codex session. Update it whenever a milestone changes.
 - Active branch: `feat/interface-seed-compiler`
 - Server working tree: `/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic`
 - Local mirror: `/home/haixi/Documents/mosaic`
-- Goal: preserve Interface-Seed 1.0 behavior while generalizing it into an
-  RFD3-native, generator-independent framework for Cn/multi-chain and
-  multi-interface design.
+- Goal: build a generator-independent `AssemblySpecification` compiler and a
+  constraint-aware RFD3 symmetry sampler in which fixed or bounded-mobile
+  motif orbits, generated segments and exact group actions are updated through
+  one runtime contract. LHD101 and individual Cn/Dn runs are regression
+  fixtures, not product-specific code paths.
+
+## 2026-08-04 architecture migration
+
+The architecture has been reset around three planes:
+
+```text
+compile:   user intent -> AssemblySpecification -> RFD3 runtime features
+infer:     (assembly state X_t, orbit poses G_t) -> denoise/control/project
+evaluate:  motif/symmetry/scaffold/assembly audits -> acceptance gate
+```
+
+The backwards-compatible migration now has three completed local slices:
+
+- `AssemblySpecification` is now the topology-neutral public schema name;
+- `InterfaceSeedSpec` remains an alias, so existing configs and imports keep
+  working;
+- `load_assembly_config` accepts new `assembly:`, legacy `interface_seed:`, or
+  an unwrapped payload and rejects ambiguous dual wrappers;
+- ports and interface edges may be empty for non-interface motifs;
+- `generated_segments` can represent N/C terminal extensions using the same
+  assembly schema used by between-motif scaffold links;
+- central and interface compatibility frontends now return one immutable
+  `CompiledAssembly` artifact, so prevalidation and inference no longer branch
+  on how the input was compiled;
+- each `CompiledAssembly` now carries immutable, topology-neutral
+  `CompiledAudit` command descriptions; the experiment worker no longer
+  branches on central motif versus interface seed during evaluation;
+- the runtime public API is now `ConstraintGroup`, `ConstraintOrbit` and
+  `ConstraintOrbitLayout`; the original `InterfaceConstraint*` names remain
+  compatibility aliases, and the motif-mobility controller consumes the
+  neutral API;
+- `UnifiedJointProjector` now owns the ordered runtime contract
+  `symmetry projection -> complete constraint restore -> closure validation`;
+  exact Euler updates, fixed-motif projection and final exact projection are
+  wired through it while the previous sampler methods remain compatibility
+  wrappers;
+- mobility is now a property of the topology-neutral symmetry orbit contract,
+  not intrinsically of an interface edge. `OrbitMobilitySpec` declares the
+  allowed subspace (`radial`, `radial_axial`, `tilt_only`, `bounded_se3`),
+  cumulative bounds, timestep window, per-step translation/rotation trust
+  region, proposal source and objective references;
+- `ConstraintOrbitInstance` is now part of the compiled assembly IR. Legacy
+  non-fixed interface mobility is migrated into that IR with conflict checks;
+  the adapter reads mobility from the compiled orbit rather than directly
+  from an interface edge;
+- `hoyeung_drag_compat` is represented only as one optional proposal source.
+  It does not define the core state model; the formal state remains one
+  bounded rigid `SE(3)` pose per master constraint orbit;
+- the experiment compiler no longer calls separate central-probe and
+  interface-seed builders. Legacy/simple frontends first lower to one
+  `AssemblySpecification`; one adapter then expands `CompiledInstanceSet`,
+  consumes either `ScaffoldLinkInstance` or `TerminalExtensionInstance`, and
+  emits the same native RFD3 feature contract;
+- `rfd3_central_motif_probe` remains only as a diagnostic compatibility tool
+  and regression fixture. It is no longer the central-motif backend used by
+  `compile_experiment_assembly`;
+- this third slice has passed local syntax and diff checks. After the latest
+  synchronization, the complete LRZ unit suite passed **318/318 tests in
+  10.666 seconds**. Native prevalidation plus one central and one interface
+  GPU regression through this new compiler path are still required before
+  calling the compiler migration end-to-end validated.
+
+The next code milestone is not another topology-specific script. It is:
+
+```text
+validate native AssemblySpecification lowering on LRZ
+-> move all remaining initialization/finalization projection sites through
+   UnifiedJointProjector
+-> multi-orbit objective aggregation
+```
+
+The existing `OrbitRigidMotifController` already carries bounded translation
+and SO(3) rotation and refreshes conditioning inside the RFD3 timestep loop.
+It remains experimental because scaffold-derived guidance currently assumes
+one cyclic orbit and uses a ring-specific axis/tilt objective. Generalization
+requires multi-orbit simultaneous residual aggregation, optional DOF
+subspaces, objective composition and Cn/Dn/T/O/I transform-registry support.
+
+## Current project state
+
+| Capability | Current evidence | Status |
+|---|---|---|
+| Interface-seed compiler | Generic fragment, topology, Cn/Dn registry, pose provenance, adapter and prevalidation paths are implemented and unit-tested | Implemented |
+| Static exact-C3 RFD3 | 50/100/200-step inference preserves the complete cross-chain seed, continuous copies and declared C3 symmetry | End-to-end demonstrated |
+| Central-motif exact C3 | Registry-v4 runs 5729451--5729453 passed the central-orbit and scaffold gates with no breaks or CA clashes and sub-0.00005 A symmetry maximum error | End-to-end demonstrated on the compatibility frontend; unified-compiler GPU regression pending |
+| C5/C6/C7 static RFD3 | A 48-structure extracted set produced 37 strict seed+scaffold passes across all three orders | Cross-order engineering generalization demonstrated on the screened set |
+| Pose exploration | Haar SO(3), joint LHS, topology-aware endpoint descriptors and quality-diversity morphology coverage are implemented | Implemented; still a GPU-budget selector, not a biological score |
+| Scaffold-aware motif mobility | Default-off bounded controller and conditioning refresh path exist; the boundary-representation correction is included in the 318-test LRZ pass, but no applied-mobility GPU result has passed the full audit gate | Unit-validated; GPU/scientific behavior not validated |
+| Multiple interface orbits | The adapter can emit multiple disjoint ASU scaffold segments and multiple constraint orbits; the D3 two-orbit CPU build/prevalidation passed, but its P100 GPU attempt exceeded memory | CPU plumbing demonstrated; GPU inference pending |
+| Dn inference | Schema, registry and D3 two-orbit CPU prevalidation pass, but no native Dn GPU end-to-end result has passed | Not demonstrated on GPU |
+| C12/C20 | Artificial order-10 guards are removed and the local-neighbourhood kernel is unit-tested, but explicit preprocessing/output and quadratic pair-state costs remain; no explicit/local GPU equivalence run has passed | Outside the validated production architecture |
+| Sequence/design validation | ProteinMPNN, multimer prediction, interface-energy ranking and experimental validation are not part of the completed evidence | Not started |
+
+The defensible current claim is:
+
+> RFD3 Mosaic can compile a cross-protomer interface seed and preserve it
+> while generating a continuous, exact-symmetry cyclic scaffold. C3 has been
+> demonstrated end to end. In the first audited C5/C6/C7 set, 37/48
+> structures passed the same strict seed and scaffold gates. This supports
+> engineering generalization across C5--C7, but does not yet establish
+> sequence-level designability or experimental assembly.
+
+The extracted-structure screen is:
+
+```text
+scripts/rfd3_mosaic/screen_extracted_cn_structures.sh
+    -> src/rfd3_mosaic/rfd3_batch_screen.py
+    -> C5/C6/C7 JSON + CSV reports
+```
+
+Its acceptance order is deliberately strict:
+
+```text
+seed integrity
+-> chain continuity and compactness
+-> zero hard CA clashes
+-> declared-transform Cn symmetry
+-> only then compare ring shape and neighbouring-chain packing
+```
+
+Ring radius, axis clearance, shape aspect and contact counts are diagnostics
+for diversity and ranking. They are not calibrated folding, assembly or
+experimental-success scores.
+
+### 2026-07-31 C5/C6/C7 extracted-structure screen
+
+The first complete batch screen used:
+
+```text
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/native_c5_full/extracted_cif
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/native_c6_full/extracted_cif
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/native_c7_full/extracted_cif
+```
+
+Results:
+
+| Order | Screened | Seed passed | Continuous | Zero CA clash | Declared symmetry | Strict passed |
+|---|---:|---:|---:|---:|---:|---:|
+| C5 | 15 | 15 | 15 | 12 | 15 | 12 (80.0%) |
+| C6 | 18 | 18 | 17 | 13 | 18 | 13 (72.2%) |
+| C7 | 15 | 15 | 14 | 12 | 15 | 12 (80.0%) |
+| Total | 48 | 48 | 46 | 37 | 48 | 37 (77.1%) |
+
+This establishes that seed preservation and declared cyclic symmetry are no
+longer C3-only behavior in the screened runs. The dominant rejection is local
+CA clash rather than loss of the interface seed. Two structures also fail
+continuity.
+
+Initial candidates for downstream inspection are:
+
+| Order | Recommended job | Reason |
+|---|---:|---|
+| C5 | `5722385` | Strict pass, 127 minimum neighbouring contacts and 4.055 A minimum inter-chain CA distance |
+| C6 | `5722398` or `5722341` | Safer 3.940/4.223 A minimum distance than the contact-ranked jobs `5722400` and `5722401`, which lie close to the 3 A hard-clash boundary |
+| C7 | `5722413` or `5722344` | Strict pass with 71/66 minimum neighbouring contacts and 3.987/4.223 A minimum distance |
+
+Contact-ranked C6 jobs `5722400` and `5722401` remain valid strict passes, but
+their 3.006 and 3.229 A minimum inter-chain CA distances make them dense
+packing controls rather than automatic first choices. The screened shape
+aspect ratios are broadly ring-like and relatively flat; they do not by
+themselves demonstrate cage-like three-dimensional closure.
+
+The next scientific gate is not more CIF geometry ranking. It is to take a
+small, shape-diverse strict-pass shortlist through sequence design, multimer
+prediction and atom-level interface/clash assessment while retaining failed
+and borderline candidates as negative controls.
+
+### Core RFD3 method-development direction (prospective)
+
+Benchmark expansion is deferred while the tool is still being built. The
+primary development objective is no longer another task-specific sampler
+patch. The current hypothesis is an RFD3-native interface-orbit sampler with
+two coupled runtime states:
+
+```text
+X_t = complete all-atom scaffold/assembly diffusion state
+g_t = one bounded, symmetry-reduced pose state per mobile interface orbit
+```
+
+The target per-step contract is:
+
+```text
+denoise the complete assembly
+-> aggregate copy-wise scaffold signals in the master frame
+-> infer one bounded, copy-equivariant update for g_t
+-> preserve immutable cross-protomer interface cores
+-> expand every master pose through the declared group actions
+-> refresh all motif and constraint conditioning
+-> project X_t back to exact group closure
+-> continue denoising
+```
+
+This is currently best described as **symmetry-constrained alternating
+inference**, not joint diffusion. No forward noise process, reverse transition
+or learned score has yet been defined for `g_t`.
+
+The first model-context audit is complete. The symmetry sampler passes the
+full length-`L` noisy assembly directly to `diffusion_module`; symmetry is not
+implemented by denoising an isolated ASU and copying it only after the network.
+Both full and chunked pair representations are built over that assembly.
+However, the `>3`-chain sparse-attention helper incorrectly iterated over
+unique chain IDs as if they were query-atom indices, so its reserved
+inter-chain keys covered only a few rows. The local fix now constructs reserved
+inter-chain neighbours for every query atom and keeps small attention budgets
+non-negative. The new targeted tests and the full LRZ unit suite pass. A paired
+C5 GPU rerun is still required before claiming any improvement in generated
+inter-subunit packing.
+
+The implementation milestones are deliberately incremental:
+
+1. Promote the existing constraint-orbit tensors into a validated, first-class
+   RFD3 `InterfaceConstraintOrbit` runtime object. **Implemented and unit-test
+   validated.**
+2. Make the existing mobile-pose controller consume that object while
+   preserving backwards compatibility with current emitted features.
+   **Implemented and unit-test validated; static restoration remains on its
+   legacy-compatible path until a separate change is justified.**
+3. Audit the true RFD3 model context and identify gauge freedoms before
+   choosing the pose parameterization. A raw six-degree-of-freedom `SE(3)`
+   state must not be adopted if axial translation or rotation only changes the
+   world frame or copy labels. **Full-assembly entry is confirmed; gauge
+   analysis remains open.**
+4. Treat interface pose as an explicit, bounded state with a copy-equivariant
+   proposal: evaluate all equivalent copies, inverse-map their signals to the
+   master frame, aggregate once, and regenerate copies only by group actions.
+5. Add hierarchical roles only after the pose state is sound:
+   immutable `interface_core`, orbit-following `rigid_support`, and a small
+   time-scheduled `flexible_boundary` next to generated scaffold.
+6. Generalize from one cyclic orbit to multiple non-equivalent Cn/Dn
+   interface orbits with simultaneous, order-independent conflict handling.
+
+Moving a complete interface orbit does **not** optimize the interface core's
+internal packing: its two sides retain their validated relative geometry. It
+can only improve junctions to generated scaffold, seed-external contacts,
+clashes and global morphology. Weak or symmetry-incompatible seeds still need
+to be rejected upstream.
+
+This is a prospective method contribution, not a validated project claim.
+More Cn samples, more penalties,
+or direct reproduction of RFdiffusion1 motif dragging are useful validation or
+engineering work but are not by themselves the core innovation. Large
+benchmarks, sequence design and refolding remain required evidence later; they
+are not the immediate construction priority.
+
+### Target symmetry scope and scalable backends
+
+The target is not limited to C3--C7. The intended finite-group scope is
+`Cn`, `Dn`, `T`, `O`, and `I`; `H` is treated here as helical/screw symmetry
+and requires a finite runtime neighbourhood rather than a finite group
+multiplicity.
+
+Current limitations are distinct and must not be treated as one unchecked
+constant change:
+
+- The local branch now removes both artificial 10-transform guards: the
+  Mosaic adapter accepts C12/D6, and Foundry motif-frame recovery no longer
+  rejects more than 10 transforms. The C12/D6 closure, adapter and frame
+  regressions have passed on LRZ.
+- Foundry's named-frame parser recognizes only `Cn`, `Dn`, and
+  `input_defined`.
+- Mosaic's typed symmetry schema currently enumerates only cyclic and
+  dihedral transform sets.
+- Explicit all-copy atom state grows linearly with copy count, while token
+  pair state and several audits can grow quadratically; `O` (24 copies), `I`
+  (60 copies), high-order `Cn/Dn`, and long helical windows therefore cannot
+  be enabled responsibly by deleting the guards.
+
+Development should separate two execution backends behind the same
+interface-orbit contract:
+
+1. `explicit_all_copy`: exact current representation for small finite groups;
+   retain as the reference implementation and numerical oracle.
+2. `local_symmetry_neighbourhood`: keep one independent master ASU/orbit,
+   materialize only symmetry copies that can interact with it, denoise that
+   local assembly context, inverse-map copy-wise updates to the master frame,
+   aggregate once, and expand the complete requested assembly only for exact
+   projection/output/audit.
+
+The first backend-independent local-neighbourhood kernel is now implemented in
+`rfd3/inference/symmetry/local_neighbourhood.py`:
+
+- Cn selects `master, -1, +1, ...` with network copy count bounded by the
+  configured neighbour radius rather than group order. C200 with radius one
+  therefore exposes three copies to the future network view.
+- Dn can select the same local cyclic neighbourhood in both dihedral cosets.
+- explicit global-to-local atom maps reject incomplete transform coverage;
+- local copy predictions are inverse-transformed, averaged in canonical orbit
+  coordinates, and expanded to every global copy. Omitted global copies never
+  dilute the denoiser update.
+
+The same module now also constructs a fail-closed local feature view: it keeps
+whole atomized tokens, reindexes `atom_to_token_map`, crops atom/token and pair
+features together, and handles Mosaic motif-constraint atom axes explicitly.
+The standalone C12/C20/C200/D100 neighbourhood, feature-crop, coordinate
+expansion and sequence-logit expansion tests have passed on LRZ.
+
+An experimental integration is now wired before `TokenInitializer` and into
+`SampleDiffusionWithSymmetry`. It is selected only by
+`symmetry_execution_backend=local_neighbourhood`, requires low-memory mode,
+exact orbit-average state, coupled noise and fixed-motif preservation, and
+currently rejects dynamic motif mobility. The default remains
+`explicit_all_copy`. On 2026-07-31 the complete LRZ unit suite, including the
+new sampler integration and fail-closed configuration tests, passed 273/273 in
+9.189 seconds. A real small-order explicit/local A/B run remains pending, so no
+production script enables the backend by default. In addition, preprocessing
+still constructs the complete assembly before this crop and final output still
+expands every copy; this integration bounds the initializer/denoiser network
+view but is not yet an end-to-end C200 memory guarantee.
+
+The staged order is:
+
+1. remove task-script assumptions such as `C5|C6|C7` while retaining safe
+   resource guards;
+2. validate parameterized high-order `Cn` and `Dn` registries, closure,
+   provenance, attention neighbourhoods, and audits on CPU;
+3. add proper finite `T/O/I` transform registries and generic finite-group
+   prevalidation;
+4. validate the experimental local-neighbourhood sampler integration and
+   demonstrate agreement with explicit all-copy results on small groups before
+   using it for C12+, O or I;
+5. add helical screw transforms, a declared repeat window and boundary-aware
+   audits as a separate infinite-symmetry mode.
+
+The former `>10` guards have been removed locally, but production high-order
+submission remains blocked by staged CPU construction, bounded GPU memory and
+scientific audit gates rather than by a hard-coded order constant.
+
+## Maintained documentation
+
+Only the following five documents are active and should receive future
+updates:
+
+1. `DEVELOPMENT_STATUS.md` — single source of truth for current evidence,
+   limitations, cluster-operation boundary and resume point.
+2. `docs/rfd3_mosaic/RFD3_MULTI_INTERFACE_SEED_FINAL_PLAN.md` — stable method
+   architecture, data model, invariants and success criteria.
+3. `docs/rfd3_mosaic/C5_C6_C7_200STEP_RUNBOOK.md` — executable pose,
+   inference, audit and extracted-structure screening workflow.
+4. `docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md` — the only
+   active experimental-method note; it must stay separate from the validated
+   static claim.
+5. `docs/rfd3_mosaic/USER_CLI.md` — concise public experiment configuration,
+   execution-profile and submission contract.
+
+One additional document is retained but not actively maintained:
+
+- `docs/rfd3_mosaic/INTERFACE_SEED_RFD1_UPGRADE_AUDIT.md` — read-only
+  historical code audit used to compare Interface-Seed 1.0 with this project.
+
+Do not create another progress handoff, evolution plan or duplicate runbook.
+Put new project evidence in this file, stable architectural decisions in the
+final plan, executable C5/C6/C7 commands in the runbook, and mobility-only
+results in the pilot note.
+
+The superseded `RFD3_MULTI_INTERFACE_SEED_EVOLUTION_PLAN.md` was removed on
+2026-07-31 after its still-relevant decisions had been incorporated into the
+final plan and this status file.
 
 ## Project reading order
 
@@ -25,14 +384,15 @@ these files in order:
    boundary, and exact resume point.
 2. `docs/rfd3_mosaic/RFD3_MULTI_INTERFACE_SEED_FINAL_PLAN.md` — method
    architecture, data model, compiler/runtime separation, and success criteria.
-3. `docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md` — the current
+3. `docs/rfd3_mosaic/USER_CLI.md` — routine validated configuration and
+   submission workflow.
+4. `docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md` — the current
    opt-in experiment that allows bounded scaffold-guided seed motion.
-4. `docs/rfd3_mosaic/C5_C6_C7_200STEP_RUNBOOK.md` — reproducible C5/C6/C7
+5. `docs/rfd3_mosaic/C5_C6_C7_200STEP_RUNBOOK.md` — reproducible C5/C6/C7
    pose generation, P100 inference, and audit commands.
 
 For historical comparison with Interface-Seed 1.0, then read
-`docs/rfd3_mosaic/INTERFACE_SEED_RFD1_UPGRADE_AUDIT.md`. The evolution plan is
-design history rather than the current execution contract.
+`docs/rfd3_mosaic/INTERFACE_SEED_RFD1_UPGRADE_AUDIT.md`.
 
 ## Environment contract
 
@@ -1079,16 +1439,15 @@ CPU pre-screening now goes beyond span/contour: every generated-protomer
   gate. These orders must not be described as established capability before
   the full audit gate passes.
 - The schema, symmetry registry, and instance compiler can express higher
-  orders such as C12 and C20, but the native symmetric-motif path cannot
-  currently run them. Both the Mosaic adapter and official Foundry RFD3 enforce
-  a maximum of 10 transforms. The native input boundary is therefore at most
-  C10 or D5 before considering model validity. Removing those guards would not
-  establish support: dense token-pair memory remains quadratic in assembly
+  orders such as C12 and C20. The local branch has removed the adapter and
+  Foundry frame-recovery limit of 10 transforms, with C12/D6 CPU regressions;
+  this removes the artificial input boundary but does not yet establish GPU
+  inference support. Dense token-pair memory remains quadratic in assembly
   size, the checkpoint's relative-chain encoding saturates beyond nearby
   copies, high-order chain-ID paths are unvalidated, and the current
-  seed-integrity audit has factorial pairing cost. C12/C20 must not be
-  submitted as native P100 diffusion jobs until a separate high-order strategy
-  and audit path exist.
+  seed-integrity audit has factorial pairing cost. C12/C20 must not yet be
+  submitted as production native P100 diffusion jobs until the new CPU
+  construction tests pass on LRZ and a bounded GPU probe is defined.
 - Transform-aware output auditing currently assumes transform-major sorted
   chain IDs for the one-chain-ASU C3 baseline.
 - Orbit-rigid mobility is an unvalidated, explicit opt-in experiment and is
@@ -1119,9 +1478,70 @@ CPU pre-screening now goes beyond span/contour: every generated-protomer
   retrained RFD3 model. Targeted LRZ tests, a full unit run, and paired
   static/mobile GPU validation are still required before treating the
   experiment as successful.
+- The first real C5 proposal-only attempt, job `5722585`, passed all 247
+  repository tests but stopped before its first denoising step because the
+  boundary finder assumed ordinary peptide neighbours were present in
+  `token_bonds`. Foundry runtime features do not require those polymer edges.
+  The local fix now combines explicit token bonds with same-chain consecutive
+  `residue_index` CA tokens. Regression tests cover an empty-token-bond C5
+  contig and reject false adjacency across chains or residue gaps. This fix is
+  syntax-checked locally and remains pending LRZ unit and real-feature
+  validation; job `5722585` is not a mobility result.
 
 The concise design and validation boundary is recorded in
 `docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md`.
+
+### 2026-08-04 orbit-owned SE(3) control migration
+
+- Motif mobility is now represented on `SymmetryOrbitSpec` and lowered to a
+  topology-neutral `ConstraintOrbitInstance`; it is no longer conceptually
+  owned by an interface edge. Existing edge-level mobility remains a
+  compatibility input and is migrated fail-closed into the owning orbit.
+- The assembly IR now carries constraint orbits plus generated scaffold links
+  and N/C terminal extensions. This is the common representation needed to
+  compile an interface-spanning motif and a central motif without separate
+  sampler algorithms.
+- Orbit mobility metadata now survives the complete compiler-to-RFD3 runtime
+  path: allowed subspace, proposal source, cumulative translation/rotation
+  bounds, timestep window, response, per-step trust region and objective IDs
+  are encoded as RFD3 features and parsed by `ConstraintOrbitLayout`.
+- `OrbitRigidMotifController` now applies the schedule belonging to each orbit
+  rather than silently using only global sampler defaults. Its diagnostics
+  report the effective subspace, proposal, objectives and trust region for
+  every orbit. Legacy inputs that do not explicitly declare an orbit schedule
+  retain their sampler-level schedule, so existing pilot commands remain
+  reproducible during the migration.
+- Native runtime execution currently accepts `bounded_se3` with
+  `denoiser_fit` or `scaffold_objectives`. `radial`, `radial_axial`,
+  `tilt_only` and `hoyeung_drag_compat` are valid IR contracts but fail closed
+  until a topology-defined reference frame and proposal backend are wired;
+  they are not falsely treated as arbitrary Cartesian SE(3).
+- Ho-Yeung's original per-step COM dragging remains the compatibility design
+  reference. It is not the native algorithm: the formal controller moves one
+  master rigid pose and regenerates every copy through declared group actions,
+  preserving the exact motif and symmetry orbit.
+- Local `py_compile` and whitespace validation pass. After synchronization,
+  the complete LRZ `rc-foundry` unit suite passed **313/313 tests in 9.804
+  seconds**. This validates the orbit-owned mobility schema/IR, feature
+  transport, runtime parsing, per-orbit scheduling, legacy schedule fallback
+  and all preceding exact-symmetry regressions at the unit-test level. It is
+  not yet a GPU validation of dynamic motif movement.
+
+### Extracted C5/C6/C7 batch screening
+
+`python -m rfd3_mosaic.rfd3_batch_screen` now audits an extracted structure
+directory and resolves each `<job-id>__*.cif` back to its sibling run. The
+strict rank requires the seed report plus continuity, compactness, zero CA
+clashes, and declared-transform symmetry. Ring-plane and coarse inter-chain CA
+packing descriptors are reported only for ranking, not as calibrated
+acceptance thresholds. A local diagnostic over 18 copied C6 structures found
+13 with zero chain breaks and zero CA clashes, four with replicated clashes,
+and one severely discontinuous result; seed provenance and declared-transform
+strict status must be recomputed on LRZ where the original job directories are
+available.
+`scripts/rfd3_mosaic/screen_extracted_cn_structures.sh` runs the C5/C6/C7
+screens together and prints one compact comparison of the hard-gate counts and
+top-ranked candidates.
 
 ### Selected low-tilt P100 comparison
 
@@ -1150,6 +1570,126 @@ shell environment cannot silently mix conditions. These jobs are prepared but
 are not recorded as executed or validated until their result audit files are
 inspected.
 
+### 2026-08-03 C5/C6/C7 low-tilt production campaign
+
+- Added `submit_lhd101_cn_low_tilt_8_3.sh` for one strictly accepted
+  0--15-degree interface-seed pose per C5/C6/C7 order and 100 independent
+  200-step diffusion seeds per pose (300 logical jobs).
+- The full pose ensembles, rather than the QD shortlists, are searched. The
+  three selected manifests are frozen with SHA256 provenance under the `8.3`
+  campaign root before submission.
+- Submissions are balanced across orders and capped at 36 per invocation for
+  the LRZ QOS limit. Resume is state-aware: active/completed/audited tasks are
+  skipped, while infrastructure-incomplete failures can receive one retry.
+- The shared Cn batch script now accepts an isolated campaign root and no
+  longer treats a non-zero diagnostic `nvidia-smi` exit as a model failure;
+  the following PyTorch CUDA probe remains fatal.
+- This campaign is prepared locally but is not recorded as synchronized,
+  submitted, or scientifically validated until the LRZ selection table, job
+  accounting, and both result audits are inspected.
+
+### 2026-08-03 multi-interface D3 engineering checkpoint
+
+- Removed the adapter's one-copy-zero-link restriction. It now compiles one
+  or more disjoint scaffold segments, emits a deterministic chain per segment,
+  and preserves legacy single-link JSON fields unchanged.
+- Runtime motif constraint groups are now assembled from every selected ASU
+  link. Multiple configured interfaces therefore become separate constraint
+  orbits under one native symmetry registry.
+- Seed-integrity mapping is no longer restricted to exactly two indexed
+  fragments. The audit CLI derives all unambiguous fragment pairs from
+  `interfaces -> ports -> fragments`, evaluates them independently, and
+  retains the old report schema for a single interface. Chain association now
+  uses minimum-cost bipartite matching instead of factorial permutation
+  enumeration, so D3 multi-chain output does not make the audit intractable.
+- Added `lhd101_d3_two_orbit_engineering.yaml` as an explicit plumbing test:
+  two duplicated LHD101 interface orbits, two disjoint ASU chains and D3
+  expansion. This is not yet a connected protein cage or a biological design.
+- Added `validate_lhd101_d3_two_orbit.sh` as the fail-closed LRZ CPU gate. It
+  runs adapter and seed-audit regressions, compiles the exact D3 input, and
+  invokes the real Foundry input builder/prevalidation. GPU inference must not
+  be added until this gate passes in `rc-foundry`.
+- Local syntax compilation, shell parsing and whitespace checks pass. The
+  local system Python lacks `pydantic`, so behavioral tests remain pending on
+  LRZ; no server execution is claimed here.
+- LRZ adapter and seed-audit regressions subsequently passed (19 adapter tests
+  and 5 seed-integrity tests), but the first real prevalidation exposed an
+  upstream frame-recovery ambiguity: two duplicated, sequence-identical motif
+  occurrences per ASU were grouped into 12 entity instances, while D3 has six
+  unique transforms. Mosaic already owns and validates the exact transform
+  registry, so multi-chain Mosaic inputs now explicitly request declared
+  frames instead of re-inferring them from entity multiplicity. The default
+  Foundry behavior remains unchanged for ordinary inputs. This correction is
+  syntax-checked locally and awaits LRZ regression/prevalidation.
+- A separate 200-step run reached the network on a 16 GB P100 but failed in
+  token initialization with CUDA OOM (13.07 GiB allocated and a further
+  2.93 GiB requested). P100 is therefore excluded from this two-orbit D3
+  experiment; subsequent runtime probes should use H100 or 80 GB A100 only.
+
+### 2026-08-04 central-motif bidirectional-growth diagnosis
+
+The product target now explicitly contains two symmetric fixed-motif
+topologies, both of which must be supported rather than conflated:
+
+1. a cross-subunit interface seed at the ends of an ASU scaffold segment,
+   with the intervening segment generated; and
+2. one fixed motif in the middle of each protomer, with new N- and C-terminal
+   regions generated around it.
+
+The second topology is not represented as a fake left/right interface.
+Runtime constraint metadata now accepts an explicit `fixed_motif` group with
+one `motif` role while retaining the strict two-role schema for interface
+groups. `rfd3_central_motif_probe` derives a controlled central-motif input
+from an existing C3 adapter input, and
+`lhd101_c3_central_motif_probe_p100.sbatch` provides four paired arms:
+
+```text
+A  true original RFD3 state, realignment enabled, no complete-orbit restore
+B  exact orbit-average/coupled-noise Mosaic state with complete restore
+C  same original RFD3 state as A, but realignment disabled
+D  legacy state, realignment disabled, complete motif-orbit restore
+```
+
+This matrix separates configuration/realignment effects from symmetry
+projector overwrite and exact-state effects. A central-orbit audit compares
+the complete output motif orbit to the source registry using a single joint
+rigid alignment and an invariant all-pairs distance-matrix residual. The
+experiment is prepared locally but no LRZ result is claimed yet. Unlike the
+larger D3 two-orbit case, this C3 single-orbit probe is intentionally small
+enough to test on P100 first.
+
+The implementation target is arm D (`exact_mosaic`), not attribution of an
+older external run. Arms A--C remain optional regression controls and should
+not consume routine GPU budget. Production acceptance requires the central
+motif orbit audit plus scaffold continuity, clash and symmetry audits; passing
+only the motif audit is not sufficient evidence of a usable design.
+
+### 2026-08-04 unified user-facing experiment CLI
+
+Routine use no longer requires writing a long Slurm script. A strict,
+versioned experiment YAML selects either `interface_seed` or `central_motif`,
+while a separate execution profile owns partitions, resources, environment
+activation and checkpoint paths. The public `exact_mosaic` preset expands to
+the validated correctness contract: no realignment, motif-precedence restore,
+orbit-average state, coupled noise and required complete motif groups. These
+invariants are not exposed as casual user toggles.
+
+The new `rfd3-mosaic validate/render/submit` flow freezes resolved paths and
+hash provenance, emits a short generated sbatch, delegates execution to one
+Python worker and applies the topology-specific motif audit plus the common
+scaffold audit gate. Built-in P100, H100 and A100-80G profiles and two example
+experiment files are present. Local syntax/render checks are required before
+handoff; LRZ environment tests and GPU submission remain pending until the
+changes are synchronized. User instructions live in
+`docs/rfd3_mosaic/USER_CLI.md`.
+
+For routine interactive use, the still simpler `central` and `interface`
+commands generate that versioned experiment YAML internally. A central-motif
+user supplies only the validated input JSON, motif selector, optional N/C
+lengths, execution profile and output root; exact-symmetry settings remain
+software-owned. The explicit YAML commands remain the auditable advanced and
+batch interface rather than a prerequisite for ordinary use.
+
 ## Verification commands
 
 ```bash
@@ -1162,10 +1702,11 @@ git status --short --branch
 ## Resume point
 
 The exact all-copy orbit-average implementation has passed CPU,
-adapter/prevalidation, and C3 GPU end-to-end validation. Resume with the
-selected C5 seed-3419 P100 proposal/applied comparison and the already prepared
-C5/C6/C7 capability runs. Keep interface-seed, continuity, hard-clash,
-compactness, and declared-transform symmetry gates unchanged. Treat C12/C20 as
-a separate high-order architecture problem rather than widening the current
-P100 matrix. After the C5 comparison, replace sorted-chain output association
-with provenance-aware copy mapping and begin native D2/D3 validation.
+adapter/prevalidation, and C3 GPU end-to-end validation. The first-class
+interface-orbit parser and corrected `>3`-chain inter-chain attention path have
+passed their targeted tests and the full LRZ unit suite. Resume with one paired
+C5 static 50-step P100 rerun matching the former job `5722385` inputs; compare
+seed, continuity, clashes, exact symmetry and neighbouring-chain contacts
+before and after the attention fix. Only after this runtime gate should work
+continue on a symmetry-reduced mobile pose state. Keep C12/C20 as a separate
+high-order architecture problem.

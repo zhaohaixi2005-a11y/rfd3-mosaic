@@ -52,7 +52,6 @@ def get_symmetry_frames_from_atom_array(src_atom_array, input_frames):
     from rfd3.inference.symmetry.checks import (
         check_input_frames_match_symmetry_frames,
         check_max_rmsds,
-        check_max_transforms,
         check_min_atoms_to_align,
         check_valid_multiplicity,
         check_valid_subunit_size,
@@ -95,9 +94,6 @@ def get_symmetry_frames_from_atom_array(src_atom_array, input_frames):
     # chains for the alignment (will generate complete set of frames)
     chains_to_consider = nids_by_entity[reference_entity]
     reference_molecule = nids_by_entity[reference_entity][0]
-
-    # check that we are not exceeding the max number of transforms
-    check_max_transforms(chains_to_consider)
 
     # align reference molecule to all others
     xforms = {

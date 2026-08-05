@@ -16,16 +16,24 @@ from rfd3_mosaic.geometry.se3 import (
     make_transform,
 )
 from rfd3_mosaic.schema import (
+    AssemblySpecification,
     CompiledInstanceSet,
+    ConstraintOrbitInstance,
     FragmentInstance,
     InterfaceEdgeInstance,
     InterfacePortInstance,
-    InterfaceSeedSpec,
     MotionGroupInstance,
     ScaffoldLinkInstance,
+    TerminalExtensionInstance,
 )
 from rfd3_mosaic.schema.instances import TransformMatrix
-from rfd3_mosaic.schema.specs import CenterMethod, FrameMethod
+from rfd3_mosaic.schema.specs import (
+    CenterMethod,
+    FrameMethod,
+    OrbitMobilityMode,
+    OrbitMobilitySpec,
+    ScaffoldLinkSpec,
+)
 from rfd3_mosaic.structure import (
     AtomRecord,
     load_selected_atoms,
@@ -65,16 +73,21 @@ def _atom_coordinates(atoms: tuple[AtomRecord, ...]) -> np.ndarray:
     )
 
 
-def load_interface_seed_config(
+def load_assembly_config(
     config_path: str | Path,
-) -> InterfaceSeedSpec:
-    """Load and validate an Interface-Seed configuration."""
+) -> AssemblySpecification:
+    """Load and validate a generator-independent assembly specification.
+
+    New configurations may use an ``assembly`` top-level key.  The historical
+    ``interface_seed`` key and an unwrapped specification remain accepted so
+    that existing campaigns are reproducible.
+    """
 
     path = Path(config_path)
 
     if not path.is_file():
         raise FileNotFoundError(
-            f"Interface-Seed config does not exist: {path}"
+            f"Assembly config does not exist: {path}"
         )
 
     with path.open("r", encoding="utf-8") as handle:
@@ -82,21 +95,37 @@ def load_interface_seed_config(
 
     if not isinstance(raw_config, dict):
         raise ValueError(
-            "Interface-Seed config must contain a YAML mapping"
+            "Assembly config must contain a YAML mapping"
         )
 
-    payload = raw_config.get("interface_seed", raw_config)
+    wrapped_keys = [
+        key for key in ("assembly", "interface_seed") if key in raw_config
+    ]
+    if len(wrapped_keys) > 1:
+        raise ValueError(
+            "Assembly config cannot define both 'assembly' and "
+            "'interface_seed'"
+        )
+    payload = raw_config[wrapped_keys[0]] if wrapped_keys else raw_config
 
     if not isinstance(payload, dict):
         raise ValueError(
-            "The interface_seed field must contain a YAML mapping"
+            "The assembly/interface_seed field must contain a YAML mapping"
         )
 
-    return InterfaceSeedSpec.model_validate(payload)
+    return AssemblySpecification.model_validate(payload)
+
+
+def load_interface_seed_config(
+    config_path: str | Path,
+) -> AssemblySpecification:
+    """Compatibility wrapper for the original public loader."""
+
+    return load_assembly_config(config_path)
 
 
 def expand_symmetry_instances(
-    spec: InterfaceSeedSpec,
+    spec: AssemblySpecification,
     *,
     master_transforms: dict[str, np.ndarray] | None = None,
 ) -> CompiledInstanceSet:
@@ -143,6 +172,43 @@ def expand_symmetry_instances(
     for orbit_id, orbit in spec.symmetry.orbits.items():
         for group_id in orbit.master_groups:
             group_to_orbit[group_id] = orbit_id
+
+    def resolved_orbit_mobility(orbit_id: str) -> OrbitMobilitySpec:
+        """Migrate legacy edge mobility into the common orbit contract."""
+
+        native = spec.symmetry.orbits[orbit_id].mobility
+        legacy: list[tuple[str, OrbitMobilitySpec]] = []
+        for edge_id, edge in spec.interfaces.items():
+            left_group = spec.ports[edge.left_port].group
+            right_group = spec.ports[edge.right_port].group
+            edge_orbits = {
+                group_to_orbit.get(left_group),
+                group_to_orbit.get(right_group),
+            }
+            if orbit_id not in edge_orbits:
+                continue
+            if edge.mobility.mode != OrbitMobilityMode.FIXED:
+                legacy.append((edge_id, edge.mobility))
+
+        if native.mode != OrbitMobilityMode.FIXED and legacy:
+            raise ValueError(
+                f"Symmetry orbit {orbit_id!r} defines native mobility and "
+                "also receives legacy interface mobility"
+            )
+        if not legacy:
+            return native
+        reference = legacy[0][1]
+        conflicting = [
+            edge_id
+            for edge_id, mobility in legacy[1:]
+            if mobility != reference
+        ]
+        if conflicting:
+            raise ValueError(
+                f"Symmetry orbit {orbit_id!r} receives conflicting legacy "
+                f"interface mobility from {conflicting}"
+            )
+        return reference
 
     identity_matrix = np.eye(4, dtype=np.float64)
     provided_master_transforms = master_transforms or {}
@@ -237,6 +303,23 @@ def expand_symmetry_instances(
                 transform_id=transform_id,
                 transform=transform,
             )
+
+    constraint_orbit_instances: dict[str, ConstraintOrbitInstance] = {}
+    for orbit_id, orbit_spec in spec.symmetry.orbits.items():
+        registry = orbit_registries[orbit_id]
+        group_instance_ids = tuple(
+            _instance_id(group_id, orbit_id, copy_index)
+            for group_id in orbit_spec.master_groups
+            for copy_index in range(len(registry.transform_ids))
+        )
+        constraint_orbit_instances[orbit_id] = ConstraintOrbitInstance(
+            id=orbit_id,
+            transform_set_id=orbit_spec.transform_set,
+            master_group_ids=tuple(orbit_spec.master_groups),
+            group_instance_ids=group_instance_ids,
+            transform_ids=tuple(registry.transform_ids),
+            mobility=resolved_orbit_mobility(orbit_id),
+        )
 
     port_instances: dict[str, InterfacePortInstance] = {}
     port_index: dict[tuple[str, str | None, int], str] = {}
@@ -376,12 +459,103 @@ def expand_symmetry_instances(
                 )
             )
 
+    generated_segment_instances: dict[
+        str,
+        ScaffoldLinkInstance | TerminalExtensionInstance,
+    ] = {}
+    for segment_id, segment_spec in spec.generated_segments.items():
+        if isinstance(segment_spec, ScaffoldLinkSpec):
+            from_fragment_id = segment_spec.from_endpoint.fragment
+            to_fragment_id = segment_spec.to_endpoint.fragment
+            from_group_id = fragment_to_group[from_fragment_id]
+            to_group_id = fragment_to_group[to_fragment_id]
+            to_copy_keys = {
+                (record[0], record[2])
+                for record in expansions[to_group_id]
+            }
+            for orbit_id, copy_index in (
+                (record[0], record[2])
+                for record in expansions[from_group_id]
+            ):
+                target_copy_index = resolve_copy_relation(
+                    orbit_id,
+                    copy_index,
+                    orbit_offset=(
+                        segment_spec.copy_relation.orbit_offset
+                    ),
+                    transform=segment_spec.copy_relation.transform,
+                )
+                if (orbit_id, target_copy_index) not in to_copy_keys:
+                    raise ValueError(
+                        f"Generated segment {segment_id!r} connects "
+                        "fragments with incompatible symmetry expansions"
+                    )
+                instance_id = _instance_id(
+                    segment_id,
+                    orbit_id,
+                    copy_index,
+                )
+                generated_segment_instances[instance_id] = (
+                    ScaffoldLinkInstance(
+                        id=instance_id,
+                        source_id=segment_id,
+                        from_fragment_instance_id=fragment_index[
+                            (from_fragment_id, orbit_id, copy_index)
+                        ],
+                        from_terminus=(
+                            segment_spec.from_endpoint.terminus
+                        ),
+                        to_fragment_instance_id=fragment_index[
+                            (
+                                to_fragment_id,
+                                orbit_id,
+                                target_copy_index,
+                            )
+                        ],
+                        to_terminus=segment_spec.to_endpoint.terminus,
+                        minimum_length=segment_spec.length.minimum,
+                        maximum_length=segment_spec.length.maximum,
+                        tie_group=segment_spec.tie_group,
+                        chain_break=segment_spec.chain_break,
+                        orbit_id=orbit_id,
+                        copy_index=copy_index,
+                        target_copy_index=target_copy_index,
+                    )
+                )
+            continue
+
+        anchor_fragment_id = segment_spec.anchor.fragment
+        anchor_group_id = fragment_to_group[anchor_fragment_id]
+        for orbit_id, _, copy_index, _, _ in expansions[anchor_group_id]:
+            instance_id = _instance_id(
+                segment_id,
+                orbit_id,
+                copy_index,
+            )
+            generated_segment_instances[instance_id] = (
+                TerminalExtensionInstance(
+                    id=instance_id,
+                    source_id=segment_id,
+                    anchor_fragment_instance_id=fragment_index[
+                        (anchor_fragment_id, orbit_id, copy_index)
+                    ],
+                    anchor_terminus=segment_spec.anchor.terminus,
+                    minimum_length=segment_spec.length.minimum,
+                    maximum_length=segment_spec.length.maximum,
+                    tie_group=segment_spec.tie_group,
+                    orbit_id=orbit_id,
+                    copy_index=copy_index,
+                )
+            )
+
     return CompiledInstanceSet(
         motion_groups=motion_group_instances,
+        constraint_orbits=constraint_orbit_instances,
         fragments=fragment_instances,
         ports=port_instances,
         interfaces=interface_instances,
         scaffold_links=scaffold_link_instances,
+        generated_segments=generated_segment_instances,
     )
 
 
@@ -488,7 +662,7 @@ def _principal_axis(coordinates: np.ndarray) -> np.ndarray | None:
 
 
 def build_master_group_transforms(
-    spec: InterfaceSeedSpec,
+    spec: AssemblySpecification,
     *,
     base_directory: str | Path = ".",
     random_seed: int | None = None,
@@ -640,7 +814,7 @@ def build_master_group_transforms(
 
 
 def resolve_reference_port_frames(
-    spec: InterfaceSeedSpec,
+    spec: AssemblySpecification,
     *,
     base_directory: str | Path = ".",
 ) -> dict[str, TransformMatrix]:

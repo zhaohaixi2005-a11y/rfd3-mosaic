@@ -105,7 +105,7 @@ class MotifMobilityTestCase(unittest.TestCase):
         self.assertGreater(float(torch.linalg.det(fitted_rotation[0])), 0.0)
 
     @staticmethod
-    def _controller_case():
+    def _controller_case(*, with_orbit_schedule: bool = False):
         template = torch.tensor(
             [
                 [
@@ -160,6 +160,17 @@ class MotifMobilityTestCase(unittest.TestCase):
                 [[2.0, 10.0]]
             ),
         }
+        if with_orbit_schedule:
+            features.update(
+                {
+                    "motif_constraint_orbit_subspace": torch.tensor([4]),
+                    "motif_constraint_orbit_proposal": torch.tensor([1]),
+                    "motif_constraint_orbit_schedule": torch.tensor(
+                        [[0.0, 1.0, 1.0, 0.10, 0.50]]
+                    ),
+                    "motif_constraint_orbit_objective_ids": ((),),
+                }
+            )
         controller = OrbitRigidMotifController.from_features(
             features,
             target,
@@ -171,6 +182,53 @@ class MotifMobilityTestCase(unittest.TestCase):
         )
         assert controller is not None
         return template, target, transforms, controller
+
+    def test_orbit_schedule_overrides_legacy_global_step_bounds(self) -> None:
+        template, _, transforms, controller = self._controller_case(
+            with_orbit_schedule=True
+        )
+        desired_rotation = _z_rotation(30.0)
+        center = template.mean(dim=1, keepdim=True)
+        desired_master = (
+            (template - center) @ desired_rotation.T
+            + center
+            + torch.tensor([[[5.0, 0.0, 0.0]]], dtype=torch.float64)
+        )
+        raw = torch.empty((1, 12, 3), dtype=torch.float64)
+        for transform_id in range(3):
+            raw[:, 4 * transform_id : 4 * (transform_id + 1)] = _apply(
+                desired_master,
+                transforms[str(transform_id)][0],
+                transforms[str(transform_id)][1],
+            )
+
+        controller.update(raw, progress=0.5)
+
+        motif = controller.motifs[0]
+        rotation_angle = torch.acos(
+            torch.clamp(
+                (torch.trace(motif.state.rotation[0]) - 1.0) / 2.0,
+                -1.0,
+                1.0,
+            )
+        )
+        self.assertAlmostEqual(
+            math.degrees(float(rotation_angle)),
+            0.50,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            float(torch.linalg.vector_norm(motif.state.translation[0])),
+            0.10,
+            places=6,
+        )
+        diagnostics = controller.diagnostics()["orbits"][0]
+        self.assertEqual(diagnostics["mobility_subspace"], "bounded_se3")
+        self.assertEqual(diagnostics["proposal_source"], "denoiser_fit")
+        self.assertAlmostEqual(
+            diagnostics["schedule"]["max_step_rotation_degrees"],
+            0.50,
+        )
 
     @staticmethod
     def _scaffold_guidance_case():

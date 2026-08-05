@@ -4,6 +4,7 @@ from pydantic import Field, model_validator
 
 from rfd3_mosaic.schema.specs import (
     Identifier,
+    OrbitMobilitySpec,
     StrictModel,
     TargetGeometrySpec,
     Terminus,
@@ -78,6 +79,29 @@ class InterfaceEdgeInstance(StrictModel):
     target_copy_index: int = Field(default=0, ge=0)
 
 
+class ConstraintOrbitInstance(StrictModel):
+    """One compiled master orbit shared by fixed and mobile motif types."""
+
+    id: Identifier
+    transform_set_id: Identifier
+    master_group_ids: tuple[Identifier, ...]
+    group_instance_ids: tuple[str, ...]
+    transform_ids: tuple[str, ...]
+    mobility: OrbitMobilitySpec = OrbitMobilitySpec()
+
+    @model_validator(mode="after")
+    def validate_orbit(self) -> "ConstraintOrbitInstance":
+        if not self.master_group_ids:
+            raise ValueError("Constraint orbit requires master groups")
+        if not self.group_instance_ids:
+            raise ValueError("Constraint orbit requires group instances")
+        if not self.transform_ids:
+            raise ValueError("Constraint orbit requires transform IDs")
+        if len(self.transform_ids) != len(set(self.transform_ids)):
+            raise ValueError("Constraint orbit transform IDs must be unique")
+        return self
+
+
 class ScaffoldLinkInstance(StrictModel):
     """One concrete directed scaffold connection between fragment copies."""
 
@@ -109,19 +133,70 @@ class ScaffoldLinkInstance(StrictModel):
         return self
 
 
+class TerminalExtensionInstance(StrictModel):
+    """One generated N- or C-terminal segment on a concrete motif copy."""
+
+    id: str
+    source_id: Identifier
+    anchor_fragment_instance_id: str
+    anchor_terminus: Terminus
+    minimum_length: int = Field(ge=0)
+    maximum_length: int = Field(ge=0)
+    tie_group: Identifier | None = None
+    orbit_id: Identifier | None = None
+    copy_index: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_extension(self) -> "TerminalExtensionInstance":
+        if self.minimum_length > self.maximum_length:
+            raise ValueError("minimum_length cannot exceed maximum_length")
+        if self.orbit_id is None and self.copy_index != 0:
+            raise ValueError(
+                "Unsymmetrized extensions must use copy_index 0"
+            )
+        return self
+
+
+GeneratedSegmentInstance = ScaffoldLinkInstance | TerminalExtensionInstance
+
+
 class CompiledInstanceSet(StrictModel):
     """Deterministic result of expanding all groups, fragments, and ports."""
 
     motion_groups: dict[str, MotionGroupInstance]
+    constraint_orbits: dict[str, ConstraintOrbitInstance] = Field(
+        default_factory=dict
+    )
     fragments: dict[str, FragmentInstance]
     ports: dict[str, InterfacePortInstance]
     interfaces: dict[str, InterfaceEdgeInstance] = Field(default_factory=dict)
     scaffold_links: dict[str, ScaffoldLinkInstance] = Field(
         default_factory=dict
     )
+    generated_segments: dict[str, GeneratedSegmentInstance] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def validate_instance_references(self) -> "CompiledInstanceSet":
+        for orbit_id, orbit in self.constraint_orbits.items():
+            if orbit_id != orbit.id:
+                raise ValueError(
+                    "Constraint-orbit mapping key must match instance ID"
+                )
+            for group_instance_id in orbit.group_instance_ids:
+                group = self.motion_groups.get(group_instance_id)
+                if group is None:
+                    raise ValueError(
+                        f"Constraint orbit {orbit_id!r} references unknown "
+                        f"motion-group instance {group_instance_id!r}"
+                    )
+                if group.orbit_id != orbit_id:
+                    raise ValueError(
+                        f"Motion-group instance {group_instance_id!r} has "
+                        f"the wrong orbit owner"
+                    )
+
         for instance_id, group in self.motion_groups.items():
             if instance_id != group.id:
                 raise ValueError("Motion-group mapping key must match instance ID")
@@ -197,6 +272,43 @@ class CompiledInstanceSet(StrictModel):
                     raise ValueError(
                         f"Scaffold endpoint {fragment_id!r}:{terminus.value} "
                         "is used more than once"
+                    )
+                occupied_endpoints.add(endpoint)
+
+        for instance_id, segment in self.generated_segments.items():
+            if instance_id != segment.id:
+                raise ValueError(
+                    "Generated-segment mapping key must match instance ID"
+                )
+            if isinstance(segment, TerminalExtensionInstance):
+                endpoint_records = (
+                    (
+                        segment.anchor_fragment_instance_id,
+                        segment.anchor_terminus,
+                    ),
+                )
+            else:
+                endpoint_records = (
+                    (
+                        segment.from_fragment_instance_id,
+                        segment.from_terminus,
+                    ),
+                    (
+                        segment.to_fragment_instance_id,
+                        segment.to_terminus,
+                    ),
+                )
+            for fragment_id, terminus in endpoint_records:
+                if fragment_id not in self.fragments:
+                    raise ValueError(
+                        f"Generated segment {instance_id!r} references "
+                        f"unknown fragment instance {fragment_id!r}"
+                    )
+                endpoint = (fragment_id, terminus)
+                if endpoint in occupied_endpoints:
+                    raise ValueError(
+                        f"Scaffold endpoint {fragment_id!r}:"
+                        f"{terminus.value} is used more than once"
                     )
                 occupied_endpoints.add(endpoint)
 

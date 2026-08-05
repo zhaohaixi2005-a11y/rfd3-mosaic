@@ -162,6 +162,36 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 symmetry_noise_mode="coupled",
             )
 
+    def test_default_sampler_rejects_local_symmetry_backend(self) -> None:
+        with self.assertRaisesRegex(ValueError, "kind=symmetry"):
+            ConditionalDiffusionSampler(
+                kind="default",
+                symmetry_execution_backend="local_neighbourhood",
+            )
+
+    def test_local_backend_requires_exact_coupled_state(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "local_neighbourhood requires symmetry_state_mode",
+        ):
+            SampleDiffusionWithSymmetry(
+                gamma_0=0.6,
+                symmetry_execution_backend="local_neighbourhood",
+                preserve_fixed_motif_during_symmetry=True,
+            )
+
+    def test_local_backend_requires_fixed_motif_preservation(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "preserve_fixed_motif_during_symmetry=True",
+        ):
+            SampleDiffusionWithSymmetry(
+                gamma_0=0.6,
+                symmetry_execution_backend="local_neighbourhood",
+                symmetry_state_mode="orbit_average",
+                symmetry_noise_mode="coupled",
+            )
+
     def test_diffusion_requires_at_least_two_timesteps(self) -> None:
         sampler = SampleDiffusionWithSymmetry(
             gamma_0=0.6,
@@ -171,6 +201,16 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least two"):
             sampler._construct_inference_noise_schedule(
                 device=torch.device("cpu"),
+            )
+
+    def test_unknown_fixed_motif_finalization_mode_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "fixed_motif_finalization_mode",
+        ):
+            SampleDiffusionWithSymmetry(
+                gamma_0=0.6,
+                fixed_motif_finalization_mode="unknown",
             )
 
     def test_partial_diffusion_cannot_reduce_schedule_to_one_step(

@@ -3,6 +3,7 @@ import unittest
 from rfd3_mosaic.structure import AtomRecord
 from rfd3_mosaic.validation import (
     FragmentPlacement,
+    audit_interface_seed_pairs,
     audit_two_fragment_seed,
     infer_fragment_placements,
 )
@@ -116,6 +117,37 @@ class SeedIntegrityTestCase(unittest.TestCase):
             placements["left"].output_residues_by_source, {10: 10}
         )
 
+    def test_infers_more_than_two_indexed_fragments(self):
+        mapping = {
+            "atom_mappings": [
+                {
+                    "source": {
+                        "fragment_id": fragment_id,
+                        "residue_number": source_residue,
+                    },
+                    "compiled": {
+                        "chain_id": compiled_chain,
+                        "label_seq_id": 1,
+                    },
+                }
+                for fragment_id, source_residue, compiled_chain in (
+                    ("first_left", 10, "A"),
+                    ("first_right", 20, "B"),
+                    ("second_left", 30, "C"),
+                    ("second_right", 40, "D"),
+                )
+            ]
+        }
+        placements = infer_fragment_placements(
+            mapping,
+            {"A1": "A10", "B1": "A20", "C1": "B30", "D1": "B40"},
+        )
+
+        self.assertEqual(
+            set(placements),
+            {"first_left", "first_right", "second_left", "second_right"},
+        )
+
     def test_finds_cross_chain_cyclic_seed_pairs(self):
         report = audit_two_fragment_seed(
             output_atoms=self._cyclic_output(),
@@ -151,6 +183,40 @@ class SeedIntegrityTestCase(unittest.TestCase):
             if pair["right_chain"] == "B"
         )
         self.assertIn("ca_rmsd", failed["failed_checks"])
+
+    def test_combines_multiple_interface_seed_audits(self):
+        references = {
+            **self.references,
+            "second_left": self.references["left"],
+            "second_right": self.references["right"],
+        }
+        placements = {
+            **self.placements,
+            "second_left": FragmentPlacement(
+                "second_left", "X", {10: 10, 11: 11, 12: 12}
+            ),
+            "second_right": FragmentPlacement(
+                "second_right", "X", {20: 1, 21: 2, 22: 3}
+            ),
+        }
+        report = audit_interface_seed_pairs(
+            output_atoms=self._cyclic_output(),
+            references=references,
+            placements=placements,
+            fragment_pairs=(
+                ("left", "right"),
+                ("second_left", "second_right"),
+            ),
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(
+            report["audit"], "rfd3_mosaic.multi_interface_seed_integrity"
+        )
+        self.assertEqual(report["summary"]["interface_seeds"], 2)
+        self.assertEqual(report["summary"]["passed_interface_seeds"], 2)
+        self.assertEqual(report["summary"]["seed_pairs"], 6)
+        self.assertEqual(len(report["interface_seed_audits"]), 2)
 
 
 if __name__ == "__main__":

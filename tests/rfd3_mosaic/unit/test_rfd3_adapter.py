@@ -6,6 +6,13 @@ from pathlib import Path
 import yaml
 
 from rfd3_mosaic.output import compile_rfd3_input, compile_standalone
+from rfd3_mosaic.output.rfd3_adapter import (
+    _native_symmetry_id_and_multiplicity,
+)
+from rfd3_mosaic.schema.specs import (
+    SymmetryTransformSetSpec,
+    SymmetryType,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -20,6 +27,11 @@ LHD101_D2_DRYRUN_CONFIG = (
 LHD101_D3_DRYRUN_CONFIG = (
     REPOSITORY_ROOT
     / "configs/rfd3_mosaic/dihedral/lhd101_d3_dryrun.yaml"
+)
+LHD101_D3_TWO_ORBIT_CONFIG = (
+    REPOSITORY_ROOT
+    / "configs/rfd3_mosaic/dihedral/"
+    "lhd101_d3_two_orbit_engineering.yaml"
 )
 LHD101_CYCLIC_CONFIGS = {
     order: (
@@ -45,6 +57,183 @@ class RFD3AdapterTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_high_order_native_symmetry_is_not_capped_at_ten_copies(
+        self,
+    ) -> None:
+        cases = (
+            (SymmetryType.CYCLIC, 12, "C12", 12),
+            (SymmetryType.DIHEDRAL, 6, "D6", 12),
+        )
+        for symmetry_type, order, symmetry_id, multiplicity in cases:
+            with self.subTest(symmetry_id=symmetry_id):
+                specification = SymmetryTransformSetSpec(
+                    type=symmetry_type,
+                    order=order,
+                    secondary_axis=(1.0, 0.0, 0.0)
+                    if symmetry_type == SymmetryType.DIHEDRAL
+                    else None,
+                )
+                self.assertEqual(
+                    _native_symmetry_id_and_multiplicity(specification),
+                    (symmetry_id, multiplicity),
+                )
+
+    def test_compiles_central_terminal_extensions_through_native_ir(
+        self,
+    ) -> None:
+        source = self.output_directory / "central_motif.pdb"
+        source.write_text(
+            "".join(
+                (
+                    "ATOM      1  N   ALA A   1       9.000   0.000   0.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      2  CA  ALA A   1      10.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      3  C   ALA A   1      11.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      4  N   GLY A   2      12.000   0.000   0.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      5  CA  GLY A   2      13.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      6  C   GLY A   2      14.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "END\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+        config = self.output_directory / "central.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "mode": "constraint_assembly",
+                        "fragments": {
+                            "motif": {
+                                "source": str(source),
+                                "selection": "A/1-2/*",
+                                "entity_type": "protein",
+                                "role": "functional_motif",
+                                "fixed_atoms": "all",
+                            }
+                        },
+                        "motion_groups": {
+                            "motif_group": {
+                                "members": ["motif"],
+                                "mode": "fixed",
+                            }
+                        },
+                        "symmetry": {
+                            "transform_sets": {
+                                "ring": {"type": "cyclic", "order": 3}
+                            },
+                            "orbits": {
+                                "motif_orbit": {
+                                    "transform_set": "ring",
+                                    "master_groups": ["motif_group"],
+                                }
+                            },
+                        },
+                        "generated_segments": {
+                            "n_flank": {
+                                "anchor": {
+                                    "fragment": "motif",
+                                    "terminus": "N",
+                                },
+                                "length": {"minimum": 5, "maximum": 5},
+                            },
+                            "c_flank": {
+                                "anchor": {
+                                    "fragment": "motif",
+                                    "terminus": "C",
+                                },
+                                "length": {"minimum": 7, "maximum": 7},
+                            },
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "central-output",
+            example_id="central-c3",
+        )
+        emitted = json.loads(outputs.input_path.read_text())["central-c3"]
+
+        self.assertEqual(emitted["contig"], "5-5,A1-2,7-7")
+        self.assertEqual(emitted["select_fixed_atoms"], {"A1-2": "ALL"})
+        self.assertEqual(
+            emitted["extra"]["scaffold_mode"],
+            "terminal_extensions",
+        )
+        self.assertEqual(
+            {
+                group["constraint_kind"]
+                for group in emitted["extra"][
+                    "motif_constraint_groups"
+                ]
+            },
+            {"fixed_motif"},
+        )
+        self.assertEqual(
+            emitted["extra"]["motif_constraint_orbits"][0][
+                "group_transform_ids"
+            ],
+            [0, 1, 2],
+        )
+        self.assertTrue(emitted["symmetry"]["use_declared_frames"])
+
+    def test_c12_compiles_to_a_native_input(self) -> None:
+        config = yaml.safe_load(
+            LHD101_CYCLIC_CONFIGS[5].read_text(encoding="utf-8")
+        )
+        interface_seed = config["interface_seed"]
+        transform_set = next(
+            iter(interface_seed["symmetry"]["transform_sets"].values())
+        )
+        transform_set["order"] = 12
+
+        # Preserve the configured C5 adjacent-copy chord length while
+        # increasing the ring order.
+        interface_seed["initialization"]["primary_seed"]["placement"][
+            "radius"
+        ]["mean"] = 83.68
+
+        config_path = self.output_directory / "lhd101_c12.yaml"
+        config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False),
+            encoding="utf-8",
+        )
+        outputs = compile_rfd3_input(
+            config_path,
+            self.output_directory / "tracked-c12",
+            base_directory=REPOSITORY_ROOT,
+            example_id="lhd101_c12_interface_seed",
+        )
+        emitted = json.loads(
+            outputs.input_path.read_text(encoding="utf-8")
+        )[outputs.example_id]
+
+        self.assertEqual(emitted["symmetry"]["id"], "C12")
+        self.assertEqual(emitted["extra"]["symmetry_multiplicity"], 12)
+        self.assertEqual(
+            len(emitted["extra"]["registry_transform_order"]),
+            12,
+        )
+        self.assertEqual(
+            len(
+                emitted["extra"]["materialized_linker_contour_preflight"][
+                    "evaluated_link_instances"
+                ]
+            ),
+            12,
+        )
 
     def test_uses_cross_copy_asu_scaffold_contig(self) -> None:
         self.assertEqual(
@@ -155,6 +344,8 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(len(orbits), 1)
         orbit = orbits[0]
         self.assertEqual(orbit["mobility_mode"], "fixed")
+        self.assertIsNone(orbit["mobility_subspace"])
+        self.assertIsNone(orbit["mobility_proposal"])
         self.assertEqual(orbit["group_transform_ids"], [0, 1, 2])
         self.assertEqual(
             orbit["group_registry_transform_ids"],
@@ -179,6 +370,13 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 "max_translation": 2.0,
                 "max_rotation_deg": 10.0,
             },
+            "schedule": {
+                "start_fraction": 0.05,
+                "end_fraction": 0.75,
+                "response": 0.2,
+                "max_step_translation": 0.25,
+                "max_step_rotation_deg": 1.0,
+            },
         }
         config = self.output_directory / "lhd101_c3_mobile.yaml"
         config.write_text(
@@ -199,6 +397,12 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(orbit["mobility_mode"], "orbit_rigid")
         self.assertEqual(orbit["max_translation"], 2.0)
         self.assertEqual(orbit["max_rotation_deg"], 10.0)
+        self.assertEqual(orbit["mobility_subspace"], "bounded_se3")
+        self.assertEqual(orbit["mobility_proposal"], "denoiser_fit")
+        self.assertEqual(
+            orbit["mobility_schedule"]["max_step_rotation_deg"],
+            1.0,
+        )
 
     def test_emits_complete_cross_chain_runtime_constraint_groups(
         self,
@@ -208,6 +412,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(len(groups), 3)
         resolved_pairs = []
         for group in groups:
+            self.assertEqual(group["constraint_kind"], "interface")
             self.assertEqual(group["orbit_id"], "primary_orbit")
             self.assertEqual(
                 {member["role"] for member in group["members"]},
@@ -402,6 +607,40 @@ class RFD3AdapterTestCase(unittest.TestCase):
                     emitted["extra"]["registry_transform_order"],
                     transform_order,
                 )
+
+    def test_d3_two_orbit_engineering_input_emits_two_asu_segments(
+        self,
+    ) -> None:
+        outputs = compile_rfd3_input(
+            LHD101_D3_TWO_ORBIT_CONFIG,
+            self.output_directory / "d3-two-orbit",
+            base_directory=REPOSITORY_ROOT,
+            example_id="lhd101_d3_two_orbit_engineering",
+        )
+        emitted = json.loads(
+            outputs.input_path.read_text(encoding="utf-8")
+        )[outputs.example_id]
+        extra = emitted["extra"]
+
+        self.assertEqual(emitted["symmetry"]["id"], "D3")
+        self.assertTrue(emitted["symmetry"]["use_declared_frames"])
+        self.assertEqual(extra["symmetry_multiplicity"], 6)
+        self.assertEqual(extra["asu_chain_count"], 2)
+        self.assertEqual(
+            extra["scaffold_mode"],
+            "multiple_asu_scaffold_segments",
+        )
+        self.assertEqual(emitted["contig"].count("85-85"), 2)
+        self.assertEqual(emitted["contig"].count("/0"), 1)
+        self.assertEqual(len(emitted["select_fixed_atoms"]), 4)
+        self.assertIsNone(extra["asu_scaffold_link_instance"])
+        self.assertEqual(len(extra["asu_scaffold_link_instances"]), 2)
+        self.assertEqual(len(extra["asu_scaffold_segments"]), 2)
+        self.assertEqual(len(extra["motif_constraint_orbits"]), 2)
+        self.assertEqual(len(extra["motif_constraint_groups"]), 12)
+        self.assertTrue(
+            extra["materialized_linker_contour_preflight"]["passed"]
+        )
 
     def test_c5_c6_c7_compile_to_native_cyclic_inputs(self) -> None:
         for order, config in LHD101_CYCLIC_CONFIGS.items():

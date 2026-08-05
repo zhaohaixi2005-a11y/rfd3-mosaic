@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from rfd3_mosaic.schema import FragmentSpec
-from rfd3_mosaic.structure.pdb import AtomRecord, read_pdb_atoms
+from rfd3_mosaic.structure.pdb import AtomRecord, read_structure_atoms
 
 
 _SELECTION_PATTERN = re.compile(
@@ -144,4 +144,13 @@ def load_selected_atoms(
     source_path = fragment.source
     if not source_path.is_absolute():
         source_path = Path(base_directory) / source_path
-    return select_atoms(read_pdb_atoms(source_path), fragment.selection)
+    # Assembly selections are expressed in the generator-facing namespace.
+    # For mmCIF this is ``label_asym_id``/``label_seq_id`` (the same identity
+    # used by RFD3 contigs); PDB has only one relevant namespace.
+    return select_atoms(
+        read_structure_atoms(
+            source_path,
+            mmcif_identifier_namespace="label",
+        ),
+        fragment.selection,
+    )

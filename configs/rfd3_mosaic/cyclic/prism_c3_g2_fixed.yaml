@@ -1,0 +1,91 @@
+assembly:
+  schema_version: 2
+  mode: constraint_assembly
+  random_seed: 42
+
+  fragments:
+    motif_n:
+      source: examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+      selection: A/12-20/*
+      entity_type: protein
+      role: functional_motif
+      fixed_atoms: all
+
+    motif_c:
+      source: examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+      selection: A/26-37/*
+      entity_type: protein
+      role: functional_motif
+      fixed_atoms: all
+
+  motion_groups:
+    fixed_motif:
+      members:
+        - motif_n
+        - motif_c
+      mode: fixed
+
+  ports:
+    motif_n_port:
+      group: fixed_motif
+      fragments:
+        - motif_n
+      atoms: heavy
+      frame:
+        method: reference_interface_pca
+
+    motif_c_port:
+      group: fixed_motif
+      fragments:
+        - motif_c
+      atoms: heavy
+      frame:
+        method: reference_interface_pca
+
+  symmetry:
+    transform_sets:
+      prism_c3:
+        type: cyclic
+        order: 3
+        # The deposited A -> B copy operation is a +120 degree rotation
+        # around the negative z axis.  The source PDB is rounded to 0.001 A;
+        # the compiler normalizes it to this exact C3 group action once.
+        axis: [0.0, 0.0, -1.0]
+        center: [0.0, 0.0, 0.0]
+
+    orbits:
+      fixed_motif_orbit:
+        transform_set: prism_c3
+        master_groups:
+          - fixed_motif
+        mobility:
+          mode: fixed
+
+  interfaces:
+    intraprotomer_motif_geometry:
+      left_port: motif_n_port
+      right_port: motif_c_port
+      copy_relation:
+        orbit_offset: 0
+      required: true
+      target_geometry:
+        mode: reference_transform
+        from_reference_seed: true
+        translation_tolerance: 0.001
+        rotation_tolerance_deg: 0.001
+
+  scaffold_links:
+    motif_gap:
+      from_endpoint:
+        fragment: motif_n
+        terminus: C
+      to_endpoint:
+        fragment: motif_c
+        terminus: N
+      length:
+        minimum: 5
+        maximum: 5
+      chain_break: false
+      copy_relation:
+        orbit_offset: 0
+

@@ -64,6 +64,23 @@ class ScaffoldGraphTestCase(unittest.TestCase):
             100,
         )
 
+    def test_native_generated_links_use_the_same_graph_compiler(self) -> None:
+        instances = make_instances()
+        native = instances.model_copy(
+            update={
+                "scaffold_links": {},
+                "generated_segments": dict(instances.scaffold_links),
+            }
+        )
+
+        graph = compile_scaffold_graph(native)
+
+        self.assertEqual(set(graph.links), set(instances.scaffold_links))
+        self.assertEqual(
+            graph.tied_length_ranges["protomer_length"].minimum,
+            70,
+        )
+
     def test_incoming_and_outgoing_queries_are_directed(self) -> None:
         graph = compile_scaffold_graph(make_instances())
 

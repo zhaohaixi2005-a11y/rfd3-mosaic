@@ -1,0 +1,17 @@
+schema_version: 1
+name: h100
+
+slurm:
+  partition: lrz-hgx-h100-94x4
+  gres: gpu:1
+  cpus: 12
+  memory: 440G
+  walltime: "08:00:00"
+
+setup_commands:
+  - source ~/software_paths.sh
+  - source "$SHARED_MAMBAFORGE/etc/profile.d/conda.sh"
+  - conda activate "$RC_FOUNDRY_ENV"
+
+checkpoint: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints/rfd3_latest.ckpt
+foundry_checkpoint_dirs: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints

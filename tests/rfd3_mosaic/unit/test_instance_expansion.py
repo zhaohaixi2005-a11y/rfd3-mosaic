@@ -45,6 +45,41 @@ class InstanceExpansionTestCase(unittest.TestCase):
             ].transform_id,
             "C3:r2",
         )
+        orbit = instances.constraint_orbits["primary_orbit"]
+        self.assertEqual(
+            orbit.group_instance_ids,
+            (
+                "primary_seed@primary_orbit[0]",
+                "primary_seed@primary_orbit[1]",
+                "primary_seed@primary_orbit[2]",
+            ),
+        )
+        self.assertEqual(orbit.transform_ids, ("C3:e", "C3:r1", "C3:r2"))
+
+    def test_legacy_interface_mobility_is_migrated_to_orbit_ir(self) -> None:
+        payload = load_interface_seed_config(LHD101_CONFIG).model_dump(
+            mode="python"
+        )
+        payload["interfaces"]["ring_interface"]["mobility"] = {
+            "mode": "orbit_rigid",
+            "bounds": {
+                "max_translation": 3.0,
+                "max_rotation_deg": 15.0,
+            },
+            "subspace": "radial_axial",
+            "proposal": "hoyeung_drag_compat",
+        }
+        spec = InterfaceSeedSpec.model_validate(payload)
+
+        instances = expand_symmetry_instances(spec)
+        mobility = instances.constraint_orbits["primary_orbit"].mobility
+
+        self.assertEqual(mobility.mode.value, "orbit_rigid")
+        self.assertEqual(mobility.effective_subspace.value, "radial_axial")
+        self.assertEqual(
+            mobility.effective_proposal.value,
+            "hoyeung_drag_compat",
+        )
 
     def test_fragment_ownership_is_preserved_per_copy(self) -> None:
         instances = expand_symmetry_instances(

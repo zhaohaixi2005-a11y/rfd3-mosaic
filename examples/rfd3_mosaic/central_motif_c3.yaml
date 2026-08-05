@@ -1,0 +1,21 @@
+schema_version: 1
+name: c3-central-exact
+
+topology:
+  kind: central_motif
+  template_input: /path/to/existing/c3/adapter/rfd3_input.json
+  fixed_selector: B1-31
+  n_terminal_length: 35
+  c_terminal_length: 35
+
+sampling:
+  preset: exact_mosaic
+  timesteps: 200
+  seed: 42
+
+resources:
+  profile: p100
+
+output:
+  root: /path/to/rfd3-mosaic-runs
+  campaign: central-motif

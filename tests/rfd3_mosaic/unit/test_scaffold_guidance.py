@@ -139,6 +139,69 @@ class ScaffoldBoundaryTopologyTestCase(unittest.TestCase):
                     .tolist(),
                 )
 
+    def test_sequence_adjacency_recovers_real_contig_boundaries(
+        self,
+    ) -> None:
+        """Foundry may omit ordinary peptide edges from token_bonds."""
+
+        order = 5
+        tokens_per_chain = 4
+        token_count = order * tokens_per_chain
+        features = {
+            "atom_to_token_map": torch.arange(token_count),
+            "asym_id": torch.repeat_interleave(
+                torch.arange(order),
+                tokens_per_chain,
+            ),
+            "residue_index": torch.arange(
+                tokens_per_chain
+            ).repeat(order),
+            "is_ca": torch.ones(token_count, dtype=torch.bool),
+            "is_protein": torch.ones(token_count, dtype=torch.bool),
+            "token_bonds": torch.zeros(
+                (token_count, token_count),
+                dtype=torch.bool,
+            ),
+        }
+        fixed_mask = torch.zeros(token_count, dtype=torch.bool)
+        for copy_index in range(order):
+            start = copy_index * tokens_per_chain
+            fixed_mask[start] = True
+            fixed_mask[start + tokens_per_chain - 1] = True
+
+        topology = build_boundary_topology(features, fixed_mask)
+
+        observed = {
+            tuple(pair)
+            for pair in topology.junction_pairs.cpu().tolist()
+        }
+        expected = set()
+        for copy_index in range(order):
+            start = copy_index * tokens_per_chain
+            expected.add((start, start + 1))
+            expected.add((start + 3, start + 2))
+        self.assertEqual(observed, expected)
+
+    def test_sequence_adjacency_does_not_cross_chain_or_residue_gap(
+        self,
+    ) -> None:
+        features = {
+            "atom_to_token_map": torch.arange(4),
+            "asym_id": torch.tensor([0, 0, 1, 1]),
+            "residue_index": torch.tensor([0, 2, 0, 1]),
+            "is_ca": torch.ones(4, dtype=torch.bool),
+            "is_protein": torch.ones(4, dtype=torch.bool),
+            "token_bonds": torch.zeros((4, 4), dtype=torch.bool),
+        }
+        fixed_mask = torch.tensor([True, False, True, False])
+
+        topology = build_boundary_topology(features, fixed_mask)
+
+        self.assertEqual(
+            topology.junction_pairs.cpu().tolist(),
+            [[2, 3]],
+        )
+
     def test_non_ca_atoms_are_not_used_as_boundary_representatives(
         self,
     ) -> None:

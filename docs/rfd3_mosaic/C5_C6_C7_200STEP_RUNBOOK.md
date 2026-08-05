@@ -1,5 +1,115 @@
 # LHD101 C5/C6/C7 200-step capability runbook
 
+## 8.3 low-tilt 200-step campaign
+
+The `8.3` campaign freezes exactly one interface-seed pose for each of C5,
+C6, and C7, then varies only the RFD3 diffusion seed. A low tilt means that
+the seed principal axis is close to parallel to the declared cyclic axis:
+the accepted interval is 0--15 degrees.
+
+Selection is performed from each complete `pose_ensemble.json`, not from the
+quality-diversity shortlist. A candidate must satisfy all of the following
+before it can be ranked:
+
+- `accepted = true`;
+- `hard_clashes = 0`;
+- `interface_ok = true` and `linker_ok = true`;
+- `required_objective_failures = 0`;
+- `0 <= maximum_principal_axis_tilt_deg <= 15`.
+
+Among eligible candidates, the script minimizes objective penalty, then
+scaffold endpoint span and mean span, preferring larger inter-group clearance
+and lower tilt as later tie-breakers. It records the selected manifest and its
+SHA256 in `selected_seed_interfaces.tsv`; subsequent invocations reuse this
+frozen selection rather than silently choosing a different pose.
+
+After synchronizing the scripts to LRZ, inspect the selected C5/C6/C7 poses
+without submitting jobs:
+
+```bash
+RFD3_8_3_SELECT_ONLY=true \
+bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+
+column -t -s $'\t' \
+  /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/8.3/selected_seed_interfaces.tsv
+```
+
+The production invocation plans 100 diffusion seeds per pose, or 300
+independent 200-step jobs. It submits at most 36 jobs per invocation to avoid
+the per-user Slurm submission limit; rerun the same command as queue capacity
+becomes available:
+
+```bash
+bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+```
+
+The default partition pool includes the LRZ H100, A100-80GB, V100 and P100
+partitions. Confirm the live names before the first submission, and override
+the pool if any partition is unavailable to the account:
+
+```bash
+sinfo -h -o '%P | %G | %a' | grep -Ei 'h100|a100|v100|p100'
+
+RFD3_8_3_PARTITIONS='lrz-hgx-h100-94x4,lrz-dgx-a100-80x8' \
+bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+```
+
+All campaign state is isolated under:
+
+```text
+$RUN_BASE/8.3/selected_seed_interfaces.tsv
+$RUN_BASE/8.3/submissions.tsv
+$RUN_BASE/8.3/native_c5_full/<job-id>/
+$RUN_BASE/8.3/native_c6_full/<job-id>/
+$RUN_BASE/8.3/native_c7_full/<job-id>/
+```
+
+The submission table is resumable. Active, completed, and already audited
+tasks are not duplicated. A failed task with no pair of audit reports is
+treated as infrastructure-incomplete and can be retried once by default.
+Scientific failures that produced both reports are retained and are not
+automatically resubmitted. Production uses the validated
+`explicit_all_copy` backend and low-memory mode.
+
+An inspected pose can replace the automatic quality winner for one order,
+but it must still pass every hard gate and the configured tilt interval. For
+example, to freeze C5 pose seed 3070 while leaving C6/C7 automatic, remove an
+old selection only before any campaign jobs have been submitted, then run:
+
+```bash
+rm /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/8.3/selected_seed_interfaces.tsv
+
+RFD3_8_3_C5_POSE_SEED=3070 \
+RFD3_8_3_SELECT_ONLY=true \
+bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+```
+
+Once the replacement row is frozen, later submission invocations reuse it
+without requiring the override variable again.
+
+## C5 inter-chain-attention validation matrix
+
+After the `>3`-chain sparse-attention row-index fix passes the complete unit
+suite, run one controlled 12-job matrix before changing mobile motif behavior:
+
+```text
+3 previously screened C5 poses: 3063, 3458, 3145
+x 50 and 200 diffusion steps
+x P100 and H100
+= 12 jobs, with diffusion seed fixed at 44
+```
+
+The three 50-step P100 jobs are paired with pre-fix jobs `5722375`, `5722380`
+and `5722385`. The submission script assigns stable logical IDs `A01`--`A12`
+and records every Slurm ID and condition in a timestamped TSV:
+
+```bash
+bash scripts/rfd3_mosaic/submit_c5_attention_validation_matrix.sh
+```
+
+This matrix tests attention-fix reproducibility across pose, diffusion depth
+and accelerator. It does not test mobile motif updates, which remain disabled.
+
 ## Scope
 
 This suite tests whether the validated exact cyclic sampler path generalizes
@@ -146,6 +256,59 @@ C5--C7 contain more tokens than the validated C3 baseline. Low-memory mode is
 enabled, but P100 memory feasibility has not yet been established; an
 out-of-memory result is a backend-capacity failure, not a geometry result.
 
+## Stage 5: batch screen extracted structures
+
+After copying result structures into each order's `extracted_cif` directory,
+run all three screens and print a combined summary from the repository root:
+
+```bash
+bash scripts/rfd3_mosaic/screen_extracted_cn_structures.sh
+```
+
+`RFD3_SCREEN_ORDERS="5 7"` can restrict the run to selected orders. The
+underlying single-directory command remains
+`python -m rfd3_mosaic.rfd3_batch_screen`.
+
+For a file named `<job-id>__<result>.cif`, the screen resolves the sibling
+`<job-id>` run directory and reuses its adapter transform registry and
+seed/scaffold reports. It writes one JSON report and one flat CSV per order:
+
+```text
+native_c<n>_full/extracted_cif/c<n>_batch_screen.json
+native_c<n>_full/extracted_cif/c<n>_batch_screen.csv
+```
+
+The strict gate still requires the original seed audit plus recomputed
+continuity, compactness, zero CA clashes, and declared-transform Cn symmetry.
+Additional ring and packing fields are diagnostics for ranking:
+
+- neighbouring-chain CA contacts below 8 A and contacts per residue;
+- minimum inter-chain CA distance and non-neighbour contacts;
+- fitted chain-COM ring radius and radial coefficient of variation;
+- axial COM RMS and cyclic angular-gap error;
+- minimum CA clearance from the fitted cyclic axis.
+
+Higher contact count is not an independent success criterion: a collapsed or
+clashing assembly can also have many contacts. Rank only after the hard gates,
+and send shortlisted structures to sequence design and multimer prediction
+before any biological claim.
+
+The first completed screen on 2026-07-31 produced:
+
+```text
+C5: 12/15 strict passes
+C6: 13/18 strict passes
+C7: 12/15 strict passes
+total: 37/48 strict passes
+```
+
+All 48 structures passed the seed audit and had their declared symmetry
+available. The principal failure mode was CA clash; two structures also
+failed continuity. For C6, do not automatically promote contact-ranked jobs
+`5722400` and `5722401`: their minimum inter-chain CA distances are only
+3.006 A and 3.229 A. Jobs `5722398` and `5722341` provide less borderline
+packing controls at 3.940 A and 4.223 A.
+
 ## Separate C5 low-tilt mobility comparison
 
 The formal C5/C6/C7 path above keeps the interface seed static. The
@@ -166,21 +329,16 @@ mobility mode. The exact rationale and interpretation are in
 ## Higher-order boundary
 
 The generic schema, Cn/Dn registry, and instance compiler are parameterized and
-can represent C12/C20. That is not equivalent to native RFD3 inference
-support. The current native path has two independent hard guards:
-
-- Mosaic rejects symmetric-motif multiplicity greater than 10.
-- Official Foundry RFD3 also defines `MAX_TRANSFORMS = 10` during motif-frame
-  recovery.
-
-Consequently C12/C20 are deliberately excluded from this runbook. Even after
-removing both guards, full token-pair state grows quadratically with assembly
+can represent C12/C20. The local branch now removes both artificial
+10-transform guards in the Mosaic adapter and Foundry motif-frame recovery,
+with C12/D6 CPU regressions added. This is not yet equivalent to validated
+high-order GPU inference. Full token-pair state grows quadratically with assembly
 size; C12 is high risk and C20 is expected to be impractical on a 16-GB P100
 with the current explicit all-copy representation. These are code- and
 memory-scaling assessments, not completed C12/C20 GPU measurements. High-order
-work requires a separate ASU/local-neighborhood strategy, non-factorial audits,
-and dedicated chain-encoding validation rather than a larger value in this
-submission script.
+work therefore begins with LRZ CPU construction and a bounded C12 GPU probe;
+C20 and larger groups require a separate local-neighborhood strategy,
+non-factorial audits, and dedicated chain-encoding validation.
 
 ## H100 robustness screen
 

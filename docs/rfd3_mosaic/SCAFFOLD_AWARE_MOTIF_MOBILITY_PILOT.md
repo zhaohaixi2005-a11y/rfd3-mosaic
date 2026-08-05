@@ -100,6 +100,23 @@ The tracked entry point is
 50-step, proposal-only P100 job.  The formal C3/C5/C6/C7 scripts and configs do
 not enable mobility.
 
+### Runtime boundary representation
+
+The first real C5 pilot exposed a distinction hidden by the original synthetic
+tests: Foundry's `token_bonds` matrix does not have to contain ordinary peptide
+neighbour edges. Scaffold guidance therefore obtains candidate junctions from
+the union of:
+
+- explicit same-chain protein `token_bonds`; and
+- consecutive same-chain protein `residue_index` values with one CA-bearing
+  token per residue.
+
+Only fixed/generated transitions become junctions. Chain identity and residue
+continuity prevent the fallback from bridging chain breaks or sequence gaps.
+Job `5722585` stopped at the old boundary initialization before diffusion and
+is retained only as failure evidence. The revised runtime path must pass LRZ
+tests and a real C5 proposal-only run before the pilot advances.
+
 ## Selected C5 P100 comparison
 
 The retained low-tilt candidate for the first paired experiment is pose seed

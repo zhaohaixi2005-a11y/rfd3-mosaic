@@ -399,6 +399,7 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
                 "sym_transform_id": np.asarray([0, 0, 1, 1]),
                 "sym_entity_id": np.asarray([0, 0, 0, 0]),
                 "is_sym_asu": np.asarray([True, True, False, False]),
+                "symmetry_id": np.asarray(["C3", "C3", "C3", "C3"]),
                 "motif_constraint_group_id": np.asarray([0, 0, 1, -1]),
                 "src_component": np.asarray(["A1", "A2", "A1", "A2"]),
                 "atom_name": np.asarray(["CA", "CA", "CA", "CA"]),
@@ -409,6 +410,8 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
         data = {"atom_array": atom_array, "feats": {}}
 
         output = transform.forward(data)
+
+        self.assertEqual(output["feats"]["symmetry_id"], "C3")
 
         self.assertTrue(
             torch.equal(
@@ -502,6 +505,81 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
                 ),
             )
         )
+
+    def test_runtime_central_fixed_motif_groups_resolve_by_copy(self) -> None:
+        atom_array = _AnnotationArray(
+            {
+                "sym_transform_id": np.asarray([0, 0, 1, 1, 2, 2]),
+                "sym_entity_id": np.asarray([0, 0, 0, 0, 0, 0]),
+                "is_sym_asu": np.asarray(
+                    [True, True, False, False, False, False]
+                ),
+                "src_component": np.asarray(
+                    ["B1", "B2", "B1", "B2", "B1", "B2"]
+                ),
+                "atom_name": np.asarray(["CA"] * 6),
+                "is_motif_atom_with_fixed_coord": np.asarray([True] * 6),
+            }
+        )
+        groups = [
+            {
+                "group_id": f"central@C3[{transform_id}]",
+                "constraint_kind": "fixed_motif",
+                "members": [
+                    {
+                        "role": "motif",
+                        "src_components": ["B1", "B2"],
+                        "sym_transform_id": transform_id,
+                    }
+                ],
+            }
+            for transform_id in range(3)
+        ]
+
+        membership = AddSymmetryFeats.make_motif_constraint_group_membership(
+            atom_array,
+            groups,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                membership,
+                torch.tensor(
+                    [
+                        [True, True, False, False, False, False],
+                        [False, False, True, True, False, False],
+                        [False, False, False, False, True, True],
+                    ]
+                ),
+            )
+        )
+
+    def test_central_fixed_motif_group_rejects_interface_roles(self) -> None:
+        atom_array = _AnnotationArray(
+            {
+                "sym_transform_id": np.asarray([0]),
+                "src_component": np.asarray(["B1"]),
+                "is_motif_atom_with_fixed_coord": np.asarray([True]),
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "exactly the roles"):
+            AddSymmetryFeats.make_motif_constraint_group_membership(
+                atom_array,
+                [
+                    {
+                        "group_id": "bad-central",
+                        "constraint_kind": "fixed_motif",
+                        "members": [
+                            {
+                                "role": "left",
+                                "src_components": ["B1"],
+                                "sym_transform_id": 0,
+                            }
+                        ],
+                    }
+                ],
+            )
 
     def test_orbit_slots_follow_atom_keys_after_copy_reordering(
         self,
@@ -623,7 +701,19 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
                 "group_ids": ["g0", "g1"],
                 "master_group_id": "g0",
                 "group_transform_ids": [0, 1],
-                "mobility_mode": "fixed",
+                "mobility_mode": "orbit_rigid",
+                "max_translation": 2.5,
+                "max_rotation_deg": 12.0,
+                "mobility_subspace": "bounded_se3",
+                "mobility_proposal": "scaffold_objectives",
+                "mobility_objectives": ["junction", "assembly_clash"],
+                "mobility_schedule": {
+                    "start_fraction": 0.05,
+                    "end_fraction": 0.70,
+                    "response": 0.20,
+                    "max_step_translation": 0.15,
+                    "max_step_rotation_deg": 0.75,
+                },
             }
         ]
         transform = AddSymmetryFeats()
@@ -662,6 +752,28 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
                 ],
                 torch.tensor([0, 1]),
             )
+        )
+        self.assertTrue(
+            torch.equal(
+                features["motif_constraint_orbit_subspace"],
+                torch.tensor([4]),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                features["motif_constraint_orbit_proposal"],
+                torch.tensor([2]),
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                features["motif_constraint_orbit_schedule"],
+                torch.tensor([[0.05, 0.70, 0.20, 0.15, 0.75]]),
+            )
+        )
+        self.assertEqual(
+            features["motif_constraint_orbit_objective_ids"],
+            (("junction", "assembly_clash"),),
         )
 
     def test_atomwise_projection_does_not_mutate_input(self) -> None:

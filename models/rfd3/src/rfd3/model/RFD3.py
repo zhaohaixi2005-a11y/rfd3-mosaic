@@ -78,7 +78,34 @@ class RFD3(nn.Module):
         n_cycle: int | None = None,
         **_: Any,
     ) -> dict:
-        initializer_outputs = self.token_initializer(input["f"])
+        full_f = input["f"]
+        network_f = full_f
+        local_symmetry_context = None
+        if not self.training:
+            # The local backend must crop before TokenInitializer; cropping
+            # only X_noisy_L inside the sampler would retain the full pair
+            # representation and misalign atom/token indices.
+            assert coord_atom_lvl_to_be_noised is not None
+            prepare_local_view = getattr(
+                self.inference_sampler.sampler,
+                "prepare_local_network_view",
+                None,
+            )
+            if prepare_local_view is not None:
+                local_symmetry_context = prepare_local_view(
+                    full_f,
+                    coord_atom_lvl_to_be_noised,
+                )
+                if local_symmetry_context is not None:
+                    if not self.token_initializer.use_chunked_pll:
+                        raise ValueError(
+                            "local_neighbourhood requires low_memory_mode=True"
+                        )
+                    network_f = (
+                        local_symmetry_context.feature_view.features
+                    )
+
+        initializer_outputs = self.token_initializer(network_f)
 
         if self.training:
             # Single denoising step
@@ -93,14 +120,20 @@ class RFD3(nn.Module):
             # Inference always provides the coordinates to be noised.
             assert coord_atom_lvl_to_be_noised is not None
             if self.use_classifier_free_guidance:
-                f_ref = strip_f(input["f"], self.cfg_features)
+                f_ref = strip_f(network_f, self.cfg_features)
                 ref_initializer_outputs = self.token_initializer(f_ref)
             else:
                 f_ref = None
                 ref_initializer_outputs = None
 
+            local_kwargs = {}
+            if local_symmetry_context is not None:
+                local_kwargs = {
+                    "network_f": network_f,
+                    "local_symmetry_context": local_symmetry_context,
+                }
             return self.inference_sampler.sample_diffusion_like_af3(
-                f=input["f"],
+                f=full_f,
                 f_ref=f_ref,  # for cfg
                 diffusion_module=self.diffusion_module,
                 diffusion_batch_size=coord_atom_lvl_to_be_noised.shape[0],
@@ -108,4 +141,5 @@ class RFD3(nn.Module):
                 # Forwarded as **kwargs:
                 initializer_outputs=initializer_outputs,
                 ref_initializer_outputs=ref_initializer_outputs,  # for cfg
+                **local_kwargs,
             )

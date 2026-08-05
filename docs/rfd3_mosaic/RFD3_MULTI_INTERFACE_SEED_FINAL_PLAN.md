@@ -1,5 +1,32 @@
 # RFD3 Multi-Interface Seed（Interface-Seed 2.0）最终架构与实施方案
 
+## 两类必须同时支持的固定 motif 拓扑
+
+最终能力不能只等同于当前 LHD101 跨亚基 interface-seed 示例。统一的
+symmetry-aware constraint-orbit 表达必须覆盖：
+
+```text
+模式 I：fixed interface half -> generated ASU segment -> fixed interface half
+模式 II：generated N terminus -> fixed central motif -> generated C terminus
+```
+
+模式 I 的一个 constraint group 含 `left/right` 两侧原子；模式 II 的一个
+group 含单一 `motif` 原子集。二者都按 Cn/Dn group action 组成完整 orbit，
+但不得用伪造的 interface 角色表达中央 motif。Sampler 对二者复用同一套
+complete-orbit restore 与 exact symmetry state，不再让 biological topology
+受某个 hard-coded left/right parser 限制。
+
+中央 motif 的第一项验收不是结构是否“看起来仍为 C3”，而是完整 motif
+orbit 相对输入 registry 是否保持。受控 A/B/C/D 实验固定输入、diffusion
+seed、长度和步数，依次隔离 realignment、完整 orbit 恢复以及 exact state；
+只有这个对照才能区分 Hubert 输入/参数错误与 RFD3 symmetry execution 的
+真实语义缺口。
+
+实际开发与生产路径直接采用 D：关闭 realignment，使用 orbit-average
+state、coupled noise 和 complete fixed-motif-orbit restore。A--C 只保留为
+可选 regression controls；当前目标是交付正确、可审计的两类 topology，
+而不是追责某一次外部运行。
+
 > **当前已落实的静态采样基线（2026-07-22）**：完整 interface seed 使用
 > `fixed_atoms: all` 保持全原子坐标和序列；其整体 pose 使用 Haar-uniform
 > SO(3) quaternion sampling，LHD101 C3 半径在 20–30 Å 内采样。采样变换
@@ -974,6 +1001,85 @@ presymmetrized CIF
 
 ## 11. Dynamic pose-graph controller
 
+### 11.0 候选方法目标：symmetry-constrained alternating inference
+
+本项目的核心不能停留在“RFD3 输出后移动 motif 坐标”。最终运行状态必须显式
+区分：
+
+```text
+X_t = 完整 all-atom assembly 的 diffusion state
+g_t = 每个 mobile interface orbit 的 symmetry-reduced pose state
+```
+
+每一步联合推理定义为：
+
+```text
+(X_t, g_t)
+-> RFD3 在完整 assembly context 中 denoise X_t
+-> 将所有等价 copies 的 scaffold signal 逆映射到 master frame 后聚合
+-> proposal backend 从聚合信号或显式可微目标产生 g_t 的 proposal
+-> 在累计和单步 bounds 内更新 g_t
+-> 从 master interface pose 通过 Cn/Dn group actions 重建所有 copies
+-> 同步 fixed targets、motif_pos、pair conditioning 和 constraint targets
+-> 将 X_t 投影回 exact group closure
+```
+
+这一区别于三个已有路径：
+
+- 官方 RFD3 的 static pre-symmetrized motif；
+- RFdiffusion1 Interface-Seed 的 atom-slot-wise heuristic dragging；
+- 仅在最终输出中重新插入 motif 的 post-processing。
+
+第一阶段不声称训练了新的 score model，也不称为 joint diffusion。
+除非未来为 `g_t` 明确定义 forward noise、timestep-dependent distribution 和
+reverse transition，当前更准确的名称是 symmetry-constrained alternating inference。
+`scaffold_boundary` 几何目标保留为可解释
+的第一个 proposal backend，同时为 `denoiser`、energy-gradient 和未来 learned
+proposal 保留统一接口。创新主张应当围绕“跨亚基 interface constraint orbit 在
+精确群作用下与 all-atom scaffold 交替更新”，而不是泛化地声称 motif 首次可以
+移动。
+
+在确定 `g_t` 的参数化前，必须先审计绕对称轴旋转和沿轴平移是否只是
+gauge freedom。不允许在未证明这些自由度真正改变 assembly geometry 时，直接
+把完整六自由度 `SE(3)` 写死为最终状态。
+
+### 11.0.1 RFD3 原生 `InterfaceConstraintOrbit`
+
+当前 adapter 已能发出 constraint groups/orbits，runtime 也已消费对应 tensors，
+但它们仍是松散 feature arrays。下一阶段必须在 RFD3 内部解析为一个经过严格
+验证的 first-class object，至少包含：
+
+```text
+orbit index and master group
+member groups and transform IDs
+master/member atom correspondence
+reference master coordinates
+mobility mode and cumulative SE(3) bounds
+group-action transforms
+future per-atom mobility roles
+```
+
+static motif restoration、mobile pose controller、conditioning refresh 和 diagnostics
+必须共用这一对象，禁止各模块独立解释 feature arrays。
+
+### 11.0.2 分层 mobility 不是 fragment 独立漂移
+
+未来 partial mobility 使用三个角色：
+
+```text
+interface_core    -> 保持已经验证的跨链原子级 packing
+rigid_support     -> 跟随该 orbit 的 master SE(3) pose
+flexible_boundary -> 仅限连接 generated scaffold 的小范围末端缓冲区
+```
+
+左右 interface fragments 和不同 symmetry copies 不得获得彼此独立的刚体运动。
+否则设计问题会从“保留已验证界面”退化成重新搜索界面。
+
+整个 orbit 的刚体移动不会改善 seed 内部的 side-chain packing 或两侧相对
+几何。它能优化的只是 seed--scaffold junction、seed 外部的新接触、clash 和
+整体 morphology。因此 seed 质量仍是 compiler 前置条件，不得宣称 runtime
+mobility 可以修复一个错误 interface。
+
 ### 11.1 分阶段，不直接跳到多界面
 
 第一版 dynamic controller 只处理：
@@ -1774,17 +1880,39 @@ capability 已扩展；目前这些仍是待验证实验。
 ### 26.1 高阶 Cn 的表达能力不等于 native RFD3 运行能力
 
 当前 schema、symmetry registry 与 instance compiler 的阶数是参数化的，
-因此可以表达 C12/C20。native symmetric-motif inference 则有两道独立边界：
-Mosaic adapter 对 multiplicity `> 10` fail closed，官方 Foundry RFD3 在
-motif-frame recovery 中同样定义 `MAX_TRANSFORMS = 10`。所以当前 native
-输入的理论上限是 C10 / D5，而仓库实际追踪的 GPU cyclic 路径仍是
-C3、C5、C6、C7。
+因此可以表达 C12/C20。local branch 已删除 native symmetric-motif path
+中的两道人工边界：Mosaic adapter 的 multiplicity `> 10` 拒绝，以及
+Foundry motif-frame recovery 的 `MAX_TRANSFORMS = 10`。新增 C12 与 D6
+（均为 12 copies）的 adapter、frame 与群闭包回归，且已在 LRZ 通过。
 
-不能把两处常数删除后称为高阶支持。显式 all-copy token-pair state 随
+这只代表移除了输入和 frame-recovery 的人工上限，不能据此称为高阶
+GPU 支持。显式 all-copy token-pair state 随
 assembly size 二次增长；checkpoint relative-chain encoding、超过单字符的
 chain-ID 路径、高阶 seed pairing 和 clash audit 也都尚未验证。C12/C20
-因此属于后续 ASU-only 或 local-neighborhood 高阶架构任务，不进入当前
-P100 50/200-step 矩阵。
+必须先通过 LRZ CPU construction，再进入小规模 bounded GPU probe；C20、
+O/I 与 helical neighbourhood 仍需要 local-neighborhood 高阶架构。
+
+local-neighbourhood 的数学内核与第一版实验性 sampler 接线已经落地：
+
+1. Cn 使用 master 与左右有限邻居；例如 radius=1 时 C200 网络视图只有
+   transforms `(0, 199, 1)`。
+2. Dn 同时选择 master 所在 cyclic coset 与对应的另一个 coset。
+3. 局部预测先逆变换到 canonical ASU 坐标系求平均，再通过完整 runtime
+   transforms 重建所有 copies；未进入网络的 copies 不参加平均，因此不会
+   把更新按 `local_count / full_count` 稀释。
+4. local feature view 保持完整 atomized token、共同裁剪 atom/token/pair
+   features、重映射 `atom_to_token_map`，并显式处理 motif-constraint atom
+   axes；local sequence logits 也通过完整 token orbit 展开。
+5. 实验 backend 在 `TokenInitializer` 前裁剪网络 view，并在每个 denoising
+   step 后把局部坐标预测逆映射、聚合和展开回完整 orbit。它只允许
+   low-memory、exact orbit-average、coupled noise、fixed-motif preservation，
+   暂不允许 dynamic motif mobility。
+
+上述基础模块和 sampler integration test 已在 LRZ 通过：2026-07-31 全套
+273/273 tests 通过（9.189 s）。真实小阶 explicit/local A/B 尚待验证，因此
+正式脚本仍默认 `explicit_all_copy`。此外，当前 preprocessing 仍先构造完整
+assembly，输出也必须展开全部 copies；第一版 backend 只界定
+initializer/denoiser 的网络规模，不能宣称已经实现端到端 C200 常数内存。
 
 ---
 
@@ -1862,3 +1990,290 @@ compiler 应同时提供 strict validation 和 diagnostic/relaxed 模式；后�
 
 只有在 sampler hook、time-dependent update、multi-interface aggregation 和
 independent benchmarks 全部验证后，才升级表述为 control framework。
+
+---
+
+## 27. 用户接口收敛
+
+功能继续扩展时，不应要求普通用户理解 sampler 内部参数或手写数百行
+Slurm。正式入口收敛为一个 versioned experiment YAML 和
+`rfd3-mosaic validate/render/submit` 三个命令，并明确支持两种固定 motif
+拓扑：跨亚基 interface seed + 中间生成，以及 protomer 中央 motif + N/C
+双向生成。
+
+集群资源、环境和 checkpoint 属于可替换 execution profile；科学输入、生成
+长度、timesteps 和随机种子属于 experiment。经过验证的 exact-symmetry
+设置封装为 `exact_mosaic` preset，不允许用户无意间打开 realignment 或关闭
+完整 motif-orbit restore。每个提交都必须冻结 resolved config、记录输入与
+profile hash，并经过 motif/seed audit 和 scaffold audit gate。具体格式见
+`docs/rfd3_mosaic/USER_CLI.md`。
+
+---
+
+## 28. 2026-08-04 统一架构决议
+
+### 28.1 产品边界
+
+RFD3 Mosaic 的正式目标是一个 RFD3-native、constraint-aware symmetry
+inference engine，而不是 LHD101、C3/D3 或某一种 interface-seed 拓扑的脚本
+集合。特定蛋白、残基编号、集群 partition 和实验批次只能存在于 examples、
+execution profiles 和 regression fixtures，不能进入核心算法。
+
+系统分成三个平面：
+
+```text
+compilation plane
+    user intent -> AssemblySpecification -> validated RFD3 features
+
+inference plane
+    (X_t, G_t) -> denoiser -> controller -> joint projector -> X_(t-1)
+
+evaluation plane
+    motif + symmetry + scaffold + assembly audits -> acceptance gate
+```
+
+其中：
+
+```text
+X_t = complete all-atom assembly diffusion state
+G_t = one symmetry-reduced rigid-pose state per mobile motif orbit
+```
+
+### 28.2 唯一的 assembly specification
+
+正式 schema 名称改为 `AssemblySpecification`。它统一描述：
+
+```text
+fragments
+motion groups
+ports
+symmetry transform sets
+symmetry orbits
+constraint/interface edges
+generated segments
+initialization
+mobility policies
+objectives
+```
+
+旧名称 `InterfaceSeedSpec` 和顶层 `interface_seed:` 暂时保留为兼容 alias。
+新配置允许使用 `assembly:`。central motif 与 cross-protomer interface seed 的
+区别只能体现在 fragment membership、generated segments 和 constraint edges，
+不得在 sampler 内形成两套 diffusion 算法。
+
+兼容迁移已经进入第三轮：schema 允许没有 interface ports/edges 的 central-motif
+assembly，并用统一 `generated_segments` 表示 N/C terminal extension。旧 central
+probe 文件仍保留作诊断和回归夹具，但 `compile_experiment_assembly` 已不再调用它；
+central 与 interface frontend 都先生成 `AssemblySpecification`，再进入同一个 native
+RFD3 emitter。
+
+### 28.3 运行时核心
+
+每个 timestep 的目标合同为：
+
+```text
+complete or bounded-local symmetry assembly enters RFD3
+-> denoiser proposes all-atom scaffold coordinates
+-> equivalent-copy signals are inverse-mapped to master frames
+-> all active constraint residuals are aggregated simultaneously
+-> one bounded SE(3) proposal is produced per master orbit
+-> master poses are updated once, independent of edge ordering
+-> all copies are regenerated only through declared group actions
+-> motif/fixed/pair conditioning is refreshed
+-> one UnifiedJointProjector enforces motif rigidity and group closure
+-> the projected Euler state advances to the next timestep
+```
+
+`G_t` 的自由度不能默认写死为任意六维运动。每个 mobility policy 必须声明
+允许的子空间，例如 `radial`、`radial_axial`、`tilt_only` 或
+`bounded_se3`；绕共同对称轴旋转、沿轴平移等潜在 gauge freedom 必须先检测，
+再决定是否进入优化。
+
+### 28.4 Ho-Yeung dragging 的迁移边界
+
+RFdiffusion1 Interface-Seed 的 runtime dragging 是一个有价值的反馈闭环：每步
+根据相邻 generated-subunit COM 中点平移 motif，并将移动后的坐标送入下一次
+denoising。但它不是显式 radius state，也没有 timestep 内 rotation；初始化的
+`xyz + dist` 不是实际径向移动，atom-slot-wise COM 更新也不是严格刚体变换。
+
+因此旧 dragging 只能作为 compatibility proposal backend。正式 RFD3 路径使用
+刚体 master-orbit pose：
+
+```text
+delta_xi_t = (delta_translation_t, delta_rotation_t)
+g_(t-1) = Exp(window(t) * delta_xi_t) * g_t
+```
+
+proposal 必须由可解释、可组合的 junction、clash、contact、orientation、shape
+和 pose-prior objectives 产生，而不是每步随机旋转。
+
+### 28.5 模块所有权
+
+```text
+src/rfd3_mosaic/schema + compiler
+    own user intent, cross references, topology compilation and provenance
+
+models/rfd3/.../symmetry
+    own runtime orbits, mobility state, proposal backends and joint projection
+
+src/rfd3_mosaic/validation + audit
+    own evidence and acceptance; never mutate inference state
+
+scripts/rfd3_mosaic
+    own submission only; no scientific geometry or sampler logic
+```
+
+### 28.6 增量重构顺序
+
+1. `AssemblySpecification` 与兼容 loader；
+2. central/interface compatibility frontends 统一返回一个
+   `CompiledAssembly` artifact（已完成第一轮 worker 接线）；
+3. `InterfaceConstraintOrbit` 升级为通用 `ConstraintOrbit`；
+   **已完成第一轮公共 API 迁移**：运行时正式名称为
+   `ConstraintGroup`、`ConstraintOrbit`、`ConstraintOrbitLayout`，旧名称仅作为
+   compatibility alias；motif-mobility controller 已改用中性 API；
+4. static restore、mobile restore 和 symmetry closure 合并为
+   `UnifiedJointProjector`；**已完成第一轮接线**：exact Euler state、固定 motif
+   symmetry projection 与 final exact state 共享
+   `project -> restore -> validate` 顺序；旧 sampler helper 暂时保留兼容；
+5. controller 支持多 orbit、同时 proposal aggregation 和 objective registry；
+6. Cn/Dn/T/O/I 共用 transform registry，ring-specific axis objective 变成可选项；
+7. CLI 默认只暴露结构输入、motif selection、symmetry、生成长度、mobility、
+   steps、profile 和 output；
+8. 旧的 LHD101/C3/C5/D3 脚本降级为 regression fixtures，验证后再逐项删除。
+
+任何阶段都必须保持旧配置可重放，并以 unit tests、prevalidation 和最小 GPU
+smoke test 证明没有破坏已经验证的 exact interface preservation。
+
+### 28.7 2026-08-04 第二轮迁移结果
+
+`CompiledAssembly` 现在不仅统一输入路径与 example identity，还携带一个或多个
+不可变的 `CompiledAudit`。每个 audit 声明 module、report name 与编译期输入；
+worker 只补充 inference result 和 output report，然后按统一方式执行。因此
+evaluation plane 已不再包含：
+
+```text
+if central_motif: run central audit
+else: run interface-seed audit
+```
+
+兼容 frontend 仍负责把旧拓扑编译成正确的 RFD3 input 和 audit plan，但编译以后，
+prevalidation、inference、semantic audit、scaffold audit 与 gate 都走同一条执行路径。
+这一步没有改变 sampler 数学和已验证的 exact-Mosaic 行为。
+
+第三轮本地实现已经把 central motif 与 interface seed 原生 lower 到同一种 assembly
+IR。`assembly_compiler.py` 对两者只调用一次 `compile_assembly_rfd3_input`；区别只保留在输入
+frontend 和编译期 audit plan，不再存在两套 RFD3 JSON builder。该实现仍须在 LRZ
+完成全量 unit、真实 central prevalidation/GPU smoke 和既有 interface 回归后，才能
+标记为服务器验证完成。
+
+### 28.8 Mobility 必须属于 constraint orbit
+
+Ho-Yeung 的逐 timestep dragging 证明了 motif pose 可以作为 denoising feedback
+loop 的一部分，但不能让这一历史实现决定通用 schema。正式 IR 现在将 mobility
+挂在 symmetry constraint orbit 上，而不是限定在 interface edge 上：
+
+```text
+ConstraintOrbitInstance
+    master groups + exact group actions
+    mobility mode
+    allowed subspace
+    cumulative bounds
+    timestep schedule
+    per-step translation/rotation trust region
+    proposal source
+    objective references
+```
+
+允许的第一批子空间为：
+
+```text
+radial
+radial_axial
+tilt_only
+bounded_se3
+```
+
+正式 proposal 来源为 `denoiser_fit` 与 `scaffold_objectives`；
+`hoyeung_drag_compat` 只用于可重放旧 dragging 行为。旧配置仍可把 mobility 写在
+interface edge，compiler 会将非固定 mobility 迁移到所属 orbit；native orbit 与
+legacy edge 同时声明移动或多个 edge 给出冲突控制时必须 fail closed。
+
+因此 central motif、cross-subunit interface seed、功能 motif 和未来多轨道 cage
+共享同一个状态：
+
+```text
+g_t = (R_t, p_t) in allowed orbit-pose subspace
+```
+
+区别只在 constraint membership、generated segments、objectives 和 mobility policy，
+不再需要不同 sampler。当前 adapter 从 compiled `ConstraintOrbitInstance` 读取
+mobility metadata，并已能把 `ScaffoldLinkInstance` 与
+`TerminalExtensionInstance` 降低为同一套 RFD3 constraint features。下一步重点从
+“删除双 emitter”转为服务器回归、完整 ASU path graph，以及 multi-orbit proposal
+聚合。
+
+### 28.9 Orbit policy 已进入 RFD3 runtime transport
+
+Orbit mobility 不再只是 YAML 中的说明字段。当前数据流已经是：
+
+```text
+SymmetryOrbitSpec.mobility
+-> ConstraintOrbitInstance
+-> motif_constraint_orbit_* RFD3 features
+-> ConstraintOrbitLayout
+-> OrbitRigidMotifController
+```
+
+运输内容包括 `subspace`、`proposal`、累计平移/旋转 bounds、schedule、response、
+单步 trust region 与 objective IDs。Controller 对每个 orbit 使用自己的 schedule，
+因此多个 orbit 不需要共享同一个打开/冻结时间或步长。未显式声明 schedule 的旧
+输入使用 sentinel 保留 sampler-level 参数，避免迁移本身改变历史 pilot 的轨迹。
+
+运行时必须区分“schema 能表达”和“backend 已执行”。当前原生执行面只正式接受：
+
+```text
+subspace = bounded_se3
+proposal = denoiser_fit | scaffold_objectives
+```
+
+`radial`、`radial_axial` 和 `tilt_only` 需要由 assembly topology 提供明确的 axis、
+centre 与 gauge 处理；在完成该 frame lowering 前必须 fail closed。
+`hoyeung_drag_compat` 同样不能被悄悄当作 native SE(3) proposal，它只标识需要旧
+COM-midpoint dragging 语义的迁移输入。
+
+这一步保证了 Ho-Yeung 的动态反馈思想被保留，但不会把其 cyclic、双链、纯平移
+假设写死进 RFD3 Mosaic 的核心。
+
+### 28.10 Native compiler 单路径（本地实现，待 LRZ 验证）
+
+当前本地数据流已变为：
+
+```text
+legacy/simple frontend
+-> AssemblySpecification
+-> CompiledInstanceSet + generated-segment IR
+-> one native RFD3 feature emitter
+-> CompiledAssembly
+```
+
+兼容 frontend 的职责仅是解释旧的简化字段。例如 central frontend 从已验证 template
+registry 解析 symmetry axis/centre，证明重建矩阵逐项一致，然后写出正常的
+`AssemblySpecification`。此后 central 和 interface 都调用同一个
+`compile_assembly_rfd3_input`；旧 `compile_rfd3_input` 仅为 API 兼容 alias。该
+emitter 同时消费 `ScaffoldLinkInstance` 和
+`TerminalExtensionInstance`，并统一生成 contig、fixed selections、constraint
+groups/orbits、declared frames 和 provenance。
+
+`build_central_motif_probe_input` 仍保留在仓库中用于历史输入重放和独立诊断，但已从
+`assembly_compiler.py` 删除，不再属于 production compilation path。当前限制是一个
+native ASU path 尚不能混合 terminal extensions 与多段 scaffold links；该情况会
+fail closed，而不会生成含糊 contig。
+
+完成定义仍包括：LRZ 全量 unit、真实 central C3 prevalidation/GPU smoke，以及既有
+interface Cn 逐 feature 回归。未完成这些验证前，只能称为“单路径已本地实现”，不能
+称为最终验证完成。
+
+本轮 orbit-owned mobility 与 assembly-IR 迁移同步到 LRZ 后，完整单元测试为
+`313/313 OK (9.804 s)`。该结果证明兼容性和运行时合同通过 CPU/unit regression；
+它不等价于 dynamic SE(3) controller 已完成 GPU 科学验证。

@@ -46,7 +46,25 @@ class ScaffoldGraph(StrictModel):
         if fragment_instance_id not in self.nodes:
             raise KeyError(
                 f"Unknown scaffold node {fragment_instance_id!r}"
+        )
+
+
+def compiled_scaffold_links(
+    instances: CompiledInstanceSet,
+) -> dict[str, ScaffoldLinkInstance]:
+    """Return legacy and native generated links as one immutable-ID map."""
+
+    links = dict(instances.scaffold_links)
+    for segment in instances.generated_segments.values():
+        if not isinstance(segment, ScaffoldLinkInstance):
+            continue
+        previous = links.get(segment.id)
+        if previous is not None and previous != segment:
+            raise ValueError(
+                f"Compiled scaffold link ID {segment.id!r} is ambiguous"
             )
+        links[segment.id] = segment
+    return links
 
 
 def _validate_no_continuous_cycles(
@@ -84,7 +102,7 @@ def compile_scaffold_graph(instances: CompiledInstanceSet) -> ScaffoldGraph:
     """Compile links and reject combinatorially impossible topology."""
 
     nodes = tuple(instances.fragments)
-    links = dict(instances.scaffold_links)
+    links = compiled_scaffold_links(instances)
 
     incoming: dict[str, str] = {}
     outgoing: dict[str, str] = {}

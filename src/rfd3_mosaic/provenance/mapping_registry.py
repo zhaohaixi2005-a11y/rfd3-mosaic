@@ -6,7 +6,7 @@ from typing import Annotated, Mapping
 
 from pydantic import Field, model_validator
 
-from rfd3_mosaic.schema import CompiledInstanceSet, InterfaceSeedSpec
+from rfd3_mosaic.schema import AssemblySpecification, CompiledInstanceSet
 from rfd3_mosaic.schema.specs import Identifier, StrictModel
 
 
@@ -203,7 +203,7 @@ class MappingRegistry(StrictModel):
 
 
 def build_mapping_registry(
-    spec: InterfaceSeedSpec,
+    spec: AssemblySpecification,
     instances: CompiledInstanceSet,
 ) -> MappingRegistry:
     """Build object-level provenance without importing or depending on RFD3."""

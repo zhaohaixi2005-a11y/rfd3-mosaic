@@ -11,13 +11,21 @@ from rfd3_mosaic.schema import (
     InterfacePortSpec,
     InterfaceMobilityMode,
     InterfaceMobilitySpec,
+    MobilityProposal,
+    MobilitySubspace,
     MotionBounds,
     MotionGroupSpec,
     MotionMode,
+    OrbitMobilityMode,
+    OrbitMobilitySpec,
 )
 
 
 class SpecsTestCase(unittest.TestCase):
+    def test_interface_mobility_names_are_compatibility_aliases(self) -> None:
+        self.assertIs(InterfaceMobilitySpec, OrbitMobilitySpec)
+        self.assertIs(InterfaceMobilityMode, OrbitMobilityMode)
+
     def test_fragment_spec_accepts_valid_fragment(self) -> None:
         fragment = FragmentSpec(
             source="inputs/7mwr_interface.pdb",
@@ -137,6 +145,15 @@ class SpecsTestCase(unittest.TestCase):
             mobility.mode,
             InterfaceMobilityMode.ORBIT_RIGID,
         )
+        self.assertEqual(
+            mobility.effective_subspace,
+            MobilitySubspace.BOUNDED_SE3,
+        )
+        self.assertEqual(
+            mobility.effective_proposal,
+            MobilityProposal.DENOISER_FIT,
+        )
+        self.assertIsNotNone(mobility.effective_schedule)
 
     def test_orbit_rigid_interface_rejects_zero_motion(self) -> None:
         with self.assertRaises(ValidationError):
@@ -147,6 +164,28 @@ class SpecsTestCase(unittest.TestCase):
                     max_rotation_deg=0.0,
                 ),
             )
+
+    def test_bounded_se3_requires_both_motion_bounds(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "bounded_se3"):
+            OrbitMobilitySpec(
+                mode=OrbitMobilityMode.ORBIT_RIGID,
+                bounds=MotionBounds(max_translation=2.0),
+            )
+
+    def test_radial_and_tilt_subspaces_require_only_their_dof(self) -> None:
+        radial = OrbitMobilitySpec(
+            mode=OrbitMobilityMode.ORBIT_RIGID,
+            subspace=MobilitySubspace.RADIAL,
+            bounds=MotionBounds(max_translation=2.0),
+        )
+        tilt = OrbitMobilitySpec(
+            mode=OrbitMobilityMode.ORBIT_RIGID,
+            subspace=MobilitySubspace.TILT_ONLY,
+            bounds=MotionBounds(max_rotation_deg=10.0),
+        )
+
+        self.assertEqual(radial.effective_subspace, MobilitySubspace.RADIAL)
+        self.assertEqual(tilt.effective_subspace, MobilitySubspace.TILT_ONLY)
 
 
 if __name__ == "__main__":

@@ -53,9 +53,26 @@ class MotionMode(str, Enum):
     SOFT_RIGID = "soft_rigid"
 
 
-class InterfaceMobilityMode(str, Enum):
+class OrbitMobilityMode(str, Enum):
     FIXED = "fixed"
     ORBIT_RIGID = "orbit_rigid"
+
+
+class MobilitySubspace(str, Enum):
+    """Allowed physical degrees of freedom for one master orbit pose."""
+
+    RADIAL = "radial"
+    RADIAL_AXIAL = "radial_axial"
+    TILT_ONLY = "tilt_only"
+    BOUNDED_SE3 = "bounded_se3"
+
+
+class MobilityProposal(str, Enum):
+    """Source of one timestep's bounded rigid-pose proposal."""
+
+    DENOISER_FIT = "denoiser_fit"
+    SCAFFOLD_OBJECTIVES = "scaffold_objectives"
+    HOYEUNG_DRAG_COMPAT = "hoyeung_drag_compat"
 
 
 class FrameMethod(str, Enum):
@@ -304,44 +321,124 @@ TargetGeometrySpec = Annotated[
 ]
 
 
-class InterfaceMobilitySpec(StrictModel):
-    """Optional rigid motion of one complete cross-chain motif orbit."""
+class MobilityScheduleSpec(StrictModel):
+    """Time window and per-step trust region for orbit motion."""
 
-    mode: InterfaceMobilityMode = InterfaceMobilityMode.FIXED
-    bounds: MotionBounds | None = None
+    start_fraction: Annotated[float, Field(ge=0.0, le=1.0)] = 0.05
+    end_fraction: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
+    response: Annotated[float, Field(gt=0.0, le=1.0)] = 0.2
+    max_step_translation: Annotated[float, Field(gt=0.0)] = 0.25
+    max_step_rotation_deg: Annotated[
+        float,
+        Field(gt=0.0, le=180.0),
+    ] = 1.0
 
     @model_validator(mode="after")
-    def validate_bounds(self) -> "InterfaceMobilitySpec":
+    def validate_window(self) -> "MobilityScheduleSpec":
+        if self.start_fraction >= self.end_fraction:
+            raise ValueError(
+                "Mobility schedule requires start_fraction < end_fraction"
+            )
+        return self
+
+
+class OrbitMobilitySpec(StrictModel):
+    """Optional bounded motion of one complete symmetry constraint orbit.
+
+    Mobility belongs to an orbit, not to an interface.  The legacy interface
+    field still accepts this same type and is migrated into the orbit IR by
+    the compiler.
+    """
+
+    mode: OrbitMobilityMode = OrbitMobilityMode.FIXED
+    bounds: MotionBounds | None = None
+    subspace: MobilitySubspace | None = None
+    proposal: MobilityProposal | None = None
+    schedule: MobilityScheduleSpec | None = None
+    objectives: tuple[Identifier, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "OrbitMobilitySpec":
         if (
-            self.mode == InterfaceMobilityMode.ORBIT_RIGID
+            self.mode == OrbitMobilityMode.ORBIT_RIGID
             and self.bounds is None
         ):
             raise ValueError(
                 "orbit_rigid interface mobility requires cumulative bounds"
             )
+        if self.mode == OrbitMobilityMode.ORBIT_RIGID:
+            assert self.bounds is not None
+            subspace = self.effective_subspace
+            translation = float(self.bounds.max_translation or 0.0)
+            rotation = float(self.bounds.max_rotation_deg or 0.0)
+            if subspace in {
+                MobilitySubspace.RADIAL,
+                MobilitySubspace.RADIAL_AXIAL,
+            } and translation <= 0.0:
+                raise ValueError(
+                    f"{subspace.value} mobility requires a positive "
+                    "translation bound"
+                )
+            if (
+                subspace == MobilitySubspace.TILT_ONLY
+                and rotation <= 0.0
+            ):
+                raise ValueError(
+                    "tilt_only mobility requires a positive rotation bound"
+                )
+            if (
+                subspace == MobilitySubspace.BOUNDED_SE3
+                and (translation <= 0.0 or rotation <= 0.0)
+            ):
+                raise ValueError(
+                    "bounded_se3 mobility requires positive translation "
+                    "and rotation bounds"
+                )
         if (
-            self.mode == InterfaceMobilityMode.ORBIT_RIGID
-            and self.bounds is not None
-            and not any(
-                value is not None and value > 0.0
+            self.mode == OrbitMobilityMode.FIXED
+            and any(
+                value is not None
                 for value in (
-                    self.bounds.max_translation,
-                    self.bounds.max_rotation_deg,
+                    self.bounds,
+                    self.subspace,
+                    self.proposal,
+                    self.schedule,
                 )
             )
         ):
             raise ValueError(
-                "orbit_rigid interface mobility requires at least one "
-                "strictly positive bound"
+                "fixed orbit mobility cannot define motion controls"
             )
-        if (
-            self.mode == InterfaceMobilityMode.FIXED
-            and self.bounds is not None
-        ):
+        if self.mode == OrbitMobilityMode.FIXED and self.objectives:
             raise ValueError(
-                "fixed interface mobility cannot define motion bounds"
+                "fixed orbit mobility cannot define mobility objectives"
             )
+        if len(self.objectives) != len(set(self.objectives)):
+            raise ValueError("Orbit mobility objectives must be unique")
         return self
+
+    @property
+    def effective_subspace(self) -> MobilitySubspace | None:
+        if self.mode == OrbitMobilityMode.FIXED:
+            return None
+        return self.subspace or MobilitySubspace.BOUNDED_SE3
+
+    @property
+    def effective_proposal(self) -> MobilityProposal | None:
+        if self.mode == OrbitMobilityMode.FIXED:
+            return None
+        return self.proposal or MobilityProposal.DENOISER_FIT
+
+    @property
+    def effective_schedule(self) -> MobilityScheduleSpec | None:
+        if self.mode == OrbitMobilityMode.FIXED:
+            return None
+        return self.schedule or MobilityScheduleSpec()
+
+
+# Compatibility public names used by existing Interface-Seed 2.0 configs.
+InterfaceMobilityMode = OrbitMobilityMode
+InterfaceMobilitySpec = OrbitMobilitySpec
 
 
 class InterfaceEdgeSpec(StrictModel):
@@ -352,7 +449,7 @@ class InterfaceEdgeSpec(StrictModel):
     copy_relation: CopyRelationSpec
     required: bool = True
     target_geometry: TargetGeometrySpec
-    mobility: InterfaceMobilitySpec = InterfaceMobilitySpec()
+    mobility: OrbitMobilitySpec = OrbitMobilitySpec()
 
 
 class SymmetryType(str, Enum):
@@ -409,6 +506,7 @@ class SymmetryOrbitSpec(StrictModel):
 
     transform_set: Identifier
     master_groups: Annotated[list[Identifier], Field(min_length=1)]
+    mobility: OrbitMobilitySpec = OrbitMobilitySpec()
 
     @model_validator(mode="after")
     def require_unique_master_groups(self) -> "SymmetryOrbitSpec":
@@ -593,6 +691,17 @@ class ScaffoldLinkSpec(StrictModel):
 
         return self
 
+
+class TerminalExtensionSpec(StrictModel):
+    """A generated N- or C-terminal segment anchored to one fragment."""
+
+    anchor: ScaffoldEndpointSpec
+    length: LinkLengthSpec
+    tie_group: Identifier | None = None
+
+
+GeneratedSegmentSpec = ScaffoldLinkSpec | TerminalExtensionSpec
+
 class SymmetrySpec(StrictModel):
     transform_sets: Annotated[
         dict[Identifier, SymmetryTransformSetSpec],
@@ -604,11 +713,18 @@ class SymmetrySpec(StrictModel):
     ]
 
 
-class InterfaceSeedSpec(StrictModel):
-    """Top-level Interface-Seed 2.0 configuration."""
+class AssemblySpecification(StrictModel):
+    """Generator-independent description of a constrained assembly.
+
+    ``InterfaceSeedSpec`` remains as a compatibility alias below.  The
+    neutral name is intentional: a central motif, a cross-protomer interface
+    seed, and a multi-orbit cage are all represented by the same fragments,
+    motion groups, symmetry orbits, scaffold links, and constraint edges.
+    """
 
     schema_version: Literal[2] = 2
     mode: Literal[
+        "constraint_assembly",
         "se3_static",
         "multi_interface_se3",
         "legacy_rfd1",
@@ -623,18 +739,20 @@ class InterfaceSeedSpec(StrictModel):
         dict[Identifier, MotionGroupSpec],
         Field(min_length=1),
     ]
-    ports: Annotated[
-        dict[Identifier, InterfacePortSpec],
-        Field(min_length=1),
-    ]
+    ports: dict[Identifier, InterfacePortSpec] = Field(
+        default_factory=dict
+    )
     symmetry: SymmetrySpec
-    interfaces: Annotated[
-        dict[Identifier, InterfaceEdgeSpec],
-        Field(min_length=1),
-    ]
+    interfaces: dict[Identifier, InterfaceEdgeSpec] = Field(
+        default_factory=dict
+    )
     scaffold_links: dict[Identifier, ScaffoldLinkSpec] = Field(
         default_factory=dict
     )
+    generated_segments: dict[
+        Identifier,
+        GeneratedSegmentSpec,
+    ] = Field(default_factory=dict)
     initialization: dict[
         Identifier,
         MotionGroupInitializationSpec,
@@ -642,7 +760,7 @@ class InterfaceSeedSpec(StrictModel):
     objectives: dict[Identifier, ObjectiveSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_cross_references(self) -> "InterfaceSeedSpec":
+    def validate_cross_references(self) -> "AssemblySpecification":
         fragment_owners: dict[str, list[str]] = {
             fragment_id: [] for fragment_id in self.fragments
         }
@@ -728,6 +846,13 @@ class InterfaceSeedSpec(StrictModel):
                     )
                 group_orbits[group_id].append(orbit_id)
 
+            for objective_id in orbit.mobility.objectives:
+                if objective_id not in self.objectives:
+                    raise ValueError(
+                        f"Symmetry orbit {orbit_id!r} mobility references "
+                        f"unknown objective {objective_id!r}"
+                    )
+
         # One master group cannot belong to multiple symmetry orbits.
         for group_id, orbit_ids in group_orbits.items():
             if len(orbit_ids) > 1:
@@ -735,6 +860,14 @@ class InterfaceSeedSpec(StrictModel):
                     f"Motion group {group_id!r} belongs to multiple "
                     f"symmetry orbits: {orbit_ids}"
                 )
+
+        for edge_id, edge in self.interfaces.items():
+            for objective_id in edge.mobility.objectives:
+                if objective_id not in self.objectives:
+                    raise ValueError(
+                        f"Interface {edge_id!r} mobility references unknown "
+                        f"objective {objective_id!r}"
+                    )
 
         # Scaffold links must reference existing fragments.
         used_endpoints: set[tuple[str, Terminus]] = set()
@@ -765,6 +898,29 @@ class InterfaceSeedSpec(StrictModel):
 
                 used_endpoints.add(endpoint_key)
 
+        for segment_id, segment in self.generated_segments.items():
+            if isinstance(segment, ScaffoldLinkSpec):
+                endpoints = [
+                    segment.from_endpoint,
+                    segment.to_endpoint,
+                ]
+            else:
+                endpoints = [segment.anchor]
+
+            for endpoint in endpoints:
+                if endpoint.fragment not in self.fragments:
+                    raise ValueError(
+                        f"Generated segment {segment_id!r} references "
+                        f"unknown fragment {endpoint.fragment!r}"
+                    )
+                endpoint_key = (endpoint.fragment, endpoint.terminus)
+                if endpoint_key in used_endpoints:
+                    raise ValueError(
+                        f"Scaffold endpoint {endpoint.fragment!r}:"
+                        f"{endpoint.terminus.value} is used more than once"
+                    )
+                used_endpoints.add(endpoint_key)
+
         for group_id in self.initialization:
             if group_id not in self.motion_groups:
                 raise ValueError(
@@ -773,3 +929,9 @@ class InterfaceSeedSpec(StrictModel):
                 )
 
         return self
+
+
+# Backwards-compatible public name used by the original Interface-Seed 2.0
+# compiler and existing user configurations.  New code should use the
+# topology-neutral ``AssemblySpecification`` name.
+InterfaceSeedSpec = AssemblySpecification

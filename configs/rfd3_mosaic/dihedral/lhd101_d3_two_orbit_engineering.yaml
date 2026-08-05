@@ -1,0 +1,130 @@
+interface_seed:
+  schema_version: 2
+  mode: se3_static
+  random_seed: 83
+
+  # This deliberately duplicates the LHD101 reference interface into two
+  # disjoint motif orbits.  It validates multi-orbit plumbing; it is not a
+  # claim that the resulting geometry is a biologically meaningful cage.
+  fragments:
+    first_left:
+      source: examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+      selection: A/165-194/*
+      entity_type: protein
+      role: interface_motif
+      fixed_atoms: all
+    first_right:
+      source: examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+      selection: B/211-241/*
+      entity_type: protein
+      role: interface_motif
+      fixed_atoms: all
+    second_left:
+      source: examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+      selection: A/165-194/*
+      entity_type: protein
+      role: interface_motif
+      fixed_atoms: all
+    second_right:
+      source: examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+      selection: B/211-241/*
+      entity_type: protein
+      role: interface_motif
+      fixed_atoms: all
+
+  motion_groups:
+    first_seed:
+      members: [first_left, first_right]
+      mode: rigid
+    second_seed:
+      members: [second_left, second_right]
+      mode: rigid
+
+  ports:
+    first_left_port:
+      group: first_seed
+      fragments: [first_left]
+      atoms: heavy
+      frame: {method: reference_interface_pca}
+    first_right_port:
+      group: first_seed
+      fragments: [first_right]
+      atoms: heavy
+      frame: {method: reference_interface_pca}
+    second_left_port:
+      group: second_seed
+      fragments: [second_left]
+      atoms: heavy
+      frame: {method: reference_interface_pca}
+    second_right_port:
+      group: second_seed
+      fragments: [second_right]
+      atoms: heavy
+      frame: {method: reference_interface_pca}
+
+  symmetry:
+    transform_sets:
+      assembly_d3:
+        type: dihedral
+        order: 3
+        axis: [0.0, 0.0, 1.0]
+        secondary_axis: [1.0, 0.0, 0.0]
+        center: [0.0, 0.0, 0.0]
+    orbits:
+      cage_engineering_orbit:
+        transform_set: assembly_d3
+        master_groups: [first_seed, second_seed]
+
+  interfaces:
+    first_interface:
+      left_port: first_left_port
+      right_port: first_right_port
+      copy_relation: {orbit_offset: 0}
+      required: true
+      target_geometry:
+        mode: reference_transform
+        from_reference_seed: true
+        translation_tolerance: 2.0
+        rotation_tolerance_deg: 10.0
+    second_interface:
+      left_port: second_left_port
+      right_port: second_right_port
+      copy_relation: {orbit_offset: 0}
+      required: true
+      target_geometry:
+        mode: reference_transform
+        from_reference_seed: true
+        translation_tolerance: 2.0
+        rotation_tolerance_deg: 10.0
+
+  scaffold_links:
+    first_protomer:
+      from_endpoint: {fragment: first_right, terminus: C}
+      to_endpoint: {fragment: first_left, terminus: N}
+      length: {minimum: 70, maximum: 100}
+      tie_group: engineering_protomer_length
+      chain_break: false
+      copy_relation: {orbit_offset: 1}
+    second_protomer:
+      from_endpoint: {fragment: second_right, terminus: C}
+      to_endpoint: {fragment: second_left, terminus: N}
+      length: {minimum: 70, maximum: 100}
+      tie_group: engineering_protomer_length
+      chain_break: false
+      copy_relation: {orbit_offset: 1}
+
+  initialization:
+    first_seed:
+      center_method: interface_heavy_atom_com
+      orientation: {method: fixed, rotation_deg: [0.0, 0.0, 0.0]}
+      placement:
+        radius: {mean: 25.0, range: 0.0}
+        axial_offset: {mean: 40.0, range: 0.0}
+        radial_direction: [1.0, 0.0, 0.0]
+    second_seed:
+      center_method: interface_heavy_atom_com
+      orientation: {method: fixed, rotation_deg: [0.0, 90.0, 0.0]}
+      placement:
+        radius: {mean: 55.0, range: 0.0}
+        axial_offset: {mean: 0.0, range: 0.0}
+        radial_direction: [0.0, 1.0, 0.0]

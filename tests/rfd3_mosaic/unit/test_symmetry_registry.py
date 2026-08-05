@@ -46,8 +46,8 @@ class CyclicSymmetryRegistryTestCase(unittest.TestCase):
             "C3:e",
         )
 
-    def test_c3_through_c7_are_closed(self) -> None:
-        for order in range(3, 8):
+    def test_c3_through_c12_are_closed(self) -> None:
+        for order in range(3, 13):
             with self.subTest(order=order):
                 validate_group_closure(build_cyclic_registry(order))
 
@@ -136,8 +136,8 @@ class DihedralSymmetryRegistryTestCase(unittest.TestCase):
         self.assertEqual(dihedral_transform_id(3, 6), "D3:e")
         self.assertEqual(dihedral_transform_id(3, 4), "D3:s1")
 
-    def test_d2_d3_d5_are_closed(self) -> None:
-        for order in (2, 3, 5):
+    def test_d2_d3_d5_d6_are_closed(self) -> None:
+        for order in (2, 3, 5, 6):
             with self.subTest(order=order):
                 validate_group_closure(build_dihedral_registry(order))
 

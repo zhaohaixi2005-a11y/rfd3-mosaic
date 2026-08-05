@@ -98,7 +98,11 @@ def _cif_value(values: list[str], fields: dict[str, int], *names: str) -> str:
     return ""
 
 
-def read_mmcif_atoms(path: str | Path) -> tuple[AtomRecord, ...]:
+def read_mmcif_atoms(
+    path: str | Path,
+    *,
+    identifier_namespace: str = "author",
+) -> tuple[AtomRecord, ...]:
     """Read the first ``_atom_site`` model from an mmCIF or mmCIF.gz file.
 
     RFD3 output files use one atom-site row per physical line.  Keeping this
@@ -106,6 +110,10 @@ def read_mmcif_atoms(path: str | Path) -> tuple[AtomRecord, ...]:
     optional AtomWorks mirror configuration.
     """
 
+    if identifier_namespace not in {"author", "label"}:
+        raise ValueError(
+            "mmCIF identifier_namespace must be 'author' or 'label'"
+        )
     cif_path = Path(path)
     if not cif_path.is_file():
         raise FileNotFoundError(f"mmCIF file does not exist: {cif_path}")
@@ -155,18 +163,20 @@ def read_mmcif_atoms(path: str | Path) -> tuple[AtomRecord, ...]:
         if model and model != "1":
             continue
         record_type = _cif_value(values, fields, "group_PDB") or "ATOM"
-        atom_name = _cif_value(
-            values, fields, "auth_atom_id", "label_atom_id"
-        )
-        residue_name = _cif_value(
-            values, fields, "auth_comp_id", "label_comp_id"
-        )
-        chain_id = _cif_value(
-            values, fields, "auth_asym_id", "label_asym_id"
-        )
-        residue_number = _cif_value(
-            values, fields, "auth_seq_id", "label_seq_id"
-        )
+        if identifier_namespace == "label":
+            atom_fields = ("label_atom_id", "auth_atom_id")
+            residue_fields = ("label_comp_id", "auth_comp_id")
+            chain_fields = ("label_asym_id", "auth_asym_id")
+            sequence_fields = ("label_seq_id", "auth_seq_id")
+        else:
+            atom_fields = ("auth_atom_id", "label_atom_id")
+            residue_fields = ("auth_comp_id", "label_comp_id")
+            chain_fields = ("auth_asym_id", "label_asym_id")
+            sequence_fields = ("auth_seq_id", "label_seq_id")
+        atom_name = _cif_value(values, fields, *atom_fields)
+        residue_name = _cif_value(values, fields, *residue_fields)
+        chain_id = _cif_value(values, fields, *chain_fields)
+        residue_number = _cif_value(values, fields, *sequence_fields)
         if not atom_name or not chain_id or not residue_number:
             raise ValueError(
                 f"Incomplete mmCIF atom identity at line {line_number}"
@@ -199,13 +209,20 @@ def read_mmcif_atoms(path: str | Path) -> tuple[AtomRecord, ...]:
     return tuple(atoms)
 
 
-def read_structure_atoms(path: str | Path) -> tuple[AtomRecord, ...]:
+def read_structure_atoms(
+    path: str | Path,
+    *,
+    mmcif_identifier_namespace: str = "author",
+) -> tuple[AtomRecord, ...]:
     """Read PDB or mmCIF atoms from plain or gzip-compressed files."""
 
     structure_path = Path(path)
     lowered = structure_path.name.lower()
     if lowered.endswith((".cif", ".cif.gz")):
-        return read_mmcif_atoms(structure_path)
+        return read_mmcif_atoms(
+            structure_path,
+            identifier_namespace=mmcif_identifier_namespace,
+        )
     if lowered.endswith((".pdb", ".pdb.gz")):
         if lowered.endswith(".gz"):
             raise ValueError("Compressed PDB input is not currently supported")

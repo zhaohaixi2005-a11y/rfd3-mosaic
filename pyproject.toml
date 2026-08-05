@@ -93,6 +93,7 @@ rfd3 = "rfd3.cli:app"
 rfd3na = "rfd3na.cli:app"
 mpnn = "mpnn.inference:main"
 foundry = "foundry_cli.download_checkpoints:app"
+rfd3-mosaic = "rfd3_mosaic.cli:main"
 
 # Build settings ----------------------------------------------------------------------
 [build-system]
@@ -118,6 +119,7 @@ allow-direct-references = true
 packages = [
   "src/foundry",
   "src/foundry_cli",
+  "src/rfd3_mosaic",
   "models/rf3/src/rf3",
   "models/rfd3/src/rfd3",
   "models/rfd3na/src/rfd3na",

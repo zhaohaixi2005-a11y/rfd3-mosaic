@@ -1,9 +1,8 @@
-"""Geometry audit for two-fragment interface seeds in symmetric RFD3 output."""
+"""Geometry audits for interface seeds in symmetric RFD3 output."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import permutations
 from typing import Any
 
 import numpy as np
@@ -67,10 +66,10 @@ def infer_fragment_placements(
     grouped: dict[str, list[tuple[int, str, int]]] = {}
     for (fragment_id, _, _), item in residue_records.items():
         grouped.setdefault(fragment_id, []).append(item)
-    if len(grouped) != 2:
+    if not grouped:
         raise ValueError(
-            "Seed integrity audit currently requires exactly two indexed "
-            f"source fragments, found {sorted(grouped)}"
+            "Seed integrity audit found no indexed source fragments in the "
+            "adapter and result mappings"
         )
 
     placements: dict[str, FragmentPlacement] = {}
@@ -276,6 +275,91 @@ def _evaluate_pair(
     }
 
 
+def _minimum_cost_cross_chain_assignment(
+    chains: list[str],
+    pair_matrix: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Solve the directed chain pairing in O(n^3) with no self-pairs.
+
+    This is the rectangular-potential form of the Hungarian assignment
+    algorithm specialized to a square matrix.  It replaces the legacy
+    factorial permutation search, which becomes unusable for multiple ASU
+    chains or higher symmetry orders.
+    """
+
+    chain_count = len(chains)
+    costs = np.full((chain_count, chain_count), np.inf, dtype=float)
+    for left_index, left_chain in enumerate(chains):
+        for right_index, right_chain in enumerate(chains):
+            if left_chain == right_chain:
+                continue
+            costs[left_index, right_index] = pair_matrix[
+                (left_chain, right_chain)
+            ]["ca_rmsd"]
+
+    row_potential = np.zeros(chain_count + 1, dtype=float)
+    column_potential = np.zeros(chain_count + 1, dtype=float)
+    matched_row = np.zeros(chain_count + 1, dtype=int)
+    predecessor = np.zeros(chain_count + 1, dtype=int)
+
+    for row in range(1, chain_count + 1):
+        matched_row[0] = row
+        minimum = np.full(chain_count + 1, np.inf, dtype=float)
+        used = np.zeros(chain_count + 1, dtype=bool)
+        column = 0
+        while True:
+            used[column] = True
+            current_row = matched_row[column]
+            delta = float("inf")
+            next_column = 0
+            for candidate_column in range(1, chain_count + 1):
+                if used[candidate_column]:
+                    continue
+                reduced_cost = (
+                    costs[current_row - 1, candidate_column - 1]
+                    - row_potential[current_row]
+                    - column_potential[candidate_column]
+                )
+                if reduced_cost < minimum[candidate_column]:
+                    minimum[candidate_column] = reduced_cost
+                    predecessor[candidate_column] = column
+                if minimum[candidate_column] < delta:
+                    delta = minimum[candidate_column]
+                    next_column = candidate_column
+            if not np.isfinite(delta):
+                raise ValueError(
+                    "No finite one-to-one cross-chain seed pairing is "
+                    "possible"
+                )
+            for candidate_column in range(chain_count + 1):
+                if used[candidate_column]:
+                    row_potential[matched_row[candidate_column]] += delta
+                    column_potential[candidate_column] -= delta
+                else:
+                    minimum[candidate_column] -= delta
+            column = next_column
+            if matched_row[column] == 0:
+                break
+        while True:
+            previous_column = predecessor[column]
+            matched_row[column] = matched_row[previous_column]
+            column = previous_column
+            if column == 0:
+                break
+
+    assigned_right_by_left = [-1] * chain_count
+    for right_column in range(1, chain_count + 1):
+        left_row = matched_row[right_column]
+        if left_row:
+            assigned_right_by_left[left_row - 1] = right_column - 1
+    if any(index < 0 for index in assigned_right_by_left):
+        raise ValueError("Cross-chain assignment did not cover every chain")
+    return [
+        pair_matrix[(chains[left_index], chains[right_index])]
+        for left_index, right_index in enumerate(assigned_right_by_left)
+    ]
+
+
 def audit_two_fragment_seed(
     *,
     output_atoms: tuple[AtomRecord, ...],
@@ -334,21 +418,7 @@ def audit_two_fragment_seed(
                 contact_cutoff=contact_cutoff,
             )
 
-    best_pairs: list[dict[str, Any]] | None = None
-    best_score = float("inf")
-    for right_order in permutations(chains):
-        if any(left == right for left, right in zip(chains, right_order)):
-            continue
-        candidate = [
-            pair_matrix[(left, right)]
-            for left, right in zip(chains, right_order)
-        ]
-        score = float(np.mean([item["ca_rmsd"] for item in candidate]))
-        if score < best_score:
-            best_score = score
-            best_pairs = candidate
-    if best_pairs is None:
-        raise ValueError("No one-to-one cross-chain seed pairing is possible")
+    best_pairs = _minimum_cost_cross_chain_assignment(chains, pair_matrix)
 
     for pair in best_pairs:
         failures: list[str] = []
@@ -373,7 +443,9 @@ def audit_two_fragment_seed(
             "right": right_fragment_id,
         },
         "candidate_protomer_chains": chains,
-        "pairing_method": "minimum_mean_ca_rmsd_one_to_one_cross_chain",
+        "pairing_method": (
+            "minimum_total_ca_rmsd_one_to_one_cross_chain_hungarian"
+        ),
         "thresholds": {
             "contact_cutoff": contact_cutoff,
             "max_ca_rmsd": max_ca_rmsd,
@@ -396,4 +468,117 @@ def audit_two_fragment_seed(
             ),
         },
         "seed_pairs": best_pairs,
+    }
+
+
+def audit_interface_seed_pairs(
+    *,
+    output_atoms: tuple[AtomRecord, ...],
+    references: dict[str, tuple[AtomRecord, ...]],
+    placements: dict[str, FragmentPlacement],
+    fragment_pairs: tuple[tuple[str, str], ...],
+    contact_cutoff: float = 4.5,
+    max_ca_rmsd: float = 0.5,
+    max_all_atom_rmsd: float = 0.75,
+    min_contact_retention: float = 0.9,
+    min_atom_completeness: float = 0.99,
+) -> dict[str, Any]:
+    """Audit one or more independently defined two-fragment interfaces.
+
+    The legacy single-interface report is returned unchanged.  Multiple
+    interfaces are evaluated independently and combined under a fail-closed
+    top-level report so existing audit gates can continue to inspect
+    ``passed`` without understanding the richer schema.
+    """
+
+    if not fragment_pairs:
+        raise ValueError("At least one interface fragment pair is required")
+    if len(set(fragment_pairs)) != len(fragment_pairs):
+        raise ValueError("Interface fragment pairs must be unique")
+
+    required_fragments = {
+        fragment_id for pair in fragment_pairs for fragment_id in pair
+    }
+    missing_references = required_fragments - set(references)
+    missing_placements = required_fragments - set(placements)
+    if missing_references or missing_placements:
+        raise ValueError(
+            "Interface fragment pairs reference unavailable fragments; "
+            f"missing references={sorted(missing_references)}, "
+            f"missing placements={sorted(missing_placements)}"
+        )
+
+    reports = []
+    for left_fragment_id, right_fragment_id in fragment_pairs:
+        pair_fragments = {left_fragment_id, right_fragment_id}
+        report = audit_two_fragment_seed(
+            output_atoms=output_atoms,
+            references={
+                key: references[key] for key in pair_fragments
+            },
+            placements={key: placements[key] for key in pair_fragments},
+            left_fragment_id=left_fragment_id,
+            right_fragment_id=right_fragment_id,
+            contact_cutoff=contact_cutoff,
+            max_ca_rmsd=max_ca_rmsd,
+            max_all_atom_rmsd=max_all_atom_rmsd,
+            min_contact_retention=min_contact_retention,
+            min_atom_completeness=min_atom_completeness,
+        )
+        reports.append(report)
+
+    if len(reports) == 1:
+        return reports[0]
+
+    seed_pairs = [
+        {
+            **pair,
+            "interface_index": interface_index,
+            "left_fragment": report["fragment_roles"]["left"],
+            "right_fragment": report["fragment_roles"]["right"],
+        }
+        for interface_index, report in enumerate(reports)
+        for pair in report["seed_pairs"]
+    ]
+    candidate_chains = sorted(
+        {
+            chain
+            for report in reports
+            for chain in report["candidate_protomer_chains"]
+        }
+    )
+    return {
+        "schema_version": 1,
+        "audit": "rfd3_mosaic.multi_interface_seed_integrity",
+        "passed": all(report["passed"] for report in reports),
+        "fragment_roles": [
+            report["fragment_roles"] for report in reports
+        ],
+        "candidate_protomer_chains": candidate_chains,
+        "pairing_method": (
+            "per_interface_minimum_mean_ca_rmsd_one_to_one_cross_chain"
+        ),
+        "thresholds": reports[0]["thresholds"],
+        "summary": {
+            "interface_seeds": len(reports),
+            "passed_interface_seeds": sum(
+                report["passed"] for report in reports
+            ),
+            "seed_pairs": len(seed_pairs),
+            "passed_pairs": sum(pair["passed"] for pair in seed_pairs),
+            "maximum_ca_rmsd": max(
+                pair["ca_rmsd"] for pair in seed_pairs
+            ),
+            "maximum_all_atom_rmsd": max(
+                pair["all_atom_rmsd"] for pair in seed_pairs
+            ),
+            "minimum_contact_retention": min(
+                pair["contact_retention"] for pair in seed_pairs
+            ),
+            "minimum_atom_completeness": min(
+                pair["atom_completeness"] for pair in seed_pairs
+            ),
+        },
+        "interface_seed_audits": reports,
+        "seed_pairs": seed_pairs,
     }

@@ -30,6 +30,19 @@ class AddSymmetryFeats(Transform):
 
     def forward(self, data):
         atom_array = data["atom_array"]
+        annotation_categories = set(
+            atom_array.get_annotation_categories()
+        )
+        if "symmetry_id" in annotation_categories:
+            symmetry_ids = np.unique(
+                atom_array.get_annotation("symmetry_id")
+            )
+            if len(symmetry_ids) != 1:
+                raise ValueError(
+                    "Symmetric inference requires one symmetry_id, observed "
+                    f"{symmetry_ids.tolist()}"
+                )
+            data["feats"]["symmetry_id"] = str(symmetry_ids[0])
         # Get frames from atom_array
         transforms_dict = self.make_transforms_dict(atom_array)
         data["feats"]["sym_transform"] = transforms_dict  # {str(id): tuple (R,T)}
@@ -77,7 +90,6 @@ class AddSymmetryFeats(Transform):
                     )
                 )
             return data
-        annotation_categories = set(atom_array.get_annotation_categories())
         for feature_name in self.optional_symmetry_feats:
             if feature_name not in annotation_categories:
                 continue
@@ -229,7 +241,14 @@ class AddSymmetryFeats(Transform):
         atom_array,
         groups,
     ) -> torch.Tensor:
-        """Resolve cross-chain groups after native symmetry expansion."""
+        """Resolve hard motif groups after native symmetry expansion.
+
+        Interface groups contain the two roles ``left`` and ``right``.  A
+        conventional central motif is a single-protomer constraint and uses
+        ``constraint_kind=fixed_motif`` with the sole role ``motif``.  Keeping
+        these schemas explicit prevents a central motif from being disguised
+        as a synthetic interface merely to reach the runtime projector.
+        """
 
         categories = set(atom_array.get_annotation_categories())
         required = {
@@ -261,6 +280,18 @@ class AddSymmetryFeats(Transform):
             dtype=bool,
         )
         for group_index, group in enumerate(groups):
+            constraint_kind = str(
+                group.get("constraint_kind", "interface")
+            )
+            expected_roles = {
+                "interface": {"left", "right"},
+                "fixed_motif": {"motif"},
+            }.get(constraint_kind)
+            if expected_roles is None:
+                raise ValueError(
+                    f"Motif constraint group {group.get('group_id')!r} "
+                    f"has unsupported constraint_kind {constraint_kind!r}"
+                )
             roles_with_atoms: set[str] = set()
             for member in group.get("members", ()):
                 member_mask = (
@@ -283,10 +314,12 @@ class AddSymmetryFeats(Transform):
                     )
                 membership[group_index] |= member_mask
                 roles_with_atoms.add(member["role"])
-            if roles_with_atoms != {"left", "right"}:
+            if roles_with_atoms != expected_roles:
                 raise ValueError(
                     f"Motif constraint group {group.get('group_id')!r} "
-                    "must resolve fixed atoms on both interface sides"
+                    f"with constraint_kind={constraint_kind!r} must resolve "
+                    f"exactly the roles {sorted(expected_roles)!r}; observed "
+                    f"{sorted(roles_with_atoms)!r}"
                 )
 
         assigned = membership.any(axis=0)
@@ -307,7 +340,7 @@ class AddSymmetryFeats(Transform):
         groups,
         orbits,
         membership: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, object]:
         """Build stable atom slots and numeric orbit-control metadata."""
 
         source_components = np.asarray(
@@ -411,6 +444,10 @@ class AddSymmetryFeats(Transform):
         master_group_indices = []
         mobility_modes = []
         orbit_bounds = []
+        mobility_subspaces = []
+        mobility_proposals = []
+        mobility_schedules = []
+        mobility_objectives = []
         atoms_by_orbit: list[set[int]] = []
         mobile_orbit_indices: set[int] = set()
         for orbit_index, orbit in enumerate(orbits):
@@ -461,6 +498,58 @@ class AddSymmetryFeats(Transform):
                     float(orbit.get("max_rotation_deg") or 0.0),
                 ]
             )
+            subspace_codes = {
+                None: 0,
+                "radial": 1,
+                "radial_axial": 2,
+                "tilt_only": 3,
+                "bounded_se3": 4,
+            }
+            proposal_codes = {
+                None: 0,
+                "denoiser_fit": 1,
+                "scaffold_objectives": 2,
+                "hoyeung_drag_compat": 3,
+            }
+            subspace = orbit.get(
+                "mobility_subspace",
+                "bounded_se3" if is_mobile else None,
+            )
+            proposal = orbit.get(
+                "mobility_proposal",
+                "denoiser_fit" if is_mobile else None,
+            )
+            if subspace not in subspace_codes:
+                raise ValueError(
+                    f"Unknown mobility subspace {subspace!r}"
+                )
+            if proposal not in proposal_codes:
+                raise ValueError(
+                    f"Unknown mobility proposal {proposal!r}"
+                )
+            mobility_subspaces.append(subspace_codes[subspace])
+            mobility_proposals.append(proposal_codes[proposal])
+            schedule = orbit.get("mobility_schedule") or {}
+            if is_mobile and schedule:
+                mobility_schedules.append([
+                    float(schedule.get("start_fraction", 0.10)),
+                    float(schedule.get("end_fraction", 0.85)),
+                    float(schedule.get("response", 0.25)),
+                    float(schedule.get("max_step_translation", 0.25)),
+                    float(schedule.get("max_step_rotation_deg", 1.0)),
+                ])
+            elif is_mobile:
+                # Negative sentinel means this legacy input inherits the
+                # sampler-level schedule rather than silently changing it.
+                mobility_schedules.append([-1.0] * 5)
+            else:
+                mobility_schedules.append([0.0] * 5)
+            mobility_objectives.append(
+                tuple(str(value) for value in orbit.get(
+                    "mobility_objectives",
+                    (),
+                ))
+            )
             if is_mobile:
                 mobile_orbit_indices.add(orbit_index)
             atoms_by_orbit.append(
@@ -506,6 +595,21 @@ class AddSymmetryFeats(Transform):
             "motif_constraint_orbit_bounds": torch.tensor(
                 orbit_bounds,
                 dtype=torch.float32,
+            ),
+            "motif_constraint_orbit_subspace": torch.tensor(
+                mobility_subspaces,
+                dtype=torch.long,
+            ),
+            "motif_constraint_orbit_proposal": torch.tensor(
+                mobility_proposals,
+                dtype=torch.long,
+            ),
+            "motif_constraint_orbit_schedule": torch.tensor(
+                mobility_schedules,
+                dtype=torch.float32,
+            ),
+            "motif_constraint_orbit_objective_ids": tuple(
+                mobility_objectives
             ),
         }
 

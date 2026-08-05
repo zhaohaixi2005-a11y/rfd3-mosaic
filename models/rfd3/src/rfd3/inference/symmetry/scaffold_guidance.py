@@ -134,11 +134,14 @@ def build_boundary_topology(
     f: dict[str, Any],
     fixed_mask: torch.Tensor,
 ) -> BoundaryTopology:
-    """Find covalent fixed/generated CA boundaries without provenance.
+    """Find fixed/generated CA boundaries from runtime topology features.
 
-    A boundary is a token bond within one protein chain whose two tokens have
-    opposite fixed-coordinate states.  The fixed atom is always stored first
-    in ``junction_pairs``.
+    Explicit ``token_bonds`` cover non-polymer covalent bonds, but Foundry
+    does not require ordinary peptide neighbours to be present in that
+    matrix.  Protein-polymer neighbours are therefore also reconstructed
+    from consecutive ``residue_index`` values within one ``asym_id``.  A
+    boundary has opposite fixed-coordinate states on its two tokens.  The
+    fixed atom is always stored first in ``junction_pairs``.
     """
 
     required = {
@@ -207,6 +210,17 @@ def build_boundary_topology(
     )
     if is_protein.shape != (token_count,):
         raise ValueError("is_protein must have shape [N_tokens]")
+    residue_index = None
+    if "residue_index" in f:
+        residue_index = _as_tensor(
+            f["residue_index"],
+            dtype=torch.long,
+            device=device,
+        )
+        if residue_index.shape != (token_count,):
+            raise ValueError(
+                "residue_index must have shape [N_tokens]"
+            )
     is_virtual = _as_tensor(
         f.get(
             "is_virtual",
@@ -261,14 +275,52 @@ def build_boundary_topology(
             ca_by_token[token_id] = int(matches[0].item())
 
     undirected_bonds = token_bonds | token_bonds.T
-    token_pairs = torch.nonzero(
-        torch.triu(undirected_bonds, diagonal=1),
-        as_tuple=False,
-    )
+    candidate_pairs = {
+        (int(pair[0].item()), int(pair[1].item()))
+        for pair in torch.nonzero(
+            torch.triu(undirected_bonds, diagonal=1),
+            as_tuple=False,
+        )
+    }
+    if residue_index is not None:
+        # Protein residues have one CA-bearing token each.  Sorting those
+        # tokens by within-chain residue index recovers peptide neighbours
+        # even when ``token_bonds`` contains no standard polymer edges.
+        for chain_id_tensor in torch.unique(asym_id):
+            chain_id = int(chain_id_tensor.item())
+            chain_ca_tokens = [
+                token_id
+                for token_id in ca_by_token
+                if int(asym_id[token_id].item()) == chain_id
+                and bool(is_protein[token_id])
+            ]
+            chain_ca_tokens.sort(
+                key=lambda token_id: (
+                    int(residue_index[token_id].item()),
+                    token_id,
+                )
+            )
+            for left_token, right_token in zip(
+                chain_ca_tokens,
+                chain_ca_tokens[1:],
+            ):
+                left_residue = int(
+                    residue_index[left_token].item()
+                )
+                right_residue = int(
+                    residue_index[right_token].item()
+                )
+                if right_residue != left_residue + 1:
+                    continue
+                candidate_pairs.add(
+                    (
+                        min(left_token, right_token),
+                        max(left_token, right_token),
+                    )
+                )
+
     junctions: list[tuple[int, int]] = []
-    for pair in token_pairs:
-        left_token = int(pair[0].item())
-        right_token = int(pair[1].item())
+    for left_token, right_token in sorted(candidate_pairs):
         if asym_id[left_token] != asym_id[right_token]:
             continue
         if not (
@@ -295,7 +347,8 @@ def build_boundary_topology(
 
     if not junctions:
         raise ValueError(
-            "No covalent fixed/generated protein boundaries were found"
+            "No fixed/generated protein boundaries were found from "
+            "explicit token bonds or consecutive within-chain residues"
         )
     junction_pairs = torch.tensor(
         junctions,
