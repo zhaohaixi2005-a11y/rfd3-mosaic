@@ -8,6 +8,7 @@ RFD3 feature compiler, and runtime sampler.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import json
 from pathlib import Path
 import re
@@ -17,11 +18,24 @@ import numpy as np
 import yaml
 
 from rfd3_mosaic.compile import load_assembly_config
+from rfd3_mosaic.design_compiler import lower_user_design
 from rfd3_mosaic.geometry import build_transform_registry
-from rfd3_mosaic.schema import AssemblySpecification
+from rfd3_mosaic.schema import (
+    AssemblySpecification,
+    FixedXYZConstraint,
+    load_user_design,
+)
 
 
 _RFD3_SELECTOR = re.compile(r"^([^0-9,+-]+)([0-9]+)-([0-9]+)$")
+
+
+class AuditRequirement(str, Enum):
+    """Semantic evidence required by one compiled constraint contract."""
+
+    EXACT_CONSTRAINT_ORBIT = "exact_constraint_orbit"
+    INTERFACE_GEOMETRY = "interface_geometry"
+    BOUNDED_COMPONENT_MOBILITY = "bounded_component_mobility"
 
 
 @dataclass(frozen=True)
@@ -30,11 +44,24 @@ class AssemblyCompilationRequest:
 
     specification_path: Path
     example_id: str
+    audit_requirements: tuple[AuditRequirement, ...]
     pose_seed: int | None = None
     pose_candidate_manifest: Path | None = None
     linker_length: int | None = None
-    semantic_audit: str = "interface_seed"
     audit_metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.audit_requirements:
+            raise ValueError(
+                "Every assembly compilation request requires an audit"
+            )
+        if len(self.audit_requirements) != len(set(self.audit_requirements)):
+            raise ValueError("Audit requirements cannot repeat")
+        if any(
+            not isinstance(item, AuditRequirement)
+            for item in self.audit_requirements
+        ):
+            raise TypeError("Audit requirements must use AuditRequirement")
 
 
 def _single_rfd3_example(path: Path) -> dict[str, Any]:
@@ -272,7 +299,7 @@ def lower_central_motif_topology(
     return AssemblyCompilationRequest(
         specification_path=specification_path,
         example_id=experiment_name,
-        semantic_audit="central_motif",
+        audit_requirements=(AuditRequirement.EXACT_CONSTRAINT_ORBIT,),
         audit_metadata={
             "probe_topology": "central_motif_bidirectional_growth",
             "probe_template_input": str(template_path),
@@ -315,13 +342,56 @@ def lower_experiment_topology(
                 Path(str(manifest)).resolve() if manifest is not None else None
             ),
             linker_length=topology.get("linker_length"),
-            semantic_audit="interface_seed",
+            audit_requirements=(AuditRequirement.INTERFACE_GEOMETRY,),
+        )
+    if kind == "user_design":
+        design_path = Path(str(topology["config"])).resolve()
+        design = load_user_design(design_path)
+        lowered = lower_user_design(design)
+        output = Path(output_directory)
+        output.mkdir(parents=True, exist_ok=True)
+        specification_path = output / "assembly_specification.yaml"
+        specification_path.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": lowered.specification.model_dump(
+                        mode="json"
+                    )
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        load_assembly_config(specification_path)
+        audit_requirements = [AuditRequirement.EXACT_CONSTRAINT_ORBIT]
+        if any(
+            isinstance(constraint, FixedXYZConstraint)
+            and constraint.pose.mode == "bounded_mobile"
+            for constraint in design.constraints
+        ):
+            audit_requirements.append(
+                AuditRequirement.BOUNDED_COMPONENT_MOBILITY
+            )
+        return AssemblyCompilationRequest(
+            specification_path=specification_path,
+            example_id=str(topology["example_id"]),
+            audit_requirements=tuple(audit_requirements),
+            audit_metadata={
+                "public_design": str(design_path),
+                "constraint_plan": lowered.constraint_plan.model_dump(
+                    mode="json"
+                ),
+                "sampling_plan": lowered.sampling_plan.model_dump(
+                    mode="json"
+                ),
+            },
         )
     raise ValueError(f"Unsupported topology kind {kind!r}")
 
 
 __all__ = [
     "AssemblyCompilationRequest",
+    "AuditRequirement",
     "lower_central_motif_topology",
     "lower_experiment_topology",
 ]

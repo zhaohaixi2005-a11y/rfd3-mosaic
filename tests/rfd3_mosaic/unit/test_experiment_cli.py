@@ -1,18 +1,57 @@
+import json
 from pathlib import Path
+import tarfile
 import tempfile
 import unittest
 
 import yaml
 
-from rfd3_mosaic.cli import _parser, _write_quick_experiment
+from rfd3_mosaic.cli import (
+    _parser,
+    _write_quick_experiment,
+)
 from rfd3_mosaic.experiment import (
     build_execution_plan,
     render_submission,
     resolve_experiment,
 )
+from rfd3_mosaic.experiment_worker import (
+    _motif_mobility_runtime,
+    _verify_render_identity,
+)
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
+    def test_worker_enables_compiler_declared_denoiser_mobility(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "rfd3_input.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "example": {
+                            "extra": {
+                                "motif_constraint_orbits": [
+                                    {
+                                        "mobility_mode": "orbit_rigid",
+                                        "mobility_proposal": "denoiser_fit",
+                                    },
+                                    {
+                                        "mobility_mode": "fixed",
+                                        "mobility_proposal": None,
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            enabled, source = _motif_mobility_runtime(path)
+
+        self.assertTrue(enabled)
+        self.assertEqual(source, "denoiser")
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -23,6 +62,8 @@ class ExperimentConfigTestCase(unittest.TestCase):
             '{"source": {"input": "source.cif", "symmetry": {"id": "C3"}}}\n',
             encoding="utf-8",
         )
+        self.checkpoint = self.root / "rfd3.ckpt"
+        self.checkpoint.write_bytes(b"test checkpoint\n")
         self.profile = self.root / "profile.yaml"
         self.profile.write_text(
             yaml.safe_dump(
@@ -37,7 +78,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
                         "walltime": "00:30:00",
                     },
                     "setup_commands": ["source /test/environment.sh"],
-                    "checkpoint": "/checkpoints/rfd3.ckpt",
+                    "checkpoint": str(self.checkpoint),
                     "foundry_checkpoint_dirs": "/checkpoints",
                 },
                 sort_keys=False,
@@ -117,6 +158,143 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertNotIn("python -m rfd3.run_inference", text)
         self.assertTrue((script.parent / "resolved_config.yaml").is_file())
         self.assertTrue((script.parent / "provenance.json").is_file())
+        self.assertTrue((script.parent / "source_snapshot.tar.gz").is_file())
+        self.assertIn('SOURCE_ROOT="$RUN_DIR/software"', text)
+        self.assertIn('--source-root "$SOURCE_ROOT"', text)
+        resolved_payload = yaml.safe_load(
+            (script.parent / "resolved_config.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        identity = resolved_payload["provenance"]["render_identity"]
+        self.assertGreater(identity["source_snapshot"]["file_count"], 0)
+        roles = {record["role"] for record in identity["files"]}
+        self.assertIn("central motif template", roles)
+        self.assertIn("central motif structure", roles)
+        self.assertEqual(
+            resolved_payload["resources"]["checkpoint_sha256"],
+            identity["checkpoint"]["sha256"],
+        )
+
+    def test_render_rejects_a_declared_checkpoint_digest_mismatch(self) -> None:
+        profile = yaml.safe_load(self.profile.read_text(encoding="utf-8"))
+        profile["checkpoint_sha256"] = "a" * 64
+        self.profile.write_text(
+            yaml.safe_dump(profile, sort_keys=False),
+            encoding="utf-8",
+        )
+        config = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "checkpoint-mismatch",
+                "topology": {
+                    "kind": "central_motif",
+                    "template_input": self.template_input.name,
+                    "fixed_selector": "B1-31",
+                },
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs", "campaign": "test"},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            render_submission(
+                resolve_experiment(config),
+                output_directory=self.root / "mismatch-render",
+            )
+
+    def test_render_fingerprints_interface_fragment_sources(self) -> None:
+        assembly = self.root / "assembly.yaml"
+        assembly.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "fragments": {
+                            "left": {
+                                "source": str(self.template_structure),
+                            }
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        config = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "interface-render",
+                "topology": {
+                    "kind": "interface_seed",
+                    "config": str(assembly),
+                    "pose_seed": 42,
+                },
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs", "campaign": "test"},
+            }
+        )
+
+        script = render_submission(
+            resolve_experiment(config),
+            output_directory=self.root / "interface-rendered",
+        )
+        resolved_payload = yaml.safe_load(
+            (script.parent / "resolved_config.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        roles = {
+            record["role"]
+            for record in resolved_payload["provenance"][
+                "render_identity"
+            ]["files"]
+        }
+        self.assertIn("assembly specification", roles)
+        self.assertIn("fragment source left", roles)
+
+    def test_worker_rejects_input_changed_after_render(self) -> None:
+        config = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "input-mutation",
+                "topology": {
+                    "kind": "central_motif",
+                    "template_input": self.template_input.name,
+                    "fixed_selector": "B1-31",
+                },
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs", "campaign": "test"},
+            }
+        )
+        script = render_submission(
+            resolve_experiment(config),
+            output_directory=self.root / "input-mutation-rendered",
+        )
+        resolved_payload = yaml.safe_load(
+            (script.parent / "resolved_config.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        source_root = self.root / "extracted-source"
+        source_root.mkdir()
+        with tarfile.open(
+            script.parent / "source_snapshot.tar.gz",
+            mode="r:gz",
+        ) as handle:
+            handle.extractall(source_root)
+        _verify_render_identity(
+            resolved_payload,
+            source_root=source_root,
+        )
+
+        self.template_structure.write_text("data_else\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "SHA256 changed"):
+            _verify_render_identity(
+                resolved_payload,
+                source_root=source_root,
+            )
 
     def test_builds_a_read_only_user_auditable_plan(self) -> None:
         config = self._write_experiment(
@@ -149,6 +327,54 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertEqual(plan["sampling"]["timesteps"], 50)
         self.assertEqual(plan["execution"]["profile"], "test-gpu")
         self.assertEqual(plan["software"]["compatibility_id"], "mosaic-rfd3")
+
+    def test_resolves_internal_envelope_for_public_user_design(self) -> None:
+        public = self.root / "public-design.yaml"
+        public.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "name": "public-design",
+                    "input": str(self.template_structure),
+                    "symmetry": "C3",
+                    "generation": [
+                        {
+                            "kind": "terminal",
+                            "anchor": "A1",
+                            "terminus": "n",
+                            "length": 20,
+                        }
+                    ],
+                    "constraints": [
+                        {"kind": "fixed_xyz", "selector": "A1"},
+                    ],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        envelope = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "public-envelope",
+                "topology": {
+                    "kind": "user_design",
+                    "config": str(public),
+                },
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs", "campaign": "public"},
+            }
+        )
+
+        resolved = resolve_experiment(envelope)
+        plan = build_execution_plan(resolved)
+
+        self.assertEqual(resolved.payload["topology"]["kind"], "user_design")
+        self.assertEqual(plan["design"]["topology"], "user_design")
+        self.assertEqual(
+            plan["design"]["effective_constraints"][0]["operator"],
+            "fixed_xyz",
+        )
 
     def test_plan_command_supports_machine_readable_output(self) -> None:
         arguments = _parser().parse_args(

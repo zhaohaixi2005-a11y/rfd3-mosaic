@@ -319,6 +319,7 @@ def expand_symmetry_instances(
             group_instance_ids=group_instance_ids,
             transform_ids=tuple(registry.transform_ids),
             mobility=resolved_orbit_mobility(orbit_id),
+            component_mobility=orbit_spec.component_mobility,
         )
 
     port_instances: dict[str, InterfacePortInstance] = {}
@@ -708,9 +709,12 @@ def build_master_group_transforms(
         transform_set_id = group_to_transform_set.get(group_id)
         if transform_set_id is None:
             axis = np.array((0.0, 0.0, 1.0), dtype=np.float64)
+            symmetry_center = np.zeros(3, dtype=np.float64)
         else:
-            axis = np.asarray(
-                spec.symmetry.transform_sets[transform_set_id].axis,
+            transform_set = spec.symmetry.transform_sets[transform_set_id]
+            axis = np.asarray(transform_set.axis, dtype=np.float64)
+            symmetry_center = np.asarray(
+                transform_set.center,
                 dtype=np.float64,
             )
         axis /= np.linalg.norm(axis)
@@ -738,7 +742,9 @@ def build_master_group_transforms(
             rng,
             unit_value=group_override.get("axial_offset_unit"),
         )
-        target_center = radial * radius + axis * axial_offset
+        target_center = (
+            symmetry_center + radial * radius + axis * axial_offset
+        )
         quaternion: np.ndarray | None = None
         if initialization.orientation.method == "fixed":
             rotation = _fixed_xyz_rotation(

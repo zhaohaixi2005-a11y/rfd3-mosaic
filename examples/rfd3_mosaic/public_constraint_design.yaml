@@ -1,0 +1,40 @@
+schema_version: 1
+name: example-c3-constraint-design
+input: /path/to/motif.pdb
+symmetry: C3
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length:
+      minimum: 80
+      maximum: 100
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+  - kind: cylindrical
+    selector: A26-37
+    atoms: ca
+    axis: symmetry
+    keep: [radius, azimuth]
+
+sampling:
+  # Optional: one rigid pose is sampled before diffusion. Omit this entire
+  # block to preserve the input coordinates exactly.
+  initial_pose:
+    radius: {minimum: 20.0, maximum: 30.0}
+    axial_offset: {minimum: -3.0, maximum: 3.0}
+    orientation: {method: uniform_so3}
+    seed: 3000
+  timesteps: 200
+  seed: 42
+
+resources:
+  profile: h100
+
+output:
+  root: /path/to/runs
+  campaign: public-constraints

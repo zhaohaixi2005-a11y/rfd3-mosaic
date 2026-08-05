@@ -507,11 +507,28 @@ class SymmetryOrbitSpec(StrictModel):
     transform_set: Identifier
     master_groups: Annotated[list[Identifier], Field(min_length=1)]
     mobility: OrbitMobilitySpec = OrbitMobilitySpec()
+    component_mobility: dict[Identifier, OrbitMobilitySpec] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def require_unique_master_groups(self) -> "SymmetryOrbitSpec":
         if len(self.master_groups) != len(set(self.master_groups)):
             raise ValueError("master_groups must be unique")
+        unknown = set(self.component_mobility) - set(self.master_groups)
+        if unknown:
+            raise ValueError(
+                "component_mobility references groups outside this orbit: "
+                f"{sorted(unknown)}"
+            )
+        if (
+            self.mobility.mode != OrbitMobilityMode.FIXED
+            and self.component_mobility
+        ):
+            raise ValueError(
+                "An orbit cannot combine orbit-wide mobility with "
+                "per-component mobility"
+            )
         return self
 
 

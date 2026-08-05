@@ -15,7 +15,14 @@ from typing import Any
 import yaml
 
 from rfd3_mosaic.assembly_compiler import compile_experiment_assembly
-from rfd3_mosaic.provenance.software import collect_runtime_provenance
+from rfd3_mosaic.provenance.software import (
+    collect_runtime_provenance,
+    verify_file_identities,
+    verify_repository_identity,
+)
+from rfd3_mosaic.provenance.source_snapshot import (
+    verify_source_snapshot_tree,
+)
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -54,27 +61,137 @@ def _symmetry_multiplicity(rfd3_input: Path) -> int:
     return int(example["extra"]["symmetry_multiplicity"])
 
 
-def execute(resolved_config: Path, run_dir: Path) -> None:
+def _motif_mobility_runtime(rfd3_input: Path) -> tuple[bool, str]:
+    """Resolve sampler switches from compiler-emitted orbit mobility."""
+
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    orbits = (example.get("extra") or {}).get(
+        "motif_constraint_orbits", []
+    )
+    mobile = [
+        orbit
+        for orbit in orbits
+        if orbit.get("mobility_mode") == "orbit_rigid"
+    ]
+    if not mobile:
+        return False, "denoiser"
+    proposals = {orbit.get("mobility_proposal") for orbit in mobile}
+    if proposals == {"denoiser_fit"}:
+        return True, "denoiser"
+    if proposals == {"scaffold_objectives"} and len(mobile) == 1:
+        return True, "scaffold_boundary"
+    raise ValueError(
+        "One RFD3 run cannot mix motif mobility proposal sources: "
+        f"{sorted(str(value) for value in proposals)}"
+    )
+
+
+def _verify_render_identity(
+    config: dict[str, Any],
+    *,
+    source_root: Path | None = None,
+) -> None:
+    """Reject queued work whose source, inputs, or checkpoint changed."""
+
+    provenance = config.get("provenance") or {}
+    identity = provenance.get("render_identity")
+    if not isinstance(identity, dict):
+        raise RuntimeError(
+            "Resolved configuration lacks the required render_identity contract"
+        )
+    if int(identity.get("schema_version", 0)) != 1:
+        raise RuntimeError("Unsupported render_identity schema version")
+    expected_repository = identity.get("repository")
+    if not isinstance(expected_repository, dict):
+        raise RuntimeError("render_identity lacks repository provenance")
+    source_snapshot = identity.get("source_snapshot")
+    if source_snapshot is None:
+        verify_repository_identity(
+            expected_repository,
+            Path(config["project_directory"]),
+        )
+    else:
+        if not isinstance(source_snapshot, dict):
+            raise RuntimeError("Invalid source_snapshot identity")
+        if int(source_snapshot.get("schema_version", 0)) != 1:
+            raise RuntimeError("Unsupported source_snapshot schema version")
+        archive = source_snapshot.get("archive")
+        if not isinstance(archive, dict):
+            raise RuntimeError("source_snapshot lacks archive identity")
+        verify_file_identities([archive])
+        if source_root is None:
+            raise RuntimeError(
+                "A source_root is required for snapshot-backed execution"
+            )
+        verify_source_snapshot_tree(
+            source_root,
+            expected_manifest_sha256=str(
+                source_snapshot["manifest_sha256"]
+            ),
+        )
+    records = identity.get("files")
+    if not isinstance(records, list) or not records:
+        raise RuntimeError("render_identity lacks frozen runtime dependencies")
+    verify_file_identities(records)
+    checkpoint_record = identity.get("checkpoint")
+    if not isinstance(checkpoint_record, dict):
+        raise RuntimeError("render_identity lacks checkpoint identity")
+    resources = config["resources"]
+    if Path(str(checkpoint_record.get("path"))).resolve() != Path(
+        resources["checkpoint"]
+    ).resolve():
+        raise RuntimeError("Resolved checkpoint path differs from render identity")
+    if checkpoint_record.get("sha256") != resources.get("checkpoint_sha256"):
+        raise RuntimeError("Resolved checkpoint digest differs from render identity")
+    verify_file_identities([checkpoint_record])
+
+
+def execute(
+    resolved_config: Path,
+    run_dir: Path,
+    *,
+    source_root: Path | None = None,
+) -> None:
     config = _load(resolved_config)
     run_dir.mkdir(parents=True, exist_ok=True)
     frozen = run_dir / "resolved_config.yaml"
     shutil.copy2(resolved_config, frozen)
     source_provenance = resolved_config.with_name("provenance.json")
-    if source_provenance.is_file():
-        shutil.copy2(source_provenance, run_dir / "provenance.json")
+    if not source_provenance.is_file():
+        raise RuntimeError(
+            f"Submission provenance is missing: {source_provenance}"
+        )
+    submission_provenance = json.loads(
+        source_provenance.read_text(encoding="utf-8")
+    )
+    expected_resolved_sha = submission_provenance.get(
+        "resolved_config_sha256"
+    )
+    observed_resolved_sha = _sha256(resolved_config)
+    if expected_resolved_sha != observed_resolved_sha:
+        raise RuntimeError(
+            "Resolved configuration changed after render: "
+            f"{expected_resolved_sha!r} != {observed_resolved_sha!r}"
+        )
+    _verify_render_identity(config, source_root=source_root)
+    shutil.copy2(source_provenance, run_dir / "provenance.json")
 
     resources = config["resources"]
     runtime_provenance_path = run_dir / "runtime_provenance.json"
+    runtime_provenance = collect_runtime_provenance(
+        Path(config["project_directory"]),
+        checkpoint=Path(resources["checkpoint"]),
+        checkpoint_sha256=resources.get("checkpoint_sha256"),
+    )
+    runtime_provenance["execution_source_root"] = (
+        str(source_root) if source_root is not None else None
+    )
+    runtime_provenance["source_snapshot"] = config["provenance"][
+        "render_identity"
+    ].get("source_snapshot")
     runtime_provenance_path.write_text(
-        json.dumps(
-            collect_runtime_provenance(
-                Path(config["project_directory"]),
-                checkpoint=Path(resources["checkpoint"]),
-                checkpoint_sha256=resources.get("checkpoint_sha256"),
-            ),
-            indent=2,
-            sort_keys=True,
-        )
+        json.dumps(runtime_provenance, indent=2, sort_keys=True)
         + "\n",
         encoding="utf-8",
     )
@@ -121,6 +238,9 @@ def execute(resolved_config: Path, run_dir: Path) -> None:
     )
 
     sampler = sampling["sampler"]
+    mobility_enabled, mobility_proposal_source = (
+        _motif_mobility_runtime(rfd3_input)
+    )
     inference_command = [
         sys.executable,
         "-m",
@@ -150,6 +270,11 @@ def execute(resolved_config: Path, run_dir: Path) -> None:
         + str(sampling["execution_backend"]),
         "++inference_sampler.symmetry_neighbour_radius="
         + str(sampling["neighbour_radius"]),
+        "++inference_sampler.enable_orbit_rigid_motif_mobility="
+        + str(mobility_enabled),
+        "++inference_sampler.motif_mobility_proposal_source="
+        + mobility_proposal_source,
+        "++inference_sampler.motif_mobility_apply_updates=True",
         f"low_memory_mode={sampling['low_memory_mode']}",
         "skip_existing=False",
         "dump_trajectories=False",
@@ -214,10 +339,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--resolved-config", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument("--source-root", type=Path)
     arguments = parser.parse_args()
     run_dir = arguments.run_dir.resolve()
     try:
-        execute(arguments.resolved_config.resolve(), run_dir)
+        execute(
+            arguments.resolved_config.resolve(),
+            run_dir,
+            source_root=(
+                arguments.source_root.resolve()
+                if arguments.source_root is not None
+                else None
+            ),
+        )
     except Exception as error:
         summary_path = run_dir / "experiment_summary.json"
         failed: dict[str, Any] = {

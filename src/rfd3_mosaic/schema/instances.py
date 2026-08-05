@@ -88,6 +88,9 @@ class ConstraintOrbitInstance(StrictModel):
     group_instance_ids: tuple[str, ...]
     transform_ids: tuple[str, ...]
     mobility: OrbitMobilitySpec = OrbitMobilitySpec()
+    component_mobility: dict[Identifier, OrbitMobilitySpec] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def validate_orbit(self) -> "ConstraintOrbitInstance":
@@ -99,6 +102,12 @@ class ConstraintOrbitInstance(StrictModel):
             raise ValueError("Constraint orbit requires transform IDs")
         if len(self.transform_ids) != len(set(self.transform_ids)):
             raise ValueError("Constraint orbit transform IDs must be unique")
+        unknown = set(self.component_mobility) - set(self.master_group_ids)
+        if unknown:
+            raise ValueError(
+                "Constraint orbit component mobility references unknown "
+                f"master groups: {sorted(unknown)}"
+            )
         return self
 
 

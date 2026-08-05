@@ -1,5 +1,18 @@
 # RFD3-Mosaic user CLI
 
+## Inspect real capability maturity
+
+Before writing a design, inspect which features are stable, engineering,
+CPU-only or planned:
+
+```bash
+python -m rfd3_mosaic.cli capabilities
+python -m rfd3_mosaic.cli capabilities --format json
+```
+
+The JSON form is the canonical machine-readable capability ledger. A feature
+being accepted by the schema does not imply that it has a GPU backend.
+
 Before rendering or submitting a job, inspect the fully resolved plan:
 
 ```bash
@@ -16,9 +29,185 @@ rfd3-mosaic plan design.yaml --format json
 effective motif constraints, sampler preset, timesteps, execution backend,
 Slurm profile, output root, Mosaic commit and Foundry base commit.
 
+## New topology-neutral design declaration (development interface)
+
+The first strict public schema is now available for validation and planning:
+
+```yaml
+schema_version: 1
+name: prism-c3
+input: Prism_C3_G2.pdb
+symmetry: C3
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length: 90
+
+constraints:
+  - kind: cylindrical
+    selector: A12-20,A26-37
+    atoms: ca
+    axis: symmetry
+    keep: [radius, azimuth]
+
+sampling:
+  timesteps: 200
+  seed: 42
+
+resources:
+  profile: h100
+
+output:
+  root: /path/to/runs
+  campaign: prism-c3
+```
+
+Inspect it with the same executable:
+
+```bash
+rfd3-mosaic validate design.yaml
+rfd3-mosaic plan design.yaml
+```
+
+The operators are optional. With no `constraints` field, the constraint plan
+is empty and undeclared degrees of freedom remain normal diffusion degrees of
+freedom. The canonical operators currently represented are:
+
+- `fixed_xyz`: preserve the selected atoms as a rigid geometry component;
+- `cylindrical`: preserve selected radius, azimuth and/or axial coordinates
+  about the declared symmetry axis;
+- `bounded_mobile`: allow selected rigid-pose degrees of freedom only inside
+  explicit bounds.
+
+The old descriptive spellings `full_xyz_fixed`, `ca_cylindrical_fixed` and
+`bounded_mobile_interface` are accepted and canonicalized; they do not create
+different pipelines.
+
+`fixed_xyz` does **not** lock a design to the input file's laboratory frame.
+One common translation or rotation of a complete fixed component is physically
+irrelevant and is removed before its RMSD is evaluated. What is protected is
+the full internal and relative geometry of every atom in that component,
+including the relative placement of all symmetry copies.
+
+One declaration is one component. A comma-separated selector within that
+declaration is therefore fitted and audited jointly:
+
+```yaml
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20,A26-37
+    atoms: all
+```
+
+Several declarations are independent unless they name the same
+`coupling_group`. Use a shared group when spatially separate selections must
+retain their mutual pose and be superposed with one common rigid transform:
+
+```yaml
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    coupling_group: catalytic_site
+  - kind: fixed_xyz
+    selector: B26-37
+    coupling_group: catalytic_site
+```
+
+Omit `coupling_group` when each selection may have its own rigid-body gauge.
+The audit then aligns each component independently. Absolute-coordinate error
+is not a public constraint and never determines pass/fail.
+
+The component pose is fixed by default. To let independently declared
+components adapt to the generated scaffold while preserving every internal
+distance, set bounded rigid mobility explicitly:
+
+```yaml
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    coupling_group: mobile_left
+    pose:
+      mode: bounded_mobile
+      max_translation: 3.0
+      max_rotation_deg: 10.0
+      start_fraction: 0.05
+      end_fraction: 0.75
+      response: 0.2
+      max_step_translation: 0.25
+      max_step_rotation_deg: 1.0
+
+  - kind: fixed_xyz
+    selector: A26-37
+    coupling_group: fixed_right
+    # pose.mode defaults to fixed
+```
+
+Here `mobile_left` and `fixed_right` are distinct components. The first may
+translate and rotate inside its declared cumulative and per-step bounds; the
+second remains at its compiled pose. Both retain their complete internal and
+symmetry-copy geometry. Declarations sharing one `coupling_group` must use
+identical `pose` settings because they represent one rigid component.
+
+Designs in which every generated-region endpoint is explicitly covered by
+`fixed_xyz` with `atoms: all` can be rendered or submitted. This includes
+both the default fixed-pose components and components that opt into nested
+`pose.mode: bounded_mobile`:
+
+```bash
+rfd3-mosaic render design.yaml
+rfd3-mosaic submit design.yaml
+```
+
+The separate legacy-style top-level `bounded_mobile` operator is not the
+component-pose control above and remains unavailable to the executable public
+backend. `cylindrical`, partial-atom fixed XYZ, unconstrained endpoints, or
+fixed regions detached from every generated region also fail with a direct
+backend/lowering error. These cases are not silently converted to historical
+adapter behavior. The stable central/interface compatibility commands below
+remain available during migration.
+
+Every submitted design with a bounded-mobile component automatically requires
+three complementary checks. The constraint audit jointly superposes all fixed
+fragments within each symmetry copy and verifies their internal rigid
+geometry; the assembly symmetry audit verifies the relationship among copies;
+and the component-mobility audit verifies that runtime updates were active and
+never exceeded the declared cumulative translation or rotation bounds. A
+fixed-pose component instead retains the stronger complete-orbit joint-fit
+contract against its initial pose.
+
 The routine public interface is one command. Users should not copy or edit
 long implementation-oriented Slurm scripts, and they do not need to write
 `topology.kind` or exact-symmetry sampler settings themselves.
+
+## Static pose sampling versus diffusion sampling
+
+These controls are intentionally separate. `sampling.initial_pose` applies
+one rigid-body transform to the complete motif motion group before RFD3
+starts. The outer `sampling.seed` controls diffusion randomness and does not
+choose that pose.
+
+```yaml
+sampling:
+  initial_pose:
+    radius: {minimum: 20.0, maximum: 30.0}
+    axial_offset: {minimum: -3.0, maximum: 3.0}
+    radial_direction: [1.0, 0.0, 0.0]
+    orientation: {method: uniform_so3}
+    seed: 3000
+  timesteps: 200
+  seed: 42
+```
+
+The current public executable subset realizes one deterministic initial pose
+per run. Radius and axial offset are sampled uniformly from the declared
+intervals; `uniform_so3` is Haar-uniform. A fixed orientation may instead be
+declared with `method: fixed` and `rotation_deg: [x, y, z]`.
+
+Omit `initial_pose` entirely to keep the input pose unchanged. This setting
+does not move a motif during diffusion; timestep mobility is a different,
+currently experimental capability.
 
 ## Simplest central-motif run
 
@@ -120,6 +309,30 @@ Each run contains the frozen resolved config, input artifacts, Slurm logs,
 RFD3 result, topology-specific motif audit, scaffold audit, provenance, and
 `experiment_summary.json`. A failed worker records `status: failed` and the
 exception before returning a non-zero job exit.
+
+## Immutable submission identity
+
+`render` and `submit` must run on a host that can read the selected RFD3
+checkpoint. At render time Mosaic records SHA256 identities for:
+
+- the complete Git source state, including tracked changes and untracked-file
+  contents;
+- the experiment, execution profile and Foundry compatibility contract;
+- every assembly specification, fragment PDB/mmCIF, central-motif template,
+  central-motif source structure and pose-candidate manifest used by the run;
+- the exact RFD3 checkpoint.
+
+The allocated worker verifies the frozen `resolved_config.yaml`, repository,
+runtime dependencies and checkpoint before compiling an input or importing
+RFD3. A missing or changed dependency fails the job with a direct identity
+error instead of silently running different software or geometry.
+
+Every rendered submission also contains `source_snapshot.tar.gz`. The job
+verifies its archive digest, extracts it into `$RUN_DIR/software`, verifies
+the per-file source manifest, and imports Mosaic, RFD3 and Foundry from that
+private snapshot. Editing or synchronizing the shared checkout while a job is
+queued therefore cannot change the code executed by that job. Runtime design
+inputs remain external files and retain their separate fail-closed hashes.
 
 ## Configuration boundary
 

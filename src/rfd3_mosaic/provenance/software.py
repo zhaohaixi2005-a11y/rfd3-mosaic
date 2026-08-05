@@ -17,6 +17,82 @@ import yaml
 PROVENANCE_SCHEMA_VERSION = 1
 
 
+def file_identity(path: Path, *, role: str) -> dict[str, Any]:
+    """Return an immutable identity record for one runtime dependency."""
+
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Runtime dependency does not exist: {resolved}")
+    before = resolved.stat()
+    digest = sha256_file(resolved)
+    after = resolved.stat()
+    if (before.st_size, before.st_mtime_ns) != (
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise RuntimeError(
+            f"Runtime dependency changed while it was being frozen: {resolved}"
+        )
+    return {
+        "role": role,
+        "path": str(resolved),
+        "sha256": digest,
+        "size_bytes": after.st_size,
+    }
+
+
+def verify_file_identities(records: list[dict[str, Any]]) -> None:
+    """Fail closed when a render-time dependency changed before execution."""
+
+    for record in records:
+        path = Path(str(record["path"])).expanduser().resolve()
+        role = str(record.get("role") or "runtime dependency")
+        if not path.is_file():
+            raise RuntimeError(f"Frozen {role} is missing at runtime: {path}")
+        observed_size = path.stat().st_size
+        expected_size = int(record["size_bytes"])
+        if observed_size != expected_size:
+            raise RuntimeError(
+                f"Frozen {role} size changed before runtime: {path} "
+                f"({expected_size} != {observed_size})"
+            )
+        observed_sha256 = sha256_file(path)
+        expected_sha256 = str(record["sha256"])
+        if observed_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"Frozen {role} SHA256 changed before runtime: {path} "
+                f"({expected_sha256} != {observed_sha256})"
+            )
+
+
+def verify_repository_identity(
+    expected: dict[str, Any],
+    repository: Path,
+) -> dict[str, Any]:
+    """Verify that queued work still sees the source tree used at render time."""
+
+    observed = collect_repository_provenance(repository)
+    fields = (
+        "commit",
+        "tracked_dirty",
+        "tracked_status",
+        "untracked_files",
+        "untracked_content_sha256",
+        "working_tree_diff_sha256",
+    )
+    mismatches = [
+        field
+        for field in fields
+        if observed.get(field) != expected.get(field)
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Repository identity changed after submission render: "
+            + ", ".join(mismatches)
+        )
+    return observed
+
+
 def sha256_file(path: Path) -> str:
     """Return the SHA256 digest of one file without loading it into memory."""
 
@@ -61,6 +137,16 @@ def collect_repository_provenance(repository: Path) -> dict[str, Any]:
         "--untracked-files=no",
     )
     untracked = _git(root, "ls-files", "--others", "--exclude-standard")
+    untracked_files = untracked.splitlines() if untracked else []
+    untracked_digest = hashlib.sha256()
+    for relative in untracked_files:
+        candidate = root / relative
+        if not candidate.is_file():
+            continue
+        encoded = relative.encode("utf-8", errors="surrogateescape")
+        untracked_digest.update(len(encoded).to_bytes(8, "big"))
+        untracked_digest.update(encoded)
+        untracked_digest.update(bytes.fromhex(sha256_file(candidate)))
     diff = _git(root, "diff", "--binary", "HEAD", "--", binary=True)
     diff_sha256 = (
         hashlib.sha256(diff).hexdigest()
@@ -74,7 +160,10 @@ def collect_repository_provenance(repository: Path) -> dict[str, Any]:
         "branch": branch,
         "tracked_dirty": bool(tracked_status),
         "tracked_status": tracked_status.splitlines() if tracked_status else [],
-        "untracked_files": untracked.splitlines() if untracked else [],
+        "untracked_files": untracked_files,
+        "untracked_content_sha256": (
+            untracked_digest.hexdigest() if untracked_files else None
+        ),
         "working_tree_diff_sha256": diff_sha256,
     }
 

@@ -52,6 +52,156 @@ Executor (local or Slurm)
 Artifacts, provenance and audits
 ```
 
+An optional functional-geometry frontend sits above this explicit execution
+path:
+
+```text
+FunctionalGeometrySpec
+        -> constraint hypergraph and symmetry-orbit compilation
+        -> optional architecture discovery and ranking
+        -> one or more explicit UserDesignSpec candidates
+        -> the unchanged compilation/runtime path above
+```
+
+Discovery is additive: it must not hide or replace the explicit route used by
+current golden regressions.
+
+## Current milestone: finish the product spine
+
+The current phase is platform engineering, not selection of a specific
+functional site or benchmark protein. Work proceeds through one invariant
+spine:
+
+```text
+UserDesignSpec
+    -> AssemblySpecification + ConstraintPlan + SamplingPlan
+    -> BackendPlan
+    -> Mosaic-RFD3
+    -> execution + provenance + declared audits
+```
+
+Every public capability must cross the complete spine. A schema-only
+constraint, a standalone preparation script or a sampler branch without an
+independent audit is not a completed feature.
+
+The ordered implementation sequence is:
+
+1. protect the Foundry base, Mosaic patch boundary, source snapshot,
+   provenance and central/interface golden regressions;
+2. finish the single public `UserDesignSpec` entry and fail-closed lowering;
+3. complete `fixed_xyz`, then cylindrical projection, then bounded rigid
+   mobility, including conflicts and composition;
+4. unify fixed/grid/random/LHS/Sobol sampling, reproducible seeds, candidate
+   manifests and replay;
+5. expose a stable sampler lifecycle rather than adding conditional blocks to
+   the timestep loop;
+6. automate Foundry upgrade compatibility and golden replay;
+7. only then promote multi-orbit, additional groups and scientific discovery
+   layers.
+
+The preliminary functional-geometry and cyclic-relation modules remain
+internal extension points during this phase. They are not public CLI features
+and do not redirect the current implementation sequence.
+
+## Future scientific hierarchy: functional-site-first assembly design
+
+A future scientific question is whether cooperative geometry formed by
+several subunits can be compiled into exact or bounded constraint orbits and
+maintained throughout all-atom diffusion while the surrounding symmetric
+assembly is generated.
+
+```text
+scientific lead: cooperative functional-site design
+method core:     constraint-orbit diffusion
+search layer:    symmetry/topology compatibility discovery
+```
+
+The first internal `FunctionalGeometrySpec` now represents symbolic
+functional atoms and rigid/soft-rigid fragments, distance, angle, periodic
+dihedral and chirality residuals, relative-pose bounds and multi-fragment
+hyperedges such as three-subunit metal coordination. A backend-independent
+evaluator now produces relation-level observations, errors and non-negative
+violations. Structure selector binding, a standalone artifact audit and
+constraint-orbit lowering remain required before any GPU coupling.
+
+The first flagship closed loop uses one cooperative site spanning three
+symmetric subunits. A complete rigid site may be supplied initially. Mosaic
+must restore its complete orbit at every timestep, generate the surrounding
+assembly, pass continuity/clash/symmetry/site audits, and support downstream
+sequence design and refolding evaluation. Bounded radial, axial, tilt and
+twist refinement follows only after the rigid case is established.
+
+## Inverse assembly search layer
+
+The later search frontend asks an underdetermined inverse question:
+
+```text
+local functional geometry
+    -> compatible global symmetry/topology hypotheses
+    -> exact all-atom assembly realization
+```
+
+The software must return a ranked, auditable set of hypotheses and explicit
+infeasibility reasons. It must not imply that one local motif uniquely
+determines one global assembly.
+
+One hypothesis contains three variable classes:
+
+- discrete: group/order, orbit assignment, copy relation, component partition
+  and generated connectivity topology;
+- continuous: group frame, radius, azimuth, axial offset, tilt, twist and
+  bounded rigid correction;
+- generated: RFD3 coordinates, followed later by sequences and refolded
+  structures.
+
+The outer solver follows six stages:
+
+1. bind supplied atoms into rigid functional fragments and pairwise or
+   higher-order local-frame relations;
+2. enumerate C2-C8 first, then D2-D6, including orbit offsets and compatible
+   fragment assignments;
+3. fit one common group frame and reject candidates that fail SE(3)
+   compatibility, identity, inverse, composition or closure;
+4. infer chain/component partitions and directed generated connections, then
+   apply conservative contour-length, terminus, clash and cavity gates;
+5. optimize only the admitted continuous pose degrees of freedom and compile
+   ranked candidates into explicit `AssemblySpecification` objects;
+6. realize a short list with the existing exact Mosaic-RFD3 runtime.
+
+For a measured relative transform `T_hat`, candidate group action `Q` and
+fitted global frame `H`, the core compatibility residual contains:
+
+```text
+d_SE3(T_hat, H Q H^-1)
+```
+
+Three-subunit metal sites and other cooperative functional geometries must be
+represented as hyperedges rather than unrelated pairwise contacts.
+
+Initial ranking uses explicit non-negative residuals:
+
+```text
+E = w_geometry     * E_geometry
+  + w_closure      * E_closure
+  + w_connectivity * E_connectivity
+  + w_clash        * E_clash
+  + w_pose_prior   * E_pose_prior
+```
+
+Hard gates precede ranking. Foldability, sequence designability and interface
+energetics are downstream evidence and cannot be inferred from this CPU score.
+
+This layer begins only after the functional-geometry compiler and a fixed
+multi-subunit flagship are established. Its first bounded scope is one rigid
+cross-subunit motif, C2-C8 enumeration, ranked order/orbit offset/group frame,
+and SE(3), closure, clash and linker gates. Architecture recovery on known
+assemblies is its first benchmark.
+
+Discrete symmetry or topology must not switch inside one Euler trajectory in
+the first implementation. Later beam/SMC exploration creates separately
+identified trajectories. Bounded timestep mobility refines only continuous
+pose variables inside one frozen architecture hypothesis.
+
 Topology, constraints and execution are separate concerns:
 
 - topology describes connectivity and where new residues are generated;
@@ -77,14 +227,14 @@ Constraints are optional, repeatable declarations. For example:
 
 ```yaml
 constraints:
-  - fixed_xyz:
-      selector: A12-20,A26-37
-      atoms: all
-      orbit: complete
-  - orientation_cone:
-      selector: A40-55
-      axis: symmetry
-      maximum_angle_degrees: 15
+  - kind: fixed_xyz
+    selector: A12-20,A26-37
+    atoms: all
+  - kind: cylindrical
+    selector: A40-55
+    atoms: ca
+    axis: symmetry
+    keep: [radius, azimuth]
 ```
 
 If no motif constraint is declared, motif atoms receive no additional Mosaic
@@ -205,6 +355,59 @@ checkpoint identity, resolved configuration, input hashes and audit reports.
 Exit gate: the existing central and interface examples compile to the same
 native RFD3 contracts and pass their current audits.
 
+Current implementation slice (2026-08-05):
+
+- immutable `UserDesignSpec` now separates raw input, symmetry, generated
+  regions and optional constraints without a `topology.kind` field;
+- `fixed_xyz`, `cylindrical` and `bounded_mobile` are repeatable operators;
+- the earlier names `full_xyz_fixed`, `ca_cylindrical_fixed` and
+  `bounded_mobile_interface` are accepted as compatibility spellings and
+  compile to the same canonical operators;
+- `rfd3-mosaic validate/plan` can inspect this public declaration;
+- structure-aware selector binding resolves declared ranges to exact atom
+  identities and detects partial-selector DOF conflicts;
+- terminal and between-region designs using `fixed_xyz(atoms=all)` now lower
+  into the common `AssemblySpecification` and existing exact RFD3 runtime;
+- `fixed_xyz` now has explicit component semantics: comma-separated ranges in
+  one declaration are jointly rigid, declarations sharing `coupling_group`
+  are jointly rigid, and otherwise declarations remain independent. Each
+  component is evaluated after one common Kabsch fit; laboratory-frame
+  coordinate offsets are not part of the acceptance contract;
+- every fixed component now declares its own public pose policy. `fixed` is
+  the backward-compatible default; `bounded_mobile` maps to an independent
+  orbit-rigid SE(3) controller with cumulative bounds, timestep window and
+  per-step trust region. The worker enables mobility from compiler-emitted
+  runtime features rather than from a hand-written Slurm flag. Mobile designs
+  automatically require a second semantic audit proving that the controller
+  ran and that final component poses remained within their declared bounds;
+- render/submit reject unconstrained endpoints and the not-yet-bound
+  `cylindrical`/top-level `bounded_mobile` operators. Nested
+  `fixed_xyz.pose.mode: bounded_mobile` is executable. No new constraint can
+  be silently accepted and then ignored by the sampler.
+- a machine-readable capability ledger now exposes validation maturity,
+  dependencies and public visibility through `rfd3-mosaic capabilities`;
+- public designs now distinguish one rigid pre-diffusion `initial_pose` from
+  diffusion seed/timestep sampling. Radius, axial offset and fixed or
+  Haar-uniform SO(3) orientation lower into the existing assembly IR without
+  adding a topology-specific sampler path;
+- omitting `initial_pose` leaves input coordinates unchanged, and the pose
+  seed is recorded separately from the diffusion seed.
+
+All features advance through the same ordered evidence ladder:
+
+```text
+planned -> schema_only -> cpu_validated -> gpu_canary
+        -> engineering -> stable -> scientifically_validated
+```
+
+The dependency order is fixed-XYZ golden regression, functional-geometry
+schema/binding/audit, a rigid three-subunit functional-site GPU loop,
+single-orbit cylindrical projection, bounded orbit mobility, simultaneous
+multi-orbit control, then Cn relation compatibility plus topology/connectivity
+ranking. Dn and finite T/O/I groups follow demonstrated multi-orbit control.
+Helical symmetry is a separate finite-window backend and is not treated as a
+large cyclic group.
+
 ### Phase 2: unified ConstraintPlan
 
 - compile existing fixed motifs into `fixed_xyz` operators;
@@ -216,6 +419,15 @@ native RFD3 contracts and pass their current audits.
 
 Exit gate: the new plan is behaviorally equivalent to the current exact path
 for fixed motifs and can represent a design with no motif constraint.
+
+The first backend-independent `ConstraintPlan` compiler is now present. It
+assigns deterministic operator IDs, records atom/orbit scope and reference
+frame, separates hard and bounded projector stages, detects exact-selector
+DOF conflicts, and requires each backend to declare supported operator kinds.
+Structure-aware partial-selector overlap and the first exact fixed-XYZ
+assembly/runtime binding are now implemented locally. Cylindrical projection,
+bounded-pose binding and behavioral-equivalence GPU gates remain part of this
+phase's exit gate.
 
 ### Phase 3: runtime boundary cleanup
 
@@ -254,15 +466,17 @@ recorded unit, GPU and scientific validation gates.
 
 ## Immediate work order
 
-The first implementation slice deliberately does not modify sampler behavior:
+The first implementation slices deliberately do not modify sampler behavior:
 
-1. add the machine-readable Foundry compatibility manifest;
-2. add the provisional validated-snapshot record;
-3. capture Git and runtime provenance automatically;
-4. ignore local visualization artifacts;
-5. add provenance regression tests;
-6. replay the full suite on LRZ;
-7. begin `UserDesignSpec` only after this identity layer passes.
+1. machine-readable Foundry compatibility manifest: implemented;
+2. provisional validated-snapshot record: implemented, exact snapshot replay
+   still pending;
+3. Git and runtime provenance: implemented;
+4. fail-closed hashes for source state, runtime inputs and checkpoint:
+   implemented and LRZ unit-validated;
+5. immutable source snapshot for queued work: implemented locally, LRZ
+   validation pending;
+6. strict `UserDesignSpec`: begin only after the identity layer passes.
 
 This order protects the working scientific engine before reorganizing its
 public API or internal runtime boundaries.

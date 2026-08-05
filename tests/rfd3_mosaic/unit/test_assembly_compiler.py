@@ -4,7 +4,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from rfd3_mosaic.assembly_frontends import AssemblyCompilationRequest
+from rfd3_mosaic.assembly_frontends import (
+    AssemblyCompilationRequest,
+    AuditRequirement,
+)
 from rfd3_mosaic.assembly_compiler import (
     CompiledAudit,
     compile_experiment_assembly,
@@ -22,7 +25,9 @@ class AssemblyCompilerTestCase(unittest.TestCase):
                 return_value=AssemblyCompilationRequest(
                     specification_path=output / "assembly.yaml",
                     example_id="central-c3",
-                    semantic_audit="central_motif",
+                    audit_requirements=(
+                        AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                    ),
                     audit_metadata={"probe_fixed_selector": "A1-31"},
                 ),
             ) as lower, patch(
@@ -44,11 +49,11 @@ class AssemblyCompilerTestCase(unittest.TestCase):
         self.assertEqual(len(artifact.semantic_audits), 1)
         self.assertEqual(
             artifact.semantic_audits[0].module,
-            "rfd3_mosaic.rfd3_central_motif_audit",
+            "rfd3_mosaic.rfd3_constraint_orbit_audit",
         )
         self.assertEqual(
             artifact.semantic_audits[0].report_name,
-            "central_motif_audit.json",
+            "constraint_orbit_audit.json",
         )
         lower.assert_called_once()
         compile_native.assert_called_once()
@@ -67,9 +72,11 @@ class AssemblyCompilerTestCase(unittest.TestCase):
                 return_value=AssemblyCompilationRequest(
                     specification_path=Path("assembly.yaml"),
                     example_id="interface-c5",
+                    audit_requirements=(
+                        AuditRequirement.INTERFACE_GEOMETRY,
+                    ),
                     pose_seed=42,
                     linker_length=80,
-                    semantic_audit="interface_seed",
                 ),
             ), patch(
                 "rfd3_mosaic.assembly_compiler.compile_assembly_rfd3_input",
@@ -105,12 +112,16 @@ class AssemblyCompilerTestCase(unittest.TestCase):
             AssemblyCompilationRequest(
                 specification_path=Path("central.yaml"),
                 example_id="central",
-                semantic_audit="central_motif",
+                audit_requirements=(
+                    AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                ),
             ),
             AssemblyCompilationRequest(
                 specification_path=Path("interface.yaml"),
                 example_id="interface",
-                semantic_audit="interface_seed",
+                audit_requirements=(
+                    AuditRequirement.INTERFACE_GEOMETRY,
+                ),
             ),
         )
         outputs = SimpleNamespace(
@@ -139,13 +150,57 @@ class AssemblyCompilerTestCase(unittest.TestCase):
 
         self.assertEqual(native.call_count, 2)
 
+    def test_mobile_component_adds_topology_neutral_runtime_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            expected_input = output / "rfd3_input.json"
+            with patch(
+                "rfd3_mosaic.assembly_compiler.lower_experiment_topology",
+                return_value=AssemblyCompilationRequest(
+                    specification_path=output / "assembly.yaml",
+                    example_id="mobile-c3",
+                    audit_requirements=(
+                        AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                        AuditRequirement.BOUNDED_COMPONENT_MOBILITY,
+                    ),
+                ),
+            ), patch(
+                "rfd3_mosaic.assembly_compiler.compile_assembly_rfd3_input",
+                return_value=SimpleNamespace(
+                    input_path=expected_input,
+                    mapping_path=output / "mapping.json",
+                ),
+            ):
+                artifact = compile_experiment_assembly(
+                    {"kind": "user_design"},
+                    output,
+                    project_directory=".",
+                    experiment_name="mobile-c3",
+                )
+
+        self.assertEqual(len(artifact.semantic_audits), 2)
+        mobility = artifact.semantic_audits[1]
+        self.assertEqual(
+            mobility.module,
+            "rfd3_mosaic.rfd3_mobility_audit",
+        )
+        self.assertEqual(
+            mobility.report_name,
+            "component_mobility_audit.json",
+        )
+        self.assertEqual(
+            mobility.input_arguments,
+            (("--compiled-input", str(expected_input)),),
+        )
+
     def test_compiled_audit_builds_a_complete_generic_command(self) -> None:
         audit = CompiledAudit(
             module="example.audit",
             report_name="audit.json",
             input_arguments=(("--input", "/tmp/input.json"),),
         )
-
         self.assertEqual(
             audit.command(
                 python="/env/bin/python",
@@ -165,6 +220,14 @@ class AssemblyCompilerTestCase(unittest.TestCase):
                 "--report-only",
             ],
         )
+
+    def test_compilation_request_requires_semantic_evidence(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires an audit"):
+            AssemblyCompilationRequest(
+                specification_path=Path("assembly.yaml"),
+                example_id="missing-audit",
+                audit_requirements=(),
+            )
 
     def test_unknown_legacy_frontend_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported topology"):

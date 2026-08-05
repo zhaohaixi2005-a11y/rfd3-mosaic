@@ -1,15 +1,158 @@
 # RFD3 Mosaic Development Status
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
+
+## 2026-08-05 public sampling and capability ledger
+
+- Upgraded public `fixed_xyz` from an ambiguous coordinate label to explicit
+  rigid-geometry component semantics. A comma-separated declaration is one
+  joint component; separate declarations are independent unless they share a
+  `coupling_group`. Compiler motion groups, runtime constraint orbits and
+  result audits now carry the same component identity.
+- Fixed components are gauge-invariant: every component is accepted only when
+  all of its atoms across the complete symmetry orbit superpose under one
+  common rigid transform. Absolute laboratory-frame displacement is neither a
+  constraint nor an acceptance metric. This matches the intended use: all
+  jointly fixed relative positions must remain unchanged, while an irrelevant
+  common translation/rotation is allowed.
+- V100 canary `5732041` already provided positive geometry evidence before
+  this semantic cleanup: all 579 selected atoms jointly aligned at
+  **0.000016 A RMSD** (orbit distance-matrix RMSD **0.000015 A**). Its Slurm
+  failure was caused by the deliberately short 10-step scaffold audit (195
+  chain breaks and 12 CA clashes), not by loss of the fixed component. The
+  former 7.847 A raw offset was only a common coordinate-frame translation.
+- Added the follow-up 50-step V100 canary
+  `experiments/lrz_public_fixed_components_v100_canary.yaml`. It declares the
+  two Prism fixed selections separately with the shared coupling group
+  `prism_site`, so one GPU result exercises the new public component contract
+  and must jointly superpose both selections across all C3 copies.
+- The component contract now includes a user-selected pose policy. A fixed
+  component defaults to `pose.mode: fixed`; `pose.mode: bounded_mobile`
+  preserves the component's complete atomic geometry while allowing that
+  component to translate and rotate independently inside explicit cumulative
+  and per-step bounds. The compiler emits per-component orbit mobility and
+  the experiment worker enables the existing multi-orbit denoiser-fit
+  controller automatically. This removes the previous mismatch in which the
+  compiler/audit recognized independent components but the sampler still
+  restored every component to its original pose.
+- Bounded component designs now carry complementary geometry, symmetry and
+  motion evidence. Within each symmetry copy, the constraint-orbit audit
+  jointly superposes every fixed fragment in one `coupling_group`; the normal
+  scaffold audit verifies the relationship among symmetry copies; and the
+  component-mobility audit proves that the GPU controller executed, refreshed
+  conditioning, and stayed inside every user-declared cumulative translation
+  and rotation bound. Fixed-pose components retain the stronger initial
+  complete-orbit joint-fit contract.
+
+- Added a machine-readable capability registry and
+  `rfd3-mosaic capabilities [--format json]`. It separates schema presence,
+  CPU validation, GPU canaries, engineering support, stable behavior and
+  scientific validation instead of treating all code paths as equivalent.
+- Added a topology-neutral `SamplingPlan`. Public `sampling.initial_pose`
+  now describes one pre-diffusion rigid pose independently of the diffusion
+  seed and timestep configuration.
+- Radius, axial offset and fixed or Haar-uniform SO(3) orientation lower into
+  `AssemblySpecification.initialization` for the complete motif motion group.
+  No initial-pose declaration means no coordinate repositioning.
+- This slice implements bounded timestep mobility for compiler-declared fixed
+  components. It does not yet expose cylindrical timestep projection or a
+  general ensemble/QD dispatcher; those remain separate capabilities.
+
+## 2026-08-05 current phase: platform-first productization
+
+- The current development objective is a general, professional and extensible
+  software platform. It is not yet the selection of one metal site, one
+  protein target or one flagship scientific benchmark.
+- The supported spine is `UserDesignSpec -> AssemblySpecification +
+  ConstraintPlan + SamplingPlan -> BackendPlan -> Mosaic-RFD3 -> execution,
+  provenance and audits`.
+- A capability is not complete merely because its schema exists. Completion
+  requires user configuration, selector binding, compiler lowering, sampler
+  runtime, result audit, tests and user documentation.
+- Functional-site and inverse-architecture work remains an important future
+  scientific layer, but it is frozen while the public execution spine is
+  completed. The internal schemas and relation-compatibility kernel are kept
+  as extension points and are not public product claims.
+- After the first platform slices, the complete LRZ unit suite passed
+  **394/394 tests** on 2026-08-05. The CLI error printed by the
+  `test_submit_cli_rejects_unlowered_public_design` test is intentional
+  fail-closed behavior.
+- The next slice replaced topology-labelled audit selection with
+  explicit `AuditRequirement` declarations. Exact fixed constraints use the
+  topology-neutral `constraint_orbit_audit.json`; the historical central
+  audit remains a compatibility engine while its implementation is gradually
+  generalized. This slice is now LRZ CPU-validated by the 394-test suite; a
+  central golden GPU canary and a public `fixed_xyz` GPU canary remain.
+- While the P100 canary is queued, the numeric constraint-orbit audit engine
+  has been moved into the topology-neutral module. The historical
+  `rfd3_central_motif_audit` now only translates legacy argument/report names;
+  a regression assertion requires both APIs to return identical thresholds
+  and numeric summaries. This compatibility refactor passed the complete
+  **394/394** LRZ unit suite and does not alter already submitted job
+  snapshots.
+- Added a declarative public `fixed_xyz` P100 canary for the Prism C3 motif.
+  It uses only the public `UserDesignSpec`, fixes A12-20 and A26-37 as one
+  complete C3 constraint orbit, generates an 85-residue between segment and
+  deliberately omits `initial_pose` so the supplied geometry is not moved.
+  It must be validated and planned now, but submitted only after the preceding
+  central P100 audit canary succeeds.
+- Added a V100 execution profile with an explicit `gpu:1` GRES request. The
+  10-step public fixed-XYZ canary may now be rendered from the same immutable
+  design for P100, A100, H100 and V100. These runs test backend portability
+  and the complete software/audit path; they are not independent scientific
+  designs and must retain per-run execution provenance.
+- The first V100 public fixed-XYZ canary (`5731968`) correctly failed closed
+  during native prevalidation before inference. The public between-segment IR
+  contained a fixed motion group and a constraint orbit, but the adapter
+  incorrectly routed every between-segment design through interface-edge
+  group lowering. Because a topology-neutral public design has no synthetic
+  `InterfaceEdge`, it emitted empty `motif_constraint_groups` and
+  `motif_constraint_orbits`.
+- The adapter now lowers fixed groups directly from
+  `ConstraintOrbitInstance`, supporting several fixed fragments in one joint
+  group per symmetry copy. Interface-edge designs retain their existing
+  cross-protomer group semantics. A regression fixture covers a two-fragment
+  C3 public between path, three complete runtime groups, exact transform IDs
+  and declared-frame execution. This fix requires LRZ unit validation before
+  the failed canary is resubmitted.
+
+## Future scientific roadmap: functional-site-first assembly design
+
+- A future scientific lead is cooperative functional-site design: compile
+  multi-subunit functional geometry into symmetry-coupled constraint orbits
+  and preserve or refine that site throughout all-atom diffusion while the
+  surrounding assembly is generated.
+- Constraint-orbit diffusion is the method core. Symmetry/topology discovery
+  is a later search layer that proposes candidate interpretations; it is not
+  the sole scientific claim or a replacement sampler.
+- Added the first internal `FunctionalGeometrySpec`: rigid/soft-rigid
+  functional fragments, stable symbolic atoms, distances, angles, periodic
+  dihedrals, chirality, relative-pose bounds and true multi-fragment
+  coordination hyperedges with optional ownership declarations.
+- Added a backend-independent residual evaluator. It emits observed values,
+  raw errors, pass/fail state and non-negative normalized violation per
+  relation. Structure selector binding and GPU constraint-orbit lowering are
+  deliberately still absent, so capability maturity remains `schema_only`.
+- A possible first flagship target is one cooperative site spanning three
+  symmetric subunits, exact every-timestep site-orbit restoration,
+  complete-assembly generation, clash-free output and downstream
+  sequence/refolding evidence.
+- The preliminary Cn code is now an internal relation-compatibility kernel,
+  not a public CLI and not an architecture solver. It distinguishes the
+  observed cyclic subgroup from a proposed full group and reports unobserved
+  cosets and unresolved topology/chemistry evidence.
+- Discrete group/topology changes remain forbidden inside one diffusion
+  trajectory. Later inverse search creates separately identified candidate
+  trajectories; bounded mobility refines only continuous variables.
 
 ## Project identity
 
 - Repository: `zhaohaixi2005-a11y/rfd3-mosaic`
 - Upstream: `RosettaCommons/foundry`
-- Active branch: `feat/interface-seed-compiler`
+- Active branch: `refactor/product-core-v1`
 - Server working tree: `/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic`
 - Local mirror: `/home/haixi/Documents/mosaic`
 - Goal: build a generator-independent `AssemblySpecification` compiler and a
@@ -74,19 +217,66 @@ The backwards-compatible migration now has three completed local slices:
   and regression fixture. It is no longer the central-motif backend used by
   `compile_experiment_assembly`;
 - this third slice has passed local syntax and diff checks. After the latest
-  synchronization, the complete LRZ unit suite passed **318/318 tests in
-  10.666 seconds**. Native prevalidation plus one central and one interface
+  synchronization, the complete LRZ unit suite passed **331/331 tests**.
+  Native prevalidation plus one central and one interface
   GPU regression through this new compiler path are still required before
   calling the compiler migration end-to-end validated.
 
-The next code milestone is not another topology-specific script. It is:
+The fail-closed identity contract for the Git source state, every runtime
+input and the RFD3 checkpoint has passed the complete LRZ unit suite. The next
+local productization slice adds a compact immutable source archive to every
+rendered submission. The worker will import Mosaic, RFD3 and Foundry from the
+verified per-run snapshot instead of the shared mutable checkout. This source
+snapshot slice requires LRZ unit validation before it is considered complete.
+
+The earlier compiler migration milestone was:
 
 ```text
 validate native AssemblySpecification lowering on LRZ
 -> move all remaining initialization/finalization projection sites through
    UnifiedJointProjector
--> multi-orbit objective aggregation
 ```
+
+The current product milestone is narrower and precedes multi-orbit research:
+
+```text
+topology-neutral audit requirements and exact constraint-orbit audit
+-> LRZ full unit validation
+-> one public fixed_xyz render/submit/GPU/audit canary
+-> first cylindrical operator end-to-end slice
+```
+
+## 2026-08-05 public design and constraint-plan slice
+
+The product-interface refactor has started without replacing the validated
+assembly compiler or exact sampler:
+
+- `schema/design.py` defines a small immutable `UserDesignSpec` with one input
+  structure, declared symmetry, topology-neutral generated regions and zero
+  or more optional constraint clauses;
+- the public constraints are canonical `fixed_xyz`, `cylindrical` and
+  `bounded_mobile` operators rather than separate protocols or Slurm scripts;
+- omission of constraints represents normal diffusion with no additional
+  Mosaic motif fixing;
+- `constraint_plan.py` compiles declarations into deterministic hard or
+  bounded projector intent and rejects visible per-DOF conflicts;
+- a backend capability gate rejects unsupported operator kinds instead of
+  silently dropping them;
+- `rfd3-mosaic validate/plan` recognizes the new public schema, while
+  `fixed_xyz(atoms=all)` terminal/between designs can now be materialized into
+  the existing experiment envelope for render/submit;
+- selectors are resolved against real PDB/mmCIF atom identities before
+  lowering, so differently written but overlapping ranges cannot claim the
+  same constrained degree of freedom;
+- the first lowerer deliberately rejects implicit endpoint fixing,
+  constraints on unattached fixed regions, partial-atom fixed XYZ, and the
+  not-yet-bound cylindrical/mobile operators.
+
+This slice is locally syntax-checked. The complete LRZ unit suite and the
+source-snapshot slice still require a single synchronized validation run.
+The validated legacy runtime behavior is unchanged. Public fixed-XYZ execution
+uses that same assembly adapter, exact projector, source snapshot and audit
+worker; its LRZ unit and GPU canary gates are still pending.
 
 The existing `OrbitRigidMotifController` already carries bounded translation
 and SO(3) rotation and refreshes conditioning inside the RFD3 timestep loop.
@@ -346,19 +536,22 @@ scientific audit gates rather than by a hard-coded order constant.
 
 ## Maintained documentation
 
-Only the following five documents are active and should receive future
+Only the following six documents are active and should receive future
 updates:
 
 1. `DEVELOPMENT_STATUS.md` — single source of truth for current evidence,
    limitations, cluster-operation boundary and resume point.
 2. `docs/rfd3_mosaic/RFD3_MULTI_INTERFACE_SEED_FINAL_PLAN.md` — stable method
    architecture, data model, invariants and success criteria.
-3. `docs/rfd3_mosaic/C5_C6_C7_200STEP_RUNBOOK.md` — executable pose,
+3. `docs/rfd3_mosaic/RFD3_MOSAIC_PRODUCTIZATION_PLAN.md` — public software
+   boundary, Foundry fork policy, capability ladder and inverse-assembly
+   solver architecture.
+4. `docs/rfd3_mosaic/C5_C6_C7_200STEP_RUNBOOK.md` — executable pose,
    inference, audit and extracted-structure screening workflow.
-4. `docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md` — the only
+5. `docs/rfd3_mosaic/SCAFFOLD_AWARE_MOTIF_MOBILITY_PILOT.md` — the only
    active experimental-method note; it must stay separate from the validated
    static claim.
-5. `docs/rfd3_mosaic/USER_CLI.md` — concise public experiment configuration,
+6. `docs/rfd3_mosaic/USER_CLI.md` — concise public experiment configuration,
    execution-profile and submission contract.
 
 One additional document is retained but not actively maintained:

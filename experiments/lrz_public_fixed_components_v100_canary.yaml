@@ -1,0 +1,40 @@
+schema_version: 1
+name: public-fixed-components-c3-v100-s907
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: C3
+  axis: [0.0, 0.0, 1.0]
+  center: [0.0, 0.0, 0.0]
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length: 85
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    orbit_scope: complete_symmetry_orbit
+    coupling_group: prism_site
+  - kind: fixed_xyz
+    selector: A26-37
+    atoms: all
+    orbit_scope: complete_symmetry_orbit
+    coupling_group: prism_site
+
+sampling:
+  timesteps: 50
+  seed: 907
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-fixed-components-canary-8_5

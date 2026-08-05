@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from rfd3_mosaic.assembly_frontends import lower_experiment_topology
+from rfd3_mosaic.assembly_frontends import (
+    AuditRequirement,
+    lower_experiment_topology,
+)
 from rfd3_mosaic.output import compile_assembly_rfd3_input
 
 
@@ -88,36 +91,48 @@ def compile_experiment_assembly(
         extra_metadata=request.audit_metadata,
     )
 
-    if request.semantic_audit == "central_motif":
-        audits = (
-            CompiledAudit(
-                module="rfd3_mosaic.rfd3_central_motif_audit",
-                report_name="central_motif_audit.json",
-                input_arguments=(
-                    ("--probe-input", str(artifacts.input_path)),
-                ),
-            ),
-        )
-    elif request.semantic_audit == "interface_seed":
-        audits = (
-            CompiledAudit(
-                module="rfd3_mosaic.rfd3_seed_audit",
-                report_name="seed_integrity_audit.json",
-                input_arguments=(
-                    ("--adapter-mapping", str(artifacts.mapping_path)),
-                    ("--config", str(request.specification_path)),
-                    ("--base-directory", str(project)),
-                ),
-            ),
-        )
-    else:
-        raise ValueError(
-            f"Unsupported semantic audit {request.semantic_audit!r}"
-        )
+    audits: list[CompiledAudit] = []
+    for requirement in request.audit_requirements:
+        if requirement == AuditRequirement.EXACT_CONSTRAINT_ORBIT:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_constraint_orbit_audit",
+                    report_name="constraint_orbit_audit.json",
+                    input_arguments=(
+                        ("--compiled-input", str(artifacts.input_path)),
+                    ),
+                )
+            )
+        elif requirement == AuditRequirement.INTERFACE_GEOMETRY:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_seed_audit",
+                    report_name="seed_integrity_audit.json",
+                    input_arguments=(
+                        ("--adapter-mapping", str(artifacts.mapping_path)),
+                        ("--config", str(request.specification_path)),
+                        ("--base-directory", str(project)),
+                    ),
+                )
+            )
+        elif requirement == AuditRequirement.BOUNDED_COMPONENT_MOBILITY:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_mobility_audit",
+                    report_name="component_mobility_audit.json",
+                    input_arguments=(
+                        ("--compiled-input", str(artifacts.input_path)),
+                    ),
+                )
+            )
+        else:
+            raise ValueError(
+                f"Unsupported audit requirement {requirement!r}"
+            )
     return CompiledAssembly(
         input_path=artifacts.input_path,
         example_id=request.example_id,
-        semantic_audits=audits,
+        semantic_audits=tuple(audits),
     )
 
 

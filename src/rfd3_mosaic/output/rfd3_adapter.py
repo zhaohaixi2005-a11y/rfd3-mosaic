@@ -509,104 +509,190 @@ def _runtime_fixed_motif_constraints(
     *,
     instances,
     mapping: dict[str, Any],
-    anchor_fragment_instance_id: str,
+    anchor_fragment_instance_ids: str | tuple[str, ...],
     transform_set,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Lower a single-fragment motif orbit into runtime constraint features."""
+    """Lower fixed fragments into explicit rigid-geometry components.
 
-    master = instances.fragments[anchor_fragment_instance_id]
-    if master.copy_index != 0 or master.orbit_id is None:
-        raise ValueError(
-            "A symmetric fixed motif path requires a copy-zero orbit anchor"
-        )
-    selector = _fragment_selector(mapping, anchor_fragment_instance_id)
-    components = _selector_source_components(selector)
-    registry = build_transform_registry(transform_set)
-    source_copies = sorted(
-        (
-            fragment
-            for fragment in instances.fragments.values()
-            if fragment.source_id == master.source_id
-            and fragment.orbit_id == master.orbit_id
-        ),
-        key=lambda fragment: fragment.copy_index,
+    Fragments in one source motion group form one joint component and must
+    retain their relative geometry.  Different motion groups become separate
+    runtime constraint orbits, so downstream projection and audit code never
+    has to infer coupling from selector order or topology names.
+    """
+
+    anchor_ids = (
+        (anchor_fragment_instance_ids,)
+        if isinstance(anchor_fragment_instance_ids, str)
+        else tuple(dict.fromkeys(anchor_fragment_instance_ids))
     )
-    if len(source_copies) != registry.order:
+    if not anchor_ids:
+        raise ValueError("A fixed constraint orbit requires anchor fragments")
+    masters = [instances.fragments[item] for item in anchor_ids]
+    orbit_ids = {fragment.orbit_id for fragment in masters}
+    if (
+        any(fragment.copy_index != 0 for fragment in masters)
+        or None in orbit_ids
+        or len(orbit_ids) != 1
+    ):
         raise ValueError(
-            f"Fixed motif {master.source_id!r} has {len(source_copies)} "
-            f"copies but symmetry registry has {registry.order} transforms"
+            "A symmetric fixed constraint path requires copy-zero anchors "
+            "from one orbit"
         )
+    orbit_id = next(iter(orbit_ids))
+    if len({fragment.source_id for fragment in masters}) != len(masters):
+        raise ValueError(
+            "A fixed constraint orbit cannot repeat a source fragment"
+        )
+    registry = build_transform_registry(transform_set)
+    masters_by_component: dict[str, list[Any]] = {}
+    for master in masters:
+        motion_group = instances.motion_groups[
+            master.motion_group_instance_id
+        ]
+        masters_by_component.setdefault(
+            motion_group.source_id, []
+        ).append(master)
 
     groups: list[dict[str, Any]] = []
-    group_transform_ids: list[int] = []
-    group_registry_transform_ids: list[str] = []
-    for fragment in source_copies:
-        matches = [
-            (index, action_id)
-            for index, action_id in enumerate(registry.transform_ids)
-            if registry.compose_ids(action_id, master.transform_id)
-            == fragment.transform_id
-        ]
-        if len(matches) != 1:
-            raise ValueError(
-                f"Could not resolve one group action for fixed motif copy "
-                f"{fragment.id!r}"
+    orbits: list[dict[str, Any]] = []
+    compiled_orbit = instances.constraint_orbits[orbit_id]
+    single_component = len(masters_by_component) == 1
+    for component_id, component_masters in masters_by_component.items():
+        mobility = compiled_orbit.component_mobility.get(
+            component_id,
+            compiled_orbit.mobility,
+        )
+        bounds = mobility.bounds
+        schedule = mobility.effective_schedule
+        source_components = {
+            master.source_id: _selector_source_components(
+                _fragment_selector(mapping, master.id)
             )
-        transform_index, transform_id = matches[0]
-        group_id = f"{master.source_id}@{master.orbit_id}[{fragment.copy_index}]"
-        groups.append(
-            {
+            for master in component_masters
+        }
+        copies_by_source_id = {
+            master.source_id: sorted(
+                (
+                    fragment
+                    for fragment in instances.fragments.values()
+                    if fragment.source_id == master.source_id
+                    and fragment.orbit_id == orbit_id
+                ),
+                key=lambda fragment: fragment.copy_index,
+            )
+            for master in component_masters
+        }
+        for source_id, source_copies in copies_by_source_id.items():
+            if len(source_copies) != registry.order:
+                raise ValueError(
+                    f"Fixed motif {source_id!r} has {len(source_copies)} "
+                    f"copies but symmetry registry has {registry.order} "
+                    "transforms"
+                )
+
+        runtime_orbit_id = (
+            orbit_id
+            if single_component
+            else f"{orbit_id}__{component_id}"
+        )
+        component_groups: list[dict[str, Any]] = []
+        group_transform_ids: list[int] = []
+        group_registry_transform_ids: list[str] = []
+        for copy_index in range(registry.order):
+            copy_fragments = [
+                copies_by_source_id[master.source_id][copy_index]
+                for master in component_masters
+            ]
+            matches = [
+                (index, action_id)
+                for index, action_id in enumerate(registry.transform_ids)
+                if all(
+                    registry.compose_ids(action_id, master.transform_id)
+                    == fragment.transform_id
+                    for master, fragment in zip(
+                        component_masters, copy_fragments
+                    )
+                )
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    "Could not resolve one group action for fixed "
+                    f"component {component_id!r} copy {copy_index}"
+                )
+            transform_index, transform_id = matches[0]
+            group_id = f"fixed@{runtime_orbit_id}[{copy_index}]"
+            group = {
                 "group_id": group_id,
                 "constraint_kind": "fixed_motif",
-                "orbit_id": master.orbit_id,
+                "geometry_lock": "joint_rigid",
+                "coupling_group_id": component_id,
+                "constraint_orbit_id": runtime_orbit_id,
+                "orbit_id": orbit_id,
                 "members": [
                     {
                         "role": "motif",
-                        "source_fragment_id": master.source_id,
-                        "src_components": components,
+                        "source_fragment_id": fragment.source_id,
+                        "src_components": source_components[
+                            fragment.source_id
+                        ],
                         "sym_transform_id": transform_index,
                     }
+                    for fragment in copy_fragments
                 ],
             }
-        )
-        group_transform_ids.append(transform_index)
-        group_registry_transform_ids.append(transform_id)
+            component_groups.append(group)
+            groups.append(group)
+            group_transform_ids.append(transform_index)
+            group_registry_transform_ids.append(transform_id)
 
-    mobility = instances.constraint_orbits[master.orbit_id].mobility
-    bounds = mobility.bounds
-    schedule = mobility.schedule
-    orbit = {
-        "constraint_orbit_id": master.orbit_id,
-        "symmetry_orbit_id": master.orbit_id,
-        "master_group_id": groups[0]["group_id"],
-        "group_ids": [group["group_id"] for group in groups],
-        "group_transform_ids": group_transform_ids,
-        "group_registry_transform_ids": group_registry_transform_ids,
-        "mobility_mode": mobility.mode.value,
-        "mobility_subspace": (
-            mobility.effective_subspace.value
-            if mobility.effective_subspace is not None
-            else None
-        ),
-        "mobility_proposal": (
-            mobility.effective_proposal.value
-            if mobility.effective_proposal is not None
-            else None
-        ),
-        "mobility_objectives": list(mobility.objectives),
-        "mobility_schedule": (
-            schedule.model_dump(mode="json")
-            if schedule is not None
-            else None
-        ),
-        "max_translation": (
-            bounds.max_translation if bounds is not None else None
-        ),
-        "max_rotation_deg": (
-            bounds.max_rotation_deg if bounds is not None else None
-        ),
-    }
-    return groups, [orbit]
+        orbits.append(
+            {
+                "constraint_orbit_id": runtime_orbit_id,
+                "symmetry_orbit_id": orbit_id,
+                "coupling_group_id": component_id,
+                "geometry_lock": "joint_rigid",
+                "source_fragment_ids": [
+                    master.source_id for master in component_masters
+                ],
+                "source_components": [
+                    component
+                    for master in component_masters
+                    for component in source_components[master.source_id]
+                ],
+                "master_group_id": component_groups[0]["group_id"],
+                "group_ids": [
+                    group["group_id"] for group in component_groups
+                ],
+                "group_transform_ids": group_transform_ids,
+                "group_registry_transform_ids": (
+                    group_registry_transform_ids
+                ),
+                "mobility_mode": mobility.mode.value,
+                "mobility_subspace": (
+                    mobility.effective_subspace.value
+                    if mobility.effective_subspace is not None
+                    else None
+                ),
+                "mobility_proposal": (
+                    mobility.effective_proposal.value
+                    if mobility.effective_proposal is not None
+                    else None
+                ),
+                "mobility_objectives": list(mobility.objectives),
+                "mobility_schedule": (
+                    schedule.model_dump(mode="json")
+                    if schedule is not None
+                    else None
+                ),
+                "max_translation": (
+                    bounds.max_translation if bounds is not None else None
+                ),
+                "max_rotation_deg": (
+                    bounds.max_rotation_deg if bounds is not None else None
+                ),
+            }
+        )
+    return groups, orbits
 
 
 def _materialize_length(
@@ -1060,7 +1146,7 @@ def compile_assembly_rfd3_input(
         ) = _runtime_fixed_motif_constraints(
             instances=instances,
             mapping=mapping,
-            anchor_fragment_instance_id=(
+            anchor_fragment_instance_ids=(
                 terminal_path.anchor_fragment_instance_id
             ),
             transform_set=transform_set,
@@ -1081,17 +1167,38 @@ def compile_assembly_rfd3_input(
                 fixed_atoms[selector] = _rfd3_atom_selection(
                     spec.fragments[fragment.source_id].fixed_atoms
                 )
-        motif_constraint_groups = _runtime_interface_constraint_groups(
-            instances,
-            mapping,
-            [segment.link for segment in segments],
-            transform_set,
-        )
-        motif_constraint_orbits = _runtime_interface_constraint_orbits(
-            motif_constraint_groups,
-            instances=instances,
-            transform_set=transform_set,
-        )
+        if instances.interfaces:
+            motif_constraint_groups = _runtime_interface_constraint_groups(
+                instances,
+                mapping,
+                [segment.link for segment in segments],
+                transform_set,
+            )
+            motif_constraint_orbits = _runtime_interface_constraint_orbits(
+                motif_constraint_groups,
+                instances=instances,
+                transform_set=transform_set,
+            )
+        else:
+            anchor_fragment_ids = tuple(
+                dict.fromkeys(
+                    fragment_id
+                    for segment in segments
+                    for fragment_id in (
+                        segment.link.from_fragment_instance_id,
+                        segment.link.to_fragment_instance_id,
+                    )
+                )
+            )
+            (
+                motif_constraint_groups,
+                motif_constraint_orbits,
+            ) = _runtime_fixed_motif_constraints(
+                instances=instances,
+                mapping=mapping,
+                anchor_fragment_instance_ids=anchor_fragment_ids,
+                transform_set=transform_set,
+            )
     legacy_link = segments[0].link if len(segments) == 1 else None
     selected_orbit_ids = (
         {terminal_path.orbit_id}
@@ -1127,7 +1234,11 @@ def compile_assembly_rfd3_input(
     # transform registry, so request declared frames only for that case. Keep
     # the legacy single-chain JSON byte-level schema free of a redundant false
     # field.
-    if asu_chain_count > 1 or terminal_path is not None:
+    if (
+        asu_chain_count > 1
+        or terminal_path is not None
+        or not instances.interfaces
+    ):
         symmetry["use_declared_frames"] = True
         symmetry["declared_transform_order"] = registry_transform_order
         symmetry["declared_transform_matrices"] = (

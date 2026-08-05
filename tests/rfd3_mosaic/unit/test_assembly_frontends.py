@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from rfd3_mosaic.assembly_frontends import (
+    AuditRequirement,
     lower_central_motif_topology,
     lower_experiment_topology,
 )
@@ -74,7 +75,10 @@ class AssemblyFrontendTestCase(unittest.TestCase):
             spec = load_assembly_config(request.specification_path)
 
         self.assertEqual(request.example_id, "central-c3")
-        self.assertEqual(request.semantic_audit, "central_motif")
+        self.assertEqual(
+            request.audit_requirements,
+            (AuditRequirement.EXACT_CONSTRAINT_ORBIT,),
+        )
         self.assertEqual(
             request.audit_metadata["probe_fixed_selector"],
             "A1-31",
@@ -138,7 +142,119 @@ assembly:
         self.assertEqual(request.specification_path, config.resolve())
         self.assertEqual(request.example_id, "example")
         self.assertEqual(request.pose_seed, 7)
-        self.assertEqual(request.semantic_audit, "interface_seed")
+        self.assertEqual(
+            request.audit_requirements,
+            (AuditRequirement.INTERFACE_GEOMETRY,),
+        )
+
+    def test_public_design_frontend_lowers_through_common_assembly_ir(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "motif.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: public-c3
+input: motif.pdb
+symmetry: C3
+generation:
+  - kind: terminal
+    anchor: A1
+    terminus: c
+    length: 20
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+""",
+                encoding="utf-8",
+            )
+
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "public-c3",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="public-c3",
+            )
+            spec = load_assembly_config(request.specification_path)
+
+        self.assertEqual(
+            request.audit_requirements,
+            (AuditRequirement.EXACT_CONSTRAINT_ORBIT,),
+        )
+        self.assertEqual(set(spec.fragments), {"motif_001"})
+        self.assertEqual(set(spec.generated_segments), {"generated_001"})
+        self.assertEqual(
+            request.audit_metadata["constraint_plan"]["operators"][0][
+                "operator"
+            ],
+            "fixed_xyz",
+        )
+
+    def test_mobile_component_requires_runtime_mobility_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "motif.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: mobile-c3
+input: motif.pdb
+symmetry: C3
+generation:
+  - kind: terminal
+    anchor: A1
+    terminus: c
+    length: 20
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+    coupling_group: mobile_component
+    pose:
+      mode: bounded_mobile
+      max_translation: 3.0
+      max_rotation_deg: 10.0
+""",
+                encoding="utf-8",
+            )
+
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "mobile-c3",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="mobile-c3",
+            )
+
+        self.assertEqual(
+            request.audit_requirements,
+            (
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.BOUNDED_COMPONENT_MOBILITY,
+            ),
+        )
 
 
 if __name__ == "__main__":

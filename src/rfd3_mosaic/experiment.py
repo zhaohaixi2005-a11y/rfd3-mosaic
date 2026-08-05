@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -15,13 +16,17 @@ import yaml
 
 from rfd3_mosaic.provenance.software import (
     collect_repository_provenance,
+    file_identity,
     load_compatibility_manifest,
 )
+from rfd3_mosaic.provenance.source_snapshot import create_source_snapshot
+from rfd3_mosaic.constraint_plan import compile_constraint_plan
+from rfd3_mosaic.schema import load_user_design
 
 
 SCHEMA_VERSION = 1
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-TOPOLOGY_KINDS = {"interface_seed", "central_motif"}
+TOPOLOGY_KINDS = {"interface_seed", "central_motif", "user_design"}
 SAMPLER_PRESETS: dict[str, dict[str, Any]] = {
     "exact_mosaic": {
         "kind": "symmetry",
@@ -173,6 +178,131 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _runtime_dependency_files(payload: dict[str, Any]) -> list[tuple[str, Path]]:
+    """Resolve every input file read again inside the allocated worker."""
+
+    topology = payload["topology"]
+    project = Path(payload["project_directory"])
+    dependencies: list[tuple[str, Path]] = []
+    if topology["kind"] == "central_motif":
+        template = Path(topology["template_input"])
+        dependencies.append(("central motif template", template))
+        template_payload = json.loads(template.read_text(encoding="utf-8"))
+        if not isinstance(template_payload, dict) or len(template_payload) != 1:
+            raise ValueError(
+                "Central motif template must contain exactly one RFD3 example"
+            )
+        example = next(iter(template_payload.values()))
+        if not isinstance(example, dict) or not example.get("input"):
+            raise ValueError("Central motif template has no input structure")
+        structure = Path(str(example["input"])).expanduser()
+        if not structure.is_absolute():
+            structure = template.parent / structure
+        dependencies.append(("central motif structure", structure.resolve()))
+    elif topology["kind"] == "interface_seed":
+        config = Path(topology["config"])
+        dependencies.append(("assembly specification", config))
+        config_payload = _load_yaml(config)
+        wrapped = config_payload.get("assembly")
+        if wrapped is None:
+            wrapped = config_payload.get("interface_seed", config_payload)
+        if not isinstance(wrapped, dict):
+            raise ValueError("Assembly specification must contain a mapping")
+        fragments = wrapped.get("fragments") or {}
+        if not isinstance(fragments, dict):
+            raise ValueError("Assembly fragments must be a mapping")
+        for fragment_id, fragment in fragments.items():
+            if not isinstance(fragment, dict) or not fragment.get("source"):
+                raise ValueError(
+                    f"Assembly fragment {fragment_id!r} has no source"
+                )
+            source = Path(str(fragment["source"])).expanduser()
+            if not source.is_absolute():
+                source = project / source
+            dependencies.append(
+                (f"fragment source {fragment_id}", source.resolve())
+            )
+        manifest = topology.get("pose_candidate_manifest")
+        if manifest is not None:
+            dependencies.append(("pose candidate manifest", Path(manifest)))
+    else:
+        design_path = Path(topology["config"])
+        design = load_user_design(design_path)
+        dependencies.extend(
+            [
+                ("public user design", design_path),
+                ("public design structure", design.input),
+            ]
+        )
+
+    provenance = payload["provenance"]
+    dependencies.extend(
+        [
+            ("experiment source", Path(provenance["experiment_source"])),
+            ("execution profile", Path(provenance["profile_source"])),
+            (
+                "Foundry compatibility manifest",
+                Path(provenance["foundry_compatibility"]["path"]),
+            ),
+        ]
+    )
+    unique: dict[Path, str] = {}
+    for role, path in dependencies:
+        unique.setdefault(path.expanduser().resolve(), role)
+    return [(role, path) for path, role in unique.items()]
+
+
+def _freeze_render_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    """Create the fail-closed identity contract consumed by the worker."""
+
+    resources = payload["resources"]
+    checkpoint = Path(resources["checkpoint"]).expanduser().resolve()
+    checkpoint_record = file_identity(checkpoint, role="RFD3 checkpoint")
+    declared_checkpoint_sha = resources.get("checkpoint_sha256")
+    observed_checkpoint_sha = checkpoint_record["sha256"]
+    if (
+        declared_checkpoint_sha is not None
+        and declared_checkpoint_sha != observed_checkpoint_sha
+    ):
+        raise ValueError(
+            "Execution profile checkpoint_sha256 does not match the "
+            f"checkpoint: {declared_checkpoint_sha} != {observed_checkpoint_sha}"
+        )
+    # A profile may omit the digest because the checkpoint exists only on the
+    # target cluster.  Rendering there materializes the exact digest into the
+    # resolved configuration before the job is submitted.
+    resources["checkpoint_sha256"] = observed_checkpoint_sha
+    repository = collect_repository_provenance(
+        Path(payload["project_directory"])
+    )
+    dependency_records = [
+        file_identity(path, role=role)
+        for role, path in _runtime_dependency_files(payload)
+    ]
+    by_role = {record["role"]: record for record in dependency_records}
+    provenance = payload["provenance"]
+    expected_source_hashes = {
+        "experiment source": provenance["experiment_sha256"],
+        "execution profile": provenance["profile_sha256"],
+        "Foundry compatibility manifest": provenance[
+            "foundry_compatibility"
+        ]["sha256"],
+    }
+    for role, expected_sha256 in expected_source_hashes.items():
+        observed_sha256 = by_role[role]["sha256"]
+        if observed_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"{role} changed between resolution and render: "
+                f"{expected_sha256} != {observed_sha256}"
+            )
+    return {
+        "schema_version": 1,
+        "repository": repository,
+        "files": dependency_records,
+        "checkpoint": checkpoint_record,
+    }
+
+
 @dataclass(frozen=True)
 class ResolvedExperiment:
     """Fully resolved experiment plus its source provenance."""
@@ -213,7 +343,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "c_terminal_length": topology["c_terminal_length"],
         }
         input_record = {"template_input": topology["template_input"]}
-    else:
+    elif topology["kind"] == "interface_seed":
         effective_constraints = [
             {
                 "operator": "fixed_xyz",
@@ -228,6 +358,45 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "config": topology["config"],
             "pose_candidate_manifest": topology["pose_candidate_manifest"],
             "pose_seed": topology["pose_seed"],
+        }
+    else:
+        declared = load_user_design(topology["config"])
+        constraint_plan = compile_constraint_plan(declared)
+        effective_constraints = [
+            {
+                "operator": operator.operator,
+                "selector": operator.selector,
+                "atom_scope": operator.atoms.value,
+                "orbit_scope": operator.orbit_scope.value,
+                "controlled_dofs": list(operator.controlled_dofs),
+                "parameters": operator.parameters,
+                **(
+                    {
+                        "coupling_group": (
+                            operator.coupling_group or operator.id
+                        )
+                    }
+                    if operator.operator == "fixed_xyz"
+                    else {}
+                ),
+                "source": "UserDesignSpec",
+            }
+            for operator in constraint_plan.operators
+        ]
+        generation = {
+            "regions": [
+                item.model_dump(mode="json")
+                for item in declared.generation
+            ]
+        }
+        input_record = {
+            "config": topology["config"],
+            "structure": str(declared.input),
+            "symmetry": (
+                declared.symmetry
+                if isinstance(declared.symmetry, str)
+                else declared.symmetry.id
+            ),
         }
 
     compatibility = payload["provenance"]["foundry_compatibility"]
@@ -334,7 +503,7 @@ def resolve_experiment(
         )
         if not resolved_topology["fixed_selector"]:
             raise ValueError("topology.fixed_selector is required")
-    else:
+    elif kind == "interface_seed":
         _reject_unknown(
             topology,
             {
@@ -386,6 +555,23 @@ def resolve_experiment(
             _nonnegative_integer(linker_length, "topology.linker_length")
             if linker_length is not None
             else None
+        )
+        resolved_topology["example_id"] = _safe_name(
+            topology.get("example_id", name),
+            "topology.example_id",
+        )
+    else:
+        _reject_unknown(
+            topology,
+            {"kind", "config", "example_id"},
+            "user_design topology",
+        )
+        resolved_topology["config"] = str(
+            _resolve_existing_file(
+                topology.get("config"),
+                base=experiment_directory,
+                label="topology.config",
+            )
         )
         resolved_topology["example_id"] = _safe_name(
             topology.get("example_id", name),
@@ -593,21 +779,34 @@ def render_submission(
         )
     else:
         output = Path(output_directory).expanduser().resolve()
+    resolved_payload = copy.deepcopy(experiment.payload)
+    render_identity = _freeze_render_identity(resolved_payload)
     output.mkdir(parents=True, exist_ok=False)
+    source_archive = output / "source_snapshot.tar.gz"
+    try:
+        render_identity["source_snapshot"] = create_source_snapshot(
+            Path(resolved_payload["project_directory"]),
+            source_archive,
+        )
+    except Exception:
+        source_archive.unlink(missing_ok=True)
+        output.rmdir()
+        raise
+    resolved_payload["provenance"]["render_identity"] = render_identity
 
     resolved_path = output / "resolved_config.yaml"
     resolved_path.write_text(
-        yaml.safe_dump(experiment.payload, sort_keys=False),
+        yaml.safe_dump(resolved_payload, sort_keys=False),
         encoding="utf-8",
     )
-    provenance = dict(experiment.payload["provenance"])
+    provenance = copy.deepcopy(resolved_payload["provenance"])
     provenance["resolved_config_sha256"] = _sha256(resolved_path)
     (output / "provenance.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
-    resources = experiment.payload["resources"]
+    resources = resolved_payload["resources"]
     slurm = resources["slurm"]
     run_root = experiment.run_root
     lines = [
@@ -629,7 +828,11 @@ def render_submission(
             f"#SBATCH --error={output}/bootstrap-%j.err",
             "",
             "set -euo pipefail",
-            f"PROJECT_DIR={shlex.quote(experiment.payload['project_directory'])}",
+            f"SOURCE_ARCHIVE={shlex.quote(str(source_archive))}",
+            "SOURCE_SNAPSHOT_SHA256="
+            + shlex.quote(
+                render_identity["source_snapshot"]["archive"]["sha256"]
+            ),
             f"RUN_ROOT={shlex.quote(str(run_root))}",
             'RUN_DIR="$RUN_ROOT/$SLURM_JOB_ID"',
             'if [[ -e "$RUN_DIR" ]]; then',
@@ -640,15 +843,26 @@ def render_submission(
             'exec >"$RUN_DIR/slurm-$SLURM_JOB_ID.out" '
             '2>"$RUN_DIR/slurm-$SLURM_JOB_ID.err"',
             *resources["setup_commands"],
-            'cd "$PROJECT_DIR"',
-            'export PYTHONPATH="$PROJECT_DIR/src:'
-            '$PROJECT_DIR/models/rfd3/src:${PYTHONPATH:-}"',
+            'OBSERVED_SOURCE_SHA256=$(sha256sum "$SOURCE_ARCHIVE" '
+            "| awk '{print $1}')",
+            'if [[ "$OBSERVED_SOURCE_SHA256" != '
+            '"$SOURCE_SNAPSHOT_SHA256" ]]; then',
+            '    echo "ERROR: source snapshot SHA256 mismatch"',
+            "    exit 3",
+            "fi",
+            'SOURCE_ROOT="$RUN_DIR/software"',
+            'mkdir -p "$SOURCE_ROOT"',
+            'tar -xzf "$SOURCE_ARCHIVE" -C "$SOURCE_ROOT"',
+            'cd "$SOURCE_ROOT"',
+            'export PYTHONPATH="$SOURCE_ROOT/src:'
+            '$SOURCE_ROOT/models/rfd3/src:${PYTHONPATH:-}"',
             "export FOUNDRY_CHECKPOINT_DIRS="
             + shlex.quote(resources["foundry_checkpoint_dirs"]),
             "python -m rfd3_mosaic.experiment_worker "
             + "--resolved-config "
             + shlex.quote(str(resolved_path))
-            + ' --run-dir "$RUN_DIR"',
+            + ' --run-dir "$RUN_DIR"'
+            + ' --source-root "$SOURCE_ROOT"',
             "",
         ]
     )

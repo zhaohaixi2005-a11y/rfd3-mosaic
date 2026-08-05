@@ -189,6 +189,191 @@ class RFD3AdapterTestCase(unittest.TestCase):
         )
         self.assertTrue(emitted["symmetry"]["use_declared_frames"])
 
+    def test_public_between_path_emits_joint_fixed_constraint_orbit(
+        self,
+    ) -> None:
+        source = self.output_directory / "public_fixed.pdb"
+        source.write_text(
+            "".join(
+                (
+                    "ATOM      1  N   ALA A   1       9.000   0.000   0.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      2  CA  ALA A   1      10.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      3  C   ALA A   1      11.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      4  N   GLY A   2      20.000   0.000   0.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      5  CA  GLY A   2      21.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      6  C   GLY A   2      22.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "END\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+        config = self.output_directory / "public_fixed.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "mode": "constraint_assembly",
+                        "fragments": {
+                            "left": {
+                                "source": str(source),
+                                "selection": "A/1-1/*",
+                                "entity_type": "protein",
+                                "role": "functional_motif",
+                                "fixed_atoms": "all",
+                            },
+                            "right": {
+                                "source": str(source),
+                                "selection": "A/2-2/*",
+                                "entity_type": "protein",
+                                "role": "functional_motif",
+                                "fixed_atoms": "all",
+                            },
+                        },
+                        "motion_groups": {
+                            "motif_group": {
+                                "members": ["left", "right"],
+                                "mode": "fixed",
+                            }
+                        },
+                        "symmetry": {
+                            "transform_sets": {
+                                "ring": {"type": "cyclic", "order": 3}
+                            },
+                            "orbits": {
+                                "motif_orbit": {
+                                    "transform_set": "ring",
+                                    "master_groups": ["motif_group"],
+                                }
+                            },
+                        },
+                        "generated_segments": {
+                            "middle": {
+                                "from_endpoint": {
+                                    "fragment": "left",
+                                    "terminus": "C",
+                                },
+                                "to_endpoint": {
+                                    "fragment": "right",
+                                    "terminus": "N",
+                                },
+                                "length": {"minimum": 5, "maximum": 5},
+                            }
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "public-fixed-output",
+            example_id="public-fixed-c3",
+        )
+        emitted = json.loads(outputs.input_path.read_text())["public-fixed-c3"]
+        groups = emitted["extra"]["motif_constraint_groups"]
+        orbit = emitted["extra"]["motif_constraint_orbits"][0]
+
+        self.assertEqual(len(groups), 3)
+        self.assertEqual(
+            [group["members"][0]["sym_transform_id"] for group in groups],
+            [0, 1, 2],
+        )
+        for group in groups:
+            self.assertEqual(group["constraint_kind"], "fixed_motif")
+            self.assertEqual(
+                {member["source_fragment_id"] for member in group["members"]},
+                {"left", "right"},
+            )
+            self.assertEqual(
+                {member["role"] for member in group["members"]},
+                {"motif"},
+            )
+        self.assertEqual(orbit["group_transform_ids"], [0, 1, 2])
+        self.assertEqual(orbit["mobility_mode"], "fixed")
+        self.assertTrue(emitted["symmetry"]["use_declared_frames"])
+
+        independent = yaml.safe_load(config.read_text(encoding="utf-8"))
+        assembly = independent["assembly"]
+        assembly["motion_groups"] = {
+            "left_component": {
+                "members": ["left"],
+                "mode": "fixed",
+            },
+            "right_component": {
+                "members": ["right"],
+                "mode": "fixed",
+            },
+        }
+        assembly["symmetry"]["orbits"]["motif_orbit"][
+            "master_groups"
+        ] = ["left_component", "right_component"]
+        assembly["symmetry"]["orbits"]["motif_orbit"][
+            "component_mobility"
+        ] = {
+            "left_component": {
+                "mode": "orbit_rigid",
+                "bounds": {
+                    "max_translation": 3.0,
+                    "max_rotation_deg": 10.0,
+                },
+                "subspace": "bounded_se3",
+                "proposal": "denoiser_fit",
+            }
+        }
+        independent_path = self.output_directory / "public_independent.yaml"
+        independent_path.write_text(
+            yaml.safe_dump(independent, sort_keys=False),
+            encoding="utf-8",
+        )
+        independent_outputs = compile_rfd3_input(
+            independent_path,
+            self.output_directory / "public-independent-output",
+            example_id="public-independent-c3",
+        )
+        independent_emitted = json.loads(
+            independent_outputs.input_path.read_text()
+        )["public-independent-c3"]
+        independent_groups = independent_emitted["extra"][
+            "motif_constraint_groups"
+        ]
+        independent_orbits = independent_emitted["extra"][
+            "motif_constraint_orbits"
+        ]
+
+        self.assertEqual(len(independent_groups), 6)
+        self.assertEqual(len(independent_orbits), 2)
+        self.assertEqual(
+            {orbit["coupling_group_id"] for orbit in independent_orbits},
+            {"left_component", "right_component"},
+        )
+        self.assertTrue(
+            all(
+                len(group["members"]) == 1
+                and group["geometry_lock"] == "joint_rigid"
+                for group in independent_groups
+            )
+        )
+        mobility_by_component = {
+            orbit["coupling_group_id"]: orbit["mobility_mode"]
+            for orbit in independent_orbits
+        }
+        self.assertEqual(
+            mobility_by_component,
+            {
+                "left_component": "orbit_rigid",
+                "right_component": "fixed",
+            },
+        )
+
     def test_c12_compiles_to_a_native_input(self) -> None:
         config = yaml.safe_load(
             LHD101_CYCLIC_CONFIGS[5].read_text(encoding="utf-8")
