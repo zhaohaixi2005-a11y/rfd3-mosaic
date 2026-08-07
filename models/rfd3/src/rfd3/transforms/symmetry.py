@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import torch
 from atomworks.ml.transforms.base import Transform
@@ -72,6 +74,11 @@ class AddSymmetryFeats(Transform):
             .get("extra", {})
             .get("motif_constraint_orbits")
         )
+        runtime_relations = (
+            data.get("specification", {})
+            .get("extra", {})
+            .get("assembly_interface_relations")
+        )
         if runtime_groups:
             membership = (
                 self.make_motif_constraint_group_membership(
@@ -89,19 +96,43 @@ class AddSymmetryFeats(Transform):
                         membership,
                     )
                 )
-            return data
-        for feature_name in self.optional_symmetry_feats:
-            if feature_name not in annotation_categories:
-                continue
-            feature_array = atom_array.get_annotation(feature_name)
-            data["feats"][feature_name] = feature_array
-            if feature_name == "motif_constraint_group_id":
-                group_ids = torch.as_tensor(feature_array, dtype=torch.long)
-                unique_group_ids = torch.unique(group_ids)
-                unique_group_ids = unique_group_ids[unique_group_ids >= 0]
-                data["feats"]["motif_constraint_group_membership"] = (
-                    unique_group_ids[:, None] == group_ids[None, :]
+        else:
+            for feature_name in self.optional_symmetry_feats:
+                if feature_name not in annotation_categories:
+                    continue
+                feature_array = atom_array.get_annotation(feature_name)
+                data["feats"][feature_name] = feature_array
+                if feature_name == "motif_constraint_group_id":
+                    group_ids = torch.as_tensor(
+                        feature_array,
+                        dtype=torch.long,
+                    )
+                    unique_group_ids = torch.unique(group_ids)
+                    unique_group_ids = unique_group_ids[unique_group_ids >= 0]
+                    data["feats"]["motif_constraint_group_membership"] = (
+                        unique_group_ids[:, None] == group_ids[None, :]
+                    )
+        # Only output-stage geometric relations belong to diffusion-time
+        # graph guidance.  Input-stage ``preserve_input`` relations are
+        # already enforced by the exact motif projector and may refer to
+        # legacy source-fragment identities which are intentionally merged
+        # during RFD3 input materialization.  Trying to bind those identities
+        # here both duplicates the hard-constraint path and breaks otherwise
+        # valid legacy inputs such as LHD101.
+        guidance_relations = tuple(
+            relation
+            for relation in (runtime_relations or ())
+            if relation.get("satisfaction_stage", "input") == "output"
+            and relation.get("target_geometry", {}).get("mode")
+            == "geometric_constraints"
+        )
+        if guidance_relations:
+            data["feats"].update(
+                self.make_assembly_interface_relation_features(
+                    atom_array,
+                    guidance_relations,
                 )
+            )
         return data
 
     @staticmethod
@@ -448,9 +479,25 @@ class AddSymmetryFeats(Transform):
         mobility_proposals = []
         mobility_schedules = []
         mobility_objectives = []
+        constraint_orbit_ids = []
+        coupling_group_ids = []
         atoms_by_orbit: list[set[int]] = []
         mobile_orbit_indices: set[int] = set()
         for orbit_index, orbit in enumerate(orbits):
+            constraint_orbit_id = str(
+                orbit.get("constraint_orbit_id") or f"orbit_{orbit_index}"
+            )
+            coupling_group_id = str(
+                orbit.get("coupling_group_id")
+                or constraint_orbit_id
+            )
+            if not constraint_orbit_id or not coupling_group_id:
+                raise ValueError(
+                    "Constraint orbit and coupling-group identifiers cannot "
+                    "be empty"
+                )
+            constraint_orbit_ids.append(constraint_orbit_id)
+            coupling_group_ids.append(coupling_group_id)
             orbit_group_ids = [
                 str(group_id) for group_id in orbit["group_ids"]
             ]
@@ -610,6 +657,207 @@ class AddSymmetryFeats(Transform):
             ),
             "motif_constraint_orbit_objective_ids": tuple(
                 mobility_objectives
+            ),
+            "motif_constraint_orbit_ids": tuple(constraint_orbit_ids),
+            "motif_constraint_orbit_component_ids": tuple(
+                coupling_group_ids
+            ),
+        }
+
+    @staticmethod
+    def make_assembly_interface_relation_features(
+        atom_array,
+        relations,
+    ) -> dict[str, object]:
+        """Resolve compiler-declared graph edges to atomwise runtime masks.
+
+        The compiler already expands every edge through the complete group
+        action.  Runtime guidance therefore consumes concrete left/right
+        memberships instead of reinterpreting YAML selectors or inventing a
+        second symmetry-neighbour convention.
+        """
+
+        categories = set(atom_array.get_annotation_categories())
+        required_annotations = {"src_component", "sym_transform_id"}
+        missing = required_annotations - categories
+        if missing:
+            raise ValueError(
+                "Assembly interface guidance requires AtomArray annotations "
+                f"{sorted(missing)}"
+            )
+        source_components = np.asarray(
+            atom_array.get_annotation("src_component")
+        )
+        transform_ids = np.asarray(
+            atom_array.get_annotation("sym_transform_id")
+        )
+        left_masks = []
+        right_masks = []
+        edge_ids = []
+        source_interface_ids = []
+        modes = []
+        required_flags = []
+        contact_minima = []
+        contact_cutoffs = []
+        coverage_minima = []
+        contiguous_minima = []
+        automatic_quality_flags = []
+        distance_targets = []
+        distance_tolerances = []
+        satisfaction_stages = []
+
+        def expanded_source_components(values) -> list[str]:
+            expanded: list[str] = []
+            for value in values:
+                text = str(value)
+                match = re.fullmatch(r"([^0-9]+)(\d+)-(\d+)", text)
+                if match is None:
+                    expanded.append(text)
+                    continue
+                chain, start_text, end_text = match.groups()
+                start, end = int(start_text), int(end_text)
+                if end < start:
+                    raise ValueError(
+                        "Assembly interface relation contains a reversed "
+                        f"source selector: {text!r}"
+                    )
+                expanded.extend(
+                    f"{chain}{residue}"
+                    for residue in range(start, end + 1)
+                )
+            return expanded
+
+        for relation in relations:
+            left = np.isin(
+                source_components,
+                expanded_source_components(
+                    relation["left_source_components"]
+                ),
+            ) & (transform_ids == int(relation["source_copy_index"]))
+            right = np.isin(
+                source_components,
+                expanded_source_components(
+                    relation["right_source_components"]
+                ),
+            ) & (transform_ids == int(relation["target_copy_index"]))
+            if not np.any(left) or not np.any(right):
+                raise ValueError(
+                    "Assembly interface relation matched no runtime atoms: "
+                    f"{relation.get('edge_instance_id')!r}"
+                )
+            if np.any(left & right):
+                raise ValueError(
+                    "Assembly interface relation sides overlap: "
+                    f"{relation.get('edge_instance_id')!r}"
+                )
+            geometry = relation["target_geometry"]
+            mode = str(geometry["mode"])
+            if mode == "reference_transform":
+                minimum_contacts = int(
+                    geometry.get("minimum_heavy_atom_contacts", 0)
+                )
+                cutoff = float(geometry.get("contact_cutoff", 4.5))
+                distance_target = float("nan")
+                distance_tolerance = float("nan")
+                minimum_coverage = 0
+                minimum_contiguous = 0
+                automatic_quality = False
+                mode_index = 0
+            elif mode == "geometric_constraints":
+                contacts = geometry.get("contacts") or {}
+                coverage = geometry.get("coverage") or {}
+                distance = geometry.get("distance") or {}
+                minimum_contacts = int(
+                    contacts.get("min_heavy_atom_contacts", 0)
+                )
+                cutoff = float(contacts.get("cutoff", 8.0))
+                distance_target = float(distance.get("target", float("nan")))
+                distance_tolerance = float(
+                    distance.get("tolerance", float("nan"))
+                )
+                minimum_coverage = int(
+                    coverage.get("minimum_contact_residues_per_side") or 0
+                )
+                minimum_contiguous = int(
+                    coverage.get(
+                        "minimum_contiguous_contact_residues_per_side"
+                    )
+                    or 0
+                )
+                automatic_quality = coverage.get("mode") == "auto"
+                mode_index = 1
+            else:
+                raise ValueError(
+                    f"Unsupported runtime interface mode {mode!r}"
+                )
+            left_masks.append(left)
+            right_masks.append(right)
+            edge_ids.append(str(relation["edge_instance_id"]))
+            source_interface_ids.append(
+                str(
+                    relation.get("source_interface_id")
+                    or str(relation["edge_instance_id"]).split("@", 1)[0]
+                )
+            )
+            modes.append(mode_index)
+            required_flags.append(bool(relation.get("required", True)))
+            contact_minima.append(minimum_contacts)
+            contact_cutoffs.append(cutoff)
+            coverage_minima.append(minimum_coverage)
+            contiguous_minima.append(minimum_contiguous)
+            automatic_quality_flags.append(automatic_quality)
+            distance_targets.append(distance_target)
+            distance_tolerances.append(distance_tolerance)
+            satisfaction_stages.append(
+                str(relation.get("satisfaction_stage", "input"))
+            )
+
+        return {
+            "assembly_interface_left_membership": torch.from_numpy(
+                np.stack(left_masks).astype(bool)
+            ),
+            "assembly_interface_right_membership": torch.from_numpy(
+                np.stack(right_masks).astype(bool)
+            ),
+            "assembly_interface_mode": torch.tensor(
+                modes,
+                dtype=torch.long,
+            ),
+            "assembly_interface_required": torch.tensor(
+                required_flags,
+                dtype=torch.bool,
+            ),
+            "assembly_interface_minimum_contacts": torch.tensor(
+                contact_minima,
+                dtype=torch.long,
+            ),
+            "assembly_interface_contact_cutoff": torch.tensor(
+                contact_cutoffs,
+                dtype=torch.float32,
+            ),
+            "assembly_interface_minimum_residues_per_side": torch.tensor(
+                coverage_minima,
+                dtype=torch.long,
+            ),
+            "assembly_interface_minimum_contiguous_residues_per_side": (
+                torch.tensor(contiguous_minima, dtype=torch.long)
+            ),
+            "assembly_interface_automatic_quality": torch.tensor(
+                automatic_quality_flags,
+                dtype=torch.bool,
+            ),
+            "assembly_interface_distance_target": torch.tensor(
+                distance_targets,
+                dtype=torch.float32,
+            ),
+            "assembly_interface_distance_tolerance": torch.tensor(
+                distance_tolerances,
+                dtype=torch.float32,
+            ),
+            "assembly_interface_ids": tuple(edge_ids),
+            "assembly_interface_source_ids": tuple(source_interface_ids),
+            "assembly_interface_satisfaction_stages": tuple(
+                satisfaction_stages
             ),
         }
 

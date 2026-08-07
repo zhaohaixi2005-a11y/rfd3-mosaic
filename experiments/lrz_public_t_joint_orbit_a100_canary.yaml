@@ -1,0 +1,49 @@
+schema_version: 1
+name: public-t-joint-orbit-a100-s920
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: T
+  axis: [0.0, 0.0, 1.0]
+  secondary_axis: [1.0, 0.0, 0.0]
+  center: [0.0, 0.0, 0.0]
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length: 85
+
+# Both fixed fragments belong to one rigid seed. The public initial_pose can
+# therefore place that complete seed at a generic tetrahedral pose before all
+# 12 exact copies are constructed.
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: t_joint_seed
+
+  - kind: fixed_xyz
+    selector: A26-37
+    atoms: all
+    coupling_group: t_joint_seed
+
+sampling:
+  initial_pose:
+    radius: {minimum: 80.0, maximum: 80.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    radial_direction: [1.0, 0.0, 0.0]
+    orientation: {method: uniform_so3}
+    seed: 920
+  timesteps: 50
+  seed: 920
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: a100_80g
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-t-joint-orbit-canary-8_6

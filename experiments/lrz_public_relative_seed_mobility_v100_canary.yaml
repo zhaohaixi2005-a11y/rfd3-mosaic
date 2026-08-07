@@ -1,0 +1,53 @@
+schema_version: 1
+name: public-relative-seed-mobility-c3-v100-s909
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: C3
+  axis: [0.0, 0.0, 1.0]
+  center: [0.0, 0.0, 0.0]
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length: 85
+
+constraints:
+  # This complete left seed orbit remains internally rigid, but its master
+  # pose may translate and rotate in response to the generated scaffold.
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: mobile_left
+    pose:
+      mode: bounded_mobile
+      proposal: scaffold_objectives
+      max_translation: 3.0
+      max_rotation_deg: 10.0
+      start_fraction: 0.05
+      end_fraction: 0.75
+      response: 0.2
+      max_step_translation: 0.25
+      max_step_rotation_deg: 1.0
+
+  # The right seed orbit defines the laboratory-frame reference.  Anchoring
+  # one component removes the meaningless common rigid-body gauge.
+  - kind: fixed_xyz
+    selector: A26-37
+    atoms: all
+    coupling_group: anchored_right
+
+sampling:
+  timesteps: 50
+  seed: 909
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-relative-seed-mobility-canary-8_6

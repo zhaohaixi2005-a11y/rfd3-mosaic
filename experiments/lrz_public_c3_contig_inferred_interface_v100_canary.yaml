@@ -1,0 +1,36 @@
+schema_version: 1
+name: public-c3-contig-inferred-interface-v100-t10-s927
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+
+# The user states only the fixed central motif and what to generate.  The
+# compiler infers that the generated N/C regions must form the C3 interface.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 35
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 35
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+
+sampling:
+  timesteps: 10
+  seed: 927
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  walltime: "01:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-contig-inferred-interface-canary-8_7

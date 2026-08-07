@@ -93,6 +93,58 @@ class SamplingPlanTestCase(unittest.TestCase):
                 }
             )
 
+    def test_compiles_independent_component_initial_poses(self) -> None:
+        plan = compile_sampling_plan(
+            design(
+                initial_poses={
+                    "site_alpha": {
+                        "radius": {"minimum": 35.0, "maximum": 35.0},
+                        "orientation": {"method": "uniform_so3"},
+                        "seed": 101,
+                    },
+                    "site_beta": {
+                        "radius": {"minimum": 55.0, "maximum": 60.0},
+                        "axial_offset": {
+                            "minimum": -2.0,
+                            "maximum": 4.0,
+                        },
+                        "radial_direction": [0.0, 1.0, 0.0],
+                        "seed": 202,
+                    },
+                }
+            )
+        )
+
+        self.assertIsNone(plan.initial_pose)
+        self.assertEqual(
+            tuple(pose.group_id for pose in plan.component_initial_poses),
+            ("site_alpha", "site_beta"),
+        )
+        seed, payload = assembly_initialization_payload(plan)
+        self.assertIsNone(seed)
+        self.assertEqual(payload["site_alpha"]["random_seed"], 101)
+        self.assertEqual(payload["site_beta"]["random_seed"], 202)
+        self.assertEqual(
+            payload["site_beta"]["placement"]["radius"],
+            {"mean": 57.5, "range": 2.5},
+        )
+
+    def test_rejects_global_and_component_initial_poses_together(self) -> None:
+        with self.assertRaises(ValidationError):
+            design(
+                initial_pose={
+                    "radius": {"minimum": 20.0, "maximum": 20.0},
+                },
+                initial_poses={
+                    "site_alpha": {
+                        "radius": {
+                            "minimum": 30.0,
+                            "maximum": 30.0,
+                        },
+                    }
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

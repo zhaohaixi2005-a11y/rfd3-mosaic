@@ -59,14 +59,14 @@ class _RecordingScaffoldController:
             )
         ]
 
-    def update_from_scaffold(
+    def update_orbits_from_scaffold(
         self,
         scaffold_coordinates,
         *,
         progress,
         topology,
         axis,
-        principal_axis,
+        principal_axes,
         config,
         apply_update,
     ):
@@ -81,7 +81,9 @@ class _RecordingScaffoldController:
                 "coordinates": scaffold_coordinates.clone(),
                 "topology": topology,
                 "axis": axis,
-                "principal_axis": principal_axis.clone(),
+                "principal_axes": tuple(
+                    value.clone() for value in principal_axes
+                ),
                 "config": config,
             }
         )
@@ -109,6 +111,28 @@ class _RecordingScaffoldController:
 
 
 class SymmetryMotifFinalizationTestCase(unittest.TestCase):
+    def test_scaffold_runtime_accepts_multiple_declared_mobile_orbits(
+        self,
+    ) -> None:
+        sampler = SampleDiffusionWithSymmetry(
+            gamma_0=0.6,
+            preserve_fixed_motif_during_symmetry=True,
+            symmetry_state_mode="orbit_average",
+            symmetry_noise_mode="coupled",
+            enable_orbit_rigid_motif_mobility=True,
+            motif_mobility_proposal_source="scaffold_boundary",
+        )
+        count = sampler._validate_motif_mobility_runtime(
+            {
+                "motif_constraint_orbit_mobility_mode": torch.tensor(
+                    [1, 1]
+                )
+            },
+            diffusion_batch_size=1,
+            initializer_outputs={"chunked_pairwise_embedder": object()},
+        )
+        self.assertEqual(count, 2)
+
     @staticmethod
     def _c3_features() -> dict:
         transforms = {}
@@ -624,6 +648,14 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 atol=1e-5,
             )
         )
+        lifecycle = result["constraint_runtime_diagnostics"]
+        self.assertEqual(lifecycle["phase_counts"]["initialize"], 1)
+        self.assertEqual(
+            lifecycle["phase_counts"]["model_prediction"],
+            2,
+        )
+        self.assertEqual(lifecycle["phase_counts"]["state_update"], 2)
+        self.assertEqual(lifecycle["phase_counts"]["finalize"], 1)
         for index, state in enumerate(result["X_denoised_L_traj"]):
             # Intermediate EDM predictions can remain at a coordinate scale
             # where float32 rotation round-trips cannot satisfy the final
@@ -703,7 +735,7 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                     ),
                     mock.patch(
                         "rfd3.model.inference_sampler."
-                        "extract_cyclic_axis",
+                        "extract_symmetry_primary_axis",
                         return_value=object(),
                     ),
                     torch.no_grad(),
@@ -758,6 +790,15 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 self.assertIs(
                     diagnostics["apply_updates"],
                     apply_updates,
+                )
+                lifecycle = diagnostics["constraint_runtime"]
+                self.assertEqual(
+                    lifecycle["phase_counts"]["proposal"],
+                    3,
+                )
+                self.assertEqual(
+                    lifecycle["conditioning_refresh_count"],
+                    expected_refreshes,
                 )
 
     def test_compactness_moves_generated_tokens_but_not_fixed_motif(

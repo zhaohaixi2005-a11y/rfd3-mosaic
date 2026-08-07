@@ -230,6 +230,11 @@ class ReferenceTransformGeometry(StrictModel):
         float,
         Field(gt=0.0, le=180.0),
     ] = 10.0
+    # Assembly IR remains backwards-compatible for non-interface geometric
+    # relations. The public `preserve_input` interface frontend lowers an
+    # explicit positive requirement by default.
+    minimum_heavy_atom_contacts: Annotated[int, Field(ge=0)] = 0
+    contact_cutoff: Annotated[float, Field(gt=0.0)] = 4.5
 
     @model_validator(mode="after")
     def validate_reference_source(self) -> "ReferenceTransformGeometry":
@@ -286,6 +291,41 @@ class ContactConstraint(StrictModel):
     cutoff: Annotated[float, Field(gt=0.0)] = 8.0
 
 
+class InterfaceCoverageConstraint(StrictModel):
+    """Scale-aware interface-quality contract used by the sampler and audit.
+
+    ``auto`` is the public default.  Optional numeric values exist only as an
+    internal/expert replay mechanism; the normal compiler leaves them unset
+    so the runtime can derive targets from the available generated residues.
+    """
+
+    mode: Literal["auto"] = "auto"
+    minimum_contact_residues_per_side: Annotated[
+        int,
+        Field(ge=1),
+    ] | None = None
+    minimum_contiguous_contact_residues_per_side: Annotated[
+        int,
+        Field(ge=1),
+    ] | None = None
+
+    @model_validator(mode="after")
+    def contiguous_target_cannot_exceed_coverage(
+        self,
+    ) -> "InterfaceCoverageConstraint":
+        if (
+            self.minimum_contact_residues_per_side is not None
+            and self.minimum_contiguous_contact_residues_per_side is not None
+            and self.minimum_contiguous_contact_residues_per_side
+            > self.minimum_contact_residues_per_side
+        ):
+            raise ValueError(
+                "minimum_contiguous_contact_residues_per_side cannot exceed "
+                "minimum_contact_residues_per_side"
+            )
+        return self
+
+
 class GeometricConstraintsGeometry(StrictModel):
     """Defines an exploratory interface without a reference pose."""
 
@@ -295,6 +335,7 @@ class GeometricConstraintsGeometry(StrictModel):
     normal_angle_deg: AngleConstraint | None = None
     twist_deg: AngleRangeConstraint | None = None
     contacts: ContactConstraint | None = None
+    coverage: InterfaceCoverageConstraint | None = None
 
     @model_validator(mode="after")
     def require_at_least_one_constraint(
@@ -305,6 +346,7 @@ class GeometricConstraintsGeometry(StrictModel):
             self.normal_angle_deg,
             self.twist_deg,
             self.contacts,
+            self.coverage,
         ]
 
         if all(value is None for value in constraints):
@@ -448,6 +490,10 @@ class InterfaceEdgeSpec(StrictModel):
     right_port: Identifier
     copy_relation: CopyRelationSpec
     required: bool = True
+    # Input-stage edges must already be satisfied by the compiled seed.
+    # Output-stage edges are design objectives: preflight records their
+    # residual but the post-diffusion audit enforces the contract.
+    satisfaction_stage: Literal["input", "output"] = "input"
     target_geometry: TargetGeometrySpec
     mobility: OrbitMobilitySpec = OrbitMobilitySpec()
 
@@ -455,6 +501,9 @@ class InterfaceEdgeSpec(StrictModel):
 class SymmetryType(str, Enum):
     CYCLIC = "cyclic"
     DIHEDRAL = "dihedral"
+    TETRAHEDRAL = "tetrahedral"
+    OCTAHEDRAL = "octahedral"
+    ICOSAHEDRAL = "icosahedral"
 
 
 class SymmetryTransformSetSpec(StrictModel):
@@ -476,9 +525,21 @@ class SymmetryTransformSetSpec(StrictModel):
         if self.type == SymmetryType.CYCLIC:
             if self.secondary_axis is not None:
                 raise ValueError(
-                    "secondary_axis is only valid for dihedral symmetry"
+                    "secondary_axis is not valid for cyclic symmetry"
                 )
             return self
+
+        expected_polyhedral_orders = {
+            SymmetryType.TETRAHEDRAL: 12,
+            SymmetryType.OCTAHEDRAL: 24,
+            SymmetryType.ICOSAHEDRAL: 60,
+        }
+        expected_order = expected_polyhedral_orders.get(self.type)
+        if expected_order is not None and self.order != expected_order:
+            raise ValueError(
+                f"{self.type.value} symmetry requires exactly "
+                f"{expected_order} proper rotations"
+            )
 
         if self.secondary_axis is not None:
             secondary_norm = sum(
@@ -495,7 +556,7 @@ class SymmetryTransformSetSpec(StrictModel):
             ) ** 0.5
             if normalized_dot > 1e-6:
                 raise ValueError(
-                    "Dihedral secondary_axis must be perpendicular to axis"
+                    "secondary_axis must be perpendicular to axis"
                 )
 
         return self
@@ -651,6 +712,7 @@ class RadialPlacementSpec(StrictModel):
 class MotionGroupInitializationSpec(StrictModel):
     """Initial master pose before applying a symmetry group action."""
 
+    random_seed: Annotated[int, Field(ge=0)] | None = None
     center_method: CenterMethod = CenterMethod.INTERFACE_HEAVY_ATOM_COM
     orientation: OrientationSpec = FixedOrientationSpec()
     placement: RadialPlacementSpec
@@ -747,6 +809,11 @@ class AssemblySpecification(StrictModel):
         "legacy_rfd1",
     ] = "se3_static"
     random_seed: int | None = None
+    constraint_group_strategy: Literal[
+        "auto",
+        "interface_edges",
+        "motion_groups",
+    ] = "auto"
 
     fragments: Annotated[
         dict[Identifier, FragmentSpec],

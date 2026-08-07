@@ -256,6 +256,125 @@ constraints:
             ),
         )
 
+    def test_mobile_graph_component_requires_runtime_mobility_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "motif.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA A   2       8.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: mobile-graph-c3
+input: motif.pdb
+symmetry: C3
+components:
+  alpha:
+    selectors: [A1]
+    pose:
+      mode: bounded_mobile
+      max_translation: 3.0
+      max_rotation_deg: 10.0
+  beta:
+    selectors: [A2]
+interfaces:
+  - id: alpha_beta
+    between: [alpha, beta]
+    relation: {mode: preserve_input}
+connections:
+  - id: alpha_to_beta
+    from: alpha.C
+    to: beta.N
+    length: 20
+""",
+                encoding="utf-8",
+            )
+
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "mobile-graph-c3",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="mobile-graph-c3",
+            )
+
+        self.assertEqual(
+            request.audit_requirements,
+            (
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
+                AuditRequirement.BOUNDED_COMPONENT_MOBILITY,
+            ),
+        )
+
+    def test_contact_graph_requires_sampler_guidance_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "motif.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA A   2       4.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: contact-graph-c3
+input: motif.pdb
+symmetry: C3
+components:
+  alpha: {selectors: [A1]}
+  beta: {selectors: [A2]}
+interfaces:
+  - id: alpha_beta
+    between: [alpha, beta]
+    copy_relation: {orbit_offset: 1}
+    relation:
+      mode: contact
+      minimum_heavy_atom_contacts: 1
+connections:
+  - id: alpha_to_beta
+    from: alpha.C
+    to: beta.N
+    length: 20
+""",
+                encoding="utf-8",
+            )
+
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "contact-graph-c3",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="contact-graph-c3",
+            )
+
+        self.assertEqual(
+            request.audit_requirements,
+            (
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
+                AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

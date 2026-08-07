@@ -34,6 +34,51 @@ class _AnnotationArray:
 
 
 class SymmetryFeatureGroupsTestCase(unittest.TestCase):
+    def test_interface_relation_expands_rfd3_selector_ranges(self) -> None:
+        atom_array = _AnnotationArray(
+            {
+                "src_component": np.asarray(
+                    ["A1", "A2", "B1", "B2", "A1", "A2", "B1", "B2"]
+                ),
+                "sym_transform_id": np.asarray([0, 0, 0, 0, 1, 1, 1, 1]),
+            }
+        )
+        features = AddSymmetryFeats.make_assembly_interface_relation_features(
+            atom_array,
+            [
+                {
+                    "edge_instance_id": "edge@0",
+                    "left_source_components": ["A1-2"],
+                    "right_source_components": ["B1-2"],
+                    "source_copy_index": 0,
+                    "target_copy_index": 1,
+                    "required": True,
+                    "satisfaction_stage": "output",
+                    "target_geometry": {
+                        "mode": "geometric_constraints",
+                        "contacts": {
+                            "min_heavy_atom_contacts": 2,
+                            "cutoff": 5.0,
+                        },
+                        "coverage": {"mode": "auto"},
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(
+            features["assembly_interface_left_membership"].tolist(),
+            [[True, True, False, False, False, False, False, False]],
+        )
+        self.assertEqual(
+            features["assembly_interface_right_membership"].tolist(),
+            [[False, False, False, False, False, False, True, True]],
+        )
+        self.assertEqual(
+            features["assembly_interface_automatic_quality"].tolist(),
+            [True],
+        )
+
     def test_exact_orbit_sampler_requires_true_fabric_precision(
         self,
     ) -> None:
@@ -698,6 +743,7 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
         orbits = [
             {
                 "constraint_orbit_id": "seed__orbit",
+                "coupling_group_id": "seed_component",
                 "group_ids": ["g0", "g1"],
                 "master_group_id": "g0",
                 "group_transform_ids": [0, 1],
@@ -774,6 +820,14 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
         self.assertEqual(
             features["motif_constraint_orbit_objective_ids"],
             (("junction", "assembly_clash"),),
+        )
+        self.assertEqual(
+            features["motif_constraint_orbit_ids"],
+            ("seed__orbit",),
+        )
+        self.assertEqual(
+            features["motif_constraint_orbit_component_ids"],
+            ("seed_component",),
         )
 
     def test_atomwise_projection_does_not_mutate_input(self) -> None:

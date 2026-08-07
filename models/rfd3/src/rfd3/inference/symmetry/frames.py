@@ -2,6 +2,24 @@ import numpy as np
 import torch
 
 
+def get_symmetry_multiplicity_from_id(symmetry_id):
+    """Return finite proper-rotation multiplicity without building frames."""
+
+    if hasattr(symmetry_id, "id"):
+        symmetry_id = symmetry_id.id
+    if not isinstance(symmetry_id, str):
+        raise ValueError(f"Invalid symmetry id {symmetry_id!r}")
+    normalized = symmetry_id.strip().upper()
+    if normalized.startswith("C") and normalized[1:].isdigit():
+        return int(normalized[1:])
+    if normalized.startswith("D") and normalized[1:].isdigit():
+        return 2 * int(normalized[1:])
+    polyhedral = {"T": 12, "O": 24, "I": 60}
+    if normalized in polyhedral:
+        return polyhedral[normalized]
+    raise ValueError(f"Symmetry id {symmetry_id} not supported")
+
+
 def get_symmetry_frames_from_symmetry_id(symmetry_id):
     """
     Get symmetry frames from a symmetry id.

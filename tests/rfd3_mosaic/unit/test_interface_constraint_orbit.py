@@ -37,6 +37,8 @@ def _features():
         "motif_constraint_orbit_objective_ids": (
             ("junction", "assembly_clash"),
         ),
+        "motif_constraint_orbit_ids": ("mobile_orbit",),
+        "motif_constraint_orbit_component_ids": ("mobile_component",),
         "motif_constraint_group_membership": membership,
         "sym_transform": {
             0: (torch.eye(3), torch.zeros(3)),
@@ -63,6 +65,8 @@ class InterfaceConstraintOrbitLayoutTestCase(unittest.TestCase):
         self.assertEqual(orbit.group_indices, (0, 1, 2))
         self.assertEqual(orbit.transform_ids, (0, 1, 2))
         self.assertEqual(orbit.mobility_mode, "orbit_rigid")
+        self.assertEqual(orbit.constraint_orbit_id, "mobile_orbit")
+        self.assertEqual(orbit.coupling_group_id, "mobile_component")
         self.assertEqual(orbit.maximum_translation, 1.0)
         self.assertEqual(orbit.maximum_rotation_degrees, 5.0)
         self.assertEqual(orbit.mobility_subspace, "bounded_se3")
@@ -130,6 +134,14 @@ class InterfaceConstraintOrbitLayoutTestCase(unittest.TestCase):
         features["motif_constraint_orbit_objective_ids"] = (
             ("junction", "assembly_clash"),
             (),
+        )
+        features["motif_constraint_orbit_ids"] = (
+            "mobile_orbit",
+            "fixed_orbit",
+        )
+        features["motif_constraint_orbit_component_ids"] = (
+            "mobile_component",
+            "fixed_component",
         )
 
         with self.assertRaisesRegex(ValueError, "cannot overlap"):

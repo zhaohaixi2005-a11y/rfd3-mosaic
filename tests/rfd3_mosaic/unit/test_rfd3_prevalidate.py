@@ -55,8 +55,13 @@ class RFD3PrevalidationLogicTestCase(unittest.TestCase):
         self.assertEqual(_expected_multiplicity("D2"), 4)
         self.assertEqual(_expected_multiplicity("d5"), 10)
 
+    def test_reads_polyhedral_multiplicity(self) -> None:
+        self.assertEqual(_expected_multiplicity("T"), 12)
+        self.assertEqual(_expected_multiplicity("o"), 24)
+        self.assertEqual(_expected_multiplicity("I"), 60)
+
     def test_rejects_unsupported_symmetry(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Cn/Dn"):
+        with self.assertRaisesRegex(ValueError, "Cn/Dn/T/O/I"):
             _expected_multiplicity("T3")
 
     def test_accepts_consistent_constructed_atom_array_report(self) -> None:

@@ -1,0 +1,61 @@
+schema_version: 1
+name: public-t-two-orbit-initialized-short-s922
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: T
+  axis: [0.0, 0.0, 1.0]
+  secondary_axis: [1.0, 0.0, 0.0]
+  center: [0.0, 0.0, 0.0]
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length: 30
+
+# Unlike the first invalid T attempt, the two source fragments are not left in
+# their embedded C3 coordinates.  Each independent rigid component receives a
+# reproducible generic tetrahedral master pose before the 12 group actions are
+# applied.  The non-special radial directions avoid tetrahedral stabilizer
+# axes.  Their approximately 48 A master-center separation remains reachable
+# by the 30-residue generated segment while providing clearance between the
+# two source motifs.
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: t_orbit_alpha
+
+  - kind: fixed_xyz
+    selector: A26-37
+    atoms: all
+    coupling_group: t_orbit_beta
+
+sampling:
+  initial_poses:
+    t_orbit_alpha:
+      radius: {minimum: 70.0, maximum: 70.0}
+      axial_offset: {minimum: 0.0, maximum: 0.0}
+      radial_direction: [0.9396926, 0.3420201, 0.0]
+      orientation: {method: fixed, rotation_deg: [0.0, 0.0, 0.0]}
+      seed: 92201
+    t_orbit_beta:
+      radius: {minimum: 100.0, maximum: 100.0}
+      axial_offset: {minimum: 0.0, maximum: 0.0}
+      radial_direction: [0.7071068, 0.7071068, 0.0]
+      orientation: {method: fixed, rotation_deg: [0.0, 0.0, 0.0]}
+      seed: 92202
+  timesteps: 50
+  seed: 922
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  walltime: "04:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-t-two-orbit-initialized-short-smoke-8_7

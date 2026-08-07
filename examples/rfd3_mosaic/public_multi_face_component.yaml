@@ -1,0 +1,53 @@
+schema_version: 1
+name: example-c3-multi-face-component
+input: inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+
+# One rigid building block owns two distinct interface faces.  The selectors
+# retain one common pose because they belong to the same joint-rigid component.
+components:
+  protomer_seed:
+    selectors: [A12-20, A26-37]
+    geometry: joint_rigid
+
+ports:
+  face_alpha:
+    component: protomer_seed
+    selectors: [A12-20]
+  face_beta:
+    component: protomer_seed
+    selectors: [A26-37]
+
+# Each edge names both the participating faces and the symmetry-related
+# neighbour.  Additional faces and interface edges do not require new code.
+interfaces:
+  - id: alpha_beta_neighbour
+    between: [face_alpha, face_beta]
+    copy_relation: {transform: C3:r1}
+    relation:
+      mode: preserve_input
+      translation_tolerance: 0.5
+      rotation_tolerance_deg: 2.0
+
+connections:
+  - id: scaffold_between_faces
+    from:
+      component: protomer_seed
+      selector: A12-20
+      terminus: c
+    to:
+      component: protomer_seed
+      selector: A26-37
+      terminus: n
+    length: {minimum: 60, maximum: 100}
+
+sampling:
+  timesteps: 50
+  seed: 42
+
+resources:
+  profile: v100
+
+output:
+  root: /path/to/rfd3-mosaic-runs
+  campaign: public-multi-face-component

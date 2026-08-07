@@ -72,6 +72,49 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         evidence=("structure-bound selector, compiler and CLI unit suite",),
     ),
     CapabilityRecord(
+        id="public_assembly_graph",
+        title="Public component/interface/connection assembly graph",
+        maturity=CapabilityMaturity.GPU_CANARY,
+        public_interface=True,
+        summary=(
+            "Compile arbitrary rigid component nodes, reusable named "
+            "interface faces, symmetry-neighbour relation edges and "
+            "generated chain connections into the common "
+            "AssemblySpecification."
+        ),
+        dependencies=("public_fixed_xyz",),
+        evidence=(
+            "50-step V100 T job 5735772 compiled one joint-rigid component, "
+            "two reusable faces, one nonidentity neighbour edge and one "
+            "generated connection through the public graph; all relation, "
+            "constraint, continuity, clash and symmetry audits passed",
+        ),
+    ),
+    CapabilityRecord(
+        id="graph_pose_search",
+        title="Assembly-graph neighbour and pose search",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=True,
+        summary=(
+            "Compare requested finite symmetry groups, enumerate interface "
+            "neighbours, sample declared component poses, rank complete "
+            "static assemblies and freeze replayable public candidates."
+        ),
+        dependencies=("public_assembly_graph", "static_pose_sampling"),
+    ),
+    CapabilityRecord(
+        id="graph_interface_guidance",
+        title="Symmetry-coupled graph interface guidance",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=True,
+        summary=(
+            "Guide generated residues on compiler-declared symmetry "
+            "neighbour edges toward packing contacts in the unified RFD3 "
+            "sampler while leaving fixed motif orbits authoritative."
+        ),
+        dependencies=("public_fixed_xyz",),
+    ),
+    CapabilityRecord(
         id="static_pose_sampling",
         title="Rigid initial-pose sampling",
         maturity=CapabilityMaturity.ENGINEERING,
@@ -158,33 +201,85 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
     CapabilityRecord(
         id="bounded_orbit_mobility",
         title="Bounded motif-orbit SE(3) mobility",
-        maturity=CapabilityMaturity.GPU_CANARY,
+        maturity=CapabilityMaturity.ENGINEERING,
         public_interface=True,
         summary=(
             "Move independently coupled rigid components under per-step and "
             "cumulative SE(3) bounds."
         ),
         dependencies=("public_fixed_xyz",),
-        evidence=("default-off Cn mobility controller and paired pilot jobs",),
+        evidence=(
+            "V100 job 5733341 applied a non-zero bounded scaffold-driven "
+            "SE(3) update and passed component, symmetry, continuity and "
+            "clash audits",
+            "V100 job 5733680 moved one complete two-fragment interface "
+            "seed orbit while preserving all three C3 copies at 0.000015 A "
+            "maximum per-copy internal RMSD",
+            "V100 job 5733718 executed radial-only mobility with 0.074646 A "
+            "translation, zero axial displacement and zero rotation; all "
+            "required audits passed",
+            "V100 job 5733719 executed radial-axial mobility with 0.161358 A "
+            "translation including -0.157698 A axial displacement and zero "
+            "rotation; all required audits passed",
+        ),
     ),
     CapabilityRecord(
         id="dn_static",
         title="Static Dn exact assembly",
-        maturity=CapabilityMaturity.CPU_VALIDATED,
+        maturity=CapabilityMaturity.GPU_CANARY,
         public_interface=False,
         summary="Compile declared Dn frames and fixed motif orbits.",
-        evidence=("D2/D3 registry properties and D3 two-orbit prevalidation",),
+        evidence=(
+            "D2/D3 registry properties and D3 two-orbit prevalidation",
+            "50-step V100 job 5733912 denoised all six D3 group actions "
+            "with two exact constraint orbits and passed input, constraint-"
+            "orbit and scaffold-validity audits",
+        ),
+    ),
+    CapabilityRecord(
+        id="dn_dynamic_multi_orbit",
+        title="Dynamic multi-orbit Dn control",
+        maturity=CapabilityMaturity.GPU_CANARY,
+        public_interface=False,
+        summary=(
+            "Jointly move multiple rigid motif orbits while reconstructing "
+            "every declared Dn group action."
+        ),
+        dependencies=(
+            "dn_static",
+            "bounded_orbit_mobility",
+            "multi_orbit_joint_control",
+        ),
+        evidence=(
+            "50-step V100 D3 job 5733972 jointly moved two independent "
+            "orbits over all six group actions, preserved 1158/1158 fixed "
+            "heavy atoms at <=0.000014 A per-copy internal RMSD, and passed "
+            "mobility, constraint, continuity, clash and symmetry audits",
+        ),
     ),
     CapabilityRecord(
         id="multi_orbit_joint_control",
         title="Simultaneous multi-orbit control",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.GPU_CANARY,
         public_interface=False,
         summary=(
             "Jointly project or move several motif orbits without "
             "update-order dependence."
         ),
-        dependencies=("bounded_orbit_mobility", "dn_static"),
+        dependencies=("bounded_orbit_mobility",),
+        evidence=(
+            "LRZ 423-test suite validates snapshot-synchronous proposals, "
+            "atomic joint acceptance, declaration-order independence and "
+            "two independently mobile compiled components",
+            "50-step V100 job 5733788 jointly moved two independent C3 "
+            "orbits by different bounded SE(3) increments, preserved both "
+            "components at <=0.000015 A per-copy internal RMSD, and passed "
+            "constraint, atomic mobility, continuity, clash and exact-"
+            "symmetry audits",
+            "50-step V100 job 5733972 extended the same atomic joint "
+            "contract to two mobile D3 orbits across all six group actions "
+            "and passed every required audit",
+        ),
     ),
     CapabilityRecord(
         id="diffusion_feedback_refinement",
@@ -214,13 +309,19 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
     CapabilityRecord(
         id="polyhedral_groups",
         title="T/O/I finite-group execution",
-        maturity=CapabilityMaturity.PLANNED,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=False,
         summary=(
             "Typed finite rotation groups for tetrahedral, octahedral and "
             "icosahedral cages."
         ),
         dependencies=("multi_orbit_joint_control", "local_neighbourhood"),
+        evidence=(
+            "LRZ 468-test suite validates deterministic 12/24/60-element "
+            "T/O/I proper-rotation registries, group closure, inverses, "
+            "center preservation and complete AssemblySpecification "
+            "instance expansion",
+        ),
     ),
     CapabilityRecord(
         id="helical_window",
@@ -277,12 +378,14 @@ def required_capabilities_for_design(
         BoundedMobileConstraint,
         CylindricalConstraint,
         FixedXYZConstraint,
+        TerminalGeneration,
         UserDesignSpec,
     )
 
     if not isinstance(design, UserDesignSpec):
         raise TypeError("Expected a UserDesignSpec")
     identifiers: list[str] = []
+    has_mobile_constraint = False
 
     def require(capability_id: str) -> None:
         if capability_id not in identifiers:
@@ -292,12 +395,34 @@ def required_capabilities_for_design(
         if isinstance(constraint, FixedXYZConstraint):
             require("public_fixed_xyz")
             if constraint.pose.mode == "bounded_mobile":
+                has_mobile_constraint = True
                 require("bounded_orbit_mobility")
         elif isinstance(constraint, CylindricalConstraint):
             require("cylindrical_projector")
         elif isinstance(constraint, BoundedMobileConstraint):
+            has_mobile_constraint = True
             require("bounded_orbit_mobility")
-    if design.sampling.initial_pose is not None:
+    if design.components:
+        require("public_assembly_graph")
+        require("public_fixed_xyz")
+        if any(
+            component.pose.mode == "bounded_mobile"
+            for component in design.components.values()
+        ):
+            has_mobile_constraint = True
+            require("bounded_orbit_mobility")
+    if any(
+        interface.required and interface.relation.mode == "contact"
+        for interface in design.interfaces
+    ) or any(
+        isinstance(generation, TerminalGeneration)
+        for generation in design.generation
+    ):
+        require("graph_interface_guidance")
+    if (
+        design.sampling.initial_pose is not None
+        or design.sampling.initial_poses
+    ):
         require("static_pose_sampling")
     if design.sampling.execution_backend == "local_neighbourhood":
         require("local_neighbourhood")
@@ -308,6 +433,8 @@ def required_capabilities_for_design(
     )
     if symmetry_id.startswith("D"):
         require("dn_static")
+        if has_mobile_constraint:
+            require("dn_dynamic_multi_orbit")
     elif symmetry_id in {"T", "O", "I"}:
         require("polyhedral_groups")
     return tuple(capability_by_id(item) for item in identifiers)

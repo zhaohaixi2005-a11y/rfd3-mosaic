@@ -140,7 +140,7 @@ def _validate_exact_selector_conflicts(
 def compile_constraint_plan(design: UserDesignSpec) -> ConstraintPlan:
     """Compile constraints deterministically without choosing a backend."""
 
-    operators = tuple(
+    legacy_operators = tuple(
         ConstraintOperatorPlan(
             id=f"constraint_{index:03d}",
             operator=_canonical_operator(constraint),
@@ -170,5 +170,21 @@ def compile_constraint_plan(design: UserDesignSpec) -> ConstraintPlan:
         )
         for index, constraint in enumerate(design.constraints, start=1)
     )
+    graph_operators = tuple(
+        ConstraintOperatorPlan(
+            id=f"component__{component_id}",
+            operator="fixed_xyz",
+            stage=ConstraintStage.HARD_PROJECTOR,
+            selector=",".join(component.selectors),
+            atoms=AtomScope.ALL,
+            orbit_scope=ConstraintOrbitScope.COMPLETE_SYMMETRY_ORBIT,
+            reference_frame="input_rigid_geometry",
+            controlled_dofs=("cartesian_xyz",),
+            coupling_group=component_id,
+            parameters={"pose": component.pose.model_dump(mode="json")},
+        )
+        for component_id, component in design.components.items()
+    )
+    operators = (*legacy_operators, *graph_operators)
     _validate_exact_selector_conflicts(operators)
     return ConstraintPlan(operators=operators)

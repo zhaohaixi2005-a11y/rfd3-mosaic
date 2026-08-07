@@ -6,11 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+import numpy as np
+
 from rfd3_mosaic.constraint_plan import (
     ConstraintOperatorPlan,
     ConstraintPlan,
     compile_constraint_plan,
 )
+from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.sampling_plan import (
     SamplingPlan,
     assembly_initialization_payload,
@@ -20,6 +23,7 @@ from rfd3_mosaic.schema import (
     AssemblySpecification,
     AtomScope,
     BetweenGeneration,
+    SymmetryTransformSetSpec,
     TerminalGeneration,
     UserDesignSpec,
     UserSymmetrySpec,
@@ -225,20 +229,45 @@ def _symmetry_payload(design: UserDesignSpec) -> dict[str, object]:
         center = request.center
         secondary_axis = request.secondary_axis
     prefix = symmetry_id[0]
-    if prefix not in {"C", "D"}:
+    polyhedral = {
+        "T": ("tetrahedral", 12),
+        "O": ("octahedral", 24),
+        "I": ("icosahedral", 60),
+    }
+    if prefix in {"C", "D"}:
+        order = int(symmetry_id[1:])
+        symmetry_type = "cyclic" if prefix == "C" else "dihedral"
+    elif symmetry_id in polyhedral:
+        symmetry_type, order = polyhedral[symmetry_id]
+    else:
         raise NotImplementedError(
-            "The native public-design lowerer currently supports Cn and Dn"
+            f"Unsupported finite symmetry declaration {symmetry_id!r}"
         )
-    order = int(symmetry_id[1:])
     payload: dict[str, object] = {
-        "type": "cyclic" if prefix == "C" else "dihedral",
+        "type": symmetry_type,
         "order": order,
         "axis": axis,
         "center": center,
     }
     if prefix == "D":
         payload["secondary_axis"] = secondary_axis or (1.0, 0.0, 0.0)
+    elif symmetry_id in polyhedral and secondary_axis is not None:
+        payload["secondary_axis"] = secondary_axis
     return payload
+
+
+def transform_registry_for_design(design: UserDesignSpec):
+    """Build the canonical finite-group registry for one public design.
+
+    Search, planning and lowering must enumerate exactly the same transform
+    identifiers.  Keeping this conversion beside the public-to-Assembly-IR
+    symmetry lowering prevents a search tool from inventing a second group
+    convention.
+    """
+
+    return build_transform_registry(
+        SymmetryTransformSetSpec.model_validate(_symmetry_payload(design))
+    )
 
 
 def _length_payload(length: object) -> dict[str, int]:
@@ -250,6 +279,258 @@ def _length_payload(length: object) -> dict[str, int]:
     }
 
 
+def _graph_endpoint_segment(
+    design: UserDesignSpec,
+    endpoint,
+) -> SelectorSegment:
+    component = design.components[endpoint.component]
+    selector = endpoint.selector or component.selectors[0]
+    return _one_segment(selector, label="assembly connection endpoint")
+
+
+def _graph_interface_geometry(relation) -> dict[str, object]:
+    if relation.mode == "preserve_input":
+        return {
+            "mode": "reference_transform",
+            "from_reference_seed": True,
+            "translation_tolerance": relation.translation_tolerance,
+            "rotation_tolerance_deg": relation.rotation_tolerance_deg,
+            "minimum_heavy_atom_contacts": (
+                relation.minimum_heavy_atom_contacts
+            ),
+            "contact_cutoff": relation.cutoff,
+        }
+
+    geometry: dict[str, object] = {
+        "mode": "geometric_constraints",
+        # Public contact edges are intent, not a demand that users tune an
+        # arbitrary number of atom pairs.  The runtime derives residue-scale
+        # coverage and continuity targets from the two generated sides.
+        "coverage": {"mode": "auto"},
+    }
+    if relation.distance is not None:
+        minimum = relation.distance.minimum
+        maximum = relation.distance.maximum
+        geometry["distance"] = {
+            "type": "com",
+            "target": (minimum + maximum) / 2.0,
+            "tolerance": max((maximum - minimum) / 2.0, 1e-6),
+        }
+    if relation.minimum_heavy_atom_contacts is not None:
+        geometry["contacts"] = {
+            "min_heavy_atom_contacts": (
+                relation.minimum_heavy_atom_contacts
+            ),
+            "cutoff": relation.cutoff,
+        }
+    else:
+        # Keep the contact cutoff available to the guidance/audit even when
+        # the user correctly leaves interface size on automatic mode.
+        geometry["contacts"] = {
+            "min_heavy_atom_contacts": 0,
+            "cutoff": relation.cutoff,
+        }
+    return geometry
+
+
+def _symmetry_axis_and_center(
+    design: UserDesignSpec,
+) -> tuple[np.ndarray, np.ndarray]:
+    if isinstance(design.symmetry, str):
+        axis = (0.0, 0.0, 1.0)
+        center = (0.0, 0.0, 0.0)
+    else:
+        axis = design.symmetry.axis
+        center = design.symmetry.center
+    axis_vector = np.asarray(axis, dtype=np.float64)
+    axis_vector /= np.linalg.norm(axis_vector)
+    return axis_vector, np.asarray(center, dtype=np.float64)
+
+
+def _apply_transform(matrix: np.ndarray, point: np.ndarray) -> np.ndarray:
+    return matrix[:3, :3] @ point + matrix[:3, 3]
+
+
+def _nearest_symmetry_neighbour(
+    registry,
+    master_center: np.ndarray,
+) -> str:
+    """Choose the nearest distinct group image of one component centre."""
+
+    candidates: list[tuple[float, str]] = []
+    for transform_id in registry.transform_ids[1:]:
+        transformed = _apply_transform(
+            registry.transform(transform_id),
+            master_center,
+        )
+        distance = float(np.linalg.norm(transformed - master_center))
+        if distance > 1e-6:
+            candidates.append((distance, transform_id))
+    if not candidates:
+        raise ValueError(
+            "Automatic interface planning could not find a distinct "
+            "symmetry neighbour; place the motif away from every symmetry "
+            "stabilizer or use expert components/ports/interfaces"
+        )
+    return min(candidates, key=lambda item: (item[0], item[1]))[1]
+
+
+def _generic_orbit_direction(
+    design: UserDesignSpec,
+    registry,
+) -> tuple[np.ndarray, float]:
+    """Find a deterministic generic direction with well-separated copies.
+
+    This is a small geometry planner, not a random pose guess.  It searches a
+    fixed set of directions and maximizes the minimum pairwise separation of
+    their complete finite-group orbit.  A non-zero axial fraction avoids
+    accidentally placing T/O/I motifs on a vertex/edge/face stabilizer.
+    """
+
+    axis, _ = _symmetry_axis_and_center(design)
+    trial = np.array((1.0, 0.0, 0.0), dtype=np.float64)
+    if abs(float(np.dot(trial, axis))) > 0.9:
+        trial = np.array((0.0, 1.0, 0.0), dtype=np.float64)
+    radial_x = trial - float(np.dot(trial, axis)) * axis
+    radial_x /= np.linalg.norm(radial_x)
+    radial_y = np.cross(axis, radial_x)
+
+    symmetry_id = (
+        design.symmetry
+        if isinstance(design.symmetry, str)
+        else design.symmetry.id
+    )
+    axial_fractions = (
+        (0.0,) if symmetry_id.startswith("C") else (0.23, 0.47, 0.71)
+    )
+    best: tuple[float, np.ndarray, float] | None = None
+    for axial_fraction in axial_fractions:
+        for azimuth_index in range(16):
+            angle = 2.0 * np.pi * azimuth_index / 16.0
+            radial = np.cos(angle) * radial_x + np.sin(angle) * radial_y
+            point = radial + axial_fraction * axis
+            point /= np.linalg.norm(point)
+            orbit = np.stack(
+                [
+                    _apply_transform(registry.transform(item), point)
+                    for item in registry.transform_ids
+                ]
+            )
+            minimum = min(
+                float(np.linalg.norm(orbit[left] - orbit[right]))
+                for left in range(len(orbit))
+                for right in range(left + 1, len(orbit))
+            )
+            candidate = (minimum, radial, axial_fraction)
+            if best is None or candidate[0] > best[0] + 1e-12:
+                best = candidate
+    assert best is not None
+    return best[1], best[2]
+
+
+def _automatic_simple_component_plan(
+    design: UserDesignSpec,
+    registry,
+    atoms: tuple[AtomRecord, ...],
+) -> tuple[dict[str, object] | None, np.ndarray]:
+    """Plan a safe ordinary-user pose only when the input is degenerate.
+
+    Already positioned motifs keep their input frame.  A motif at a symmetry
+    stabilizer (for example at the origin) receives a deterministic generic
+    orbit pose large enough to prevent immediate copy overlap.
+    """
+
+    coordinates = np.asarray(
+        [atom.coordinate for atom in atoms if atom.element.upper() != "H"],
+        dtype=np.float64,
+    )
+    if coordinates.size == 0:
+        coordinates = np.asarray(
+            [atom.coordinate for atom in atoms],
+            dtype=np.float64,
+        )
+    center = coordinates.mean(axis=0)
+    extent = float(np.linalg.norm(coordinates - center, axis=1).max())
+    image_distances = [
+        float(
+            np.linalg.norm(
+                _apply_transform(registry.transform(item), center) - center
+            )
+        )
+        for item in registry.transform_ids[1:]
+    ]
+    minimum_image_distance = min(image_distances)
+    if minimum_image_distance >= max(4.0, 0.35 * extent):
+        return None, center
+
+    radial_direction, axial_fraction = _generic_orbit_direction(
+        design,
+        registry,
+    )
+    axis, symmetry_center = _symmetry_axis_and_center(design)
+    unit_point = radial_direction + axial_fraction * axis
+    orbit = np.stack(
+        [
+            _apply_transform(registry.transform(item), unit_point)
+            for item in registry.transform_ids
+        ]
+    )
+    unit_separation = min(
+        float(np.linalg.norm(orbit[left] - orbit[right]))
+        for left in range(len(orbit))
+        for right in range(left + 1, len(orbit))
+    )
+    target_separation = max(12.0, 2.0 * extent + 6.0)
+    radial = target_separation / unit_separation
+    axial_offset = radial * axial_fraction
+    planned_center = (
+        symmetry_center + radial * radial_direction + axial_offset * axis
+    )
+    payload: dict[str, object] = {
+        "random_seed": design.sampling.seed,
+        "center_method": "interface_heavy_atom_com",
+        "orientation": {
+            "method": "fixed",
+            "rotation_deg": (0.0, 0.0, 0.0),
+        },
+        "placement": {
+            "radius": {"mean": radial, "range": 0.0},
+            "axial_offset": {"mean": axial_offset, "range": 0.0},
+            "radial_direction": tuple(float(item) for item in radial_direction),
+        },
+    }
+    return payload, planned_center
+
+
+def _initialization_center(
+    design: UserDesignSpec,
+    payload: dict[str, object],
+) -> np.ndarray:
+    """Recover the deterministic centre encoded by an IR initialization."""
+
+    axis, symmetry_center = _symmetry_axis_and_center(design)
+    placement = payload["placement"]
+    assert isinstance(placement, dict)
+    radial_value = placement["radius"]
+    axial_value = placement["axial_offset"]
+    assert isinstance(radial_value, dict)
+    assert isinstance(axial_value, dict)
+    radial = float(radial_value["mean"])
+    axial = float(axial_value["mean"])
+    direction = np.asarray(
+        placement["radial_direction"],
+        dtype=np.float64,
+    )
+    direction -= float(np.dot(direction, axis)) * axis
+    direction_norm = float(np.linalg.norm(direction))
+    if direction_norm <= 1e-12:
+        raise ValueError(
+            "Initial pose radial_direction is parallel to the symmetry axis"
+        )
+    direction /= direction_norm
+    return symmetry_center + radial * direction + axial * axis
+
+
 def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     """Lower the currently executable fixed-XYZ public subset.
 
@@ -258,8 +539,34 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     rather than inheriting the adapter's historical implicit ``ALL`` fixing.
     """
 
-    if not design.generation:
+    if not design.generation and not design.connections:
         raise ValueError("Executable user designs require generated regions")
+    if design.components:
+        connected_selectors = {
+            _graph_endpoint_segment(design, endpoint)
+            for connection in design.connections
+            for endpoint in (
+                connection.from_endpoint,
+                connection.to_endpoint,
+            )
+        }
+        unattached = [
+            selector
+            for component in design.components.values()
+            for selector in component.selectors
+            if _one_segment(
+                selector,
+                label="assembly component selector",
+            )
+            not in connected_selectors
+        ]
+        if unattached:
+            raise NotImplementedError(
+                "The current RFD3 graph backend requires every component "
+                "selector to participate in a generated connection; "
+                "unattached selectors: "
+                + ", ".join(unattached)
+            )
     plan = compile_constraint_plan(design)
     sampling_plan = compile_sampling_plan(design)
     plan.require_backend_support({"fixed_xyz"})
@@ -269,6 +576,51 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 "The first fixed_xyz backend requires atoms=all"
             )
     bound = bind_constraint_plan(design, plan)
+
+    symmetry_id = (
+        design.symmetry
+        if isinstance(design.symmetry, str)
+        else design.symmetry.id
+    )
+    declared_registry = transform_registry_for_design(design)
+    named_relations = [
+        (f"interface {interface.id!r}", interface.copy_relation.transform)
+        for interface in design.interfaces
+        if interface.copy_relation.transform is not None
+    ]
+    named_relations.extend(
+        (
+            f"connection {connection.id!r}",
+            connection.copy_relation.transform,
+        )
+        for connection in design.connections
+        if connection.copy_relation.transform is not None
+    )
+    for owner, transform_id in named_relations:
+        assert transform_id is not None
+        try:
+            declared_registry.transform(transform_id)
+        except KeyError as error:
+            raise ValueError(
+                f"{owner} uses an invalid symmetry neighbour: {error}"
+            ) from error
+    if symmetry_id in {"T", "O", "I"}:
+        invalid_offsets = [
+            clause.orbit_offset
+            for clause in design.generation
+            if isinstance(clause, BetweenGeneration)
+            and clause.orbit_offset != 0
+        ]
+        invalid_offsets.extend(
+            connection.copy_relation.orbit_offset
+            for connection in design.connections
+            if connection.copy_relation.orbit_offset not in (None, 0)
+        )
+        if invalid_offsets:
+            raise ValueError(
+                "T/O/I generation does not define cyclic orbit offsets; "
+                "use a named group transform in the AssemblySpecification"
+            )
 
     generation_segments: list[SelectorSegment] = []
     for clause in design.generation:
@@ -289,6 +641,27 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                     ),
                 )
             )
+    for component in design.components.values():
+        generation_segments.extend(
+            _one_segment(
+                selector,
+                label="assembly component selector",
+            )
+            for selector in component.selectors
+        )
+    for connection in design.connections:
+        generation_segments.extend(
+            (
+                _graph_endpoint_segment(
+                    design,
+                    connection.from_endpoint,
+                ),
+                _graph_endpoint_segment(
+                    design,
+                    connection.to_endpoint,
+                ),
+            )
+        )
     ordered_segments = tuple(dict.fromkeys(generation_segments))
     source_atoms = read_structure_atoms(
         design.input,
@@ -391,8 +764,8 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 "max_translation": pose["max_translation"],
                 "max_rotation_deg": pose["max_rotation_deg"],
             },
-            "subspace": "bounded_se3",
-            "proposal": "denoiser_fit",
+            "subspace": pose["subspace"] or "bounded_se3",
+            "proposal": pose["proposal"],
             "schedule": {
                 "start_fraction": pose["start_fraction"],
                 "end_fraction": pose["end_fraction"],
@@ -440,26 +813,228 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 "tie_group": clause.tie_group,
                 "copy_relation": {"orbit_offset": clause.orbit_offset},
             }
+    for connection in design.connections:
+        left = _graph_endpoint_segment(
+            design,
+            connection.from_endpoint,
+        )
+        right = _graph_endpoint_segment(
+            design,
+            connection.to_endpoint,
+        )
+        generated_segments[f"connection__{connection.id}"] = {
+            "from_endpoint": {
+                "fragment": segment_ids[left],
+                "terminus": "C",
+            },
+            "to_endpoint": {
+                "fragment": segment_ids[right],
+                "terminus": "N",
+            },
+            "length": _length_payload(connection.length),
+            "tie_group": connection.tie_group,
+            "copy_relation": connection.copy_relation.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+        }
 
+    # Both public authoring modes converge here.  Expert declarations may
+    # provide an explicit initial pose; ordinary contig designs may receive a
+    # deterministic pose from the automatic planner below.
     initialization_seed, initialization = assembly_initialization_payload(
         sampling_plan
     )
     if initialization:
-        if len(motion_group_ids) != 1:
-            raise ValueError(
-                "One public initial_pose cannot position multiple independent "
-                "fixed coupling groups; declare a joint coupling_group or "
-                "omit initial_pose"
+        if sampling_plan.initial_pose is not None:
+            if len(motion_group_ids) != 1:
+                raise ValueError(
+                    "One public initial_pose cannot position multiple "
+                    "independent fixed coupling groups; use "
+                    "sampling.initial_poses keyed by coupling_group"
+                )
+            initialization = {
+                next(iter(motion_group_ids.values())): next(
+                    iter(initialization.values())
+                )
+            }
+        else:
+            unknown_components = sorted(
+                set(initialization) - set(motion_group_ids)
             )
-        initialization = {
-            next(iter(motion_group_ids.values())): next(
-                iter(initialization.values())
-            )
+            if unknown_components:
+                raise ValueError(
+                    "sampling.initial_poses references unknown fixed "
+                    "coupling_group(s): "
+                    + ", ".join(unknown_components)
+                    + "; available groups are "
+                    + ", ".join(motion_group_ids)
+                )
+            initialization = {
+                motion_group_ids[component_id]: payload
+                for component_id, payload in initialization.items()
+            }
+
+    ports: dict[str, object] = {}
+    public_port_ids: dict[str, str] = {}
+    for port_id, port in design.ports.items():
+        internal_port_id = f"port__{port_id}"
+        public_port_ids[port_id] = internal_port_id
+        ports[internal_port_id] = {
+            "group": motion_group_ids[port.component],
+            "fragments": [
+                segment_ids[
+                    _one_segment(
+                        selector,
+                        label=f"assembly port {port_id!r} selector",
+                    )
+                ]
+                for selector in port.selectors
+            ],
+            "atoms": "heavy",
+            "frame": {"method": "reference_interface_pca"},
         }
+    interfaces: dict[str, object] = {}
+    for interface in design.interfaces:
+        left_node, right_node = interface.between
+        if design.ports:
+            left_port = public_port_ids[left_node]
+            right_port = public_port_ids[right_node]
+        else:
+            # Backward-compatible component-as-interface shorthand.  New
+            # cage designs should declare reusable named ports explicitly.
+            left_port = f"interface__{interface.id}__left"
+            right_port = f"interface__{interface.id}__right"
+            ports[left_port] = {
+                "group": motion_group_ids[left_node],
+                "fragments": component_members[left_node],
+                "atoms": "heavy",
+                "frame": {"method": "reference_interface_pca"},
+            }
+            ports[right_port] = {
+                "group": motion_group_ids[right_node],
+                "fragments": component_members[right_node],
+                "atoms": "heavy",
+                "frame": {"method": "reference_interface_pca"},
+            }
+        interfaces[interface.id] = {
+            "left_port": left_port,
+            "right_port": right_port,
+            "copy_relation": interface.copy_relation.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            "required": interface.required,
+            "satisfaction_stage": (
+                "input"
+                if interface.relation.mode == "preserve_input"
+                else "output"
+            ),
+            "target_geometry": _graph_interface_geometry(
+                interface.relation
+            ),
+        }
+
+    # Simple motif-scaffolding tasks do not need a hand-written assembly
+    # graph.  Their contig topology already states the design intent:
+    # terminal generation around a fixed central motif must create packing
+    # against a symmetry neighbour.  Conversely, ``between`` generation
+    # joins supplied fixed fragments and therefore does not invent a new
+    # interface objective.  Explicit graph interfaces remain available for
+    # advanced multi-face cages and take precedence over this inference.
+    if not design.interfaces:
+        terminal_components: list[str] = []
+        for clause in design.generation:
+            if not isinstance(clause, TerminalGeneration):
+                continue
+            anchor = _one_segment(clause.anchor, label="terminal anchor")
+            component_id = component_by_segment[anchor]
+            if component_id not in terminal_components:
+                terminal_components.append(component_id)
+        if design.user_mode == "simple" and len(terminal_components) > 1:
+            raise ValueError(
+                "Simple mode found terminal generation on multiple "
+                "independent fixed components. Mosaic will not silently "
+                "place several motif orbits on top of one another; use "
+                "expert components/ports/interfaces/connections so their "
+                "relationships are explicit"
+            )
+        for component_index, component_id in enumerate(
+            terminal_components,
+            start=1,
+        ):
+            motion_group_id = motion_group_ids[component_id]
+            component_atom_ids = frozenset().union(
+                *(
+                    generation_atom_ids[segment]
+                    for segment in ordered_segments
+                    if component_by_segment[segment] == component_id
+                )
+            )
+            component_atoms = tuple(
+                atom
+                for atom in source_atoms
+                if _atom_identity(atom) in component_atom_ids
+            )
+            if motion_group_id in initialization:
+                master_center = _initialization_center(
+                    design,
+                    initialization[motion_group_id],
+                )
+            else:
+                automatic_initialization, master_center = (
+                    _automatic_simple_component_plan(
+                        design,
+                        declared_registry,
+                        component_atoms,
+                    )
+                )
+                if automatic_initialization is not None:
+                    initialization[motion_group_id] = automatic_initialization
+
+            port_id = f"auto_interface_port_{component_index:03d}"
+            interface_id = f"auto_generated_interface_{component_index:03d}"
+            contact_frame = np.eye(4, dtype=np.float64)
+            contact_frame[:3, 3] = master_center
+            ports[port_id] = {
+                "group": motion_group_id,
+                "fragments": component_members[component_id],
+                "atoms": "heavy",
+                # Output contact guidance is orientation-free.  A
+                # translation-only frame avoids imposing a three-atom PCA
+                # requirement on tiny motifs used by the simple frontend.
+                "frame": {
+                    "method": "precomputed",
+                    "transform": contact_frame.tolist(),
+                },
+            }
+            copy_relation = {
+                "transform": _nearest_symmetry_neighbour(
+                    declared_registry,
+                    master_center,
+                )
+            }
+            interfaces[interface_id] = {
+                "left_port": port_id,
+                "right_port": port_id,
+                "copy_relation": copy_relation,
+                "required": True,
+                "satisfaction_stage": "output",
+                "target_geometry": {
+                    "mode": "geometric_constraints",
+                    "contacts": {
+                        "min_heavy_atom_contacts": 0,
+                        "cutoff": 8.0,
+                    },
+                    "coverage": {"mode": "auto"},
+                },
+            }
+
     specification = AssemblySpecification.model_validate(
         {
             "schema_version": 2,
             "mode": "constraint_assembly",
+            "constraint_group_strategy": "motion_groups",
             "random_seed": initialization_seed,
             "fragments": fragments,
             "motion_groups": {
@@ -479,6 +1054,8 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                     }
                 },
             },
+            "ports": ports,
+            "interfaces": interfaces,
             "generated_segments": generated_segments,
             "initialization": initialization,
         }

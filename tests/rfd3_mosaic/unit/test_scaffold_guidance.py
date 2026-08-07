@@ -7,6 +7,7 @@ from rfd3.inference.symmetry.scaffold_guidance import (
     build_boundary_topology,
     expand_master_orbit,
     extract_cyclic_axis,
+    extract_symmetry_primary_axis,
     propose_bounded_se3_step,
     scaffold_orbit_energy,
 )
@@ -61,6 +62,25 @@ def _cyclic_transforms(
         rotation = _z_rotation(360.0 * transform_id / order)
         translation = point - rotation @ point
         transforms[str(transform_id)] = (rotation, translation)
+    return transforms
+
+
+def _dihedral_transforms(
+    order: int,
+) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    transforms = _cyclic_transforms(order)
+    secondary = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ],
+        dtype=torch.float64,
+    )
+    zero = torch.zeros(3, dtype=torch.float64)
+    for copy_index in range(order):
+        rotation = _z_rotation(360.0 * copy_index / order) @ secondary
+        transforms[str(order + copy_index)] = (rotation, zero)
     return transforms
 
 
@@ -279,6 +299,32 @@ class CyclicAxisTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cyclic|rotation|axis"):
             extract_cyclic_axis(transforms)
 
+    def test_extracts_d3_primary_axis_without_discarding_dihedral_group(
+        self,
+    ) -> None:
+        transforms = _dihedral_transforms(3)
+
+        axis = extract_symmetry_primary_axis(
+            transforms,
+            symmetry_id="D3",
+        )
+
+        self.assertEqual(axis.transform_ids, (0, 1, 2))
+        self.assertAlmostEqual(
+            abs(float(axis.direction[2])),
+            1.0,
+            places=6,
+        )
+        expanded = expand_master_orbit(
+            torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64),
+            transforms,
+        )
+        self.assertEqual(tuple(expanded.shape), (6, 1, 1, 3))
+
+    def test_d3_full_registry_is_not_misread_as_one_common_axis(self) -> None:
+        with self.assertRaisesRegex(ValueError, "share one cyclic axis"):
+            extract_cyclic_axis(_dihedral_transforms(3))
+
 
 class CyclicMasterExpansionTestCase(unittest.TestCase):
     def test_master_is_expanded_by_each_c3_and_c5_group_action(
@@ -490,6 +536,37 @@ class BoundedSE3ProposalTestCase(unittest.TestCase):
             _rotation_angle_degrees(proposal.rotation),
             5.0 + 1e-6,
         )
+
+    def test_proposal_respects_translation_and_rotation_bases(self) -> None:
+        identity = torch.eye(3, dtype=torch.float64)
+        target_translation = torch.tensor(
+            [1.0, 2.0, 3.0],
+            dtype=torch.float64,
+        )
+
+        proposal = propose_bounded_se3_step(
+            identity,
+            torch.zeros(3, dtype=torch.float64),
+            lambda rotation, translation: (
+                torch.sum(torch.square(translation - target_translation))
+                + torch.sum(torch.square(rotation - _z_rotation(20.0)))
+            ),
+            maximum_step_translation=0.25,
+            maximum_step_rotation_degrees=0.0,
+            maximum_total_translation=1.0,
+            maximum_total_rotation_degrees=0.0,
+            translation_step_size=0.25,
+            rotation_step_size_degrees=0.0,
+            translation_basis=torch.tensor(
+                [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                dtype=torch.float64,
+            ),
+            rotation_basis=torch.empty((0, 3), dtype=torch.float64),
+        )
+
+        self.assertTrue(proposal.accepted)
+        self.assertAlmostEqual(float(proposal.translation[1]), 0.0)
+        self.assertTrue(torch.equal(proposal.rotation, identity))
 
     def test_rejects_a_nonfinite_objective(self) -> None:
         with self.assertRaisesRegex(ValueError, "finite|NaN|Inf"):

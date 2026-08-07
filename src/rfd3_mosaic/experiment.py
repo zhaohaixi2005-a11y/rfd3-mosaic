@@ -387,7 +387,11 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "regions": [
                 item.model_dump(mode="json")
                 for item in declared.generation
-            ]
+            ],
+            "connections": [
+                item.model_dump(mode="json", by_alias=True)
+                for item in declared.connections
+            ],
         }
         input_record = {
             "config": topology["config"],
@@ -397,6 +401,14 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
                 if isinstance(declared.symmetry, str)
                 else declared.symmetry.id
             ),
+            "components": {
+                component_id: component.model_dump(mode="json")
+                for component_id, component in declared.components.items()
+            },
+            "interfaces": [
+                interface.model_dump(mode="json")
+                for interface in declared.interfaces
+            ],
         }
 
     compatibility = payload["provenance"]["foundry_compatibility"]
@@ -421,6 +433,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
         },
         "execution": {
             "profile": resources["profile_name"],
+            "executor": resources["executor"],
             "slurm": resources["slurm"],
             "checkpoint": resources["checkpoint"],
             "checkpoint_sha256": resources["checkpoint_sha256"],
@@ -648,6 +661,7 @@ def resolve_experiment(
         {
             "schema_version",
             "name",
+            "executor",
             "slurm",
             "setup_commands",
             "checkpoint",
@@ -658,6 +672,11 @@ def resolve_experiment(
     )
     if int(profile.get("schema_version", 0)) != SCHEMA_VERSION:
         raise ValueError(f"profile schema_version must be {SCHEMA_VERSION}")
+    executor = str(profile.get("executor", "slurm"))
+    if executor != "slurm":
+        raise ValueError(
+            "Only executor=slurm is implemented; local execution is planned"
+        )
     slurm = profile.get("slurm")
     if not isinstance(slurm, dict):
         raise ValueError("profile.slurm must be a mapping")
@@ -736,6 +755,7 @@ def resolve_experiment(
         "sampling": resolved_sampling,
         "resources": {
             "profile_name": _safe_name(profile.get("name"), "profile.name"),
+            "executor": executor,
             "slurm": resolved_slurm,
             "setup_commands": list(setup_commands),
             "checkpoint": str(checkpoint),

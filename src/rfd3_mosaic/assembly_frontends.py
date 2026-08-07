@@ -35,6 +35,8 @@ class AuditRequirement(str, Enum):
 
     EXACT_CONSTRAINT_ORBIT = "exact_constraint_orbit"
     INTERFACE_GEOMETRY = "interface_geometry"
+    ASSEMBLY_INTERFACE_RELATIONS = "assembly_interface_relations"
+    GRAPH_INTERFACE_GUIDANCE = "graph_interface_guidance"
     BOUNDED_COMPONENT_MOBILITY = "bounded_component_mobility"
 
 
@@ -364,10 +366,24 @@ def lower_experiment_topology(
         )
         load_assembly_config(specification_path)
         audit_requirements = [AuditRequirement.EXACT_CONSTRAINT_ORBIT]
+        if design.interfaces:
+            audit_requirements.append(
+                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS
+            )
+        if any(
+            interface.required and interface.relation.mode == "contact"
+            for interface in design.interfaces
+        ):
+            audit_requirements.append(
+                AuditRequirement.GRAPH_INTERFACE_GUIDANCE
+            )
         if any(
             isinstance(constraint, FixedXYZConstraint)
             and constraint.pose.mode == "bounded_mobile"
             for constraint in design.constraints
+        ) or any(
+            component.pose.mode == "bounded_mobile"
+            for component in design.components.values()
         ):
             audit_requirements.append(
                 AuditRequirement.BOUNDED_COMPONENT_MOBILITY

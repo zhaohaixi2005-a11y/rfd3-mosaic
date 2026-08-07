@@ -8,6 +8,7 @@ import yaml
 from rfd3_mosaic.output import compile_rfd3_input, compile_standalone
 from rfd3_mosaic.output.rfd3_adapter import (
     _native_symmetry_id_and_multiplicity,
+    _selector_source_components,
 )
 from rfd3_mosaic.schema.specs import (
     SymmetryTransformSetSpec,
@@ -77,6 +78,25 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 self.assertEqual(
                     _native_symmetry_id_and_multiplicity(specification),
                     (symmetry_id, multiplicity),
+                )
+
+    def test_polyhedral_symmetry_uses_complete_declared_multiplicity(
+        self,
+    ) -> None:
+        cases = (
+            (SymmetryType.TETRAHEDRAL, 12, "T"),
+            (SymmetryType.OCTAHEDRAL, 24, "O"),
+            (SymmetryType.ICOSAHEDRAL, 60, "I"),
+        )
+        for symmetry_type, order, symmetry_id in cases:
+            with self.subTest(symmetry_id=symmetry_id):
+                specification = SymmetryTransformSetSpec(
+                    type=symmetry_type,
+                    order=order,
+                )
+                self.assertEqual(
+                    _native_symmetry_id_and_multiplicity(specification),
+                    (symmetry_id, order),
                 )
 
     def test_compiles_central_terminal_extensions_through_native_ir(
@@ -188,6 +208,108 @@ class RFD3AdapterTestCase(unittest.TestCase):
             [0, 1, 2],
         )
         self.assertTrue(emitted["symmetry"]["use_declared_frames"])
+
+    def test_compiles_tetrahedral_terminal_design_with_declared_frames(
+        self,
+    ) -> None:
+        source = self.output_directory / "tetrahedral_motif.pdb"
+        source.write_text(
+            "".join(
+                (
+                    "ATOM      1  N   ALA A   1      59.000  20.000  10.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      2  CA  ALA A   1      60.000  20.000  10.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      3  C   ALA A   1      61.000  20.000  10.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      4  N   GLY A   2      62.000  20.000  10.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      5  CA  GLY A   2      63.000  20.000  10.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      6  C   GLY A   2      64.000  20.000  10.000"
+                    "  1.00 20.00           C  \n",
+                    "END\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+        config = self.output_directory / "tetrahedral.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "mode": "constraint_assembly",
+                        "fragments": {
+                            "motif": {
+                                "source": str(source),
+                                "selection": "A/1-2/*",
+                                "entity_type": "protein",
+                                "role": "functional_motif",
+                                "fixed_atoms": "all",
+                            }
+                        },
+                        "motion_groups": {
+                            "motif_group": {
+                                "members": ["motif"],
+                                "mode": "fixed",
+                            }
+                        },
+                        "symmetry": {
+                            "transform_sets": {
+                                "cage": {
+                                    "type": "tetrahedral",
+                                    "order": 12,
+                                }
+                            },
+                            "orbits": {
+                                "motif_orbit": {
+                                    "transform_set": "cage",
+                                    "master_groups": ["motif_group"],
+                                }
+                            },
+                        },
+                        "generated_segments": {
+                            "n_flank": {
+                                "anchor": {
+                                    "fragment": "motif",
+                                    "terminus": "N",
+                                },
+                                "length": {"minimum": 5, "maximum": 5},
+                            },
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "tetrahedral-output",
+            example_id="tetrahedral-terminal",
+        )
+        emitted = json.loads(outputs.input_path.read_text())[
+            "tetrahedral-terminal"
+        ]
+
+        self.assertEqual(emitted["symmetry"]["id"], "T")
+        self.assertTrue(emitted["symmetry"]["use_declared_frames"])
+        self.assertEqual(
+            len(emitted["symmetry"]["declared_transform_order"]),
+            12,
+        )
+        self.assertEqual(
+            len(emitted["symmetry"]["declared_transform_matrices"]),
+            12,
+        )
+        self.assertEqual(
+            emitted["extra"]["motif_constraint_orbits"][0][
+                "group_transform_ids"
+            ],
+            list(range(12)),
+        )
 
     def test_public_between_path_emits_joint_fixed_constraint_orbit(
         self,
@@ -329,6 +451,45 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 "proposal": "denoiser_fit",
             }
         }
+        assembly["constraint_group_strategy"] = "motion_groups"
+        diagnostic_frame = {
+            "method": "precomputed",
+            "transform": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        }
+        assembly["ports"] = {
+            "left_port": {
+                "group": "left_component",
+                "fragments": ["left"],
+                "atoms": "heavy",
+                "frame": diagnostic_frame,
+            },
+            "right_port": {
+                "group": "right_component",
+                "fragments": ["right"],
+                "atoms": "heavy",
+                "frame": diagnostic_frame,
+            },
+        }
+        assembly["interfaces"] = {
+            "diagnostic_relation": {
+                "left_port": "left_port",
+                "right_port": "right_port",
+                "copy_relation": {"orbit_offset": 0},
+                "required": False,
+                "target_geometry": {
+                    "mode": "geometric_constraints",
+                    "contacts": {
+                        "min_heavy_atom_contacts": 0,
+                        "cutoff": 4.5,
+                    },
+                },
+            }
+        }
         independent_path = self.output_directory / "public_independent.yaml"
         independent_path.write_text(
             yaml.safe_dump(independent, sort_keys=False),
@@ -348,6 +509,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
         independent_orbits = independent_emitted["extra"][
             "motif_constraint_orbits"
         ]
+        relation_plan = independent_emitted["extra"][
+            "assembly_interface_relations"
+        ]
 
         self.assertEqual(len(independent_groups), 6)
         self.assertEqual(len(independent_orbits), 2)
@@ -355,10 +519,47 @@ class RFD3AdapterTestCase(unittest.TestCase):
             {orbit["coupling_group_id"] for orbit in independent_orbits},
             {"left_component", "right_component"},
         )
+        self.assertEqual(len(relation_plan), 3)
+        self.assertEqual(
+            {edge["source_interface_id"] for edge in relation_plan},
+            {"diagnostic_relation"},
+        )
+        self.assertEqual(
+            {edge["source_copy_index"] for edge in relation_plan},
+            {0, 1, 2},
+        )
+        self.assertEqual(
+            {edge["reference_basis"] for edge in relation_plan},
+            {"declared_target_geometry"},
+        )
+        source_components_by_group = {
+            orbit["coupling_group_id"]: orbit["source_components"]
+            for orbit in independent_orbits
+        }
+        for edge in relation_plan:
+            observed_left = [
+                component
+                for selector in edge["left_source_components"]
+                for component in _selector_source_components(selector)
+            ]
+            observed_right = [
+                component
+                for selector in edge["right_source_components"]
+                for component in _selector_source_components(selector)
+            ]
+            self.assertEqual(
+                observed_left,
+                source_components_by_group["left_component"],
+            )
+            self.assertEqual(
+                observed_right,
+                source_components_by_group["right_component"],
+            )
         self.assertTrue(
             all(
                 len(group["members"]) == 1
                 and group["geometry_lock"] == "joint_rigid"
+                and group["constraint_kind"] == "fixed_motif"
                 for group in independent_groups
             )
         )

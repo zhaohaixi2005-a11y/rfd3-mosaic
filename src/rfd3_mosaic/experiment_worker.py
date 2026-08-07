@@ -23,6 +23,8 @@ from rfd3_mosaic.provenance.software import (
 from rfd3_mosaic.provenance.source_snapshot import (
     verify_source_snapshot_tree,
 )
+from rfd3_mosaic.rfd3_mobility_audit import write_mobility_trajectory
+from rfd3_mosaic.run_index import update_run_state
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -79,12 +81,57 @@ def _motif_mobility_runtime(rfd3_input: Path) -> tuple[bool, str]:
     proposals = {orbit.get("mobility_proposal") for orbit in mobile}
     if proposals == {"denoiser_fit"}:
         return True, "denoiser"
-    if proposals == {"scaffold_objectives"} and len(mobile) == 1:
+    if proposals == {"scaffold_objectives"}:
         return True, "scaffold_boundary"
     raise ValueError(
-        "One RFD3 run cannot mix motif mobility proposal sources: "
+        "One RFD3 run cannot mix or omit motif mobility proposal sources: "
         f"{sorted(str(value) for value in proposals)}"
     )
+
+
+def _graph_interface_guidance_runtime(rfd3_input: Path) -> bool:
+    """Enable the shared sampler field for output-stage contact edges."""
+
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    relations = (example.get("extra") or {}).get(
+        "assembly_interface_relations", []
+    )
+    return any(
+        bool(relation.get("required", True))
+        and relation.get("satisfaction_stage") == "output"
+        and (relation.get("target_geometry") or {}).get("mode")
+        == "geometric_constraints"
+        for relation in relations
+    )
+
+
+def _record_worker_state(
+    config: dict[str, Any],
+    run_dir: Path,
+    state: str,
+    *,
+    error: str | None = None,
+) -> None:
+    """Update the optional operational index without risking science output."""
+
+    try:
+        output = config["output"]
+        update_run_state(
+            root=output["root"],
+            job_id=run_dir.name,
+            state=state,
+            experiment=str(config["name"]),
+            campaign=str(output["campaign"]),
+            run_directory=run_dir,
+            error=error,
+        )
+    except (KeyError, OSError, TypeError, ValueError) as index_error:
+        print(
+            "WARNING: could not update the RFD3-Mosaic run index: "
+            f"{index_error}",
+            flush=True,
+        )
 
 
 def _verify_render_identity(
@@ -208,6 +255,7 @@ def execute(
         json.dumps(started, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    _record_worker_state(config, run_dir, "running")
 
     topology = config["topology"]
     sampling = config["sampling"]
@@ -240,6 +288,9 @@ def execute(
     sampler = sampling["sampler"]
     mobility_enabled, mobility_proposal_source = (
         _motif_mobility_runtime(rfd3_input)
+    )
+    interface_guidance_enabled = _graph_interface_guidance_runtime(
+        rfd3_input
     )
     inference_command = [
         sys.executable,
@@ -275,6 +326,8 @@ def execute(
         "++inference_sampler.motif_mobility_proposal_source="
         + mobility_proposal_source,
         "++inference_sampler.motif_mobility_apply_updates=True",
+        "++inference_sampler.enable_graph_interface_guidance="
+        + str(interface_guidance_enabled),
         f"low_memory_mode={sampling['low_memory_mode']}",
         "skip_existing=False",
         "dump_trajectories=False",
@@ -283,6 +336,11 @@ def execute(
     _run(inference_command)
 
     result_json = _result_json(run_dir)
+    mobility_trajectory_path = run_dir / "mobility_trajectory.json"
+    has_mobility_trajectory = write_mobility_trajectory(
+        result_json=result_json,
+        output=mobility_trajectory_path,
+    )
     reports = []
     for audit in assembly.semantic_audits:
         report = run_dir / audit.report_name
@@ -327,11 +385,17 @@ def execute(
         "result_json": str(result_json),
         "reports": [str(path) for path in reports],
         "runtime_provenance": str(runtime_provenance_path),
+        "mobility_trajectory": (
+            str(mobility_trajectory_path)
+            if has_mobility_trajectory
+            else None
+        ),
     }
     summary_path.write_text(
         json.dumps(completion, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    _record_worker_state(config, run_dir, "completed")
     print("RFD3-Mosaic experiment completed and passed all required audits")
 
 
@@ -368,6 +432,12 @@ def main() -> None:
             json.dumps(failed, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        try:
+            config = _load(arguments.resolved_config.resolve())
+        except (OSError, TypeError, ValueError):
+            config = None
+        if config is not None:
+            _record_worker_state(config, run_dir, "failed", error=str(error))
         raise
 
 

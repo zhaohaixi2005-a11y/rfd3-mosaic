@@ -1,0 +1,31 @@
+schema_version: 1
+name: simple-interface-seed-c3
+input: inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+
+# Ordinary-user mode: these two fixed fragments are one supplied rigid seed;
+# RFD3 generates only the intervening protein region.
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: D26-37
+    length: {minimum: 70, maximum: 90}
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    coupling_group: supplied_interface
+  - kind: fixed_xyz
+    selector: D26-37
+    coupling_group: supplied_interface
+
+sampling:
+  timesteps: 200
+  seed: 42
+
+resources:
+  profile: v100
+
+output:
+  root: /path/to/runs
+  campaign: simple-interface-seed

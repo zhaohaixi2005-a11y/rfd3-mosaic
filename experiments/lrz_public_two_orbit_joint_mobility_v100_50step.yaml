@@ -1,0 +1,50 @@
+schema_version: 1
+name: public-two-orbit-joint-mobility-c3-v100-s914
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: C3
+  axis: [0.0, 0.0, 1.0]
+  center: [0.0, 0.0, 0.0]
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length: 85
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: mobile_orbit_alpha
+    pose: &joint_pose
+      mode: bounded_mobile
+      proposal: scaffold_objectives
+      max_translation: 3.0
+      max_rotation_deg: 10.0
+      start_fraction: 0.05
+      end_fraction: 0.75
+      response: 0.2
+      max_step_translation: 0.25
+      max_step_rotation_deg: 1.0
+
+  - kind: fixed_xyz
+    selector: A26-37
+    atoms: all
+    coupling_group: mobile_orbit_beta
+    pose: *joint_pose
+
+sampling:
+  timesteps: 50
+  seed: 914
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-two-orbit-joint-mobility-50step-8_6

@@ -1,0 +1,69 @@
+schema_version: 1
+name: public-three-component-graph-c3-v100-s923
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+
+components:
+  seed_alpha:
+    selectors: [A12-14]
+
+  seed_beta:
+    selectors: [A18-20]
+
+  seed_gamma:
+    selectors: [A26-28, A35-37]
+    geometry: joint_rigid
+
+interfaces:
+  - id: alpha_beta_geometry
+    between: [seed_alpha, seed_beta]
+    relation:
+      mode: preserve_input
+      translation_tolerance: 0.5
+      rotation_tolerance_deg: 2.0
+
+  - id: beta_gamma_contact
+    between: [seed_beta, seed_gamma]
+    copy_relation: {orbit_offset: 1}
+    relation:
+      mode: contact
+      minimum_heavy_atom_contacts: 4
+      cutoff: 8.0
+
+connections:
+  - id: alpha_to_beta
+    from: seed_alpha.C
+    to: seed_beta.N
+    length: {minimum: 10, maximum: 20}
+
+  - id: beta_to_gamma
+    from: seed_beta.C
+    to:
+      component: seed_gamma
+      selector: A26-28
+      terminus: n
+    length: {minimum: 10, maximum: 20}
+
+  - id: gamma_internal
+    from:
+      component: seed_gamma
+      selector: A26-28
+      terminus: c
+    to:
+      component: seed_gamma
+      selector: A35-37
+      terminus: n
+    length: 5
+
+sampling:
+  preset: exact_mosaic
+  timesteps: 10
+  seed: 923
+
+resources:
+  profile: v100
+  walltime: 02:00:00
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-three-component-graph-canary-8_7

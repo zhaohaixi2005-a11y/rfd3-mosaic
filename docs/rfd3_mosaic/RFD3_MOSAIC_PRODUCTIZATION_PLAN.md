@@ -10,7 +10,8 @@ RFD3 timestep loop.
 
 The goal is therefore not to remove the RFD3 modifications. The goal is to
 turn them into a controlled, testable and upgradeable Mosaic-RFD3 engine while
-providing one simple user-facing design interface above it.
+providing a simple ordinary-user surface and a retained expert assembly-graph
+surface above one shared compiler/runtime.
 
 ## Non-negotiable scientific invariants
 
@@ -34,7 +35,7 @@ The target architecture is:
 design.yaml / CLI overrides
         |
         v
-UserDesignSpec
+UserDesignSpec (simple contig or expert assembly graph)
         |
         v
 AssemblySpecification + ConstraintPlan
@@ -65,6 +66,13 @@ FunctionalGeometrySpec
 
 Discovery is additive: it must not hide or replace the explicit route used by
 current golden regressions.
+
+The simple and expert authoring levels are also additive, not separate
+products. Simple mode infers interface intent, neighbour identity and a safe
+initial orbit pose from motif/generation geometry. Expert mode exposes named
+components, ports, interfaces, connections and numerical overrides. Both must
+produce the same `AssemblySpecification`; no feature may introduce a second
+sampler or topology-specific submission script.
 
 ## Current milestone: finish the product spine
 
@@ -441,6 +449,18 @@ phase's exit gate.
 Exit gate: central and interface golden cases remain unchanged within declared
 numeric tolerances after the runtime reorganization.
 
+The first Phase 3 slice is now implemented behind the existing exact sampler.
+`MosaicConstraintRuntime` owns initial projection, optional scheduled target
+proposal, conditioning refresh, model-output projection, Euler-state
+projection, post-guidance projection and finalization.  Every stage delegates
+to the same `UnifiedJointProjector`; rejected proposals cannot mutate the hard
+target.  The RFD3 denoiser call and EDM integration remain unchanged, and the
+previous sampler helpers remain available as compatibility paths for legacy
+symmetry mode.  Runtime phase counters are emitted with result diagnostics so
+LRZ golden tests can prove that all exact stages traversed the new boundary.
+This slice remains local until the complete LRZ unit suite and C3 golden replay
+pass.
+
 ### Phase 4: execution and operational usability
 
 - provide local and Slurm executors over the same compiled plan;
@@ -452,8 +472,31 @@ numeric tolerances after the runtime reorganization.
 Exit gate: users can run a design without writing an sbatch file or editing a
 cluster-specific Python module.
 
+The first Phase 4 product-shell slice is implemented locally. `run` is the
+canonical submit entry point while `submit` remains compatible. `status`
+resolves either a run directory, a submission receipt or a numeric Slurm JobID
+and joins scheduler state with worker state, declared audits and output
+artifacts. `report` writes one self-contained HTML dashboard plus its canonical
+JSON payload. Scientific success is fail-closed: scheduler completion alone is
+never promoted to `passed`. This slice still requires LRZ unit validation
+before it is considered available in the synchronized checkout.
+
+The second Phase 4 slice adds an explicit executor interface and a persistent
+per-JobID index at `OUTPUT_ROOT/.rfd3-mosaic/jobs`. Slurm submission now uses
+`sbatch --parsable`, validates the returned JobID, writes a durable submission
+record, and lets the allocated worker advance that record through running,
+completed or failed. `runs` lists the index and `status JOB_ID --root ...`
+checks it before its backward-compatible filesystem scan. Index failure is
+reported but cannot corrupt or retroactively fail a scientifically valid run.
+Only the Slurm executor is enabled in this slice; local execution remains a
+declared next step rather than an untested switch.
+
 ### Phase 5: advanced assembly capabilities
 
+- public `components + interfaces + connections` assembly graph;
+- contig-inferred public intent for the two common workflows: supplied fixed
+  interface plus generated linker, or fixed central motif plus automatically
+  designed generated interface;
 - simultaneous multi-orbit mobility;
 - explicit radial, axial, tangential, tilt, twist and bounded SE(3) subspaces;
 - Dn GPU closure;
@@ -464,9 +507,60 @@ cluster-specific Python module.
 Each capability advances from experimental to engineering to stable only via
 recorded unit, GPU and scientific validation gates.
 
-## Immediate work order
+The first assembly-graph slice is now implemented at the public-schema and
+compiler level. It accepts an arbitrary number of rigid or joint-rigid
+components, reusable component-owned interface ports, `preserve_input` or
+contact interface edges, and directed generated chain connections. Several
+differently oriented ports may belong to one joint-rigid building block, while
+each interface edge names its own symmetry-neighbour relation. These
+declarations lower into the same fragments, motion groups, ports, interface
+edges, generated segments and constraint plan used by the existing exact
+runtime; no graph-specific sampler branch is introduced.
+The first slice validates edge relations during static assembly preflight and
+uses the existing final audits for component rigidity, motion bounds and
+scaffold validity. The topology-neutral post-diffusion relation audit is now
+implemented: the adapter freezes every concrete symmetry edge and its atom
+mapping, and the worker gates `preserve_input` translation/rotation or declared
+contact/distance constraints in `assembly_interface_relation_audit.json`.
+Ordinary users do not choose contact counts or identify a packing patch. The
+compiler emits an automatic quality contract and the runtime derives balanced
+residue coverage and contiguous-patch targets from available generated chain
+length. Explicit graph edges and thresholds are reserved for advanced
+multi-face cages and reproducible ablations.
 
-The first implementation slices deliberately do not modify sampler behavior:
+The runtime is also converging on the same single-path contract. An
+input-stage `preserve_input` edge remains authoritative in the unified hard
+projector. An output-stage `contact` edge automatically activates a bounded
+graph-interface field in that same timestep loop; compiler-expanded neighbour
+instances determine which generated chains interact, while fixed motif atoms
+remain untouched and exact symmetry is reprojected after the update. The final
+audit evaluates output-stage relations on generated heavy atoms rather than
+the fixed port atoms. This is an experimental CA-level controller until the
+LRZ unit suite and a designed-interface GPU canary pass.
+
+The second controller revision adds balanced per-side residue coverage,
+contiguous-patch formation, source-interface-balanced aggregation,
+residue-normalized clash energy and same-chain token-gradient smoothing. It
+therefore cannot satisfy a many-contact request with one contacting residue,
+and its repulsive signal does not vanish quadratically as the assembly grows.
+These terms remain part of the common sampler lifecycle and common runtime
+audit; they are not a topology-specific execution branch.
+
+The static supplied-interface graph crossed its first GPU canary in T job
+`5735772`. Promotion beyond `gpu_canary` still requires the full LRZ suite,
+strict multi-component regression coverage and the new designed-interface
+runtime canary.
+The scope is intentionally one global finite symmetry action. Independent
+stabilizers and mixed vertex/edge/face orbits require a later IR extension and
+must not be simulated by topology-specific scripts. The static graph path is
+`gpu_canary`; the output-stage designed-interface controller remains
+`schema_only` pending its own LRZ tests and GPU evidence.
+
+## Historical first implementation order
+
+The original productization slices deliberately did not modify sampler
+behavior; that phase is complete, and the unified output-stage interface field
+described above is now the active runtime-development boundary:
 
 1. machine-readable Foundry compatibility manifest: implemented;
 2. provisional validated-snapshot record: implemented, exact snapshot replay

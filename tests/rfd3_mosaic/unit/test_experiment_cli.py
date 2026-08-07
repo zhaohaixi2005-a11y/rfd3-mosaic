@@ -22,6 +22,40 @@ from rfd3_mosaic.experiment_worker import (
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
+    def test_worker_enables_multiple_scaffold_objective_orbits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "rfd3_input.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "example": {
+                            "extra": {
+                                "motif_constraint_orbits": [
+                                    {
+                                        "mobility_mode": "orbit_rigid",
+                                        "mobility_proposal": (
+                                            "scaffold_objectives"
+                                        ),
+                                    },
+                                    {
+                                        "mobility_mode": "orbit_rigid",
+                                        "mobility_proposal": (
+                                            "scaffold_objectives"
+                                        ),
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            enabled, source = _motif_mobility_runtime(path)
+
+        self.assertTrue(enabled)
+        self.assertEqual(source, "scaffold_boundary")
+
     def test_worker_enables_compiler_declared_denoiser_mobility(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "rfd3_input.json"
@@ -124,6 +158,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertTrue(sampler["preserve_fixed_motif_during_symmetry"])
         self.assertEqual(sampler["symmetry_state_mode"], "orbit_average")
         self.assertEqual(resolved.payload["resources"]["slurm"]["cpus"], 4)
+        self.assertEqual(resolved.payload["resources"]["executor"], "slurm")
         provenance = resolved.payload["provenance"]
         self.assertIn("repository", provenance)
         self.assertIn("commit", provenance["repository"])
@@ -383,6 +418,30 @@ class ExperimentConfigTestCase(unittest.TestCase):
 
         self.assertEqual(arguments.command, "plan")
         self.assertEqual(arguments.format, "json")
+
+    def test_product_commands_have_stable_public_arguments(self) -> None:
+        run = _parser().parse_args(
+            ["run", "design.yaml", "--profile", "p100", "--dry-run"]
+        )
+        status = _parser().parse_args(
+            ["status", "5733788", "--root", "/runs", "--format", "json"]
+        )
+        report = _parser().parse_args(
+            ["report", "/runs/design/5733788", "--output", "report.html"]
+        )
+        runs = _parser().parse_args(
+            ["runs", "--root", "/runs", "--limit", "5", "--rebuild"]
+        )
+
+        self.assertEqual(run.command, "run")
+        self.assertTrue(run.dry_run)
+        self.assertEqual(status.command, "status")
+        self.assertEqual(status.format, "json")
+        self.assertEqual(report.command, "report")
+        self.assertEqual(report.output, Path("report.html"))
+        self.assertEqual(runs.command, "runs")
+        self.assertEqual(runs.limit, 5)
+        self.assertTrue(runs.rebuild)
 
     def test_resolves_official_rfd3_control_preset(self) -> None:
         config = self._write_experiment(

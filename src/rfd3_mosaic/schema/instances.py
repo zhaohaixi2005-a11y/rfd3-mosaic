@@ -1,5 +1,7 @@
 """Compiled, immutable instances derived from Interface-Seed specifications."""
 
+from typing import Literal
+
 from pydantic import Field, model_validator
 
 from rfd3_mosaic.schema.specs import (
@@ -73,6 +75,7 @@ class InterfaceEdgeInstance(StrictModel):
     left_port_instance_id: str
     right_port_instance_id: str
     required: bool
+    satisfaction_stage: Literal["input", "output"] = "input"
     target_geometry: TargetGeometrySpec
     orbit_id: Identifier | None = None
     source_copy_index: int = Field(ge=0)

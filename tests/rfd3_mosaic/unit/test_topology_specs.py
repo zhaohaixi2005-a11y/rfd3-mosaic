@@ -6,6 +6,7 @@ from rfd3_mosaic.schema import (
     MotionGroupInitializationSpec,
     CopyRelationSpec,
     GeometricConstraintsGeometry,
+    InterfaceCoverageConstraint,
     InterfaceEdgeSpec,
     LinkLengthSpec,
     ReferenceTransformGeometry,
@@ -65,6 +66,20 @@ class TopologySpecsTestCase(unittest.TestCase):
     def test_empty_geometric_constraints_are_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             GeometricConstraintsGeometry()
+
+    def test_auto_interface_coverage_is_a_complete_constraint(self) -> None:
+        geometry = GeometricConstraintsGeometry(
+            coverage={"mode": "auto"}
+        )
+
+        self.assertEqual(geometry.coverage.mode, "auto")
+
+    def test_contiguous_interface_override_cannot_exceed_coverage(self) -> None:
+        with self.assertRaises(ValidationError):
+            InterfaceCoverageConstraint(
+                minimum_contact_residues_per_side=3,
+                minimum_contiguous_contact_residues_per_side=4,
+            )
 
     def test_interface_edge_parses_discriminated_geometry(self) -> None:
         edge = InterfaceEdgeSpec(

@@ -41,6 +41,9 @@ class SamplingPlan(StrictModel):
 
     schema_version: int = 1
     initial_pose: StaticPosePlan | None = None
+    component_initial_poses: tuple[StaticPosePlan, ...] = Field(
+        default_factory=tuple
+    )
     diffusion: DiffusionSamplingPlan
     runtime_mobility: tuple[dict[str, object], ...] = Field(
         default_factory=tuple
@@ -56,11 +59,15 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
     """
 
     sampling = design.sampling
-    initial = sampling.initial_pose
-    pose_plan: StaticPosePlan | None = None
-    if initial is not None:
+
+    def compile_pose(
+        initial,
+        *,
+        group_id: str,
+    ) -> StaticPosePlan:
         fixed = isinstance(initial.orientation, UserFixedOrientationSpec)
-        pose_plan = StaticPosePlan(
+        return StaticPosePlan(
+            group_id=group_id,
             seed=initial.seed,
             radius_minimum=initial.radius.minimum,
             radius_maximum=initial.radius.maximum,
@@ -72,8 +79,20 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
                 initial.orientation.rotation_deg if fixed else None
             ),
         )
+
+    initial = sampling.initial_pose
+    pose_plan = (
+        compile_pose(initial, group_id="motif_group")
+        if initial is not None
+        else None
+    )
+    component_pose_plans = tuple(
+        compile_pose(pose, group_id=component_id)
+        for component_id, pose in sampling.initial_poses.items()
+    )
     return SamplingPlan(
         initial_pose=pose_plan,
+        component_initial_poses=component_pose_plans,
         diffusion=DiffusionSamplingPlan(
             timesteps=sampling.timesteps,
             seed=sampling.seed,
@@ -88,10 +107,14 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
 def assembly_initialization_payload(
     plan: SamplingPlan,
 ) -> tuple[int | None, dict[str, object]]:
-    """Lower one static pose plan into the existing assembly IR fields."""
+    """Lower static pose plans into the existing assembly IR fields."""
 
-    pose = plan.initial_pose
-    if pose is None:
+    poses = (
+        (plan.initial_pose,)
+        if plan.initial_pose is not None
+        else plan.component_initial_poses
+    )
+    if not poses:
         return None, {}
 
     def interval(minimum: float, maximum: float) -> dict[str, float]:
@@ -100,11 +123,17 @@ def assembly_initialization_payload(
             "range": (maximum - minimum) / 2.0,
         }
 
-    orientation: dict[str, object] = {"method": pose.orientation_method}
-    if pose.rotation_deg is not None:
-        orientation["rotation_deg"] = pose.rotation_deg
-    return pose.seed, {
-        pose.group_id: {
+    def pose_payload(
+        pose: StaticPosePlan,
+        *,
+        include_seed: bool,
+    ) -> dict[str, object]:
+        orientation: dict[str, object] = {
+            "method": pose.orientation_method
+        }
+        if pose.rotation_deg is not None:
+            orientation["rotation_deg"] = pose.rotation_deg
+        payload: dict[str, object] = {
             "center_method": "interface_heavy_atom_com",
             "orientation": orientation,
             "placement": {
@@ -119,7 +148,21 @@ def assembly_initialization_payload(
                 "radial_direction": pose.radial_direction,
             },
         }
-    }
+        if include_seed:
+            payload["random_seed"] = pose.seed
+        return payload
+
+    component_mode = plan.initial_pose is None
+    return (
+        None if component_mode else poses[0].seed,
+        {
+            pose.group_id: pose_payload(
+                pose,
+                include_seed=component_mode,
+            )
+            for pose in poses
+        },
+    )
 
 
 __all__ = [

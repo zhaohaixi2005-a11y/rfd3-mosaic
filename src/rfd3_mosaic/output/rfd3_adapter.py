@@ -208,6 +208,15 @@ def _native_symmetry_id_and_multiplicity(transform_set: Any) -> tuple[str, int]:
     elif transform_set.type == SymmetryType.DIHEDRAL:
         symmetry_id = f"D{transform_set.order}"
         multiplicity = 2 * transform_set.order
+    elif transform_set.type == SymmetryType.TETRAHEDRAL:
+        symmetry_id = "T"
+        multiplicity = 12
+    elif transform_set.type == SymmetryType.OCTAHEDRAL:
+        symmetry_id = "O"
+        multiplicity = 24
+    elif transform_set.type == SymmetryType.ICOSAHEDRAL:
+        symmetry_id = "I"
+        multiplicity = 60
     else:
         raise NotImplementedError(
             f"Native RFD3 symmetry does not support "
@@ -220,7 +229,7 @@ def _preflight_native_transform_registry(
     transform_set: Any,
     expected_multiplicity: int,
 ) -> list[str]:
-    """Reject incomplete, duplicated, improper, or non-closed Cn/Dn sets."""
+    """Reject incomplete, duplicated, improper, or non-closed finite sets."""
 
     registry = build_transform_registry(transform_set)
     if registry.order != expected_multiplicity:
@@ -695,6 +704,73 @@ def _runtime_fixed_motif_constraints(
     return groups, orbits
 
 
+def _runtime_interface_relation_audit_plan(
+    *,
+    instances,
+    mapping: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Freeze topology-neutral interface relations for result auditing.
+
+    RFD3 renumbers and merges the master-copy fragments into one or more ASU
+    chains.  The source components below are those canonical RFD3 selectors,
+    while the copy indices retain the compiler's exact group-action pairing.
+    A post-diffusion audit can therefore reconstruct every declared edge
+    without reopening the original public YAML or guessing chain mappings.
+    """
+
+    def source_components(port_instance_id: str) -> list[str]:
+        port = instances.ports[port_instance_id]
+        selectors: list[str] = []
+        for fragment_instance_id in port.fragment_instance_ids:
+            fragment = instances.fragments[fragment_instance_id]
+            masters = [
+                candidate
+                for candidate in instances.fragments.values()
+                if candidate.source_id == fragment.source_id
+                and candidate.orbit_id == fragment.orbit_id
+                and candidate.copy_index == 0
+            ]
+            if len(masters) != 1:
+                raise ValueError(
+                    "Interface relation audit requires exactly one "
+                    "copy-zero fragment for source "
+                    f"{fragment.source_id!r}; observed {len(masters)}"
+                )
+            selector = _fragment_selector(mapping, masters[0].id)
+            if selector not in selectors:
+                selectors.append(selector)
+        if not selectors:
+            raise ValueError(
+                f"Interface port {port_instance_id!r} contains no fragments"
+            )
+        return selectors
+
+    return [
+        {
+            "edge_instance_id": edge.id,
+            "source_interface_id": edge.source_id,
+            "required": edge.required,
+            "satisfaction_stage": edge.satisfaction_stage,
+            "source_copy_index": edge.source_copy_index,
+            "target_copy_index": edge.target_copy_index,
+            "left_source_components": source_components(
+                edge.left_port_instance_id
+            ),
+            "right_source_components": source_components(
+                edge.right_port_instance_id
+            ),
+            "reference_basis": (
+                "compiled_presymmetrized_input"
+                if edge.target_geometry.mode == "reference_transform"
+                and edge.target_geometry.from_reference_seed
+                else "declared_target_geometry"
+            ),
+            "target_geometry": edge.target_geometry.model_dump(mode="json"),
+        }
+        for edge in instances.interfaces.values()
+    ]
+
+
 def _materialize_length(
     minimum: int,
     maximum: int,
@@ -1167,7 +1243,14 @@ def compile_assembly_rfd3_input(
                 fixed_atoms[selector] = _rfd3_atom_selection(
                     spec.fragments[fragment.source_id].fixed_atoms
                 )
-        if instances.interfaces:
+        use_interface_constraint_groups = (
+            spec.constraint_group_strategy == "interface_edges"
+            or (
+                spec.constraint_group_strategy == "auto"
+                and bool(instances.interfaces)
+            )
+        )
+        if use_interface_constraint_groups:
             motif_constraint_groups = _runtime_interface_constraint_groups(
                 instances,
                 mapping,
@@ -1238,6 +1321,12 @@ def compile_assembly_rfd3_input(
         asu_chain_count > 1
         or terminal_path is not None
         or not instances.interfaces
+        or transform_set.type
+        in {
+            SymmetryType.TETRAHEDRAL,
+            SymmetryType.OCTAHEDRAL,
+            SymmetryType.ICOSAHEDRAL,
+        }
     ):
         symmetry["use_declared_frames"] = True
         symmetry["declared_transform_order"] = registry_transform_order
@@ -1342,6 +1431,14 @@ def compile_assembly_rfd3_input(
         ),
         "motif_constraint_groups": motif_constraint_groups,
         "motif_constraint_orbits": motif_constraint_orbits,
+        "assembly_interface_relations": (
+            _runtime_interface_relation_audit_plan(
+                instances=instances,
+                mapping=mapping,
+            )
+            if instances.interfaces
+            else []
+        ),
     }
     if extra_metadata:
         protected = set(adapter_extra) & set(extra_metadata)

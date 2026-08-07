@@ -1,7 +1,7 @@
 import numpy as np
 from rfd3.inference.symmetry.frames import (
     decompose_symmetry_frame,
-    get_symmetry_frames_from_symmetry_id,
+    get_symmetry_multiplicity_from_id,
 )
 
 FIXED_TRANSFORM_ID = -1
@@ -204,9 +204,11 @@ def reannotate_2d_entity_ids(atom_array, transform_id):
     if "_2d_entity_id" not in atom_array.get_annotation_categories():
         return atom_array
     _2d_annos = get_2d_annotation_categories(atom_array)
-    frames = get_symmetry_frames_from_symmetry_id(atom_array.symmetry_id[0])
+    symmetry_multiplicity = get_symmetry_multiplicity_from_id(
+        atom_array.symmetry_id[0]
+    )
     # NOTE: assuming its either 2d cond is within a subunit was specified or all active sites were explicity specified
-    max_entity_id = max(len(_2d_annos), len(frames))
+    max_entity_id = max(len(_2d_annos), symmetry_multiplicity)
     mask = atom_array.get_annotation("_2d_entity_id") != 0
     atom_array._2d_entity_id[mask] = (
         (atom_array._2d_entity_id[mask] + transform_id - 1) % max_entity_id

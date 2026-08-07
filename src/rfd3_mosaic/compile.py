@@ -396,6 +396,7 @@ def expand_symmetry_instances(
                     (edge_spec.right_port, orbit_id, target_copy_index)
                 ],
                 required=edge_spec.required,
+                satisfaction_stage=edge_spec.satisfaction_stage,
                 target_geometry=edge_spec.target_geometry,
                 orbit_id=orbit_id,
                 source_copy_index=source_copy_index,
@@ -685,9 +686,15 @@ def build_master_group_transforms(
             group_to_transform_set[group_id] = orbit.transform_set
 
     effective_seed = spec.random_seed if random_seed is None else random_seed
-    rng = np.random.default_rng(effective_seed)
+    shared_rng = np.random.default_rng(effective_seed)
     transforms: dict[str, np.ndarray] = {}
     for group_id, initialization in spec.initialization.items():
+        group_seed = initialization.random_seed
+        rng = (
+            np.random.default_rng(group_seed)
+            if group_seed is not None
+            else shared_rng
+        )
         group_override = (sample_overrides or {}).get(group_id, {})
         group = spec.motion_groups[group_id]
         atoms = tuple(
@@ -785,7 +792,11 @@ def build_master_group_transforms(
                 else None
             )
             sample_metadata[group_id] = {
-                "random_seed": effective_seed,
+                "random_seed": (
+                    group_seed
+                    if group_seed is not None
+                    else effective_seed
+                ),
                 "orientation_method": initialization.orientation.method,
                 "quaternion_xyzw": (
                     quaternion.tolist() if quaternion is not None else None

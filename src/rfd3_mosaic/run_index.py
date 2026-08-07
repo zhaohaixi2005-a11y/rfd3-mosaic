@@ -1,0 +1,241 @@
+"""Persistent, append-safe job index for RFD3-Mosaic run roots."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import re
+import tempfile
+from typing import Any
+
+import yaml
+
+
+SCHEMA_VERSION = 1
+INDEX_DIRECTORY = ".rfd3-mosaic"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _validate_job_id(job_id: str) -> str:
+    value = str(job_id)
+    if not re.fullmatch(r"[0-9]+(?:_[0-9]+)?", value):
+        raise ValueError(f"Invalid scheduler JobID: {value!r}")
+    return value
+
+
+def _index_path(root: Path, job_id: str) -> Path:
+    return root / INDEX_DIRECTORY / "jobs" / f"{_validate_job_id(job_id)}.json"
+
+
+def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.stem}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+    temporary.replace(path)
+
+
+def read_run_record(root: str | Path, job_id: str) -> dict[str, Any] | None:
+    path = _index_path(Path(root).expanduser().resolve(), job_id)
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected a run-index mapping in {path}")
+    if int(payload.get("schema_version", 0)) != SCHEMA_VERSION:
+        raise ValueError(f"Unsupported run-index schema in {path}")
+    return payload
+
+
+def record_submission(
+    *,
+    root: str | Path,
+    job_id: str,
+    experiment: str,
+    campaign: str,
+    run_directory: str | Path,
+    submission_directory: str | Path,
+    executor: str,
+) -> Path:
+    """Create the durable identity record immediately after submission."""
+
+    root_path = Path(root).expanduser().resolve()
+    path = _index_path(root_path, job_id)
+    if path.exists():
+        raise FileExistsError(
+            f"Run index already contains JobID {job_id}: {path}"
+        )
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "job_id": _validate_job_id(job_id),
+        "experiment": experiment,
+        "campaign": campaign,
+        "executor": executor,
+        "state": "submitted",
+        "created_at": _now(),
+        "updated_at": _now(),
+        "run_directory": str(Path(run_directory).expanduser().resolve()),
+        "submission_directory": str(
+            Path(submission_directory).expanduser().resolve()
+        ),
+    }
+    _atomic_write(path, payload)
+    return path
+
+
+def update_run_state(
+    *,
+    root: str | Path,
+    job_id: str,
+    state: str,
+    experiment: str,
+    campaign: str,
+    run_directory: str | Path,
+    error: str | None = None,
+    observed_at: str | None = None,
+) -> Path:
+    """Upsert lifecycle state from the allocated worker."""
+
+    if state not in {"running", "completed", "failed"}:
+        raise ValueError(f"Invalid indexed run state: {state!r}")
+    root_path = Path(root).expanduser().resolve()
+    path = _index_path(root_path, job_id)
+    existing = read_run_record(root_path, job_id) or {
+        "schema_version": SCHEMA_VERSION,
+        "job_id": _validate_job_id(job_id),
+        "experiment": experiment,
+        "campaign": campaign,
+        "executor": "unknown",
+        "created_at": observed_at or _now(),
+        "submission_directory": None,
+    }
+    existing.update(
+        {
+            "state": state,
+            "updated_at": observed_at or _now(),
+            "run_directory": str(Path(run_directory).resolve()),
+            "error": error,
+        }
+    )
+    _atomic_write(path, existing)
+    return path
+
+
+def list_run_records(root: str | Path) -> list[dict[str, Any]]:
+    """Return newest indexed runs first, skipping no malformed records."""
+
+    root_path = Path(root).expanduser().resolve()
+    directory = root_path / INDEX_DIRECTORY / "jobs"
+    if not directory.is_dir():
+        return []
+    records = []
+    for path in directory.glob("*.json"):
+        payload = read_run_record(root_path, path.stem)
+        if payload is not None:
+            records.append(payload)
+    return sorted(
+        records,
+        key=lambda item: str(item.get("created_at") or ""),
+        reverse=True,
+    )
+
+
+def rebuild_run_index(root: str | Path) -> dict[str, Any]:
+    """Import historical worker summaries into the persistent job index."""
+
+    root_path = Path(root).expanduser().resolve()
+    if not root_path.is_dir():
+        raise FileNotFoundError(f"Run root does not exist: {root_path}")
+    indexed = 0
+    skipped = 0
+    failures: list[dict[str, str]] = []
+    for summary_path in root_path.rglob("experiment_summary.json"):
+        run_directory = summary_path.parent.resolve()
+        if (
+            INDEX_DIRECTORY in run_directory.parts
+            or "software" in run_directory.parts
+        ):
+            skipped += 1
+            continue
+        job_id = run_directory.name
+        if not re.fullmatch(r"[0-9]+(?:_[0-9]+)?", job_id):
+            skipped += 1
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            if not isinstance(summary, dict):
+                raise ValueError("worker summary is not a JSON mapping")
+            state = str(summary.get("status") or "")
+            if state not in {"running", "completed", "failed"}:
+                raise ValueError(f"unsupported worker status {state!r}")
+            resolved_path = run_directory / "resolved_config.yaml"
+            resolved: dict[str, Any] = {}
+            if resolved_path.is_file():
+                try:
+                    loaded = yaml.safe_load(
+                        resolved_path.read_text(encoding="utf-8")
+                    )
+                    if isinstance(loaded, dict):
+                        resolved = loaded
+                except (OSError, ValueError, yaml.YAMLError):
+                    resolved = {}
+            relative_parts = run_directory.relative_to(root_path).parts
+            inferred_campaign = (
+                relative_parts[-3] if len(relative_parts) >= 3 else "legacy"
+            )
+            output = resolved.get("output") or {}
+            campaign = str(output.get("campaign") or inferred_campaign)
+            experiment = str(
+                summary.get("experiment")
+                or resolved.get("name")
+                or run_directory.parent.name
+            )
+            update_run_state(
+                root=root_path,
+                job_id=job_id,
+                state=state,
+                experiment=experiment,
+                campaign=campaign,
+                run_directory=run_directory,
+                error=(
+                    str(summary["error"])
+                    if summary.get("error") is not None
+                    else None
+                ),
+                observed_at=datetime.fromtimestamp(
+                    summary_path.stat().st_mtime,
+                    timezone.utc,
+                ).isoformat(),
+            )
+            indexed += 1
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            yaml.YAMLError,
+        ) as error:
+            failures.append(
+                {"path": str(summary_path.resolve()), "error": str(error)}
+            )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "root": str(root_path),
+        "indexed": indexed,
+        "skipped": skipped,
+        "failed": len(failures),
+        "failures": failures,
+    }

@@ -8,7 +8,7 @@ copies never receive independent rigid motions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Any
 
@@ -206,6 +206,8 @@ class OrbitRigidPoseState:
 
 @dataclass
 class OrbitRigidMotif:
+    constraint_orbit_id: str
+    coupling_group_id: str
     group_indices: torch.Tensor
     group_atom_indices: torch.Tensor
     group_transform_ids: torch.Tensor
@@ -302,11 +304,14 @@ class OrbitRigidMotifController:
             float(kwargs.get("per_step_rotation_degrees", 1.0)),
         )
         for orbit in layout.mobile_orbits:
-            if orbit.mobility_subspace != "bounded_se3":
+            if orbit.mobility_subspace not in {
+                "bounded_se3",
+                "radial",
+                "radial_axial",
+            }:
                 raise ValueError(
-                    "Dynamic motif conditioning currently executes only "
-                    "mobility_subspace='bounded_se3'; radial and tilt "
-                    "subspaces require a topology-defined reference frame"
+                    "Dynamic motif conditioning does not yet execute "
+                    f"mobility_subspace={orbit.mobility_subspace!r}"
                 )
             if orbit.proposal_source == "hoyeung_drag_compat":
                 raise ValueError(
@@ -321,6 +326,14 @@ class OrbitRigidMotifController:
                 raise ValueError(
                     "A mobile constraint orbit has no executable proposal "
                     "source"
+                )
+            if (
+                orbit.mobility_subspace in {"radial", "radial_axial"}
+                and orbit.proposal_source != "scaffold_objectives"
+            ):
+                raise ValueError(
+                    f"{orbit.mobility_subspace} mobility requires the "
+                    "topology-defined axis provided by scaffold_objectives"
                 )
             schedule = orbit.schedule or default_schedule
             orbit_group_indices = torch.tensor(
@@ -348,6 +361,8 @@ class OrbitRigidMotifController:
             batch_size = fixed_target.shape[0]
             motifs.append(
                 OrbitRigidMotif(
+                    constraint_orbit_id=orbit.constraint_orbit_id,
+                    coupling_group_id=orbit.coupling_group_id,
                     group_indices=orbit_group_indices,
                     group_atom_indices=compact_indices_tensor,
                     group_transform_ids=torch.tensor(
@@ -586,14 +601,263 @@ class OrbitRigidMotifController:
         config: ScaffoldGuidanceConfig,
         apply_update: bool,
     ) -> torch.Tensor:
-        """Propose one scaffold-derived pose step for a single cyclic orbit."""
+        """Compatibility wrapper for one scaffold-driven motif orbit."""
 
         if len(self.motifs) != 1:
             raise ValueError(
-                "Scaffold-derived motif guidance currently supports exactly "
-                "one mobile motif orbit"
+                "update_from_scaffold is the single-orbit compatibility "
+                "entry point; use update_orbits_from_scaffold for multiple "
+                "mobile motif orbits"
             )
-        motif = self.motifs[0]
+        return self.update_orbits_from_scaffold(
+            scaffold_coordinates,
+            progress=progress,
+            topology=topology,
+            axis=axis,
+            principal_axes=(principal_axis,),
+            config=config,
+            apply_update=apply_update,
+        )
+
+    def _joint_scaffold_energy(
+        self,
+        target: torch.Tensor,
+        scaffold: torch.Tensor,
+        *,
+        topology: BoundaryTopology,
+        axis: CyclicAxis,
+        principal_axes: tuple[torch.Tensor, ...],
+        rotations: tuple[torch.Tensor, ...],
+        translations: tuple[torch.Tensor, ...],
+        config: ScaffoldGuidanceConfig,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        """Evaluate assembly geometry once and one pose prior per orbit."""
+
+        if not (
+            len(self.motifs)
+            == len(principal_axes)
+            == len(rotations)
+            == len(translations)
+        ):
+            raise ValueError(
+                "Joint scaffold energy inputs must match the mobile orbit "
+                "count"
+            )
+        geometry_config = replace(
+            config,
+            tilt_weight=0.0,
+            prior_weight=0.0,
+        )
+        geometry = scaffold_orbit_energy(
+            target,
+            scaffold,
+            topology,
+            axis,
+            config=geometry_config,
+        )
+        inter_orbit_clash, minimum_inter_orbit_distance = (
+            self._inter_orbit_clash_energy(
+                target,
+                topology=topology,
+                clash_distance=config.clash_distance,
+            )
+        )
+        combined_clash = geometry.clash + inter_orbit_clash
+        total = geometry.total + config.clash_weight * inter_orbit_clash
+        orbit_terms = []
+        pose_config = replace(
+            config,
+            junction_weight=0.0,
+            clash_weight=0.0,
+        )
+        for motif, principal_axis, rotation, translation in zip(
+            self.motifs,
+            principal_axes,
+            rotations,
+            translations,
+        ):
+            pose = scaffold_orbit_energy(
+                target,
+                scaffold,
+                topology,
+                axis,
+                principal_axis=principal_axis,
+                pose_rotation=rotation,
+                pose_translation=translation,
+                config=pose_config,
+            )
+            total = total + pose.total
+            orbit_terms.append(
+                {
+                    "tilt": float(pose.tilt.detach().cpu().item()),
+                    "weighted_tilt": float(
+                        (config.tilt_weight * pose.tilt)
+                        .detach()
+                        .cpu()
+                        .item()
+                    ),
+                    "prior": float(pose.prior.detach().cpu().item()),
+                    "weighted_prior": float(
+                        (config.prior_weight * pose.prior)
+                        .detach()
+                        .cpu()
+                        .item()
+                    ),
+                    "tilt_degrees": float(
+                        pose.tilt_degrees.detach().cpu().item()
+                    ),
+                }
+            )
+        minimum_clash_distance = torch.minimum(
+            geometry.minimum_clash_distance,
+            minimum_inter_orbit_distance,
+        )
+        return total, {
+            "total": float(total.detach().cpu().item()),
+            "junction": float(geometry.junction.detach().cpu().item()),
+            "weighted_junction": float(
+                (config.junction_weight * geometry.junction)
+                .detach()
+                .cpu()
+                .item()
+            ),
+            "clash": float(combined_clash.detach().cpu().item()),
+            "scaffold_clash": float(
+                geometry.clash.detach().cpu().item()
+            ),
+            "inter_orbit_clash": float(
+                inter_orbit_clash.detach().cpu().item()
+            ),
+            "weighted_clash": float(
+                (config.clash_weight * combined_clash)
+                .detach()
+                .cpu()
+                .item()
+            ),
+            "maximum_junction_error": float(
+                geometry.maximum_junction_error.detach().cpu().item()
+            ),
+            "minimum_clash_distance": float(
+                minimum_clash_distance.detach().cpu().item()
+            ),
+            "minimum_inter_orbit_distance": float(
+                minimum_inter_orbit_distance.detach().cpu().item()
+            ),
+            "orbits": orbit_terms,
+        }
+
+    def _inter_orbit_clash_energy(
+        self,
+        target: torch.Tensor,
+        *,
+        topology: BoundaryTopology,
+        clash_distance: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Penalize CA overlap between independently mobile motif orbits.
+
+        The ordinary scaffold objective compares fixed motif atoms with the
+        generated scaffold.  With several independently mobile orbits that is
+        insufficient: two individually acceptable proposals can collide only
+        after their poses are materialized together.  This term is evaluated
+        only by the joint objective, so it preserves Jacobi proposal semantics
+        while allowing the atomic acceptance decision to reject that conflict.
+        """
+
+        if target.ndim != 2 or target.shape[-1] != 3:
+            raise ValueError("Joint motif target must have shape [L, 3]")
+        zero = target.sum() * 0.0
+        if len(self.motifs) < 2:
+            return zero, torch.full(
+                (),
+                float("inf"),
+                dtype=target.dtype,
+                device=target.device,
+            )
+
+        fixed_ca = {
+            int(value)
+            for value in (
+                topology.fixed_ca_atom_indices.detach().cpu().tolist()
+            )
+        }
+        orbit_ca_indices: list[torch.Tensor] = []
+        for motif in self.motifs:
+            indices = sorted(
+                {
+                    int(value)
+                    for value in motif.group_atom_indices.detach()
+                    .cpu()
+                    .flatten()
+                    .tolist()
+                    if int(value) in fixed_ca
+                }
+            )
+            orbit_ca_indices.append(
+                torch.tensor(
+                    indices,
+                    dtype=torch.long,
+                    device=target.device,
+                )
+            )
+
+        penalties = []
+        minimum_distances = []
+        for left_index in range(len(orbit_ca_indices)):
+            left = orbit_ca_indices[left_index]
+            if not len(left):
+                continue
+            for right_index in range(left_index + 1, len(orbit_ca_indices)):
+                right = orbit_ca_indices[right_index]
+                if not len(right):
+                    continue
+                distances = torch.cdist(target[left], target[right])
+                penalties.append(
+                    torch.mean(
+                        torch.square(
+                            torch.relu(clash_distance - distances)
+                        )
+                    )
+                )
+                minimum_distances.append(distances.min())
+        if not penalties:
+            return zero, torch.full(
+                (),
+                float("inf"),
+                dtype=target.dtype,
+                device=target.device,
+            )
+        return (
+            torch.stack(penalties).mean(),
+            torch.stack(minimum_distances).min(),
+        )
+
+    def update_orbits_from_scaffold(
+        self,
+        scaffold_coordinates: torch.Tensor,
+        *,
+        progress: float,
+        topology: BoundaryTopology,
+        axis: CyclicAxis,
+        principal_axes: tuple[torch.Tensor, ...],
+        config: ScaffoldGuidanceConfig,
+        apply_update: bool,
+    ) -> torch.Tensor:
+        """Jointly propose and atomically apply scaffold-driven orbit poses.
+
+        Every orbit proposal is computed from the same immutable pose
+        snapshot.  Candidate poses are then materialized together and are
+        accepted only when the joint assembly objective improves.  This
+        Jacobi-style update makes the result independent of declaration
+        order and prevents one orbit from observing another orbit's partially
+        committed state.
+        """
+
+        if not self.motifs:
+            raise ValueError("Scaffold guidance requires a mobile motif orbit")
+        if len(principal_axes) != len(self.motifs):
+            raise ValueError(
+                "principal_axes must contain one axis per mobile motif orbit"
+            )
         if self.base_target.shape[0] != 1:
             raise ValueError(
                 "Scaffold-derived motif guidance supports one pose batch"
@@ -614,115 +878,312 @@ class OrbitRigidMotifController:
 
         self.update_calls += 1
         self.last_update_applied = False
-        window = mobility_window_weight(
-            progress,
-            start_fraction=motif.start_fraction,
-            end_fraction=motif.end_fraction,
+        windows = tuple(
+            mobility_window_weight(
+                progress,
+                start_fraction=motif.start_fraction,
+                end_fraction=motif.end_fraction,
+            )
+            for motif in self.motifs
         )
+        window = max(windows, default=0.0)
         extra: dict[str, Any] = {
             "proposal_source": "scaffold_boundary",
             "proposal_only": not apply_update,
             "accepted": False,
             "applied": False,
+            "atomic_joint_acceptance": True,
+            "orbit_proposals": [],
+            "objective_weights": {
+                "junction": config.junction_weight,
+                "clash": config.clash_weight,
+                "tilt": config.tilt_weight,
+                "prior": config.prior_weight,
+            },
         }
         if window > 0.0:
             self.active_window_calls += 1
-            current_rotation = motif.state.rotation[0]
-            current_translation = motif.state.translation[0]
+            baseline_target = self.materialize_target()[0]
+            current_rotations = tuple(
+                motif.state.rotation[0].clone() for motif in self.motifs
+            )
+            current_translations = tuple(
+                motif.state.translation[0].clone() for motif in self.motifs
+            )
+            proposed_rotations = list(current_rotations)
+            proposed_translations = list(current_translations)
+            proposals = []
 
-            def energy_function(rotation, translation):
+            for orbit_index, (
+                motif,
+                motif_window,
+                principal_axis,
+            ) in enumerate(zip(self.motifs, windows, principal_axes)):
+                current_rotation = current_rotations[orbit_index]
+                current_translation = current_translations[orbit_index]
+                if motif_window <= 0.0:
+                    proposals.append(None)
+                    extra["orbit_proposals"].append(
+                        {
+                            "orbit_index": orbit_index,
+                            "constraint_orbit_id": (
+                                motif.constraint_orbit_id
+                            ),
+                            "component_id": motif.coupling_group_id,
+                            "active": False,
+                            "accepted": False,
+                            "committed": False,
+                        }
+                    )
+                    continue
+
+                translation_basis = None
+                rotation_basis = None
+                maximum_step_rotation = (
+                    motif.per_step_rotation_degrees * motif_window
+                )
+                maximum_total_rotation = motif.maximum_rotation_degrees
+                rotation_step_size = (
+                    motif.per_step_rotation_degrees
+                    * motif.response
+                    * motif_window
+                )
+                if motif.mobility_subspace in {"radial", "radial_axial"}:
+                    axis_direction = axis.direction.to(
+                        dtype=current_translation.dtype,
+                        device=current_translation.device,
+                    )
+                    axis_direction = (
+                        axis_direction
+                        / torch.linalg.vector_norm(axis_direction)
+                    )
+                    axis_point = axis.point.to(
+                        dtype=current_translation.dtype,
+                        device=current_translation.device,
+                    )
+                    master_center = (
+                        motif.template_master[0].mean(dim=0)
+                        + current_translation
+                    )
+                    offset = master_center - axis_point
+                    radial = offset - torch.dot(
+                        offset,
+                        axis_direction,
+                    ) * axis_direction
+                    radial_norm = torch.linalg.vector_norm(radial)
+                    if float(radial_norm.item()) <= 1e-8:
+                        raise ValueError(
+                            "Radial mobility is undefined for a motif "
+                            "centered on the symmetry axis"
+                        )
+                    radial = radial / radial_norm
+                    translation_basis = radial[None, :]
+                    if motif.mobility_subspace == "radial_axial":
+                        translation_basis = torch.stack(
+                            (radial, axis_direction),
+                            dim=0,
+                        )
+                    rotation_basis = torch.empty(
+                        (0, 3),
+                        dtype=current_rotation.dtype,
+                        device=current_rotation.device,
+                    )
+                    maximum_step_rotation = 0.0
+                    maximum_total_rotation = 0.0
+                    rotation_step_size = 0.0
+
+                def energy_function(rotation, translation):
+                    master = self._master_coordinates_for_pose(
+                        motif,
+                        rotation,
+                        translation,
+                    )
+                    candidate_target = insert_master_orbit(
+                        baseline_target,
+                        master,
+                        motif.group_atom_indices,
+                        motif.group_transform_ids,
+                        self.sym_transforms,
+                    )
+                    return scaffold_orbit_energy(
+                        candidate_target,
+                        scaffold[0],
+                        topology,
+                        axis,
+                        principal_axis=principal_axis,
+                        pose_rotation=rotation,
+                        pose_translation=translation,
+                        config=config,
+                    )
+
+                proposal = propose_bounded_se3_step(
+                    current_rotation,
+                    current_translation,
+                    energy_function,
+                    maximum_step_translation=(
+                        motif.per_step_translation * motif_window
+                    ),
+                    maximum_step_rotation_degrees=maximum_step_rotation,
+                    maximum_total_translation=motif.maximum_translation,
+                    maximum_total_rotation_degrees=maximum_total_rotation,
+                    translation_step_size=(
+                        motif.per_step_translation
+                        * motif.response
+                        * motif_window
+                    ),
+                    rotation_step_size_degrees=rotation_step_size,
+                    translation_basis=translation_basis,
+                    rotation_basis=rotation_basis,
+                )
+                proposals.append(proposal)
+                if proposal.accepted:
+                    proposed_rotations[orbit_index] = proposal.rotation
+                    proposed_translations[orbit_index] = proposal.translation
+                with torch.no_grad():
+                    local_initial = energy_function(
+                        current_rotation,
+                        current_translation,
+                    ).detached_dict()
+                    local_proposed = energy_function(
+                        proposal.rotation,
+                        proposal.translation,
+                    ).detached_dict()
+                tracked_terms = (
+                    "total",
+                    "junction",
+                    "clash",
+                    "tilt",
+                    "prior",
+                )
+                extra["orbit_proposals"].append(
+                    {
+                        "orbit_index": orbit_index,
+                        "constraint_orbit_id": motif.constraint_orbit_id,
+                        "component_id": motif.coupling_group_id,
+                        "objective_ids": list(motif.objective_ids),
+                        "mobility_subspace": motif.mobility_subspace,
+                        "active": True,
+                        "accepted": proposal.accepted,
+                        "committed": False,
+                        "line_search_scale": proposal.line_search_scale,
+                        "objective": {
+                            "initial": local_initial,
+                            "proposed": local_proposed,
+                            "delta": {
+                                term: local_proposed[term]
+                                - local_initial[term]
+                                for term in tracked_terms
+                            },
+                        },
+                        "proposed_translation": [
+                            float(value)
+                            for value in proposal.translation.detach().cpu().tolist()
+                        ],
+                        "proposed_delta_translation": [
+                            float(value)
+                            for value in (
+                                proposal.delta_translation.detach().cpu().tolist()
+                            )
+                        ],
+                        "proposed_delta_rotation_degrees": math.degrees(
+                            float(
+                                _axis_angle(proposal.delta_rotation)[1]
+                                .detach()
+                                .cpu()
+                                .item()
+                            )
+                        ),
+                    }
+                )
+
+            candidate_target = baseline_target.clone()
+            for motif, rotation, translation in zip(
+                self.motifs,
+                proposed_rotations,
+                proposed_translations,
+            ):
                 master = self._master_coordinates_for_pose(
                     motif,
                     rotation,
                     translation,
                 )
                 candidate_target = insert_master_orbit(
-                    self.base_target[0],
+                    candidate_target,
                     master,
                     motif.group_atom_indices,
                     motif.group_transform_ids,
                     self.sym_transforms,
                 )
-                return scaffold_orbit_energy(
-                    candidate_target,
+
+            with torch.no_grad():
+                initial_total, initial_terms = self._joint_scaffold_energy(
+                    baseline_target,
                     scaffold[0],
-                    topology,
-                    axis,
-                    principal_axis=principal_axis,
-                    pose_rotation=rotation,
-                    pose_translation=translation,
+                    topology=topology,
+                    axis=axis,
+                    principal_axes=principal_axes,
+                    rotations=current_rotations,
+                    translations=current_translations,
                     config=config,
                 )
-
-            proposal = propose_bounded_se3_step(
-                current_rotation,
-                current_translation,
-                energy_function,
-                maximum_step_translation=(
-                    motif.per_step_translation * window
-                ),
-                maximum_step_rotation_degrees=(
-                    motif.per_step_rotation_degrees * window
-                ),
-                maximum_total_translation=motif.maximum_translation,
-                maximum_total_rotation_degrees=(
-                    motif.maximum_rotation_degrees
-                ),
-                translation_step_size=(
-                    motif.per_step_translation
-                    * motif.response
-                    * window
-                ),
-                rotation_step_size_degrees=(
-                    motif.per_step_rotation_degrees
-                    * motif.response
-                    * window
-                ),
+                proposed_total, proposed_terms = self._joint_scaffold_energy(
+                    candidate_target,
+                    scaffold[0],
+                    topology=topology,
+                    axis=axis,
+                    principal_axes=principal_axes,
+                    rotations=tuple(proposed_rotations),
+                    translations=tuple(proposed_translations),
+                    config=config,
+                )
+            any_candidate = any(
+                proposal is not None and proposal.accepted
+                for proposal in proposals
             )
-            with torch.no_grad():
-                initial_terms = energy_function(
-                    current_rotation,
-                    current_translation,
-                ).detached_dict()
-                proposed_terms = energy_function(
-                    proposal.rotation,
-                    proposal.translation,
-                ).detached_dict()
+            joint_accepted = bool(
+                any_candidate
+                and float(proposed_total.item())
+                < float(initial_total.item()) - 1e-12
+            )
             extra.update(
                 {
-                    "accepted": proposal.accepted,
-                    "line_search_scale": proposal.line_search_scale,
+                    "accepted": joint_accepted,
+                    "joint_decision": (
+                        "accepted"
+                        if joint_accepted
+                        else "rejected"
+                    ),
                     "initial_energy": initial_terms,
                     "proposed_energy": proposed_terms,
-                    "proposed_translation": [
-                        float(value)
-                        for value in (
-                            proposal.translation.detach().cpu().tolist()
-                        )
-                    ],
-                    "proposed_delta_translation": [
-                        float(value)
-                        for value in (
-                            proposal.delta_translation.detach().cpu().tolist()
-                        )
-                    ],
-                    "proposed_delta_rotation_degrees": math.degrees(
-                        float(
-                            _axis_angle(
-                                proposal.delta_rotation
-                            )[1].detach().cpu().item()
-                        )
+                    "joint_energy_delta": (
+                        float(proposed_total.detach().cpu().item())
+                        - float(initial_total.detach().cpu().item())
                     ),
                 }
             )
-            if apply_update and proposal.accepted:
-                motif.state = OrbitRigidPoseState(
-                    rotation=proposal.rotation[None, ...],
-                    translation=proposal.translation[None, ...],
-                    last_proposal_rmsd=torch.zeros_like(
-                        motif.state.last_proposal_rmsd
-                    ),
+            for record, proposal in zip(
+                extra["orbit_proposals"],
+                proposals,
+            ):
+                record["committed"] = bool(
+                    apply_update
+                    and joint_accepted
+                    and proposal is not None
+                    and proposal.accepted
                 )
+            if apply_update and joint_accepted:
+                for motif, rotation, translation in zip(
+                    self.motifs,
+                    proposed_rotations,
+                    proposed_translations,
+                ):
+                    motif.state = OrbitRigidPoseState(
+                        rotation=rotation[None, ...],
+                        translation=translation[None, ...],
+                        last_proposal_rmsd=torch.zeros_like(
+                            motif.state.last_proposal_rmsd
+                        ),
+                    )
                 self.last_update_applied = True
                 extra["applied"] = True
 
@@ -747,6 +1208,13 @@ class OrbitRigidMotifController:
             dim=-1,
         )
         return {
+            "constraint_orbit_id": motif.constraint_orbit_id,
+            "component_id": motif.coupling_group_id,
+            "group_action_count": int(motif.group_transform_ids.numel()),
+            "group_transform_ids": [
+                int(value)
+                for value in motif.group_transform_ids.detach().cpu().tolist()
+            ],
             "translation_norms": [
                 float(value)
                 for value in translation_norms.detach().cpu().tolist()

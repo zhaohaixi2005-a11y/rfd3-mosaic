@@ -654,6 +654,7 @@ def _analyze_interface_edges(
             "right_port_instance_id": edge.right_port_instance_id,
             "source_copy_index": edge.source_copy_index,
             "target_copy_index": edge.target_copy_index,
+            "satisfaction_stage": edge.satisfaction_stage,
             "centroid_distance": float(
                 np.linalg.norm(
                     left_coordinates.mean(axis=0)
@@ -669,23 +670,27 @@ def _analyze_interface_edges(
         geometry = edge.target_geometry
         if geometry.mode == "reference_transform":
             if geometry.from_reference_seed:
-                left_reference = np.asarray(
-                    reference_frames[left_port.source_id],
-                    dtype=np.float64,
-                )
-                right_reference = np.asarray(
-                    reference_frames[right_port.source_id],
-                    dtype=np.float64,
-                )
-                target_relative = compose_transforms(
-                    invert_transform(left_reference),
-                    right_reference,
-                )
+                # ``preserve_input`` freezes the relation in the compiled
+                # reference assembly, not the relation between the two raw
+                # source-file port frames.  Those are equivalent only when
+                # both ports address the same symmetry copy.  A named
+                # cross-copy edge (for example face_a -> face_b@T:g01) must
+                # include both the sampled master pose and the target group
+                # action in its reference relation.
+                #
+                # ``left_world_frame`` and ``right_world_frame`` already
+                # contain exactly those transforms because the instance set
+                # was expanded with ``master_transforms``.  Freezing this
+                # initialized relation also matches the post-diffusion audit,
+                # whose reference is the emitted presymmetrized input.
+                target_relative = observed_relative.copy()
+                reference_basis = "initialized_symmetry_expanded_assembly"
             else:
                 target_relative = np.asarray(
                     geometry.target_transform,
                     dtype=np.float64,
                 )
+                reference_basis = "declared_target_transform"
             translation_error = float(
                 np.linalg.norm(
                     observed_relative[:3, 3] - target_relative[:3, 3]
@@ -695,40 +700,154 @@ def _analyze_interface_edges(
                 observed_relative[:3, :3],
                 target_relative[:3, :3],
             )
+            contact_count = int(
+                (distances < geometry.contact_cutoff).sum()
+            )
+            contacts_satisfied = (
+                contact_count >= geometry.minimum_heavy_atom_contacts
+            )
             satisfied = (
                 translation_error <= geometry.translation_tolerance
                 and rotation_error <= geometry.rotation_tolerance_deg
+                and contacts_satisfied
                 and report["hard_clashes_below_2_0A"] == 0
             )
             report.update(
                 {
                     "target_mode": geometry.mode,
+                    "reference_basis": reference_basis,
+                    "target_relative_transform": target_relative.tolist(),
                     "translation_error": translation_error,
                     "translation_tolerance": geometry.translation_tolerance,
                     "rotation_error_deg": rotation_error,
                     "rotation_tolerance_deg": (
                         geometry.rotation_tolerance_deg
                     ),
+                    "declared_contact_cutoff": geometry.contact_cutoff,
+                    "declared_contact_count": contact_count,
+                    "minimum_heavy_atom_contacts": (
+                        geometry.minimum_heavy_atom_contacts
+                    ),
+                    "contacts_satisfied": contacts_satisfied,
                     "satisfied": satisfied,
                 }
             )
         else:
+            checks: list[bool] = []
+            if geometry.distance is not None:
+                if geometry.distance.type != "com":
+                    distance_error = None
+                    distance_satisfied = False
+                else:
+                    distance_error = abs(
+                        report["centroid_distance"]
+                        - geometry.distance.target
+                    )
+                    distance_satisfied = (
+                        distance_error <= geometry.distance.tolerance
+                    )
+                report.update(
+                    {
+                        "distance_type": geometry.distance.type,
+                        "distance_target": geometry.distance.target,
+                        "distance_tolerance": geometry.distance.tolerance,
+                        "distance_error": distance_error,
+                        "distance_satisfied": distance_satisfied,
+                    }
+                )
+                if geometry.distance.type != "com":
+                    report["distance_diagnostic"] = (
+                        "Standalone geometric validation currently supports "
+                        "only distance.type=com"
+                    )
+                checks.append(distance_satisfied)
+            if geometry.normal_angle_deg is not None:
+                normal_error = abs(
+                    report["normal_angle_deg"]
+                    - geometry.normal_angle_deg.target
+                )
+                normal_satisfied = (
+                    normal_error <= geometry.normal_angle_deg.tolerance
+                )
+                report.update(
+                    {
+                        "normal_angle_target_deg": (
+                            geometry.normal_angle_deg.target
+                        ),
+                        "normal_angle_tolerance_deg": (
+                            geometry.normal_angle_deg.tolerance
+                        ),
+                        "normal_angle_error_deg": normal_error,
+                        "normal_angle_satisfied": normal_satisfied,
+                    }
+                )
+                checks.append(normal_satisfied)
+            if geometry.twist_deg is not None:
+                twist_deg = float(
+                    np.rad2deg(
+                        np.arctan2(
+                            observed_relative[1, 0],
+                            observed_relative[0, 0],
+                        )
+                    )
+                )
+                twist_satisfied = (
+                    geometry.twist_deg.minimum
+                    <= twist_deg
+                    <= geometry.twist_deg.maximum
+                )
+                report.update(
+                    {
+                        "twist_deg": twist_deg,
+                        "twist_minimum_deg": geometry.twist_deg.minimum,
+                        "twist_maximum_deg": geometry.twist_deg.maximum,
+                        "twist_satisfied": twist_satisfied,
+                    }
+                )
+                checks.append(twist_satisfied)
+            if geometry.contacts is not None:
+                contact_count = int(
+                    (distances < geometry.contacts.cutoff).sum()
+                )
+                contacts_satisfied = (
+                    contact_count
+                    >= geometry.contacts.min_heavy_atom_contacts
+                )
+                report.update(
+                    {
+                        "declared_contact_cutoff": geometry.contacts.cutoff,
+                        "declared_contact_count": contact_count,
+                        "minimum_heavy_atom_contacts": (
+                            geometry.contacts.min_heavy_atom_contacts
+                        ),
+                        "contacts_satisfied": contacts_satisfied,
+                    }
+                )
+                checks.append(contacts_satisfied)
+            no_hard_clashes = report["hard_clashes_below_2_0A"] == 0
             report.update(
                 {
                     "target_mode": geometry.mode,
-                    "satisfied": False,
-                    "diagnostic": (
-                        "Geometric-constraint validation is not implemented"
-                    ),
+                    "satisfied": all(checks) and no_hard_clashes,
                 }
             )
-        if edge.required and not report["satisfied"]:
+        if (
+            edge.required
+            and edge.satisfaction_stage == "input"
+            and not report["satisfied"]
+        ):
             failed_required_edges.append(edge.id)
         reports.append(report)
 
     return {
         "all_required_satisfied": not failed_required_edges,
         "failed_required_edge_instances": failed_required_edges,
+        "unsatisfied_output_target_instances": [
+            report["edge_instance_id"]
+            for report in reports
+            if report["satisfaction_stage"] == "output"
+            and not report["satisfied"]
+        ],
         "edges": reports,
     }
 
@@ -907,11 +1026,33 @@ def _compile_atoms(
     compilation["strict_validation"] = strict_validation
 
     if strict_validation and clash_report["total_hard_clashes"]:
+        clashing_pairs = sorted(
+            (
+                pair
+                for pair in clash_report["group_pairs"]
+                if pair["hard_clash_count"]
+            ),
+            key=lambda pair: (
+                -pair["hard_clash_count"],
+                pair["minimum_atom_distance"],
+            ),
+        )
+        pair_summary = "; ".join(
+            f"{pair['left_group_instance_id']} vs "
+            f"{pair['right_group_instance_id']}: "
+            f"{pair['hard_clash_count']} pair(s), "
+            f"min {pair['minimum_atom_distance']:.3f} A"
+            for pair in clashing_pairs[:4]
+        )
+        remaining = len(clashing_pairs) - 4
+        if remaining > 0:
+            pair_summary += f"; plus {remaining} additional group pair(s)"
         raise ValueError(
             "Standalone compilation rejected severe inter-group clashes: "
             f"{clash_report['total_hard_clashes']} atom pairs are closer "
             f"than {clash_report['hard_cutoff']:.2f} A; minimum distance "
-            f"is {clash_report['minimum_inter_group_distance']:.3f} A"
+            f"is {clash_report['minimum_inter_group_distance']:.3f} A; "
+            f"clashing groups: {pair_summary}"
         )
     if strict_validation and not interface_report["all_required_satisfied"]:
         raise ValueError(

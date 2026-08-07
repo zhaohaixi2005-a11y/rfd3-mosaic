@@ -30,6 +30,7 @@ from rfd3.inference.symmetry.contigs import (
 from rfd3.inference.symmetry.frames import (
     get_symmetry_frames_from_atom_array,
     get_symmetry_frames_from_symmetry_id,
+    get_symmetry_multiplicity_from_id,
 )
 from rfd3.transforms.conditioning_base import get_motif_features
 
@@ -61,7 +62,10 @@ class SymmetryConfig(BaseModel):
     )
     id: Optional[str] = Field(
         None,
-        description="Symmetry group ID. e.g. 'C3', 'D2'. Only C and D symmetry types are supported currently.",
+        description=(
+            "Symmetry group ID, for example C3 or D2. Compiler-declared "
+            "frames additionally support the finite T, O and I groups."
+        ),
     )
     is_unsym_motif: Optional[str] = Field(
         None,
@@ -109,12 +113,6 @@ def _resolve_symmetry_frames(
 ):
     """Resolve runtime frames without conflating entities with transforms."""
 
-    frames = get_symmetry_frames_from_symmetry_id(sym_conf)
-    if not sym_conf.is_symmetric_motif:
-        return frames
-    assert (
-        src_atom_array is not None
-    ), "Source atom array must be provided for symmetric motifs"
     if sym_conf.use_declared_frames:
         order = sym_conf.declared_transform_order
         matrices = sym_conf.declared_transform_matrices
@@ -128,7 +126,7 @@ def _resolve_symmetry_frames(
                 "Declared symmetry transform order does not cover the "
                 "declared matrix set"
             )
-        expected_count = len(get_symmetry_frames_from_symmetry_id(sym_conf))
+        expected_count = get_symmetry_multiplicity_from_id(sym_conf)
         if len(order) != expected_count:
             raise ValueError(
                 "Declared symmetry transform count does not match symmetry "
@@ -163,6 +161,13 @@ def _resolve_symmetry_frames(
             "Using compiler-declared symmetry matrices in declared order."
         )
         return frames
+
+    frames = get_symmetry_frames_from_symmetry_id(sym_conf)
+    if not sym_conf.is_symmetric_motif:
+        return frames
+    assert (
+        src_atom_array is not None
+    ), "Source atom array must be provided for symmetric motifs"
     return get_symmetry_frames_from_atom_array(src_atom_array, frames)
 
 
@@ -264,6 +269,18 @@ def make_symmetric_atom_array_for_partial_diffusion(atom_array, sym_conf):
     Returns:
         atom_array: atom array with symmetry applied
     """
+    if not isinstance(sym_conf, SymmetryConfig):
+        sym_conf = convery_sym_conf_to_symmetry_config(sym_conf)
+    if (
+        sym_conf.use_declared_frames
+        and (sym_conf.id or "").strip().upper() in {"T", "O", "I"}
+    ):
+        raise NotImplementedError(
+            "Partial diffusion for declared-frame T/O/I symmetry is not "
+            "implemented; use ordinary generation or a Cn/Dn partial "
+            "diffusion input"
+        )
+
     # TODO: clean up this function
 
     # For partial diffusion with symmetric inputs, preserve exact positioning

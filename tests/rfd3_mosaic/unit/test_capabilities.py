@@ -42,6 +42,11 @@ class CapabilityLedgerTestCase(unittest.TestCase):
         self.assertEqual(schema.maturity, CapabilityMaturity.SCHEMA_ONLY)
         self.assertEqual(runtime.maturity, CapabilityMaturity.PLANNED)
 
+    def test_polyhedral_execution_is_not_overclaimed(self) -> None:
+        record = capability_by_id("polyhedral_groups")
+
+        self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
+
     def test_capabilities_cli_emits_machine_readable_json(self) -> None:
         output = StringIO()
         with redirect_stdout(output):
@@ -84,7 +89,7 @@ class CapabilityLedgerTestCase(unittest.TestCase):
         )
         self.assertEqual(
             observed["dn_static"],
-            CapabilityMaturity.CPU_VALIDATED,
+            CapabilityMaturity.GPU_CANARY,
         )
 
     def test_mobile_fixed_component_declares_runtime_capability(self) -> None:
@@ -113,6 +118,186 @@ class CapabilityLedgerTestCase(unittest.TestCase):
         self.assertEqual(
             observed,
             {"public_fixed_xyz", "bounded_orbit_mobility"},
+        )
+
+    def test_component_initial_poses_require_static_pose_sampling(self) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "component-initialization",
+                "input": "motif.pdb",
+                "symmetry": "T",
+                "sampling": {
+                    "initial_poses": {
+                        "site_alpha": {
+                            "radius": {
+                                "minimum": 50.0,
+                                "maximum": 50.0,
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {"static_pose_sampling", "polyhedral_groups"},
+        )
+
+    def test_mobile_dihedral_design_declares_dynamic_dn_capability(
+        self,
+    ) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "mobile-d3-component",
+                "input": "motif.pdb",
+                "symmetry": "D3",
+                "constraints": [
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-10",
+                        "pose": {
+                            "mode": "bounded_mobile",
+                            "max_translation": 3.0,
+                            "max_rotation_deg": 10.0,
+                        },
+                    }
+                ],
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {
+                "public_fixed_xyz",
+                "bounded_orbit_mobility",
+                "dn_static",
+                "dn_dynamic_multi_orbit",
+            },
+        )
+
+    def test_assembly_graph_declares_public_graph_capability(self) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "three-component-graph",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "components": {
+                    "alpha": {"selectors": ["A1-2"]},
+                    "beta": {"selectors": ["A3-4"]},
+                    "gamma": {"selectors": ["A5-6"]},
+                },
+                "interfaces": [
+                    {
+                        "id": "alpha_beta",
+                        "between": ["alpha", "beta"],
+                        "relation": {"mode": "preserve_input"},
+                    }
+                ],
+                "connections": [
+                    {
+                        "id": "alpha_to_beta",
+                        "from": "alpha.C",
+                        "to": "beta.N",
+                        "length": 20,
+                    }
+                ],
+            }
+        )
+
+        observed = {
+            item.id: item.maturity
+            for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {
+                "public_assembly_graph": CapabilityMaturity.GPU_CANARY,
+                "public_fixed_xyz": CapabilityMaturity.ENGINEERING,
+            },
+        )
+
+    def test_contact_edge_declares_graph_guidance_capability(self) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "designed-interface-c3",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "components": {
+                    "seed": {"selectors": ["A1-2"]},
+                },
+                "ports": {
+                    "face": {
+                        "component": "seed",
+                        "selectors": ["A1-2"],
+                    }
+                },
+                "interfaces": [
+                    {
+                        "id": "designed_face",
+                        "between": ["face", "face"],
+                        "copy_relation": {"orbit_offset": 1},
+                        "relation": {
+                            "mode": "contact",
+                            "minimum_heavy_atom_contacts": 4,
+                        },
+                    }
+                ],
+                "connections": [
+                    {
+                        "id": "extension",
+                        "from": "seed.C",
+                        "to": "seed.N",
+                        "length": 20,
+                    }
+                ],
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {
+                "public_assembly_graph",
+                "public_fixed_xyz",
+                "graph_interface_guidance",
+            },
+        )
+
+    def test_terminal_contig_infers_graph_guidance_capability(self) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "central-motif-auto-interface",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "generation": [
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "n",
+                        "length": 20,
+                    }
+                ],
+                "constraints": [
+                    {"kind": "fixed_xyz", "selector": "A1-2"}
+                ],
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {"public_fixed_xyz", "graph_interface_guidance"},
         )
 
 

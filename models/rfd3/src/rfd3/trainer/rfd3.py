@@ -374,6 +374,15 @@ class AADesignTrainer(FabricTrainer):
                     mobility_diagnostics
                 )
 
+        interface_guidance_diagnostics = network_output.get(
+            "graph_interface_guidance_diagnostics"
+        )
+        if interface_guidance_diagnostics is not None:
+            for i in range(len(arrays)):
+                metadata_dict[i][
+                    "graph_interface_guidance_diagnostics"
+                ] = interface_guidance_diagnostics
+
         # Add the seed to the metadata dictionary if provided
         if self.seed is not None:
             for i in range(len(arrays)):

@@ -195,6 +195,91 @@ class AssemblyCompilerTestCase(unittest.TestCase):
             (("--compiled-input", str(expected_input)),),
         )
 
+    def test_assembly_graph_adds_post_diffusion_relation_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            expected_input = output / "rfd3_input.json"
+            with patch(
+                "rfd3_mosaic.assembly_compiler.lower_experiment_topology",
+                return_value=AssemblyCompilationRequest(
+                    specification_path=output / "assembly.yaml",
+                    example_id="graph-c3",
+                    audit_requirements=(
+                        AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                        AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
+                    ),
+                ),
+            ), patch(
+                "rfd3_mosaic.assembly_compiler.compile_assembly_rfd3_input",
+                return_value=SimpleNamespace(
+                    input_path=expected_input,
+                    mapping_path=output / "mapping.json",
+                ),
+            ):
+                artifact = compile_experiment_assembly(
+                    {"kind": "user_design"},
+                    output,
+                    project_directory=".",
+                    experiment_name="graph-c3",
+                )
+
+        relation = artifact.semantic_audits[1]
+        self.assertEqual(
+            relation.module,
+            "rfd3_mosaic.rfd3_interface_relation_audit",
+        )
+        self.assertEqual(
+            relation.report_name,
+            "assembly_interface_relation_audit.json",
+        )
+        self.assertEqual(
+            relation.input_arguments,
+            (("--compiled-input", str(expected_input)),),
+        )
+
+    def test_contact_graph_adds_sampler_guidance_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            expected_input = output / "rfd3_input.json"
+            with patch(
+                "rfd3_mosaic.assembly_compiler.lower_experiment_topology",
+                return_value=AssemblyCompilationRequest(
+                    specification_path=output / "assembly.yaml",
+                    example_id="contact-c3",
+                    audit_requirements=(
+                        AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                        AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
+                        AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+                    ),
+                ),
+            ), patch(
+                "rfd3_mosaic.assembly_compiler.compile_assembly_rfd3_input",
+                return_value=SimpleNamespace(
+                    input_path=expected_input,
+                    mapping_path=output / "mapping.json",
+                ),
+            ):
+                artifact = compile_experiment_assembly(
+                    {"kind": "user_design"},
+                    output,
+                    project_directory=".",
+                    experiment_name="contact-c3",
+                )
+
+        guidance = artifact.semantic_audits[2]
+        self.assertEqual(
+            guidance.module,
+            "rfd3_mosaic.rfd3_graph_interface_guidance_audit",
+        )
+        self.assertEqual(
+            guidance.report_name,
+            "graph_interface_guidance_audit.json",
+        )
+        self.assertEqual(
+            guidance.input_arguments,
+            (("--compiled-input", str(expected_input)),),
+        )
+
     def test_compiled_audit_builds_a_complete_generic_command(self) -> None:
         audit = CompiledAudit(
             module="example.audit",

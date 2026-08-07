@@ -1,0 +1,71 @@
+schema_version: 1
+name: example-c3-three-component-graph
+input: inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+
+# Components are rigid nodes. A component may contain one contiguous motif
+# fragment, or several fragments that must retain one common relative pose.
+components:
+  seed_alpha:
+    selectors: [A12-14]
+
+  seed_beta:
+    selectors: [A18-20]
+
+  seed_gamma:
+    selectors: [A26-28, A35-37]
+    geometry: joint_rigid
+
+# Interfaces are geometry-relation edges; they do not create peptide bonds.
+interfaces:
+  - id: alpha_beta_geometry
+    between: [seed_alpha, seed_beta]
+    relation:
+      mode: preserve_input
+
+  - id: beta_gamma_contact
+    between: [seed_beta, seed_gamma]
+    copy_relation: {orbit_offset: 1}
+    relation:
+      mode: contact
+      minimum_heavy_atom_contacts: 4
+      cutoff: 8.0
+
+# Connections are directed generated-chain edges. Each physical terminus can
+# be consumed at most once. Multi-selector components name the endpoint
+# selector explicitly.
+connections:
+  - id: alpha_to_beta
+    from: seed_alpha.C
+    to: seed_beta.N
+    length: {minimum: 10, maximum: 20}
+
+  - id: beta_to_gamma
+    from: seed_beta.C
+    to:
+      component: seed_gamma
+      selector: A26-28
+      terminus: n
+    length: {minimum: 10, maximum: 20}
+
+  - id: gamma_internal
+    from:
+      component: seed_gamma
+      selector: A26-28
+      terminus: c
+    to:
+      component: seed_gamma
+      selector: A35-37
+      terminus: n
+    length: 5
+
+sampling:
+  timesteps: 50
+  seed: 42
+
+resources:
+  profile: v100
+
+output:
+  root: /path/to/rfd3-mosaic-runs
+  campaign: public-assembly-graph

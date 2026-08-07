@@ -69,6 +69,7 @@ class UserDesignConstraintTestCase(unittest.TestCase):
                         "coupling_group": "mobile_site",
                         "pose": {
                             "mode": "bounded_mobile",
+                            "proposal": "scaffold_objectives",
                             "max_translation": 4.0,
                             "max_rotation_deg": 12.0,
                         },
@@ -79,8 +80,24 @@ class UserDesignConstraintTestCase(unittest.TestCase):
 
         pose = plan.operators[0].parameters["pose"]
         self.assertEqual(pose["mode"], "bounded_mobile")
+        self.assertEqual(pose["proposal"], "scaffold_objectives")
         self.assertEqual(pose["max_translation"], 4.0)
         self.assertEqual(pose["max_rotation_deg"], 12.0)
+
+    def test_fixed_component_rejects_scaffold_proposal(self) -> None:
+        with self.assertRaises(ValidationError):
+            design(
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A12-20",
+                        "pose": {
+                            "mode": "fixed",
+                            "proposal": "scaffold_objectives",
+                        },
+                    }
+                ]
+            )
 
     def test_bounded_fixed_component_requires_translation_and_rotation(self) -> None:
         with self.assertRaises(ValidationError):
@@ -96,6 +113,59 @@ class UserDesignConstraintTestCase(unittest.TestCase):
                     }
                 ]
             )
+
+    def test_radial_component_uses_translation_only_scaffold_signal(
+        self,
+    ) -> None:
+        plan = compile_constraint_plan(
+            design(
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A12-20",
+                        "pose": {
+                            "mode": "bounded_mobile",
+                            "subspace": "radial",
+                            "proposal": "scaffold_objectives",
+                            "max_translation": 4.0,
+                        },
+                    }
+                ]
+            )
+        )
+
+        pose = plan.operators[0].parameters["pose"]
+        self.assertEqual(pose["subspace"], "radial")
+        self.assertIsNone(pose["max_rotation_deg"])
+
+    def test_radial_component_rejects_rotation_or_denoiser_signal(
+        self,
+    ) -> None:
+        for pose in (
+            {
+                "mode": "bounded_mobile",
+                "subspace": "radial",
+                "proposal": "scaffold_objectives",
+                "max_translation": 4.0,
+                "max_rotation_deg": 5.0,
+            },
+            {
+                "mode": "bounded_mobile",
+                "subspace": "radial",
+                "proposal": "denoiser_fit",
+                "max_translation": 4.0,
+            },
+        ):
+            with self.subTest(pose=pose), self.assertRaises(ValidationError):
+                design(
+                    constraints=[
+                        {
+                            "kind": "fixed_xyz",
+                            "selector": "A12-20",
+                            "pose": pose,
+                        }
+                    ]
+                )
 
     def test_compatibility_constraint_names_compile_canonically(self) -> None:
         plan = compile_constraint_plan(
@@ -315,8 +385,50 @@ constraints:
 
         text = output.getvalue()
         self.assertIn("RFD3-Mosaic public design plan", text)
+        self.assertIn("user mode:  simple", text)
         self.assertIn("cylindrical [hard_projector]", text)
         self.assertIn("assembly lowering: blocked", text)
+
+    def test_plan_cli_explains_joint_seed_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "motif.pdb").write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA A   2       3.800   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            config = root / "design.yaml"
+            config.write_text(
+                """\
+schema_version: 1
+name: complete-seed-plan
+input: motif.pdb
+symmetry: C3
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+    coupling_group: complete_interface_seed
+  - kind: fixed_xyz
+    selector: A2
+    coupling_group: complete_interface_seed
+""",
+                encoding="utf-8",
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                main(["plan", str(config)])
+
+        text = output.getvalue()
+        self.assertIn("complete_interface_seed", text)
+        self.assertIn(
+            "2 selected region(s) and 2 atom(s) per copy",
+            text,
+        )
+        self.assertIn("x 3 symmetry copies", text)
+        self.assertIn("selectors: A1, A2", text)
 
     def test_submit_cli_rejects_unlowered_public_design(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -335,6 +447,81 @@ symmetry: C3
 
             with self.assertRaises(SystemExit):
                 main(["submit", str(config), "--dry-run"])
+
+    def test_validate_preflights_complete_expanded_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "motif.pdb").write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            config = root / "design.yaml"
+            config.write_text(
+                """\
+schema_version: 1
+name: geometry-preflight
+input: motif.pdb
+symmetry: C3
+generation:
+  - kind: terminal
+    anchor: A1
+    terminus: n
+    length: 20
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+sampling:
+  initial_pose:
+    radius: {minimum: 24.0, maximum: 24.0}
+    seed: 3000
+""",
+                encoding="utf-8",
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                main(["validate", str(config)])
+
+        text = output.getvalue()
+        self.assertIn("User design validation: PASSED", text)
+        self.assertIn("geometry:    PASSED", text)
+        self.assertIn("3 atoms", text)
+
+    def test_validate_automatically_positions_degenerate_simple_motif(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "motif.pdb").write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            config = root / "design.yaml"
+            config.write_text(
+                """\
+schema_version: 1
+name: clashing-preflight
+input: motif.pdb
+symmetry: C3
+generation:
+  - kind: terminal
+    anchor: A1
+    terminus: n
+    length: 20
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+""",
+                encoding="utf-8",
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                main(["validate", str(config)])
+
+        self.assertIn("User design validation: PASSED", output.getvalue())
 
     def test_executable_public_design_materializes_internal_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

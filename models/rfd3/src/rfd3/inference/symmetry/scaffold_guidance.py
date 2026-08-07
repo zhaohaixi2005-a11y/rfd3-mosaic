@@ -1,9 +1,10 @@
-"""Scaffold-derived rigid-pose guidance for one cyclic motif orbit.
+"""Scaffold-derived rigid-pose guidance for symmetry motif orbits.
 
 This module contains only deterministic geometry operations.  It does not
 change RFD3 model weights and it never moves symmetry copies independently.
-The caller optimizes one master pose, then expands that pose through the
-declared cyclic transforms.
+The caller optimizes one master pose, then expands that pose through every
+declared group action.  Axis-dependent objectives use the primary cyclic
+subgroup of Cn or Dn; orbit materialization itself is group-agnostic.
 """
 
 from __future__ import annotations
@@ -27,7 +28,13 @@ class BoundaryTopology:
 
 @dataclass(frozen=True)
 class CyclicAxis:
-    """One common fixed line for a proper cyclic transform set."""
+    """Primary cyclic-subgroup axis used by axis-dependent objectives.
+
+    The historical class name is retained for API compatibility.  For Dn,
+    ``transform_ids`` contains the identity and rotations in the primary Cn
+    subgroup, while the complete Dn transform registry remains responsible
+    for orbit expansion and exact projection.
+    """
 
     point: torch.Tensor
     direction: torch.Tensor
@@ -530,6 +537,62 @@ def extract_cyclic_axis(
     )
 
 
+def extract_symmetry_primary_axis(
+    sym_transforms: dict[Any, tuple[Any, Any]],
+    *,
+    symmetry_id: str | None,
+    tolerance: float = 1e-4,
+) -> CyclicAxis:
+    """Resolve the primary Cn axis without assuming all group axes coincide.
+
+    Cn consists entirely of one cyclic subgroup, so this is identical to
+    :func:`extract_cyclic_axis`.  A proper Dn registry is ordered as
+    ``e, r1, ..., r(n-1), s0, ..., s(n-1)`` by Mosaic's transform registry.
+    Only the first ``n`` rotations share the principal axis; the secondary
+    two-fold coset must remain in the full registry but must not be passed to
+    the common-axis solver.
+    """
+
+    normalized_id = str(symmetry_id or "").upper()
+    if len(normalized_id) < 2 or not normalized_id[1:].isdigit():
+        raise ValueError(
+            "Axis-dependent scaffold guidance requires a runtime Cn or Dn "
+            "symmetry_id"
+        )
+    family = normalized_id[0]
+    order = int(normalized_id[1:])
+    if family not in {"C", "D"} or order < 2:
+        raise ValueError(
+            "Axis-dependent scaffold guidance currently supports Cn and Dn"
+        )
+
+    transforms = _normalized_transforms(sym_transforms)
+    ordered_ids = tuple(sorted(transforms))
+    expected_count = order if family == "C" else 2 * order
+    if len(ordered_ids) != expected_count:
+        raise ValueError(
+            f"{normalized_id} requires {expected_count} runtime transforms, "
+            f"observed {len(ordered_ids)}"
+        )
+    if family == "C":
+        subgroup_ids = ordered_ids
+    else:
+        subgroup_ids = ordered_ids[:order]
+
+    axis = extract_cyclic_axis(
+        {
+            transform_id: transforms[transform_id]
+            for transform_id in subgroup_ids
+        },
+        tolerance=tolerance,
+    )
+    return CyclicAxis(
+        point=axis.point,
+        direction=axis.direction,
+        transform_ids=tuple(subgroup_ids),
+    )
+
+
 def principal_axis_from_points(points: torch.Tensor) -> torch.Tensor:
     """Return a deterministic principal direction for one master motif."""
 
@@ -869,6 +932,33 @@ def _energy_scalar(value: Any) -> torch.Tensor:
     return value.reshape(())
 
 
+def _project_onto_basis(
+    vector: torch.Tensor,
+    basis: torch.Tensor | None,
+    *,
+    label: str,
+) -> torch.Tensor:
+    """Project one 3-vector onto the span of explicit physical axes."""
+
+    if basis is None:
+        return vector
+    basis = _as_tensor(
+        basis,
+        dtype=vector.dtype,
+        device=vector.device,
+    )
+    if basis.ndim != 2 or basis.shape[1] != 3:
+        raise ValueError(f"{label} basis must have shape [K, 3]")
+    if not torch.isfinite(basis).all():
+        raise ValueError(f"{label} basis contains NaN or Inf")
+    if basis.shape[0] == 0:
+        return torch.zeros_like(vector)
+    if int(torch.linalg.matrix_rank(basis).item()) != basis.shape[0]:
+        raise ValueError(f"{label} basis vectors must be independent")
+    orthonormal, _ = torch.linalg.qr(basis.T, mode="reduced")
+    return orthonormal @ (orthonormal.T @ vector)
+
+
 def propose_bounded_se3_step(
     current_rotation: torch.Tensor,
     current_translation: torch.Tensor,
@@ -880,6 +970,8 @@ def propose_bounded_se3_step(
     maximum_total_rotation_degrees: float,
     translation_step_size: float | None = None,
     rotation_step_size_degrees: float | None = None,
+    translation_basis: torch.Tensor | None = None,
+    rotation_basis: torch.Tensor | None = None,
     line_search_scales: tuple[float, ...] = (1.0, 0.5, 0.25),
 ) -> SE3Proposal:
     """Take one deterministic gradient proposal with fixed line search."""
@@ -958,11 +1050,19 @@ def propose_bounded_se3_step(
     ):
         raise ValueError("Pose objective gradient contains NaN or Inf")
 
-    rotation_direction = -rotation_gradient.detach()
+    rotation_direction = _project_onto_basis(
+        -rotation_gradient.detach(),
+        rotation_basis,
+        label="rotation",
+    )
     rotation_norm = torch.linalg.vector_norm(rotation_direction)
     if float(rotation_norm.item()) > 1e-12:
         rotation_direction = rotation_direction / rotation_norm
-    translation_direction = -translation_gradient.detach()
+    translation_direction = _project_onto_basis(
+        -translation_gradient.detach(),
+        translation_basis,
+        label="translation",
+    )
     translation_norm = torch.linalg.vector_norm(translation_direction)
     if float(translation_norm.item()) > 1e-12:
         translation_direction = translation_direction / translation_norm
@@ -1044,7 +1144,7 @@ def expand_master_orbit(
 
     The output has shape ``[G, D, M, 3]``.  Keeping the group-action dimension
     explicit makes it difficult for callers to accidentally apply one global
-    rigid motion to the complete Cn union.
+    rigid motion to the complete symmetry-orbit union.
     """
 
     master = _as_tensor(master_coordinates)

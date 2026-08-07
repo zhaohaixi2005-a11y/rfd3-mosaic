@@ -4,14 +4,17 @@ from pathlib import Path
 
 import numpy as np
 
-from rfd3_mosaic.compile import build_master_group_transforms
+from rfd3_mosaic.compile import (
+    build_master_group_transforms,
+    expand_symmetry_instances,
+)
 from rfd3_mosaic.constraint_plan import compile_constraint_plan
 from rfd3_mosaic.design_compiler import (
     bind_constraint_plan,
     lower_user_design,
     parse_public_selector,
 )
-from rfd3_mosaic.schema import UserDesignSpec
+from rfd3_mosaic.schema import AssemblySpecification, UserDesignSpec
 
 
 def _atom_line(
@@ -128,11 +131,85 @@ class DesignCompilerTestCase(unittest.TestCase):
         spec = lowered.specification
         self.assertEqual(len(spec.fragments), 1)
         self.assertEqual(len(spec.generated_segments), 2)
+        self.assertEqual(len(spec.interfaces), 1)
+        automatic = spec.interfaces["auto_generated_interface_001"]
+        self.assertEqual(automatic.satisfaction_stage, "output")
+        self.assertEqual(automatic.copy_relation.transform, "C3:r1")
+        self.assertEqual(automatic.target_geometry.coverage.mode, "auto")
         self.assertEqual(spec.fragments["motif_001"].fixed_atoms, "all")
         self.assertEqual(
             spec.symmetry.transform_sets["declared"].order,
             3,
         )
+
+    def test_simple_mode_automatically_moves_axis_degenerate_motif(
+        self,
+    ) -> None:
+        structure = self.root / "axis_motif.pdb"
+        structure.write_text(
+            _atom_line(1, "CA", "A", 1, 0.0) + "END\n",
+            encoding="utf-8",
+        )
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "automatic-simple-pose",
+                "input": str(structure),
+                "symmetry": "C3",
+                "generation": [
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1",
+                        "terminus": "c",
+                        "length": 20,
+                    }
+                ],
+                "constraints": [
+                    {"kind": "fixed_xyz", "selector": "A1"},
+                ],
+            }
+        )
+
+        lowered = lower_user_design(design)
+        initialization = lowered.specification.initialization[
+            "fixed_component_001"
+        ]
+
+        self.assertEqual(design.user_mode, "simple")
+        self.assertGreater(initialization.placement.radius.mean, 0.0)
+        self.assertEqual(
+            lowered.specification.interfaces[
+                "auto_generated_interface_001"
+            ].copy_relation.transform,
+            "C3:r1",
+        )
+
+    def test_between_generation_does_not_invent_output_interface(self) -> None:
+        lowered = lower_user_design(
+            self._design(
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "supplied_interface",
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "supplied_interface",
+                    },
+                ],
+            )
+        )
+
+        self.assertEqual(lowered.specification.interfaces, {})
 
     def test_fixed_coupling_groups_lower_to_motion_components(self) -> None:
         lowered = lower_user_design(
@@ -218,6 +295,7 @@ class DesignCompilerTestCase(unittest.TestCase):
                         "coupling_group": "mobile_component",
                         "pose": {
                             "mode": "bounded_mobile",
+                            "proposal": "scaffold_objectives",
                             "max_translation": 3.0,
                             "max_rotation_deg": 10.0,
                         },
@@ -235,11 +313,152 @@ class DesignCompilerTestCase(unittest.TestCase):
         self.assertEqual(len(orbit.component_mobility), 1)
         mobility = orbit.component_mobility["fixed_component_001"]
         self.assertEqual(mobility.mode.value, "orbit_rigid")
+        self.assertEqual(
+            mobility.effective_proposal.value,
+            "scaffold_objectives",
+        )
         self.assertEqual(mobility.bounds.max_translation, 3.0)
         self.assertEqual(mobility.bounds.max_rotation_deg, 10.0)
         self.assertEqual(
             orbit.component_mobility.get("fixed_component_002"), None
         )
+
+    def test_two_independent_mobile_interfaces_lower_to_two_components(
+        self,
+    ) -> None:
+        pose = {
+            "mode": "bounded_mobile",
+            "proposal": "scaffold_objectives",
+            "max_translation": 3.0,
+            "max_rotation_deg": 10.0,
+        }
+        lowered = lower_user_design(
+            self._design(
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "interface_alpha",
+                        "pose": pose,
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "interface_beta",
+                        "pose": pose,
+                    },
+                ],
+            )
+        )
+
+        orbit = lowered.specification.symmetry.orbits["motif_orbit"]
+        self.assertEqual(len(orbit.master_groups), 2)
+        self.assertEqual(
+            set(orbit.component_mobility),
+            {"fixed_component_001", "fixed_component_002"},
+        )
+        self.assertTrue(
+            all(
+                mobility.mode.value == "orbit_rigid"
+                and mobility.effective_proposal.value
+                == "scaffold_objectives"
+                for mobility in orbit.component_mobility.values()
+            )
+        )
+
+    def test_radial_component_lowers_axis_aware_mobility(self) -> None:
+        lowered = lower_user_design(
+            self._design(
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "mobile_component",
+                        "pose": {
+                            "mode": "bounded_mobile",
+                            "subspace": "radial",
+                            "proposal": "scaffold_objectives",
+                            "max_translation": 3.0,
+                        },
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "fixed_component",
+                    },
+                ],
+            )
+        )
+
+        orbit = lowered.specification.symmetry.orbits["motif_orbit"]
+        mobility = orbit.component_mobility["fixed_component_001"]
+        self.assertEqual(mobility.effective_subspace.value, "radial")
+        self.assertEqual(
+            mobility.effective_proposal.value,
+            "scaffold_objectives",
+        )
+        self.assertEqual(mobility.bounds.max_translation, 3.0)
+        self.assertIsNone(mobility.bounds.max_rotation_deg)
+
+    def test_joint_mobile_interface_fragments_lower_as_one_orbit_component(
+        self,
+    ) -> None:
+        pose = {
+            "mode": "bounded_mobile",
+            "proposal": "scaffold_objectives",
+            "max_translation": 3.0,
+            "max_rotation_deg": 10.0,
+        }
+        lowered = lower_user_design(
+            self._design(
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "complete_interface_seed",
+                        "pose": pose,
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "complete_interface_seed",
+                        "pose": pose,
+                    },
+                ],
+            )
+        )
+
+        specification = lowered.specification
+        self.assertEqual(len(specification.motion_groups), 1)
+        group = specification.motion_groups["fixed_component_001"]
+        self.assertEqual(set(group.members), {"motif_001", "motif_002"})
+        orbit = specification.symmetry.orbits["motif_orbit"]
+        self.assertEqual(orbit.master_groups, ["fixed_component_001"])
+        self.assertEqual(set(orbit.component_mobility), {"fixed_component_001"})
 
     def test_joint_component_rejects_conflicting_pose_modes(self) -> None:
         with self.assertRaisesRegex(ValueError, "same pose settings"):
@@ -392,6 +611,331 @@ class DesignCompilerTestCase(unittest.TestCase):
         transform = spec.symmetry.transform_sets["declared"]
         self.assertEqual(transform.type, "dihedral")
         self.assertEqual(transform.order, 3)
+
+    def test_lowers_two_independent_mobile_components_for_d3(self) -> None:
+        pose = {
+            "mode": "bounded_mobile",
+            "proposal": "scaffold_objectives",
+            "max_translation": 3.0,
+            "max_rotation_deg": 10.0,
+        }
+        lowered = lower_user_design(
+            self._design(
+                symmetry={
+                    "id": "D3",
+                    "axis": [0.0, 0.0, 1.0],
+                    "secondary_axis": [1.0, 0.0, 0.0],
+                },
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "d3_orbit_alpha",
+                        "pose": pose,
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "d3_orbit_beta",
+                        "pose": pose,
+                    },
+                ],
+            )
+        )
+
+        spec = lowered.specification
+        transform = spec.symmetry.transform_sets["declared"]
+        orbit = spec.symmetry.orbits["motif_orbit"]
+        self.assertEqual(transform.type, "dihedral")
+        self.assertEqual(transform.order, 3)
+        self.assertEqual(len(orbit.master_groups), 2)
+        self.assertEqual(
+            set(orbit.component_mobility),
+            {"fixed_component_001", "fixed_component_002"},
+        )
+
+    def test_lowers_public_polyhedral_groups_into_assembly_ir(self) -> None:
+        expected = {
+            "T": ("tetrahedral", 12),
+            "O": ("octahedral", 24),
+            "I": ("icosahedral", 60),
+        }
+        for symmetry_id, (symmetry_type, order) in expected.items():
+            with self.subTest(symmetry=symmetry_id):
+                lowered = lower_user_design(
+                    self._design(
+                        symmetry=symmetry_id,
+                        generation=[
+                            {
+                                "kind": "terminal",
+                                "anchor": "A1-2",
+                                "terminus": "n",
+                                "length": 20,
+                            }
+                        ],
+                        constraints=[
+                            {
+                                "kind": "fixed_xyz",
+                                "selector": "A1-2",
+                            }
+                        ],
+                    )
+                )
+                transform = lowered.specification.symmetry.transform_sets[
+                    "declared"
+                ]
+                self.assertEqual(transform.type, symmetry_type)
+                self.assertEqual(transform.order, order)
+                instances = expand_symmetry_instances(
+                    lowered.specification
+                )
+                self.assertEqual(len(instances.fragments), order)
+                self.assertEqual(len(instances.generated_segments), order)
+
+    def test_tetrahedral_joint_seed_accepts_one_generic_initial_pose(
+        self,
+    ) -> None:
+        lowered = lower_user_design(
+            self._design(
+                symmetry={
+                    "id": "T",
+                    "axis": [0.0, 0.0, 1.0],
+                    "secondary_axis": [1.0, 0.0, 0.0],
+                    "center": [0.0, 0.0, 0.0],
+                },
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "joint_seed",
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "joint_seed",
+                    },
+                ],
+                sampling={
+                    "initial_pose": {
+                        "radius": {"minimum": 80.0, "maximum": 80.0},
+                        "orientation": {"method": "uniform_so3"},
+                        "seed": 920,
+                    }
+                },
+            )
+        )
+
+        spec = lowered.specification
+        self.assertEqual(
+            list(spec.motion_groups),
+            ["fixed_component_001"],
+        )
+        self.assertEqual(
+            list(spec.motion_groups["fixed_component_001"].members),
+            ["motif_001", "motif_002"],
+        )
+        self.assertEqual(
+            spec.initialization[
+                "fixed_component_001"
+            ].placement.radius.mean,
+            80.0,
+        )
+        instances = expand_symmetry_instances(spec)
+        self.assertEqual(len(instances.fragments), 24)
+        self.assertEqual(len(instances.generated_segments), 12)
+
+    def test_tetrahedral_independent_orbits_accept_component_poses(
+        self,
+    ) -> None:
+        lowered = lower_user_design(
+            self._design(
+                symmetry={
+                    "id": "T",
+                    "axis": [0.0, 0.0, 1.0],
+                    "secondary_axis": [1.0, 0.0, 0.0],
+                    "center": [0.0, 0.0, 0.0],
+                },
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "site_alpha",
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "site_beta",
+                    },
+                ],
+                sampling={
+                    "initial_poses": {
+                        "site_alpha": {
+                            "radius": {
+                                "minimum": 70.0,
+                                "maximum": 70.0,
+                            },
+                            "orientation": {"method": "uniform_so3"},
+                            "seed": 101,
+                        },
+                        "site_beta": {
+                            "radius": {
+                                "minimum": 90.0,
+                                "maximum": 90.0,
+                            },
+                            "radial_direction": [0.0, 1.0, 0.0],
+                            "orientation": {"method": "uniform_so3"},
+                            "seed": 202,
+                        },
+                    }
+                },
+            )
+        )
+
+        spec = lowered.specification
+        self.assertIsNone(spec.random_seed)
+        self.assertEqual(
+            list(spec.initialization),
+            ["fixed_component_001", "fixed_component_002"],
+        )
+        self.assertEqual(
+            spec.initialization["fixed_component_001"].random_seed,
+            101,
+        )
+        self.assertEqual(
+            spec.initialization["fixed_component_002"].random_seed,
+            202,
+        )
+        self.assertEqual(
+            spec.initialization[
+                "fixed_component_001"
+            ].placement.radius.mean,
+            70.0,
+        )
+        self.assertEqual(
+            spec.initialization[
+                "fixed_component_002"
+            ].placement.radius.mean,
+            90.0,
+        )
+
+        metadata: dict[str, object] = {}
+        transforms = build_master_group_transforms(
+            spec,
+            base_directory=self.root,
+            sample_metadata=metadata,
+        )
+        self.assertEqual(
+            metadata["fixed_component_001"]["random_seed"],
+            101,
+        )
+        self.assertEqual(
+            metadata["fixed_component_002"]["random_seed"],
+            202,
+        )
+
+        reversed_payload = spec.model_dump(mode="json")
+        reversed_payload["initialization"] = dict(
+            reversed(list(reversed_payload["initialization"].items()))
+        )
+        reversed_spec = AssemblySpecification.model_validate(
+            reversed_payload
+        )
+        reversed_transforms = build_master_group_transforms(
+            reversed_spec,
+            base_directory=self.root,
+        )
+        for group_id in transforms:
+            np.testing.assert_allclose(
+                transforms[group_id],
+                reversed_transforms[group_id],
+                atol=1e-12,
+            )
+
+    def test_component_initial_pose_rejects_unknown_coupling_group(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown fixed coupling_group"):
+            lower_user_design(
+                self._design(
+                    generation=[
+                        {
+                            "kind": "between",
+                            "from_selector": "A1-2",
+                            "to_selector": "B1-2",
+                            "length": 30,
+                        }
+                    ],
+                    constraints=[
+                        {
+                            "kind": "fixed_xyz",
+                            "selector": "A1-2",
+                            "coupling_group": "site_alpha",
+                        },
+                        {
+                            "kind": "fixed_xyz",
+                            "selector": "B1-2",
+                            "coupling_group": "site_beta",
+                        },
+                    ],
+                    sampling={
+                        "initial_poses": {
+                            "missing_site": {
+                                "radius": {
+                                    "minimum": 50.0,
+                                    "maximum": 50.0,
+                                }
+                            }
+                        }
+                    },
+                )
+            )
+
+    def test_polyhedral_lowering_rejects_cyclic_orbit_offsets(self) -> None:
+        design = self._design(
+            symmetry="T",
+            generation=[
+                {
+                    "kind": "between",
+                    "from_selector": "A1-2",
+                    "to_selector": "B1-2",
+                    "length": 30,
+                    "orbit_offset": 1,
+                }
+            ],
+            constraints=[
+                {
+                    "kind": "fixed_xyz",
+                    "selector": "A1-2,B1-2",
+                }
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "cyclic orbit offsets"):
+            lower_user_design(design)
 
     def test_lowering_rejects_unimplemented_cylindrical_backend(self) -> None:
         declared = self._design(

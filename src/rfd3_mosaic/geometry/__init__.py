@@ -11,9 +11,11 @@ from rfd3_mosaic.geometry.symmetry_registry import (
     SymmetryTransformRegistry,
     build_cyclic_registry,
     build_dihedral_registry,
+    build_polyhedral_registry,
     build_transform_registry,
     cyclic_transform_id,
     dihedral_transform_id,
+    polyhedral_transform_id,
     validate_group_closure,
 )
 from rfd3_mosaic.geometry.frames import reference_interface_pca_frame
@@ -29,9 +31,11 @@ __all__ = [
     "SymmetryTransformRegistry",
     "build_cyclic_registry",
     "build_dihedral_registry",
+    "build_polyhedral_registry",
     "build_transform_registry",
     "cyclic_transform_id",
     "dihedral_transform_id",
+    "polyhedral_transform_id",
     "validate_group_closure",
     "reference_interface_pca_frame",
 ]

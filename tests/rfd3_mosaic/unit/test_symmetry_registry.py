@@ -6,9 +6,11 @@ from rfd3_mosaic.geometry import (
     apply_transform,
     build_cyclic_registry,
     build_dihedral_registry,
+    build_polyhedral_registry,
     build_transform_registry,
     cyclic_transform_id,
     dihedral_transform_id,
+    polyhedral_transform_id,
     validate_group_closure,
 )
 from rfd3_mosaic.schema.specs import (
@@ -215,6 +217,117 @@ class DihedralSymmetryRegistryTestCase(unittest.TestCase):
                 axis=(0.0, 0.0, 1.0),
                 secondary_axis=(1.0, 0.0, 1.0),
             )
+
+
+class PolyhedralSymmetryRegistryTestCase(unittest.TestCase):
+    CASES = (
+        (SymmetryType.TETRAHEDRAL, "T", 12),
+        (SymmetryType.OCTAHEDRAL, "O", 24),
+        (SymmetryType.ICOSAHEDRAL, "I", 60),
+    )
+
+    def test_polyhedral_groups_have_stable_complete_ids(self) -> None:
+        for symmetry_type, group_name, order in self.CASES:
+            with self.subTest(group=group_name):
+                registry = build_polyhedral_registry(symmetry_type)
+                self.assertEqual(registry.group_name, group_name)
+                self.assertEqual(registry.order, order)
+                self.assertEqual(registry.identity_id, f"{group_name}:e")
+                self.assertEqual(
+                    registry.transform_ids[-1],
+                    polyhedral_transform_id(group_name, order - 1),
+                )
+                np.testing.assert_allclose(
+                    registry.transform(registry.identity_id),
+                    np.eye(4),
+                    atol=1e-7,
+                )
+
+    def test_polyhedral_groups_are_closed_and_proper(self) -> None:
+        for symmetry_type, group_name, _ in self.CASES:
+            with self.subTest(group=group_name):
+                registry = build_polyhedral_registry(symmetry_type)
+                validate_group_closure(registry)
+                for transform_id in registry.transform_ids:
+                    rotation = registry.transform(transform_id)[:3, :3]
+                    np.testing.assert_allclose(
+                        rotation @ rotation.T,
+                        np.eye(3),
+                        atol=1e-7,
+                    )
+                    self.assertAlmostEqual(
+                        float(np.linalg.det(rotation)),
+                        1.0,
+                        places=6,
+                    )
+                    inverse = np.linalg.inv(
+                        registry.transform(transform_id)
+                    )
+                    inverse_ids = [
+                        candidate_id
+                        for candidate_id in registry.transform_ids
+                        if np.allclose(
+                            registry.transform(candidate_id),
+                            inverse,
+                            atol=1e-7,
+                        )
+                    ]
+                    self.assertEqual(len(inverse_ids), 1)
+
+    def test_polyhedral_groups_fix_declared_center(self) -> None:
+        center = np.asarray((4.0, -2.0, 1.0))
+        for symmetry_type, group_name, _ in self.CASES:
+            with self.subTest(group=group_name):
+                registry = build_polyhedral_registry(
+                    symmetry_type,
+                    axis=(0.0, 1.0, 0.0),
+                    secondary_axis=(1.0, 0.0, 0.0),
+                    center=center,
+                )
+                for transform_id in registry.transform_ids:
+                    np.testing.assert_allclose(
+                        apply_transform(
+                            center,
+                            registry.transform(transform_id),
+                        ),
+                        center,
+                        atol=1e-7,
+                    )
+
+    def test_schema_dispatches_to_each_polyhedral_registry(self) -> None:
+        for symmetry_type, group_name, order in self.CASES:
+            with self.subTest(group=group_name):
+                registry = build_transform_registry(
+                    SymmetryTransformSetSpec(
+                        type=symmetry_type,
+                        order=order,
+                    )
+                )
+                self.assertEqual(registry.group_name, group_name)
+                self.assertEqual(registry.order, order)
+
+    def test_schema_rejects_incorrect_polyhedral_group_order(self) -> None:
+        with self.assertRaisesRegex(ValueError, "12 proper rotations"):
+            SymmetryTransformSetSpec(
+                type=SymmetryType.TETRAHEDRAL,
+                order=3,
+            )
+
+    def test_polyhedral_transform_ids_normalize_indices(self) -> None:
+        self.assertEqual(polyhedral_transform_id("T", -1), "T:g11")
+        self.assertEqual(polyhedral_transform_id("O", 24), "O:e")
+        self.assertEqual(polyhedral_transform_id("I", 61), "I:g01")
+
+    def test_unknown_transform_reports_canonical_registry_ids(self) -> None:
+        registry = build_transform_registry(
+            SymmetryTransformSetSpec(
+                type=SymmetryType.TETRAHEDRAL,
+                order=12,
+            )
+        )
+
+        with self.assertRaisesRegex(KeyError, "T:g01"):
+            registry.transform("T:g1")
 
 
 if __name__ == "__main__":

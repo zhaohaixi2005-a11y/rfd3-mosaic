@@ -115,6 +115,31 @@ def compile_experiment_assembly(
                     ),
                 )
             )
+        elif requirement == AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS:
+            audits.append(
+                CompiledAudit(
+                    module=(
+                        "rfd3_mosaic.rfd3_interface_relation_audit"
+                    ),
+                    report_name="assembly_interface_relation_audit.json",
+                    input_arguments=(
+                        ("--compiled-input", str(artifacts.input_path)),
+                    ),
+                )
+            )
+        elif requirement == AuditRequirement.GRAPH_INTERFACE_GUIDANCE:
+            audits.append(
+                CompiledAudit(
+                    module=(
+                        "rfd3_mosaic."
+                        "rfd3_graph_interface_guidance_audit"
+                    ),
+                    report_name="graph_interface_guidance_audit.json",
+                    input_arguments=(
+                        ("--compiled-input", str(artifacts.input_path)),
+                    ),
+                )
+            )
         elif requirement == AuditRequirement.BOUNDED_COMPONENT_MOBILITY:
             audits.append(
                 CompiledAudit(

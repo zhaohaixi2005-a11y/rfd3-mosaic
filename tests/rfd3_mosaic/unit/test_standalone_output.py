@@ -274,6 +274,133 @@ class StandaloneOutputTestCase(unittest.TestCase):
             self.assertLess(edge["rotation_error_deg"], 1e-5)
             self.assertGreater(edge["heavy_atom_contacts_below_4_5A"], 0)
 
+    def test_cross_copy_preserve_input_uses_initialized_assembly(self) -> None:
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        interface = payload["interface_seed"]["interfaces"][
+            "ring_interface"
+        ]
+        interface["copy_relation"] = {"transform": "C3:r1"}
+        config = self.output_directory / "cross-copy-preserve-input.yaml"
+        config.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        outputs = compile_standalone(
+            config,
+            self.output_directory / "cross-copy-preserve-input-output",
+            base_directory=REPOSITORY_ROOT,
+        )
+        manifest = json.loads(
+            outputs.manifest_path.read_text(encoding="utf-8")
+        )
+        report = manifest["validation"]["interfaces"]
+
+        self.assertTrue(report["all_required_satisfied"])
+        self.assertEqual(len(report["edges"]), 3)
+        for edge in report["edges"]:
+            self.assertTrue(edge["satisfied"])
+            self.assertEqual(
+                edge["reference_basis"],
+                "initialized_symmetry_expanded_assembly",
+            )
+            self.assertLess(edge["translation_error"], 1e-6)
+            self.assertLess(edge["rotation_error_deg"], 1e-5)
+
+    def test_required_geometric_interface_is_evaluated(self) -> None:
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        interface = payload["interface_seed"]["interfaces"][
+            "ring_interface"
+        ]
+        interface["target_geometry"] = {
+            "mode": "geometric_constraints",
+            "distance": {
+                "type": "com",
+                "target": 10.0,
+                "tolerance": 100.0,
+            },
+            "contacts": {
+                "min_heavy_atom_contacts": 1,
+                "cutoff": 4.5,
+            },
+        }
+        config = self.output_directory / "geometric-interface.yaml"
+        config.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        outputs = compile_standalone(
+            config,
+            self.output_directory / "geometric-interface-output",
+            base_directory=REPOSITORY_ROOT,
+        )
+        manifest = json.loads(
+            outputs.manifest_path.read_text(encoding="utf-8")
+        )
+        report = manifest["validation"]["interfaces"]
+
+        self.assertTrue(report["all_required_satisfied"])
+        for edge in report["edges"]:
+            self.assertTrue(edge["distance_satisfied"])
+            self.assertTrue(edge["contacts_satisfied"])
+            self.assertGreaterEqual(edge["declared_contact_count"], 1)
+
+    def test_required_geometric_interface_fails_closed(self) -> None:
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        interface = payload["interface_seed"]["interfaces"][
+            "ring_interface"
+        ]
+        interface["target_geometry"] = {
+            "mode": "geometric_constraints",
+            "contacts": {
+                "min_heavy_atom_contacts": 1000000,
+                "cutoff": 4.5,
+            },
+        }
+        config = self.output_directory / "failed-geometric-interface.yaml"
+        config.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "unsatisfied required interface edges",
+        ):
+            compile_standalone(
+                config,
+                self.output_directory / "failed-geometric-output",
+                base_directory=REPOSITORY_ROOT,
+            )
+
+    def test_required_reference_interface_contact_gate_fails_closed(
+        self,
+    ) -> None:
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        interface = payload["interface_seed"]["interfaces"][
+            "ring_interface"
+        ]
+        interface["target_geometry"][
+            "minimum_heavy_atom_contacts"
+        ] = 1000000
+        interface["target_geometry"]["contact_cutoff"] = 4.5
+        config = self.output_directory / "failed-reference-contact.yaml"
+        config.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "unsatisfied required interface edges",
+        ):
+            compile_standalone(
+                config,
+                self.output_directory / "failed-reference-contact-output",
+                base_directory=REPOSITORY_ROOT,
+            )
+
     def test_compiler_rejects_unplaced_overlapping_c3_copies(self) -> None:
         payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
         payload["interface_seed"]["initialization"] = {}

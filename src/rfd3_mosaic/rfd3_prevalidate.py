@@ -528,8 +528,11 @@ def _expected_multiplicity(symmetry_id: str) -> int:
         order = int(normalized[1:])
         if order >= 2:
             return 2 * order
+    polyhedral = {"T": 12, "O": 24, "I": 60}
+    if normalized in polyhedral:
+        return polyhedral[normalized]
     raise ValueError(
-        f"Prevalidation currently supports native Cn/Dn symmetry, got "
+        f"Prevalidation requires a finite Cn/Dn/T/O/I symmetry, got "
         f"{symmetry_id!r}"
     )
 

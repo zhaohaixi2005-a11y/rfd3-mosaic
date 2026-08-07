@@ -1,9 +1,346 @@
 # RFD3 Mosaic Development Status
 
-Last updated: 2026-08-05
+Last updated: 2026-08-07
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
+
+## Current software maturity snapshot
+
+RFD3-Mosaic is currently a research-grade alpha with a strong execution core,
+not yet a finished general protein-cage product.
+
+Validated or engineering-ready foundations:
+
+- one public YAML/CLI path lowering through `UserDesignSpec` into a common
+  `AssemblySpecification`, RFD3 backend, provenance record and audit gate;
+- exact complete-orbit restoration for central motifs and cross-protomer
+  interface seeds;
+- grouped versus independently coupled fixed fragments;
+- bounded rigid motif translation/rotation and atomic multi-orbit updates;
+- Cn, Dn and tetrahedral declared group actions, including successful C3, D3
+  and static T GPU canaries;
+- public run/submit/status/report/index operations and fixed-orbit PyMOL
+  alignment;
+- two retained authoring levels: a compact simple contig interface and an
+  explicit expert components/ports/interfaces/connections graph. Both use the
+  same compiler and sampler.
+
+Active experimental core:
+
+- simple terminal-contig designs now infer that generated symmetry-neighbour
+  regions must form an interface, choose a concrete nonidentity neighbour and
+  automatically move a motif away from a degenerate symmetry stabilizer;
+- output-interface guidance derives its own balanced residue coverage and
+  contiguous-patch targets, so ordinary users do not specify a contact count
+  or packing location;
+- final audits independently check generated-interface coverage rather than
+  allowing exact fixed-motif restoration to hide a missing new interface.
+
+Major unfinished product/science layers:
+
+- repeated GPU evidence that automatic guidance produces broad, well-oriented
+  and sequence-designable new interfaces, rather than merely geometric
+  contact;
+- orientation/shape-complementarity, cavity and exposed-surface terms in the
+  joint packing objective;
+- joint continuous pose optimization for several seed/interface orbits;
+- vertex/edge/face stabilizers, cosets and mixed-multiplicity cage components;
+- dynamic T, O/I GPU closure, high-order local-neighbourhood execution and
+  helical symmetry;
+- integrated sequence design, multimer refolding and final candidate ranking;
+- packaged releases, GPU CI, schema migration and upstream Foundry upgrade
+  automation.
+
+Approximate maturity is therefore: exact symmetry/constraint runtime 80--85%,
+public compiler/execution/audit spine 70--80%, automatic new-interface packing
+40--50%, general cage architecture solving 25--35%, and complete experimental
+design pipeline 25--35%. These ranges describe engineering coverage, not
+scientific success rates.
+
+The first LRZ run of the latest simple/expert authoring slice executed 545
+unit tests and exposed four regressions: a misplaced `user_mode` field in the
+legacy quick-command writer and an unnecessary PCA-frame requirement for
+one-atom synthetic contact ports. Both causes are fixed locally. The complete
+LRZ suite must be rerun before this slice is considered green or promoted.
+
+## 2026-08-07 unified graph-interface sampler guidance
+
+The public authoring surface is now explicitly divided into two retained
+levels without dividing the backend. `UserDesignSpec.user_mode` reports
+`simple` for contig-style `generation + constraints`, and `expert` when the
+user declares `components / ports / interfaces / connections`. The CLI plan
+shows the selected level. Both lower to the same Assembly IR and timestep
+runtime. Simple terminal designs now choose their closest non-identity group
+neighbour from geometry instead of taking the first registry element. A motif
+on a symmetry stabilizer receives a deterministic, clash-avoiding generic
+orbit initialization; an already usable input pose is preserved.
+
+The public interface intent is now inferred for the two ordinary contig
+topologies rather than delegated to user tuning. Terminal generation around a
+fixed central motif lowers to an internal output-stage symmetry-neighbour
+interface objective. Between-generation linking supplied fixed fragments does
+not invent a second interface objective. A bare `mode: contact` is valid in
+the advanced graph API; contact count is no longer mandatory. Compiler output
+adds an `auto` interface-quality contract, and the sampler derives bounded
+coverage and contiguous-patch targets from the number of generated residues
+on both sides. The final interface audit independently derives and checks the
+same residue-scale targets. Explicit ports, neighbour relations and numerical
+thresholds remain advanced cage/replay controls, not requirements for simple
+motif scaffolding.
+
+T job `5735772` completed the 50-step public multi-face graph run on V100 in
+23:02. It passed the assembly-interface, exact constraint-orbit, RFD3 input and
+scaffold audits. All 2316 fixed heavy atoms across 12 tetrahedral copies were
+retained with 0.000054 A joint RMSD; the output had 12 continuous chains, zero
+CA clashes and exact T symmetry. This is strong evidence for the supplied
+interface mode: it preserves a declared `preserve_input` relation. It does not
+show that an arbitrary motif can induce a newly packed generated interface.
+
+The second behavior is now represented without a parallel compiler or sampler.
+Public `preserve_input` relations lower as input-stage hard constraints;
+public `contact` relations lower as output-stage design targets. Required
+output-stage graph edges automatically enable a shared RFD3 sampler field. The
+compiler-expanded concrete neighbour pairs are converted to generated-chain
+CA masks, all edge energies are evaluated jointly, updates are bounded and
+token-rigid, fixed atoms never receive the update, and the existing unified
+symmetry/fixed-orbit projector runs again after every guidance step. This is
+intentionally different from a global compactness force or Ho-Yeung-style
+radius drag: only graph-declared neighbour edges act, and unrelated copies are
+not pulled toward the center.
+
+The final assembly-interface audit now distinguishes the two semantics. Input
+relations are evaluated on declared fixed port atoms. Output contact relations
+are evaluated on generated heavy atoms of the resolved output chains after
+excluding all fixed residues from `diffused_index_map`. Missing generated
+contacts therefore fail closed even when motif restoration and symmetry are
+perfect. `preserve_input` also defaults to at least one sub-4.5 A heavy-atom
+contact; setting the minimum to zero is an explicit geometry-only opt-out.
+
+This implementation is locally syntax-clean but the workstation Python lacks
+the Foundry dependencies (`pydantic` and `torch`). It therefore requires the
+complete LRZ unit suite and a V100/P100 contact-design GPU canary before the
+runtime field can advance beyond experimental status. Remaining scientific
+work includes stronger orientation-aware packing terms, sequence-aware
+side-chain evaluation and downstream design/refolding validation.
+
+## 2026-08-07 graph-aware inverse-search slice
+
+The first executable inverse-assembly search layer is now implemented above
+the common public compiler. `rfd3-mosaic search` accepts a normal public
+components/ports/interfaces/connections design, enumerates canonical
+nonidentity group transforms for selected interface edges and optionally
+samples the already-declared component pose ranges with deterministic seeds.
+Every candidate is lowered into the same AssemblySpecification and evaluated
+by the production standalone compiler. Ranking is feasibility-first: required
+interface and linker failures, objective failures and hard clashes precede
+interface-contact, linker-span and clearance diagnostics. Combinatorial growth
+is bounded before compilation.
+
+The search writes all compiler artifacts, one machine-readable
+`graph_search.json`, and ordinary resolved public YAML files for the top
+candidates. Those YAMLs replay the concrete transform assignments and pose
+seeds through the existing validate/submit/RFD3 path; there is no separate
+cage sampler. Selection now fails closed: only statically accepted candidates
+are serialized, reloaded through the public loader and strictly recompiled;
+the replayed initialized CIF must hash identically to the ranked assembly.
+Replay failures remain diagnostic search records and are never exposed as
+submittable selected designs. The same search can now compare an explicit set
+of candidate Cn, Dn, T, O or I symmetries; selected YAMLs freeze the winning
+group as well as neighbour relations and pose seeds. This is genuine discrete
+architecture comparison using complete-assembly feasibility, but it does not
+claim that one local relation uniquely identifies a global group. Automatic
+symmetry-family proposal, component topology, stabilizer/coset assignments and
+generated connectivity remain unresolved.
+Capability maturity remains `schema_only` until the LRZ suite and a frozen
+candidate validate/replay gate pass.
+
+## 2026-08-07 independent component initialization
+
+- While the corrected joint-orbit T GPU smoke is running, the public static
+  pose API is being generalized from one implicit motif pose to independently
+  named component poses.  The backwards-compatible singular
+  `sampling.initial_pose` remains valid for a one-component design.  New
+  `sampling.initial_poses` is keyed by the user's explicit `coupling_group`;
+  every component carries its own radius, axial offset, radial direction,
+  orientation and seed.  Lowering rejects unknown groups and ambiguous use of
+  both spellings.  Per-group seeds are preserved in Assembly IR and sampled
+  with independent RNGs, making realized poses invariant to initialization
+  declaration order.  The first intended gate is
+  `lrz_public_t_two_orbit_initialized_short_v100_smoke.yaml`, which restores
+  two genuinely independent T seed orbits instead of merging them into the
+  temporary joint-seed workaround.  This slice is locally syntax/YAML clean
+  but requires the LRZ unit suite and strict geometry preflight before GPU
+  submission.
+- The first strict preflight of that independent two-orbit T configuration
+  correctly rejected the proposed 70/80 A, 20/30 degree placement: 72 atom
+  pairs were below 2 A with a 0.273 A minimum.  This is a static candidate
+  geometry failure, not a compiler or T-runtime failure.  The smoke candidate
+  now places the two master centers about 47.0 A apart (70 A at 20 degrees and
+  100 A at 45 degrees), still inside the reach of its 30-residue generated
+  segment.  Standalone clash errors now report the worst concrete motion-group
+  copy pairs rather than only the global count, so future pose correction does
+  not require an ad-hoc diagnostic script.  The revised pose must pass LRZ
+  preflight before it is submitted.
+
+## 2026-08-06 science-core convergence: native Dn runtime
+
+- Public-design validation now includes a strict, topology-neutral static
+  geometry preflight.  `validate` lowers the public declaration, expands the
+  complete symmetry assembly in a temporary directory and applies the same
+  standalone clash/interface gates used by execution.  `render`, `run` and
+  `submit` call the identical preflight before creating a persistent request
+  directory, so callers cannot bypass it and consume a GPU slot with invalid
+  source geometry.  Temporary compiler artifacts are discarded; successful
+  validation reports only assembly atom, residue and chain counts.  Regression
+  coverage includes both a separated C3 expansion and a deliberately
+  coincident expansion that must fail closed.
+- T job `5734023` is the motivating negative control, not a runtime failure:
+  its unchanged C3-embedded Prism coordinates produced 2676 inter-group atom
+  pairs below 2 A (minimum 0.461 A) during standalone expansion, before RFD3
+  inference.  Job `5734024` uses the same invalid geometry and should be
+  cancelled rather than allowed to repeat the result.  The corrected first T
+  experiments use one jointly coupled rigid seed plus a sampled 80 A initial
+  pose; validate them with the new preflight before submission.
+
+- Static native D3 has crossed the GPU-canary boundary.  The 50-step V100
+  run `5733912` (`public-d3-two-orbit-v100-s915`) completed on `dgx-002` in
+  **00:16:25** with scheduler exit `0:0`.  RFD3 input prevalidation, the
+  two-orbit exact-constraint audit and the scaffold validity audit all passed,
+  and the run emitted a complete structure.  This promotes `dn_static` from
+  `cpu_validated` to `gpu_canary`; it does not yet promote Dn to `stable`.
+- Dynamic D3 job `5733940` is a successful runtime-kernel result but a failed
+  end-to-end candidate.  Both independently mobile orbits executed seven
+  atomic joint updates over all six declared D3 actions, translated by
+  0.065817 A and 0.123855 A, rotated by 0.478063 and 0.256409 degrees,
+  preserved all 1158 fixed heavy atoms at at most 0.000014 A per-copy internal
+  RMSD, and passed the mobility, constraint-orbit, continuity, compactness and
+  exact-symmetry gates.  The final scaffold nevertheless contained one
+  symmetry-equivalent generated--generated CA clash orbit: residue 33 in
+  chain pairs A--D, B--F and C--E was separated by about 1.816 A.  Output
+  residue 33 lies in the generated 10--94 interval rather than either fixed
+  1--9 or 95--106 interval.  The strict scaffold gate therefore correctly
+  rejected this sample.  Do not attribute this event to loss of motif
+  rigidity or incomplete D3 actions, and do not relax the 3 A clash cutoff;
+  replay a different diffusion seed before deciding whether additional
+  assembly-context scaffold guidance is required.
+- That controlled replay has now passed.  V100 job `5733972`
+  (`public-d3-two-orbit-mobility-v100-s917`) completed all required gates with
+  zero CA clashes and zero chain breaks.  Both independently mobile components
+  executed seven atomic joint scaffold updates over all six D3 actions.  They
+  translated by 0.139269 A and 0.081815 A and rotated by 0.404452 and 0.473126
+  degrees.  The runtime matched all 1158/1158 fixed heavy atoms, with maximum
+  per-copy internal RMSD 0.0000138 A.  Final symmetry coordinate RMSD was
+  0.0000351 A and maximum symmetry error was 0.0000535 A.  This establishes a
+  separate `dn_dynamic_multi_orbit` GPU-canary capability; it does not yet
+  establish broad Dn order/topology generalization or scientific pose quality.
+- The first polyhedral-cage foundation is now implemented locally without
+  changing the GPU sampler.  `SymmetryTransformSetSpec` and the common
+  registry support the 12 proper tetrahedral, 24 proper octahedral and 60
+  proper icosahedral rotations with stable identity-first transform IDs,
+  arbitrary declared center and a deterministic oriented group frame.  The
+  icosahedral action is constructed from the 60 directed edges of a canonical
+  icosahedron rather than a hand-maintained matrix table.  CPU regressions
+  require unique identity, proper orthogonal matrices, center preservation,
+  pairwise group closure and complete instance expansion for T/O/I.  Public
+  T/O/I designs now lower into the common AssemblySpecification; nonzero
+  cyclic `orbit_offset` is rejected because a polyhedral group has no
+  canonical ring ordering.  Native RFD3 adapter/runtime execution remains
+  intentionally fail-closed until this registry/compiler slice passes the LRZ
+  suite and declared-frame transport is implemented end to end.
+- The LRZ `rc-foundry` suite subsequently passed **468/468 tests** in 18.827
+  seconds.  This promotes `polyhedral_groups` from `schema_only` to
+  `cpu_validated` for the registry/compiler boundary only.  Native RFD3
+  declared-frame input construction, GPU denoising and cage-scale memory
+  behavior remain separate maturity gates.
+- The next local slice begins the native RFD3 declared-frame transport needed
+  for those separate gates.  The RFD3 frame resolver now consumes a
+  compiler-declared T/O/I registry before invoking the legacy Cn/Dn frame
+  generator, validates the complete 12/24/60 transform count, and preserves
+  the declared transform order.  Two-dimensional entity reannotation uses
+  symmetry multiplicity without trying to synthesize legacy frames.  The
+  Mosaic adapter emits native symmetry IDs `T`, `O` and `I`, always includes
+  declared matrices for polyhedral inputs, and prevalidation recognizes their
+  finite multiplicities.  Focused regressions cover the multiplicity contract,
+  legacy-generator bypass, incomplete-registry rejection, generic RFD3 virtual
+  frame round trips for all 12/24/60 actions and a tetrahedral terminal-design
+  adapter build.  The complete LRZ `rc-foundry` suite passed **477/477 tests**
+  in 16.030 seconds, accepting this declared-frame transport at the CPU
+  boundary.  Partial diffusion remains
+  outside this slice because its legacy symmetry verifier still constructs
+  Cn/Dn frames directly; declared-frame T/O/I partial inputs now fail closed
+  with an explicit unsupported-mode error instead of reaching that verifier.
+- The first post-CPU execution gate is declared in
+  `experiments/lrz_public_t_two_orbit_a100_canary.yaml`.  It reuses the public
+  design language and common Assembly IR, expands two static motif orbits over
+  all 12 proper tetrahedral actions and runs 50 denoising steps through the
+  explicit-all-copy reference backend.  The 80 GB A100 profile is intentional:
+  a 12-copy reference trajectory is roughly four times the pair-state scale of
+  the six-copy D3 canary.  Do not use a 10-step output as a scaffold-quality
+  gate and do not claim local-neighbourhood T support from this experiment.
+- A separate memory-oriented race configuration is
+  `experiments/lrz_public_t_two_orbit_short_v100_smoke.yaml`.  It retains the
+  same two static exact orbits and all 12 T actions but shortens the generated
+  segment from 85 to 30 residues, bringing the token count near the already
+  demonstrated six-copy D3 scale.  It may be submitted independently with
+  `--profile v100` and `--profile p100`; passing it proves small-GPU runtime
+  transport, not full-length tetrahedral scaffold quality.  Reducing timestep
+  count alone is not a memory remedy because it does not reduce peak pair-state
+  size.
+- The first two-orbit T submissions were rejected correctly before GPU
+  inference: job `5734023` reported 2676 inter-group atom pairs below 2 A,
+  with a 0.461 A minimum.  The Prism coordinates encode a C3 placement and
+  cannot be reinterpreted directly as a generic tetrahedral master pose.
+  Because one public `initial_pose` deliberately cannot ambiguously reposition
+  two independent coupling groups, the corrected first T gate couples both
+  fixed fragments into one complete rigid seed and samples one generic pose at
+  80 A radius before applying all 12 actions.  The replacement configurations
+  are `lrz_public_t_joint_orbit_short_v100_smoke.yaml` and
+  `lrz_public_t_joint_orbit_a100_canary.yaml`.  They prove one exact joint T
+  orbit; independent multi-orbit T initialization remains a subsequent API and
+  runtime milestone.
+- The multi-orbit scaffold controller now treats proposals as one atomic
+  Jacobi update: every orbit reads the same immutable pre-update state and the
+  combined candidate is committed only when the joint assembly objective
+  improves. The joint objective now includes an explicit inter-orbit CA clash
+  term, closing the case where two individually acceptable movable motifs
+  collide only after both proposals are materialized.
+- Runtime mobility diagnostics now record the exact group-action count and
+  ordered transform IDs for every orbit. The mobility audit compares these
+  against the compiled orbit declarations and fails closed if, for example, a
+  declared six-action D3 orbit is accidentally executed as only its three-copy
+  C3 subgroup.
+- Added CPU regressions for two independently moving D3 orbits: both proposals
+  are atomic and declaration-order independent, and each accepted master pose
+  reconstructs all six D3 actions exactly. The V100 dynamic canary is
+  `experiments/lrz_public_d3_two_orbit_mobility_v100_canary.yaml`; it must be
+  submitted only after the static V100 D3 canary passes.
+
+- Product operations (`run`, `runs`, `status`, `report`) are sufficiently
+  complete for current development.  The active priority has returned to the
+  scientific runtime: exact non-cyclic group actions and multi-orbit control.
+- Exact orbit expansion, joint projection and atomic multi-orbit updates were
+  already group-action based.  The remaining hard Cn assumption was in
+  scaffold-derived pose guidance, which required every transform to share one
+  cyclic axis.  That is false for Dn because its secondary two-fold coset has
+  different axes.
+- Axis-dependent guidance now resolves the primary Cn subgroup from a declared
+  Cn or Dn runtime registry.  Dn keeps all `2n` transforms for materialization
+  and exact projection; only its first `n` rotation-subgroup transforms define
+  the principal axis used by radial/axial/tilt objectives.
+- Added CPU regressions proving that a D3 registry yields the correct primary
+  axis while orbit expansion still produces all six group copies, plus public
+  lowering for two independently controlled D3 components.
+- Added `experiments/lrz_public_d3_two_orbit_h100_canary.yaml`.  Its first GPU
+  objective is deliberately static: prove six-copy D3 denoising, two exact
+  constraint orbits, continuity, clash freedom and final group closure before
+  enabling D3 dynamic mobility.  P100 is not the primary target because the
+  earlier full D3 attempt exceeded its practical memory envelope.
+
+The complete LRZ `rc-foundry` unit suite passed **420/420 tests** on
+2026-08-06 after adding public scaffold-proposal selection, axis-aware
+radial/radial-axial mobility, joint whole-interface-seed lowering and explicit
+rigid-component/symmetry-copy reporting in `rfd3-mosaic plan`.
 
 ## 2026-08-05 public sampling and capability ledger
 
@@ -294,9 +631,9 @@ subspaces, objective composition and Cn/Dn/T/O/I transform-registry support.
 | Central-motif exact C3 | Registry-v4 runs 5729451--5729453 passed the central-orbit and scaffold gates with no breaks or CA clashes and sub-0.00005 A symmetry maximum error | End-to-end demonstrated on the compatibility frontend; unified-compiler GPU regression pending |
 | C5/C6/C7 static RFD3 | A 48-structure extracted set produced 37 strict seed+scaffold passes across all three orders | Cross-order engineering generalization demonstrated on the screened set |
 | Pose exploration | Haar SO(3), joint LHS, topology-aware endpoint descriptors and quality-diversity morphology coverage are implemented | Implemented; still a GPU-budget selector, not a biological score |
-| Scaffold-aware motif mobility | Default-off bounded controller and conditioning refresh path exist; the boundary-representation correction is included in the 318-test LRZ pass, but no applied-mobility GPU result has passed the full audit gate | Unit-validated; GPU/scientific behavior not validated |
-| Multiple interface orbits | The adapter can emit multiple disjoint ASU scaffold segments and multiple constraint orbits; the D3 two-orbit CPU build/prevalidation passed, but its P100 GPU attempt exceeded memory | CPU plumbing demonstrated; GPU inference pending |
-| Dn inference | Schema, registry and D3 two-orbit CPU prevalidation pass, but no native Dn GPU end-to-end result has passed | Not demonstrated on GPU |
+| Scaffold-aware motif mobility | V100 job 5733341 produced a non-zero bounded SE(3) update and passed component, symmetry, continuity and clash audits; whole-interface-seed and axis-aware canaries remain pending | Full-SE(3) GPU canary passed; broader engineering/scientific behavior not yet validated |
+| Multiple interface orbits | C3 V100 job 5733788 and D3 V100 job 5733972 jointly moved two independent orbits with differential bounded motion and passed every required audit | Dynamic C3 and six-action D3 GPU canaries passed; broader topology/order coverage pending |
+| Dn inference | Static D3 job 5733912 and dynamic two-orbit D3 job 5733972 passed input, exact-orbit, mobility and scaffold-validity gates | Static and dynamic D3 GPU canaries passed; broader Dn remains below stable |
 | C12/C20 | Artificial order-10 guards are removed and the local-neighbourhood kernel is unit-tested, but explicit preprocessing/output and quadratic pair-state costs remain; no explicit/local GPU equivalence run has passed | Outside the validated production architecture |
 | Sequence/design validation | ProteinMPNN, multimer prediction, interface-energy ranking and experimental validation are not part of the completed evidence | Not started |
 
@@ -1892,14 +2229,424 @@ python -c "from rfd3_mosaic.compile import load_interface_seed_config; load_inte
 git status --short --branch
 ```
 
+### 2026-08-06 scaffold-driven relative seed mobility canary
+
+The public fixed-component pose contract now distinguishes the source of a
+bounded rigid-pose proposal:
+
+```yaml
+pose:
+  mode: bounded_mobile
+  proposal: denoiser_fit | scaffold_objectives
+```
+
+`denoiser_fit` remains the compatibility default.  The first public mobility
+canary proved runtime transport, exact symmetry, conditioning refresh and
+pose bounds, but its observed motion was effectively zero because the hard
+fixed-coordinate conditioning caused the denoiser proposal to coincide with
+the current target.  It is therefore a safety regression rather than a
+positive mobility result.
+
+`scaffold_objectives` exposes the existing scaffold-boundary proposal through
+the public compiler.  The new
+`lrz_public_relative_seed_mobility_v100_canary.yaml` keeps the right seed orbit
+fixed as a gauge anchor and permits the complete left seed orbit to translate
+and rotate within explicit bounds.  Each seed remains internally rigid and
+all copies remain exact C3 images; only their relative rigid pose may change.
+GPU job `5733341` completed on `gpu-001` in 6 minutes 56 seconds and provided
+the first positive scaffold-driven relative-pose result.  The mobile left
+component translated by 0.160231 A and rotated by 0.653719 degrees, while the
+right component remained the fixed reference.  The mobile component's
+maximum per-copy internal RMSD was 0.000012 A and the fixed component's joint
+orbit RMSD was 0.000013 A.  The output retained exact C3 geometry
+(maximum symmetry coordinate RMSD 0.000034 A), zero chain breaks and zero CA
+clashes.  The constraint-orbit, component-mobility and scaffold-validity
+audits all passed.
+
+This is evidence that `scaffold_objectives` can produce a non-zero bounded
+relative SE(3) update without corrupting either component or the assembly.
+It is not yet evidence for the newly added `radial`/`radial_axial` execution
+subspaces or for an adaptive pose planner: the canary deliberately used full
+`bounded_se3`.  Those capabilities require their own unit and GPU gates before
+promotion.
+
+Job `5733341` must also not be confused with whole-interface-seed orbit
+mobility.  It deliberately represented the two halves of an interface as two
+independent components, moved one half and anchored the other.  The biological
+target contains three C3-related complete interface seeds; each complete seed
+must retain the joint geometry of both halves while the pose of the complete
+seed orbit changes relative to the symmetry axis.  The corrected
+`lrz_public_whole_interface_orbit_mobility_v100_canary.yaml` therefore assigns
+both fragment selectors to one `complete_interface_seed` coupling group and
+applies one bounded rigid pose to that joint component before rebuilding all
+three C3 copies.  That separate canary is the acceptance gate for the intended
+whole-seed behavior.
+
+V100 job `5733680` passed that whole-seed gate.  The compiled design contained
+one 579-heavy-atom component: both interface fragments were coupled into one
+rigid seed and expanded into three C3-related copies.  The complete seed orbit
+translated by 0.146656 A and rotated by 0.588174 degrees.  Maximum per-copy
+internal RMSD was 0.000015 A; output C3 coordinate RMSD was 0.000033 A; chain
+break and CA-clash counts were both zero.  The constraint-orbit,
+component-mobility and scaffold-validity audits all passed.  Together with the
+split-component canary and the full public compiler/audit path, this promotes
+general bounded-SE(3) orbit mobility from `gpu_canary` to `engineering`.
+At that stage, axis-aware radial/radial-axial mobility remained CPU-validated
+until its separate GPU gates completed.
+
+Those axis-aware gates have now completed.  V100 job `5733718` executed the
+complete two-fragment seed orbit in `radial` mode: seven updates produced a
+0.074646 A translation with exactly zero axial component and zero rotation.
+V100 job `5733719` executed the same seed in `radial_axial` mode: seven updates
+produced a 0.161358 A translation, including -0.157698 A along the declared C3
+axis, with zero rotation.  For both jobs the constraint-orbit,
+component-mobility and scaffold-validity audits passed.  These runs establish
+GPU execution and subspace enforcement; their small displacement remains an
+engineering signal rather than evidence of scientifically optimal pose
+refinement.
+
+The observed whole-seed displacement (0.146656 A and 0.588174 degrees) is an
+engineering execution signal, not evidence of scientifically meaningful pose
+optimization.  The current pilot objective contains junction, clash, tilt and
+initial-pose prior terms.  This design already had zero clashes and continuous
+junctions; its seven active update calls therefore had little reason to move.
+The 3 A / 10 degree declaration is a safety ceiling, not a requested target.
+Before claiming adaptive assembly refinement, Mosaic must add explicit
+assembly-level feasibility objectives, objective/trajectory audits and a
+controlled recovery challenge with a known unfavorable starting pose.  Do not
+increase weights merely to manufacture a larger displacement.
+
+After this single-mobile-orbit gate, development should proceed in this
+order: expose axis-aware radial/axial/azimuth/tilt/twist subspaces; add an
+adaptive pose planner that derives feasible intervals from connectivity,
+closure and clash geometry rather than asking routine users to guess them;
+record
+per-objective energy and pose trajectories; aggregate proposals jointly for
+multiple mobile orbits without update-order dependence; then validate Dn and
+polyhedral cage groups.  Do not add more topology-specific sbatch scripts;
+all new behavior must pass through the public design schema, assembly IR,
+sampler lifecycle, provenance and semantic audits.
+
+### 2026-08-06 simultaneous multi-interface orbit implementation
+
+The successful whole-interface canary is still a **single mobile orbit**.  Its
+two selectors form one rigid component and its three C3 copies are one group
+orbit; it does not demonstrate several chemically or topologically distinct
+interfaces adapting together.  Static Dn compilation is CPU-validated, while
+native Dn GPU execution, finite T/O/I groups and finite-window helical
+execution remain incomplete.
+
+The next runtime slice therefore removes the scaffold-guidance single-orbit
+restriction.  Every mobile constraint orbit now derives a proposal from the
+same immutable timestep snapshot.  Proposals are materialized together,
+evaluated against one assembly-level junction/clash objective plus one
+tilt/prior term per orbit, and accepted or rejected atomically.  No orbit sees
+a partially committed update from an earlier YAML declaration, so the result
+is designed to be independent of declaration order.  The legacy
+`update_from_scaffold` entry point remains a single-orbit wrapper; the sampler
+uses the plural `update_orbits_from_scaffold` lifecycle.
+
+The LRZ full suite passed **423 tests**, including snapshot-synchronous
+two-orbit proposals, atomic joint acceptance, declaration-order independence,
+sampler admission of more than one scaffold-driven orbit and compiler
+lowering of two independently mobile components.  Simultaneous multi-orbit
+control is therefore `cpu_validated`, not merely `schema_only`.  It still
+requires a GPU canary with at least two disjoint interface orbits, both showing
+nonzero bounded motion, exact per-orbit reconstruction, atomic diagnostics,
+zero chain breaks and valid complete-assembly symmetry.  Only then should Dn
+GPU closure be used as the next group-level gate.  T/O/I require a finite-group
+registry and local-neighbourhood execution; H requires an explicit repeat
+window and boundary semantics rather than pretending that an infinite screw
+group is a finite point group.
+
+The first two-orbit V100 execution, job `5733773`, is a **partial kernel
+result**, not an end-to-end pass.  The runtime recognized both declared mobile
+orbits, applied one joint update, refreshed conditioning, retained all
+579/579 fixed heavy atoms and preserved exact C3 geometry (maximum symmetry
+coordinate RMSD 0.000033 A).  Maximum per-copy internal RMSD was 0.000012 A
+for the first component and 0.000014 A for the second.  Both components moved
+by approximately 0.014153 A and rotated by 0.055953 degrees.  However, the
+10-step output contained 177 chain breaks and 12 CA clashes, so the scaffold
+gate failed.  Ten-step under-denoising is the leading explanation, but it is
+not yet proven: a matched 50-step execution must distinguish an intentionally
+short smoke artifact from a controller/compiler interaction.  Because the two
+motions were also nearly identical, this canary proves multi-orbit execution
+plumbing but does not yet prove useful differential adaptation of independent
+interfaces.  Maturity therefore remains `cpu_validated`.
+
+The mobility audit now requires explicit `atomic_joint_acceptance` trajectory
+evidence whenever more than one scaffold-driven orbit is declared; merely
+reporting two bounded component poses is no longer sufficient.  The
+replacement 50-step V100 configuration is
+`experiments/lrz_public_two_orbit_joint_mobility_v100_50step.yaml`.  Promotion
+requires all three audits to pass, both orbits to show bounded non-zero motion,
+atomic joint diagnostics, zero chain breaks and zero CA clashes.
+
+The runtime observability layer now transports stable constraint-orbit and
+coupling-component identifiers into the sampler.  Every scaffold-driven step
+records per-orbit junction, clash, tilt and pose-prior values before and after
+the proposal, their deltas, the proposed SE(3) increment, the assembly-level
+joint energy change and whether that orbit was actually committed.  Joint
+rejection records an all-orbit rollback.  The worker extracts these diagnostics
+into strict JSON as `mobility_trajectory.json`, while the mobility audit rejects
+missing identifiers, non-finite objective terms, incomplete orbit records or
+non-atomic commit decisions.  A differential-response regression gives the
+two mobile orbits different boundary environments and requires different pose
+proposals; a separate forced joint-rejection regression requires both states
+to remain unchanged.  These changes improve explainability and fail-closed
+behavior but do not promote the capability until LRZ tests and the 50-step GPU
+gate pass.
+
+The replacement 50-step V100 execution, job `5733788`, **passed the complete
+GPU canary gate** on 2026-08-06.  The worker finished with exit code 0 in
+5 minutes 56 seconds.  Both independently declared components retained
+complete heavy-atom coverage (579/579 total) and rigid per-copy geometry:
+maximum internal RMSD was 0.000012 A for `fixed_component_001` and 0.000015 A
+for `fixed_component_002`.  The two orbits responded differently to the same
+diffusion trajectory: the first translated 0.160616 A and rotated 0.652521
+degrees, while the second translated 0.074847 A and rotated 0.323851 degrees.
+The mobility audit reported two declared and two runtime components,
+`atomic_joint_runtime=true`, ten scheduled controller calls and seven active
+window calls.  Ten controller calls are correct for a 50-step trajectory
+because the current update interval is five diffusion steps.  The final
+scaffold contained three continuous chains, zero chain breaks, zero CA clashes
+and exact C3 closure (maximum symmetry coordinate RMSD 0.000032 A).  Constraint,
+mobility and scaffold audits all passed.  Relative to the failed 10-step job
+`5733773`, this result supports under-denoising as the leading explanation for
+the earlier broken scaffold, although the changed diffusion seed prevents a
+strict causal attribution.  It also demonstrates genuinely differential rather
+than duplicated orbit motion.  `multi_orbit_joint_control` is therefore
+promoted from `cpu_validated` to `gpu_canary`.
+
+This run predates automatic extraction of the embedded sampler trajectory, so
+the worker did not initially write a standalone `mobility_trajectory.json`.
+The artifact was backfilled successfully from the immutable result JSON after
+completion using the current strict-JSON exporter; new submissions using the
+current worker write it automatically.  The next maturity gate is not another
+identical single run: require multiple diffusion seeds (including at least one
+longer trajectory), consistent atomic trajectory records, and then a native
+Dn two-orbit GPU closure before promotion to `engineering`.
+
+## 2026-08-06 constraint-runtime lifecycle extraction
+
+The first sampler productization slice now introduces
+`rfd3.inference.symmetry.constraint_runtime.MosaicConstraintRuntime`.  Exact
+Mosaic sampling uses one owned target and one `UnifiedJointProjector` across
+initialization, every denoiser prediction, every Euler-updated state, optional
+post-guidance repair and finalization.  Optional mobility enters through one
+scheduled proposal transaction: scaffold-boundary proposals see a restored
+immutable snapshot, accepted targets refresh conditioning before projection,
+and rejected targets cannot change the advancing state.  The RFD3 network
+invocation, noise schedule, coupled noise and Euler formula are unchanged.
+Legacy symmetry mode retains its existing compatibility path.
+
+The runtime reports phase counts and conditioning refreshes in result metadata.
+New focused tests cover phase order, interval scheduling, transactional target
+commit, rejected-proposal rollback and non-finite target rejection.  Existing
+exact-sampler and scaffold-mobility integration tests now require lifecycle
+diagnostics.  Local static compilation and `git diff --check` pass; the local
+Python environment lacks PyTorch, so LRZ must run the focused tests and the
+complete suite before this lifecycle becomes the accepted default.  After CPU
+validation, replay one static exact C3 golden and one mobile multi-orbit C3
+canary before beginning native D3 GPU work.
+
 ## Resume point
 
-The exact all-copy orbit-average implementation has passed CPU,
-adapter/prevalidation, and C3 GPU end-to-end validation. The first-class
-interface-orbit parser and corrected `>3`-chain inter-chain attention path have
-passed their targeted tests and the full LRZ unit suite. Resume with one paired
-C5 static 50-step P100 rerun matching the former job `5722385` inputs; compare
-seed, continuity, clashes, exact symmetry and neighbouring-chain contacts
-before and after the attention fix. Only after this runtime gate should work
-continue on a symmetry-reduced mobile pose state. Keep C12/C20 as a separate
-high-order architecture problem.
+Sync the lifecycle module, sampler integration and focused tests to LRZ.  Run
+`test_constraint_runtime.py`, `test_symmetry_motif_finalization.py` and then the
+complete unit suite.  If they pass, replay one static exact C3 golden and one
+50-step two-orbit C3 mobile canary using the new runtime diagnostics.  Do not
+begin D3 GPU work or add another constraint type until those two equivalence
+gates pass.  After equivalence, move controller construction behind a runtime
+factory, then use that same boundary for native D3 two-orbit execution.
+
+## 2026-08-06 product run shell
+
+The first user-facing operations layer is now implemented locally rather than
+as another campaign-specific script. The canonical execution verb is `run`;
+`submit` remains an alias. `status` accepts a run directory, submission receipt
+or numeric Slurm JobID and aggregates Slurm, worker, audit and artifact state
+into one versioned JSON contract. `report` emits a self-contained HTML summary
+and the same canonical JSON beside it. Numeric JobID discovery uses `--root` or
+`RFD3_MOSAIC_RUN_ROOT`, eliminating the repeated hand-written `find`, `sacct`
+and JSON snippets used during development.
+
+The product layer deliberately distinguishes execution from scientific
+acceptance. A queued/running job has `passed=null`; a worker or scheduler
+failure has `passed=false`; and `passed=true` requires a completed worker
+summary plus every declared audit. A scheduler-only `COMPLETED` record without
+the worker summary is fail-closed as `completed_without_worker_summary`.
+Focused tests cover completed and failed runs, missing/pending run directories,
+numeric JobID discovery, artifact collection and escaped portable HTML. Local
+static compilation and `git diff --check` pass. The local interpreter still
+lacks `pydantic`, so the new reporting tests and full suite must run in the LRZ
+`rc-foundry` environment before this slice is accepted.
+
+The next product slice after LRZ validation is a persistent campaign index and
+executor abstraction. That will make JobID lookup constant-time, allow arrays
+and resume, and remove direct `sbatch` knowledge from the CLI. It should reuse
+this status/report contract rather than introduce another output format.
+
+That second slice is now implemented locally. `SlurmExecutor` owns parsable
+submission and validated JobID extraction; the CLI no longer contains direct
+`subprocess`/`sbatch` logic. Every new submission creates one atomic record at
+`OUTPUT_ROOT/.rfd3-mosaic/jobs/JOB_ID.json`, and the immutable allocated worker
+updates the same record to running, completed or failed. Worker-side indexing
+is deliberately best-effort so an operational index write cannot invalidate a
+scientifically successful structure and its audit reports. The `runs` command
+lists indexed jobs, while numeric `status` uses the index before falling back
+to recursive discovery for historical runs. Tests cover parsable Slurm output,
+unknown-executor rejection, atomic index lifecycle, legacy worker upsert and
+constant-time status resolution. This executor/index slice must accompany the
+reporting files in the next LRZ validation batch.
+
+Historical results can be migrated explicitly with `runs --rebuild`. The
+rebuild scans worker summaries, imports only numeric run identities, preserves
+existing executor/submission fields, reconstructs historical ordering from
+summary modification time and reports every malformed summary. It is
+idempotent and leaves the compatibility discovery fallback in place.
+
+## 2026-08-07 public assembly-graph compiler
+
+The next product-core slice replaces the implicit two-seed mental model with
+a public assembly graph. `UserDesignSpec` now accepts any number of named
+`components`, component-owned interface `ports`, geometric `interfaces`
+between ports and directed generated-chain `connections`. Single-fragment
+components use `geometry: rigid`; several
+selectors that must preserve one common relative pose must state
+`geometry: joint_rigid`. Compact connection endpoints use `component.C` and
+`component.N`, while multi-selector endpoints fail closed until the exact
+selector is named.
+
+The compiler does not create a parallel cage pipeline. Each component becomes
+one fixed-geometry constraint component and motion group; each named public
+port selects one or more complete fragments on its owning component; each
+interface binds two reusable ports through an explicit copy relation; and each
+connection becomes a generated segment. The previous component-to-component
+interface spelling remains a compatibility shorthand that generates private
+ports per edge. All components are
+expanded by the same declared finite symmetry registry and enter the existing
+joint projector, mobility controller and RFD3 adapter. Component rigidity is
+covered by the existing constraint-orbit audit. Interface relations are now
+also compiled into a frozen, topology-neutral runtime audit plan containing
+the concrete symmetry copy pairing, canonical RFD3 residue selectors and
+declared target geometry for every edge instance. After inference,
+`rfd3_interface_relation_audit` reconstructs those exact atom correspondences
+from `diffused_index_map`: `preserve_input` is checked by independent rigid
+fits of both ports followed by relative translation/rotation comparison, while
+`contact` is checked by output COM distance and declared heavy-atom contact
+count. Required failed edges enter the same fail-closed audit gate as motif,
+mobility and scaffold validity and are reported as
+`assembly_interface_relation_audit.json`. Initial poses remain independently
+keyed by the public component identifiers and are mapped to internal
+motion-group identifiers during lowering.
+
+An explicit AssemblySpecification `constraint_group_strategy` now separates
+node rigidity from edge semantics. Public graphs use `motion_groups`: fixed
+runtime constraint orbits are generated from component nodes even when
+interface edges exist. Legacy interface-seed specifications retain `auto`,
+which preserves their historical interface-edge constraint groups. This is
+necessary because a contact relation must not silently weld two independently
+mobile nodes into one exact rigid seed. The first graph backend also requires
+every component selector to be named by a generated connection endpoint;
+unattached protein/ligand nodes await explicit ownership and multichain
+semantics rather than being guessed.
+
+The first relation vocabulary is deliberately small and executable:
+`preserve_input` retains a reference relative transform, while `contact`
+expresses a COM-distance interval, a heavy-atom contact minimum, or both.
+Schema validation rejects unknown nodes, duplicate edge IDs, identity
+self-interfaces, port/component selector ownership conflicts, ambiguous
+multi-selector connection endpoints, invalid N/C direction and mixing the
+graph frontend with legacy parallel fields. A port may bind to the same named
+port on a non-identity symmetry copy, which is required for homotypic cage
+faces. Static preflight still expands the complete assembly and rejects severe
+clashes before a scheduler slot is consumed.
+
+This is not yet multi-stabilizer cage semantics. Phase 1 uses one global
+symmetry action because the current interface/link expansion requires both
+nodes to have compatible copy indices. Vertex-, edge- and face-orbit
+stabilizers will require explicit coset/orbit identities in the assembly IR;
+they are not represented by fake extra scripts. The capability ledger now
+marks the static `public_assembly_graph` path as `gpu_canary`: T job `5735772`
+completed the graph-authored 50-step V100 gate with relation, constraint and
+scaffold audits passing. This does not yet promote the new output-stage
+interface-design controller or multi-stabilizer cage semantics.
+
+The first T multi-face graph preflight exposed an important reference-frame
+bug rather than an invalid user interface edge.  Static interface validation
+was comparing a cross-copy relation observed after component initialization
+and symmetry expansion against the two untransformed source-file port frames.
+That comparison is valid only for ports on the same copy.  `preserve_input`
+now freezes the relation in the fully initialized, symmetry-expanded compiled
+assembly, which is also the presymmetrized structure used by the
+post-diffusion relation audit.  Explicit `target_transform` relations remain
+independent declared targets and retain their original strict validation.
+Regression coverage addresses a nonidentity named C3 neighbour under a
+sampled master pose; the T graph configuration uses the canonical registry ID
+`T:g01`.
+
+## 2026-08-07 tetrahedral two-orbit GPU canary
+
+LRZ job `5734641` completed the first valid native tetrahedral execution with
+two independently declared fixed motif components. The runtime reconstructed
+both components through all 12 proper T rotations, retained 2316/2316 expected
+heavy atoms and passed both the constraint-orbit and scaffold-validity audits.
+The maximum per-copy internal RMSD was 0.000008 A, the maximum joint-orbit
+error was 0.000150 A and the maximum complete-assembly symmetry-coordinate
+RMSD was 0.000106 A. The 12-chain output had zero chain breaks and zero CA
+clashes.
+
+Independent repeats `5734679` and `5734680` subsequently completed on
+different V100 nodes and passed prevalidation, exact constraint-orbit and
+scaffold-validity audits. Static T two-orbit execution therefore has three
+successful GPU realizations; this strengthens engineering reproducibility but
+does not replace the missing dynamic-T and O/I validation gates.
+
+This closes the **static T, two-independent-orbit GPU canary**. It does not
+validate tetrahedral dynamic mobility, O or I GPU execution, mixed stabilizers
+or a general cage-design workflow. The aggregate `polyhedral_groups`
+capability therefore remains `cpu_validated` until O and I receive their own
+runtime gates; the narrower static-T execution state is now `gpu_canary`.
+
+The manual PyMOL verification for this run required an explicit 24-fragment to
+12-output-chain atom correspondence and produced 0.000624 A RMSD over all 2316
+fixed heavy atoms. That procedure is now encoded in
+`scripts/rfd3_mosaic/pymol_fixed_orbit_alignment.py`. The
+`mosaic_align_fixed` PyMOL command reads the run's compiled residue map and
+symmetry registry, creates a separately aligned output object and leaves the
+original visualization state untouched. Users no longer need to reproduce the
+T-chain mapping by hand or rely on PyMOL sequence heuristics. The higher-level
+`mosaic_load_run` command accepts only a run directory, discovers and loads the
+reference and result structures, preserves the raw result, performs the same
+alignment and applies a consistent comparison style. For already loaded
+structures, the zero-argument `mosaic_align` command detects the reference and
+result objects, locates their local run metadata and applies the same audited
+mapping. It fails closed when either inference is ambiguous.
+
+## 2026-08-07 graph-interface packing guidance v2
+
+The unified output-stage interface field now distinguishes broad interface
+formation from a degenerate point contact. In addition to nearest-pair
+attraction, every required edge derives a conservative per-side residue
+coverage target from its requested contact count and penalizes missing
+coverage independently on both chains. Clash energy is normalized by the
+number of participating residues rather than all pairwise distances, so one
+severe overlap cannot disappear numerically as cage size grows.
+Coverage is accompanied by a contiguous-patch term based on adjacent token
+runs; spatially scattered residues therefore cannot satisfy a broad-interface
+request merely by being individually close. Concrete symmetry copies are
+averaged within each source interface before different declared interfaces
+are averaged, so orbit multiplicity cannot silently determine objective
+weight.
+
+Guidance gradients are still applied only to generated tokens. Before the
+bounded step, adjacent selected tokens on the same output chain are smoothed;
+the operation never crosses a fixed-motif gap or a chain boundary. Exact
+symmetry and fixed-orbit projection remain authoritative after guidance.
+Runtime diagnostics and the guidance audit now record attraction, coverage,
+continuity, clash, distance, per-side covered and contiguous residue counts,
+per-edge energy and mean/maximum token steps.
+This controller remains scientifically unvalidated until the designed-
+interface GPU canary and multi-seed repeats pass their final generated-heavy-
+atom relation audits.
