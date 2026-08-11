@@ -1,0 +1,42 @@
+schema_version: 1
+name: public-c3-joint-packing-mobility-v100-t50-s944
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+task: create_symmetric_interface
+fixed_arrangement: optimize_components
+
+# Ordinary-user flagship for the unified controller. The motif remains one
+# exact rigid orbit internally; Mosaic may translate and rotate that complete
+# orbit while generated terminal regions form the new C3 neighbour interface.
+# No radius, angle, patch location or contact count is user-tuned.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 35
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 35
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+
+sampling:
+  timesteps: 50
+  seed: 944
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-c3-joint-packing-mobility-canary-8_11

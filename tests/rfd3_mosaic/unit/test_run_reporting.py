@@ -160,6 +160,37 @@ class RunReportingTestCase(unittest.TestCase):
         )
         self.assertTrue(payload["passed"])
 
+    def test_status_exposes_final_graph_packing_metrics(self) -> None:
+        run = self._completed_run("97531")
+        guidance = run / "graph_interface_guidance_audit.json"
+        self._write_json(
+            guidance,
+            {
+                "passed": True,
+                "summary": {
+                    "final_packing_metrics": {
+                        "energy": 1.25,
+                        "orientation": 0.1,
+                        "shape": 0.2,
+                        "minimum_edge_distance": 4.0,
+                    }
+                },
+            },
+        )
+        summary_path = run / "experiment_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["reports"].append(str(guidance))
+        self._write_json(summary_path, summary)
+
+        status = collect_run_status(
+            RunReference(job_id="97531", run_directory=run),
+            include_scheduler=False,
+        )
+        text = format_status_text(status)
+
+        self.assertIn("packing energy=1.25", text)
+        self.assertIn("orientation=0.1", text)
+
     def test_copied_run_resolves_absolute_report_paths_by_name(self) -> None:
         run = self._completed_run("86420")
         summary_path = run / "experiment_summary.json"
@@ -179,6 +210,149 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertTrue(
             all(Path(item["path"]).parent == run for item in status["audits"])
         )
+
+    def test_status_identifies_frozen_input_and_design_task(self) -> None:
+        run = self._completed_run("11223")
+        (run / "input").mkdir()
+        source = run / "input" / "presymmetrized_input.cif"
+        source.write_text("data_test\n", encoding="utf-8")
+        self._write_json(
+            run / "input" / "rfd3_input.json",
+            {
+                "example": {
+                    "input": "presymmetrized_input.cif",
+                    "symmetry": {"id": "C3"},
+                    "extra": {
+                        "symmetry_multiplicity": 3,
+                        "motif_constraint_orbits": [{}, {}],
+                        "assembly_interface_relations": [
+                            {"satisfaction_stage": "input"}
+                        ],
+                    },
+                }
+            },
+        )
+        (run / "resolved_config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "topology": {"kind": "user_design"},
+                    "sampling": {"timesteps": 50, "seed": 7},
+                    "resources": {"profile_name": "p100"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status = collect_run_status(
+            RunReference(job_id="11223", run_directory=run),
+            include_scheduler=False,
+        )
+
+        self.assertEqual(
+            status["design"]["task"], "preserve_supplied_geometry"
+        )
+        self.assertEqual(status["design"]["symmetry"], "C3")
+        self.assertEqual(status["design"]["fixed_component_count"], 2)
+        text = format_status_text(status)
+        self.assertIn("task:       preserve_supplied_geometry", text)
+        self.assertIn("symmetry:   C3 x3", text)
+        self.assertIn(str(source.resolve()), text)
+
+    def test_status_traces_compiled_input_back_to_original_structure(self) -> None:
+        run = self._completed_run("11224")
+        (run / "input").mkdir()
+        compiled = run / "input" / "presymmetrized_input.cif"
+        compiled.write_text("data_test\n", encoding="utf-8")
+        original = run / "inputs" / "supplied_seed.pdb"
+        original.parent.mkdir()
+        original.write_text("END\n", encoding="utf-8")
+        self._write_json(
+            run / "input" / "rfd3_input.json",
+            {
+                "example": {
+                    "input": "presymmetrized_input.cif",
+                    "symmetry": {"id": "C3"},
+                    "extra": {
+                        "symmetry_multiplicity": 3,
+                        "motif_constraint_orbits": [{}, {}],
+                        "assembly_interface_relations": [
+                            {
+                                "source_interface_id": "interface_alpha",
+                                "satisfaction_stage": "input",
+                            },
+                            {
+                                "source_interface_id": "interface_alpha",
+                                "satisfaction_stage": "input",
+                            },
+                            {
+                                "source_interface_id": "interface_beta",
+                                "satisfaction_stage": "input",
+                            },
+                        ],
+                    },
+                }
+            },
+        )
+        self._write_json(
+            run / "input" / "manifest.json",
+            {
+                "inputs": [
+                    {"path": str(original), "sha256": "abc123"}
+                ]
+            },
+        )
+        (run / "input" / "assembly_specification.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "fragments": {
+                            "left": {"selection": "A/186-189/*"},
+                            "right": {"selection": "B/238-240/*"},
+                        },
+                        "ports": {
+                            "left_port": {"fragments": ["left"]},
+                            "right_port": {"fragments": ["right"]},
+                        },
+                        "interfaces": {
+                            "interface_alpha": {
+                                "left_port": "left_port",
+                                "right_port": "right_port",
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status = collect_run_status(
+            RunReference(job_id="11224", run_directory=run),
+            include_scheduler=False,
+        )
+
+        design = status["design"]
+        self.assertEqual(design["structure_input"], str(original))
+        self.assertEqual(design["compiled_input"], str(compiled.resolve()))
+        self.assertEqual(
+            design["interface_instances"],
+            {"interface_alpha": 2, "interface_beta": 1},
+        )
+        self.assertEqual(
+            design["interface_selections"],
+            {"interface_alpha": ["A/186-189/*", "B/238-240/*"]},
+        )
+        text = format_status_text(status)
+        self.assertIn(f"input:      {original}", text)
+        self.assertIn(f"compiled:   {compiled.resolve()}", text)
+        self.assertIn("interfaces: interface_alpha x2, interface_beta x1", text)
+        self.assertIn(
+            "- interface_alpha: A/186-189/* + B/238-240/*", text
+        )
+        report = write_report(status)
+        html = report.read_text(encoding="utf-8")
+        self.assertIn("Design provenance", html)
+        self.assertIn("supplied_seed.pdb", html)
+        self.assertIn("A/186-189/*", html)
 
 
 if __name__ == "__main__":

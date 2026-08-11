@@ -187,6 +187,27 @@ class SpecsTestCase(unittest.TestCase):
         self.assertEqual(radial.effective_subspace, MobilitySubspace.RADIAL)
         self.assertEqual(tilt.effective_subspace, MobilitySubspace.TILT_ONLY)
 
+    def test_radial_rotation_requires_translation_and_rotation(self) -> None:
+        mobility = OrbitMobilitySpec(
+            mode=OrbitMobilityMode.ORBIT_RIGID,
+            subspace=MobilitySubspace.RADIAL_ROTATION,
+            bounds=MotionBounds(
+                max_translation=2.0,
+                max_rotation_deg=10.0,
+            ),
+        )
+
+        self.assertEqual(
+            mobility.effective_subspace,
+            MobilitySubspace.RADIAL_ROTATION,
+        )
+        with self.assertRaisesRegex(ValidationError, "rotation bound"):
+            OrbitMobilitySpec(
+                mode=OrbitMobilityMode.ORBIT_RIGID,
+                subspace=MobilitySubspace.RADIAL_ROTATION,
+                bounds=MotionBounds(max_translation=2.0),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

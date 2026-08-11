@@ -1,14 +1,239 @@
 # RFD3 Mosaic Development Status
 
-Last updated: 2026-08-07
+Last updated: 2026-08-11
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
+
+## 2026-08-11 authoritative engineering checkpoint
+
+### Module closeout protocol
+
+After each core module, record the completed contract, unit/CPU evidence, GPU
+run IDs and paths, failures/exclusions, and the next acceptance gate.  Do not
+infer scientific completion from a generated CIF, a single passing audit or
+an implementation-only change.  `docs/rfd3_mosaic/CURRENT_PRODUCT_STATUS.md`
+is the concise current report; this file retains the detailed development
+memory.
+
+### Static finite-quotient exact scaffolding closed
+
+The first static quotient slice is complete for `C4/C2`: C4 is the full
+group, the supplied seed has stabilizer `{e,r2}`, and the physical orbit is
+the two cosets `{e,r2}` and `{r1,r3}`.  Fresh frozen V100 jobs `5742936` and
+`5742947` completed.  Job `5742936` is retained as the golden run at:
+
+```text
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/public-c4-c2-quotient-orbit-canary-8_11-v2/public-c4-c2-quotient-orbit-v100-t50-s943/5742936
+```
+
+It recovered 144/144 fixed atoms with authoritative runtime target RMSD and
+maximum error equal to zero, generated two continuous chains, introduced no
+CA clashes, and passed constraint-orbit and scaffold-validity gates.  The
+runtime now records direct final fixed-target residuals.  The audit consumes
+that authoritative contract and retains transform-reconstructed values only
+as legacy diagnostics.  The compactness policy derives its lower bound from
+the immutable fixed geometry without weakening clash rejection.
+
+Excluded from this closeout: dynamic quotient mobility, quotient partial
+diffusion, and mixing full and quotient physical orbits in one native task.
+
+### Mobility implementation and evidence checkpoint
+
+The implemented engine provides complete-orbit rigid SE(3) motion; exact
+per-copy internal motif geometry; reconstruction from one master pose;
+synchronized symmetry copies, fixed targets and conditioning; per-step and
+cumulative bounds; schedules; radial and radial/axial translation subspaces;
+and snapshot-synchronous multi-orbit proposals with atomic joint acceptance
+or rollback.  Validated GPU examples include jobs `5733341`, `5733680`,
+`5733718`, `5733719`, `5733788` and `5733972` across C3 and D3.
+
+The executable public declaration is currently
+`fixed_xyz.pose.mode: bounded_mobile`.  Standalone `kind: bounded_mobile` and
+`kind: cylindrical` declarations still stop at schema/plan because the first
+public backend lowering path only admits `fixed_xyz`.  Internal `tilt_only`
+metadata also exists but is rejected by the runtime controller and is not a
+public `FixedComponentPoseSpec` option.  Explicit azimuth-, twist-, tilt- and
+radial-plus-rotation-only subspaces therefore remain unimplemented.  Dynamic
+mobility currently requires one design per process, low-memory/chunked pair
+conditioning, exact orbit-average state and coupled symmetry noise.  The
+local-neighbourhood execution backend rejects dynamic mobility.  Cn and Dn
+have GPU evidence; dynamic T/O/I/H and dynamic quotient execution do not.
+
+The older C5 pilot scripts and configuration under
+`scripts/rfd3_mosaic/lhd101_c5_mobile_*` and
+`configs/rfd3_mosaic/experimental/lhd101_c5_mobile.yaml` are retained for
+historical reproduction.  They are not the recommended public product entry
+and must not become another parallel sampler workflow.
+
+Runs `5742223`, `5742231` and `5742921` further prove non-zero bounded motion
+and exact constraints/symmetry without CA clashes, but all fail the requested
+generated interface (`0/3`) and contain three chain breaks.  This separates
+the completed motion mechanics from the unfinished scientific controller.
+
+The main design defect is architectural: motif mobility optimizes junction,
+CA-clash, tilt and pose-prior terms, while generated-interface packing is a
+separate post-Euler patch controller.  They can therefore make individually
+valid moves that do not jointly improve the complete assembly.  The next
+core implementation must combine packing, linker/junction, continuity,
+global clash, orientation, shape and cavity/compactness into one simultaneous
+multi-orbit SE(3) proposal, project it into the declared motion subspaces,
+refresh exact symmetry/targets/conditioning and accept or roll back the whole
+update atomically.
+
+Run `5742211` demonstrates a separate global-pose blocker: exact tetrahedral
+runtime and clean chains passed, but the selected interface partners remained
+about 94.92 A apart and all 12 interfaces failed.  A local trust-region
+controller cannot repair this.  Global continuous radius/rotation/tilt/
+translation and neighbour-relation optimization must precede timestep-local
+packing refinement for such candidates.
+
+Do not use run `5741270` as packing evidence: it formed 3/3 relations while
+breaking all three chains.  Do not use `5741324` as a complete cage PASS: it
+preserved all six supplied interface instances but retained six real CA
+clashes.  Both runs are valuable failure evidence and define acceptance
+tests for the unified controller and candidate feasibility gates.
 
 ## Current software maturity snapshot
 
 RFD3-Mosaic is currently a research-grade alpha with a strong execution core,
 not yet a finished general protein-cage product.
+
+## Operational baseline: use the software now
+
+Development no longer assumes that every roadmap feature must be finished
+before Mosaic can be used. The project now has an operational v0.1 baseline
+that is protected while experimental capabilities advance independently.
+
+The recommended routine workflow today is:
+
+```text
+one input PDB/mmCIF
+  -> simple YAML (input, symmetry, generation, fixed selectors, lengths)
+  -> rfd3-mosaic plan
+  -> rfd3-mosaic validate
+  -> rfd3-mosaic run
+  -> rfd3-mosaic status/report
+  -> inspect only candidates whose required audits pass
+```
+
+Use now as the default engineering path:
+
+- supplied-interface scaffolding: provide all fixed interface fragments in
+  one `coupling_group`, generate the connecting region and preserve the whole
+  interface orbit exactly;
+- fixed central-motif scaffolding in Cn: preserve the complete motif orbit and
+  generate N/C extensions; new-interface quality remains a ranked design
+  outcome rather than a one-shot guarantee;
+- C3 for the most extensively exercised exact runtime, with audited C5--C7
+  supplied-interface campaigns available as broader engineering evidence;
+- 50 steps for a canary and 200 steps for a real design campaign;
+- V100/P100 according to queue availability, with `validate` before every
+  submission and all declared audits treated as mandatory.
+
+Use only as opt-in engineering/experimental functionality:
+
+- bounded motif mobility and multiple independently moving orbits;
+- D3 and T assembly graphs;
+- automatic graph pose search and newly generated interface packing guidance;
+- local-neighbourhood execution for high-order symmetry.
+
+Do not yet treat as routine product capabilities:
+
+- general O/I/helical generation, mixed stabilizer/coset cage components;
+- automatic recovery of a globally optimal cage architecture from an
+  arbitrary motif;
+- sequence design, multimer refolding or experimental designability claims.
+
+The release policy is therefore additive. A feature progresses through
+`planned -> schema_only -> cpu_validated -> gpu_canary -> engineering ->
+stable -> scientifically_validated`. Anything below `engineering` remains
+opt-in and may not change the protected operational defaults without a golden
+regression. This lets normal design campaigns run now while cage search,
+packing and downstream validation improve incrementally.
+
+The v0.1 baseline is considered releasable when installation instructions,
+one simple supplied-interface example, one simple central-motif example,
+full CPU tests, two GPU golden replays, provenance capture and portable HTML
+reports all pass from a clean checkout. O/I/H and sequence design are not v0.1
+release blockers.
+
+Current delivery view:
+
+| Release layer | Current state | Remaining gate |
+|---|---|---|
+| v0.1 supported exact runtime | Core implementation complete for audited C3 central/interface scope | preserve the existing golden behavior |
+| v0.1 product/release hardening | 80--85% | clean-checkout installation, freeze two GPU golden replays, concise tutorial |
+| v0.2 generated-interface packing | 45--55% | packing-v4 LRZ suite, repeated 50/200-step GPU evidence, all-atom output metrics |
+| v0.3 multi-face cage graphs | 35--45% | continuous joint pose refinement, three-plus-interface GPU campaigns, stabilizer/coset IR |
+| v0.4 O/I/high-order/helical | 20--30% | O/I GPU closure, bounded neighbourhood equivalence, separate helical semantics |
+| v0.5 sequence/fold validation | 5--10% | ProteinMPNN/refolding adapters, provenance, ranking and failure gates |
+
+### Queued-run input freezing correction (2026-08-10)
+
+Jobs submitted before this correction could fail before RFD3 startup when the
+live public-design YAML was edited while the job waited in Slurm.  The source
+code already ran from `source_snapshot.tar.gz`, but the worker still reloaded
+the mutable authoring YAML from the shared project checkout.  LRZ job
+`5736812` exposed this contradiction as a size-identity error (`1537 != 1562`);
+it is not a diffusion, GPU or structure-quality failure.
+
+Rendered public runs now contain a normalized immutable
+`public_user_design.yaml`, and `resolved_config.yaml` points to that submission
+artifact.  Experiment/profile/compatibility files are retained as authoring
+provenance but are not executable dependencies after their values have been
+resolved.  The frozen public design, structure inputs, source archive and
+checkpoint remain fail-closed hashed runtime dependencies.  A regression test
+requires edits to the original YAML/profile to leave a queued render valid and
+requires tampering with the frozen design to fail.  This correction is locally
+syntax-validated and still requires the complete LRZ unit suite plus one newly
+rendered canary before promotion.
+
+The first newly frozen P100 retry (`5740944`) passed RFD3 input construction
+but exposed a separate runtime-feature contract error before its first
+diffusion step.  Optional assembly-interface COM distance targets had used
+`NaN` as an absent-value sentinel; Foundry correctly rejects any non-finite
+model feature.  The transform now emits finite zero placeholders plus an
+explicit `assembly_interface_has_distance_target` mask, and graph guidance
+consults that mask.  Prevalidation now also rejects any non-finite floating
+runtime feature.  This is a backend-independent adapter bug, not a P100
+kernel/precision failure; all submissions rendered with the older transform
+must be replaced after LRZ unit validation.
+
+Public `validate`, `render`, `run` and `submit` preflight now use the complete
+production path (`UserDesignSpec -> AssemblySpecification -> RFD3 adapter ->
+AddSymmetryFeats`) rather than stopping after standalone static geometry.
+Validation therefore checks the exact runtime feature dictionary, including
+its finite-value contract, on CPU before a scheduler slot is consumed.  The
+CLI reports a separate `RFD3 input: PASSED` line so users can distinguish
+schema/static-assembly success from backend-input construction success.  This
+closes the validation hole that allowed job `5740944` to pass public validate
+while carrying a NaN runtime feature.
+
+### Ordinary cage inspection hardening (current local slice)
+
+The ordinary `inspect` frontend now separates residue-disconnected contact
+patches on the same pair of chains instead of merging them into one false
+interface seed. It also records the observed chain-to-interface incidence
+graph and detected port count, and accepts subunit, outer-diameter and cavity-
+diameter ranges directly on the command line. These are user intent fields;
+diameter and cavity constraints are not yet continuous pose-search objectives.
+
+Simple cage plans now report `resolution_stage: intent` and
+`executable: false` in machine-readable output, plus the variables still
+blocking a frozen assembly. This removes an important product ambiguity:
+successful `inspect/validate` proves the input contacts and request are
+self-consistent, not that component ownership, scaffold paths, symmetry
+neighbours and continuous poses have already been solved. The current slice
+is syntax-validated locally and requires the full LRZ unit suite before its
+capability evidence is updated.
+
+The supported v0.1 runtime is not "15--20% scientifically missing". Its
+remaining percentage is release engineering around an already demonstrated
+scope. The later percentages describe additional product layers and are not
+discounts applied to the existing successful structures. The immediate
+product target is v0.1; v0.2 work may continue in parallel but must not delay
+or destabilize the exact-scaffolding release.
 
 Validated or engineering-ready foundations:
 
@@ -22,11 +247,46 @@ Validated or engineering-ready foundations:
   and static T GPU canaries;
 - public run/submit/status/report/index operations and fixed-orbit PyMOL
   alignment;
-- two retained authoring levels: a compact simple contig interface and an
-  explicit expert components/ports/interfaces/connections graph. Both use the
-  same compiler and sampler.
+- retained ordinary and expert authoring levels. Executable compact motif-
+  scaffolding YAML and explicit components/ports/interfaces/connections both
+  use the same compiler and sampler; the broader ordinary cage intent is a
+  pre-execution discovery document until its resolver freezes that same graph.
 
 Active experimental core:
+
+- `rfd3-mosaic inspect` now performs deterministic PDB/mmCIF chain/contact
+  analysis, separates residue-disconnected patches on the same chain pair,
+  reports observed component/port incidence and emits a short ordinary-user
+  cage intent. The user supplies the
+  input, broad cage goal and per-interface usage (`auto`, exact or range);
+  detected interface selectors and inspection thresholds are recorded for
+  reproducible validation. The intent itself is never submitted directly. A
+  user must first choose one standard YAML produced by a supported resolver;
+  only the single-seed Cn and experimental pre-positioned multi-binary Cn
+  contracts currently provide that bridge;
+- the ordinary intent schema represents an interface as two or more named
+  participants rather than a hard-coded pair. Exact selector validation uses
+  a connected participant contact graph, allowing cooperative A-C-D-style
+  sites without demanding an all-to-all clique. The current executable
+  Assembly IR relation remains pairwise, so hyperedge lowering is still an
+  explicit later gate;
+- explicit assembly-graph interfaces now carry a physical multiplicity
+  contract. After group expansion the compiler counts unique physical edge
+  instances and rejects an expert symmetry/copy relation that cannot satisfy
+  the requested usage;
+- ordinary intents now receive a conservative Cn/Dn/T/O/I generic full-orbit
+  compatibility report. It filters group orders using interface usage and
+  optional homomeric subunit bounds, but explicitly leaves polymer ownership,
+  connection order, neighbour transforms, continuous pose and mixed
+  stabilizer/coset multiplicities unresolved;
+- ordinary resolution now has two deliberately narrow local frontends. One
+  freezes a single binary preserve-exact seed into Cn-ring candidates. The
+  second experimental frontend accepts several disjoint binary preserve-exact
+  seeds only when their relative coordinates are already supplied, binds
+  canonical path covers to chemical directions, one closing seam and a
+  full-orbit Cn winding, validates the expanded interface/unit graph, and uses
+  the common static compiler/ranker/replay path. Neither frontend silently
+  chooses a candidate;
 
 - simple terminal-contig designs now infer that generated symmetry-neighbour
   regions must form an interface, choose a concrete nonidentity neighbour and
@@ -36,14 +296,31 @@ Active experimental core:
   or packing location;
 - final audits independently check generated-interface coverage rather than
   allowing exact fixed-motif restoration to hide a missing new interface.
+- packing-guidance v4 augments attraction/coverage/continuity with an
+  orientation proxy, contact-depth uniformity, local C-alpha geometry
+  protection and smooth worst-interface pressure. These terms are joint over
+  compiler-declared graph edges and remain inside the unified sampler.
 
 Major unfinished product/science layers:
 
+- single-input multi-interface-seed cages: the public graph can separately
+  name any number of supplied interface identities and polymer units carrying
+  arbitrary ordered subsets such as `A-C-D` or `B-C-D`. A local topology
+  analyzer now checks the general interface--unit incidence
+  cycle and records pair/unit ownership, but explicit input-copy-to-group-action
+  assignment, strict public validation and a three-pair GPU canary remain
+  unfinished. Ordered same-chain paths are supported separately and are not
+  the flagship cage topology;
+- the general ordinary architecture resolver still must infer or optimize
+  unknown interface-side ownership, directed polymer paths, symmetry
+  family/order, neighbour actions and seed poses. The new multi-binary bridge
+  handles only already pre-positioned disjoint seeds in Cn and must not be
+  described as solving this general inverse problem;
 - repeated GPU evidence that automatic guidance produces broad, well-oriented
   and sequence-designable new interfaces, rather than merely geometric
   contact;
-- orientation/shape-complementarity, cavity and exposed-surface terms in the
-  joint packing objective;
+- true solvent-accessible area, side-chain-aware shape complementarity,
+  cavity/porosity and exposed-hydrophobe terms in the joint packing objective;
 - joint continuous pose optimization for several seed/interface orbits;
 - vertex/edge/face stabilizers, cosets and mixed-multiplicity cage components;
 - dynamic T, O/I GPU closure, high-order local-neighbourhood execution and
@@ -54,15 +331,152 @@ Major unfinished product/science layers:
 
 Approximate maturity is therefore: exact symmetry/constraint runtime 80--85%,
 public compiler/execution/audit spine 70--80%, automatic new-interface packing
-40--50%, general cage architecture solving 25--35%, and complete experimental
+40--50%, general cage architecture solving 30--40%, and complete experimental
 design pipeline 25--35%. These ranges describe engineering coverage, not
 scientific success rates.
 
-The first LRZ run of the latest simple/expert authoring slice executed 545
-unit tests and exposed four regressions: a misplaced `user_mode` field in the
-legacy quick-command writer and an unnecessary PCA-frame requirement for
-one-atom synthetic contact ports. Both causes are fixed locally. The complete
-LRZ suite must be rerun before this slice is considered green or promoted.
+The latest simple/expert authoring slice and subsequent graph-runtime fixes
+have passed the complete LRZ unit suite. Packing-guidance v4 is a newer local
+change and must pass that suite plus a 50-step V100/P100 canary before its
+runtime diagnostics schema is promoted.
+
+## Ultimate multi-interface-seed cage acceptance target
+
+One flagship product goal is not tied to a literal count such as two, three or
+eight. It is an **N-interface-relation cage** contract: one input PDB/mmCIF may
+contain any number of fixed interface identities, and each relation contains
+two or more participants. The original two-protomer interface seed is the
+common binary special case; cooperative A/C/D-like sites are native
+hyperedges, not three unrelated successful pairs. A protein unit may carry
+ports from any number of different relations. The non-covalent relation
+hypergraph preserves each supplied interface, while the independent covalent
+scaffold graph creates arbitrary ordered polymer units. Component/interface
+ownership is not one-to-one: heterogeneous component types may expose
+different interface sets and one relation type may have many physical
+instances under symmetry. Mosaic must either scaffold those two graphs into
+one compatible symmetric assembly or return a precise infeasibility
+explanation. No implementation layer may contain a scientific maximum number
+of relations or participants; practical limits must arise only from validated
+topology, memory and compute budgets and must be reported explicitly.
+
+This target is reached only when all of the following are true:
+
+1. The public input layer binds all selected chains/residue ranges from one
+   structure with unambiguous component, interface-pair and polymer-unit
+   ownership. The original two-helix input is one pair, not one chain unit;
+   additional pairs use the same representation rather than a new script.
+2. Each supplied interface is represented independently from generated
+   polymer paths. The interface relation is never
+   inferred from covalent contig order and the contig compiler never consumes
+   or rewrites the interface edge.
+3. If input chains already represent different symmetry copies, the compiler
+   records their group-transform identities and must not copy the complete
+   multi-chain seed again as though every input chain were an independent ASU.
+4. The generated-chain compiler discovers polymer units from scaffold edges,
+   including units carrying three or more different interfaces, and emits
+   every unit once. Ordered path is a native property of every unit, not a
+   hard-coded two-interface or adjacent-pair rule.
+5. The compiler assigns components to valid group orbits, including
+   stabilizer/coset semantics when future vertex, edge and face objects have
+   different multiplicities.
+6. A joint pose/topology solver chooses or validates symmetry neighbours,
+   radius, rotation, tilt, axial offset and chain connections, and rejects
+   contradictory seeds through group-closure, clash and linker-feasibility
+   diagnostics. Static enumeration alone is insufficient.
+7. The unified timestep runtime restores every fixed seed relation exactly,
+   or moves every explicitly bounded orbit atomically, without declaration-
+   order dependence. The implementation is list-based, but GPU evidence is
+   currently limited to two independently controlled C3/D3 orbits.
+8. Independent final audits report atom completeness and fitted relative-pose
+   error for every seed, complete-assembly symmetry, continuity, clashes and
+   interface quality. A single aggregate RMSD cannot hide one failed edge.
+9. A real campaign with at least three distinct supplied interface classes is
+   replayable at 50 and 200 steps; the later full cage gate must also include
+   sequence design and multimer refolding before experimental-design claims.
+
+The already implemented exact projector, two-edge-type assembly graph and
+atomic multi-orbit transaction are the correct foundation for this target.
+They do not need a second sampler. Ordered non-branching multi-link path
+lowering is a useful local addition awaiting LRZ validation, but it is not the
+flagship blocker. The immediate missing work is cross-pair unit derivation,
+explicit input-chain/group-action ownership, per-interface-pair audits and
+broader N-pair GPU validation. Consequently
+`multi_chain_interface_seed_cage` is recorded as `schema_only`; the narrower
+pre-positioned graph that has already reached GPU remains
+`public_assembly_graph`.
+
+## 2026-08-07 single-input ordered seed-path compiler slice
+
+The native adapter no longer assumes that every generated scaffold link owns
+two disjoint fixed endpoints. Copy-zero continuous links are assembled into
+directed open N-to-C paths. For `A -> B -> C`, the emitted RFD3 contig is
+`A,linker,B,linker,C`; B is selected, fixed and materialized once. Link order
+is determined by endpoint connectivity rather than YAML or identifier order,
+so the representation remains data-driven for longer 5/6/7-fragment paths.
+
+This slice applies only when several fixed fragments belong to the same
+polymer chain. It does **not** redefine an interface seed as sequence-adjacent
+fragments and is not the core solution for the original Interface-Seed cage
+topology. In that topology, fixed edges are `A_i <-> B_i` while the generated
+unit is `B_(i-1) -- A_i` (or the equivalent reverse indexing).
+
+The compiler fails closed for two cases that cannot be represented by one
+linear protein chain: two outgoing/incoming links at one terminus and a closed
+peptide cycle. Independent open paths and declared chain breaks retain their
+existing multi-ASU-chain behavior. Adapter metadata now records the ordered
+link IDs, source IDs and selector path while preserving singular legacy keys
+for one-link designs.
+
+New regression coverage checks path ordering, single materialization of an
+internal seed, arbitrary path length, branch rejection, cycle rejection and a
+single-file three-fragment end-to-end C3 compilation. Local `compileall`,
+`py_compile` and `git diff --check` pass. The workstation Python environment
+lacks `pydantic`, so the feature remains unpromoted until the complete LRZ
+`rc-foundry` unit suite passes. The following step is explicit ownership of
+input chains that already correspond to different group actions; without that
+mapping, a complete pre-expanded multi-chain cage can still be over-expanded.
+
+## 2026-08-07 original Interface-Seed topology re-audit
+
+The original Ho-Yeung implementation confirms the interleaved two-graph
+semantics directly. Its input PDB contains at most chains A and B, which form
+one asymmetric non-covalent interface pair. Cyclic expansion renames each
+copy as `(A,B)`, `(C,D)`, `(E,F)`, and so on. The contig template is
+`Y...generated...X`; after comparing the two neighbouring directions, the
+runtime substitutes X/Y with halves from adjacent interface copies. For C3,
+one direction yields units equivalent to `F--A`, `B--C`, and `D--E`, rather
+than the non-covalent pairs `A<->B`, `C<->D`, and `E<->F`.
+
+Mosaic's existing IR separation between `InterfaceEdgeInstance` and
+`ScaffoldLinkInstance` is therefore conceptually correct. The missing product
+feature is a first-class topology pass that validates the alternating
+interface/scaffold cycle, assigns every physical fragment to exactly one
+interface pair and one polymer unit, and then maps equivalent units to the
+declared symmetry action without duplication.
+
+## 2026-08-07 packing-guidance v4
+
+The designed-interface controller is being upgraded from contact formation
+to a broader differentiable backbone-packing objective without adding a new
+sampler path. In addition to nearest-pair attraction, balanced per-side
+coverage, contiguous patches, clash repulsion and optional centroid distance,
+v4 adds four terms:
+
+- an orientation term penalizes selected contact patches whose local C-alpha
+  tangents point end-on through the opposing patch;
+- a contact-shape term penalizes strongly non-uniform nearest-contact depths,
+  discouraging one protruding point from standing in for a broad interface;
+- a backbone term protects adjacent generated C-alpha spacing from local
+  token-by-token collapse during guidance;
+- a log-mean-exp source-interface term puts more gradient pressure on the
+  worst currently unsatisfied declared interface while preserving equal
+  weighting across symmetry multiplicities.
+
+All four values and their per-edge evidence are emitted in sampler diagnostics
+schema v4 and required by the independent runtime audit. They are deliberately
+described as backbone-level packing proxies. They do not calculate SASA,
+atomic shape complementarity, hydrophobic burial or sequence designability.
+Those require all-atom/sequence-aware evaluation later in the pipeline.
 
 ## 2026-08-07 unified graph-interface sampler guidance
 
@@ -891,10 +1305,13 @@ updates:
 6. `docs/rfd3_mosaic/USER_CLI.md` — concise public experiment configuration,
    execution-profile and submission contract.
 
-One additional document is retained but not actively maintained:
+Two additional documents are retained but not actively maintained:
 
 - `docs/rfd3_mosaic/INTERFACE_SEED_RFD1_UPGRADE_AUDIT.md` — read-only
   historical code audit used to compare Interface-Seed 1.0 with this project.
+- `docs/rfd3_mosaic/RFD3_INDEXED_INTERFACE_SEED_SHIFT_ROOT_CAUSE.md` —
+  detailed, evidence-backed record of the original fixed-index/symmetry
+  projector drift mechanism and its corrected runtime semantics.
 
 Do not create another progress handoff, evolution plan or duplicate runbook.
 Put new project evidence in this file, stable architectural decisions in the
@@ -2650,3 +3067,189 @@ per-edge energy and mean/maximum token steps.
 This controller remains scientifically unvalidated until the designed-
 interface GPU canary and multi-seed repeats pass their final generated-heavy-
 atom relation audits.
+
+## 2026-08-10 ordinary intent boundary and terminal packing revision
+
+The ordinary-user layer is now a real input-analysis surface, but it is not
+yet an automatic cage solver. `rfd3-mosaic inspect` detects pairwise
+chain-contact patches in PDB/mmCIF input and writes a replayable
+`simple_cage_intent`. The intent records ring/cage/auto architecture,
+homomer/heteromer/auto composition, optional symmetry and size ranges, any
+number of detected interface seeds, and physical use as `auto`, `exact` or a
+range. Compatibility planning filters full-group Cn/Dn/T/O/I hypotheses and
+reports unresolved ownership, scaffold order, neighbour relations and
+continuous pose variables. It deliberately remains non-executable until a
+resolver freezes those variables into the same expert `UserDesignSpec` and
+`AssemblySpecification` path.
+
+The executable expert graph accepts any number of named components, ports and
+binary interface edges; no three- or four-face limit exists. A simple intent
+may already describe a connected interface with two or more participants, but
+automatic inspection and the executable relation/runtime are still pairwise.
+General participant hyperedges, polymer-unit ownership inferred across many
+seed pairs, stabilizer/coset orbits and mixed physical multiplicities remain
+the next architecture-resolver work rather than hidden special cases.
+
+Job `5741076` proved that packing diagnostics v4 could form transient contacts
+but did not retain a broad final interface: all three C3 edges finished with
+adequate heavy-atom pair counts but only 7/6 contacted residues and 2/4
+contiguous residues versus required 9/9 and 6/6. The root cause was a proxy and
+lifecycle mismatch, not a reversed gradient: the old sinusoidal field was
+fully disabled for the last 20% of diffusion, and orientation/shape selected
+scattered nearest residues rather than the same continuous patch audited at
+the output.
+
+Packing diagnostics v5 therefore makes one coherent runtime contract:
+
+- guidance retains a bounded terminal weight instead of switching off;
+- a deterministic final-polish phase runs through the same exact joint
+  projector before finalization;
+- coverage/continuity failure activates a configurable fraction of the token
+  trust region instead of accepting vanishing gradients;
+- continuity selects a genuine token-adjacent window with soft occupancy;
+- orientation and contact-depth shape reuse that same contiguous patch;
+- the shape term contains a shallow packing-distance well rather than only a
+  variance term;
+- default backbone regularization is reduced and CA clash pressure increased;
+- automatic continuity is capped by the longest physically available
+  generated run in both runtime and final heavy-atom audit, while explicit
+  user targets remain strict;
+- schema-v5 diagnostics distinguish controller execution from
+  `final_proxy_targets_satisfied` and record final coverage/continuity plus
+  the number of terminal polish steps.
+
+This slice is locally syntax-checked and has focused regression coverage for
+late-time hold, disconnected short runs, trust-region activation, final proxy
+evidence and explicit-versus-automatic audit targets. It requires the complete
+LRZ unit suite and a newly rendered 50-step V100/P100 canary before the packing
+capability can be promoted.
+
+### 2026-08-10 first executable ordinary resolver
+
+The missing CLI bridge is now implemented for the smallest architecture that
+can be frozen without inventing topology: one binary `preserve_exact`
+supplied-interface seed in a full-orbit Cn ring. `rfd3-mosaic resolve`
+enumerates both chain directions and adjacent-copy directions, preserves the
+input interface as one joint-rigid component, creates the cross-copy polymer
+connection, and sends every hypothesis through the common static compiler,
+ranking and strict YAML replay/hash gate. It emits ordinary expert-compatible
+`UserDesignSpec` files under `selected/`; it does not introduce an ordinary
+sampler or automatically run rank 1.
+
+The boundary remains explicit. Three-or-more participants, unknown relative
+seed poses, heteromer ownership, homomer-equivalence claims, Dn/T/O/I
+connection transforms, diameter/cavity objectives and stabilizer/coset
+multiplicities remain rejected.
+
+The generic deterministic directed polymer path-cover primitive enumerates
+rotation/reversal-unique interleaved cycles for disjoint binary seeds and
+proves that every seed side is used exactly once. Its hypotheses remain
+`executable: false`: that object contains no input-contact, backbone-anchor,
+symmetry-winding, linker, clash or replay evidence.
+
+A separate experimental bridge,
+`prepositioned_multi_binary_cn_v1`, now makes only one subset executable. It
+requires several disjoint binary preserve-exact seeds already co-positioned
+in one input frame, complete boundary `N/CA/C` anchors, `composition: auto`
+and a full-orbit Cn ring. It enumerates path cover, chemical direction,
+closing seam and winding; lowers each candidate to the normal public graph;
+validates its expanded interface/unit topology; and passes it to the common
+static compiler/ranker and strict replay. It does not optimize seed pose or
+automatically select rank 1.
+
+This bridge remains `schema_only`. Calling it 70% engineering-complete
+requires, from one frozen snapshot: the complete LRZ suite; a real two-seed
+`inspect -> plan -> resolve` with deterministic manifest and zero advertised-
+candidate replay failures; one selected YAML passing public/runtime
+prevalidation plus linker/clash/group-closure checks; a newly rendered
+50-step V100/P100 run passing all fixed-seed, symmetry, continuity and
+scaffold audits; and a second input or Cn order without source-specific code.
+Even then, general pose discovery, hyperedges, component equivalence,
+stabilizer/coset and T/O/I remain separate gates.
+
+The replay gate now includes the native RFD3 adapter for this multi-seed
+frontend, not only standalone structure hashing. Cross-copy scaffold seams
+retain their physical target copy in the contig. Fixed constraint groups bind
+the selectors that actually enter that contig and convert compiler physical
+transforms into native RFD3 actions relative to the materialized ASU. For
+example, a C3 seam containing `A@0` and `F@2` reconstructs the original three
+supplied interface copies as `A@0+F@1`, `A@1+F@2` and `A@2+F@0`; it must not
+rewrite `F` to an absent copy-zero `B` selector or lock `A@0+F@2` as the
+functional seed. The conversion uses group composition rather than cyclic
+index arithmetic, so the contract remains valid for non-commutative finite
+registries.
+
+A real 7mwr A/B contact was split into two disjoint contact patches for an
+engineering regression: all 16 C3 path/direction/seam/winding candidates
+compiled without hard clashes, two selected candidates passed strict YAML
+replay, expanded alternating-topology replay and native-adapter replay with
+zero replay failures. The first LRZ run then correctly exposed the missing
+runtime-token coverage in the old copy-zero encoding even though 616 unit
+tests had passed. The adapter correction and a full
+`prevalidate_rfd3_input` regression are now implemented locally; the complete
+LRZ suite and selected-YAML validation must be rerun from the corrected
+snapshot. This is engineering evidence, not yet a GPU pass and not a claim
+that the two patches are independent biological interface types.
+
+## 2026-08-10 three-day demo evidence snapshot
+
+Product progress is now reported with explicit evidence gates rather than a
+single completion percentage. The two ordinary-user tasks are distinct but
+lower through the same runtime: `preserve_supplied_geometry` restores an
+interface already present in the input, whereas `create_symmetric_interface`
+keeps a motif exact and asks generated regions to create a new neighbour
+interface. Exact motif recovery is a necessary gate for both and a sufficient
+packing result for neither.
+
+Run `5741271` used
+`examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb`, fixed `A12-20`
+and two 35-residue terminal generations. It passed complete fixed-orbit,
+symmetry, continuity, CA-clash and final heavy-atom interface-relation audits
+(270/270 fixed heavy atoms; joint RMSD 0.0000185 A), but its runtime
+`final_proxy_targets_satisfied` remained false and retrospective morphology
+measurement found about 17.9 A central radial clearance. It is therefore the
+partial generated-interface baseline, not the 7mwr supplied-seed run and not
+a compact-pore success.
+
+Run `5741324` used a strictly replayed selected candidate derived from
+`examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb`. Its two
+engineering seeds were disjoint patches of the same A/B contact:
+`A186-189/B238-240` and `A191-192/B234-235`. RFD3 inference completed. The
+generalized multi-chain audit now recovers 273/273 fixed heavy atoms and all
+six supplied interface instances through compiler-declared cross-seam
+provenance. The run nevertheless fails the independent scaffold gate because
+six real CA clashes repeat under C3 (minimum 0.896 A). Its status is therefore
+**exact-seed runtime proven, complete design failed**, not a passing cage.
+
+The immediate demo gates are: correct the two-seed endpoint/linker clash, use
+the new morphology report, repeat both ordinary tasks from frozen P100/V100
+submissions, and retain only results whose task-specific audit set passes.
+O/I/H, unknown-pose general cage solving and downstream
+sequence/refolding remain outside the three-day claim.
+
+### Fixed arrangement and generated guidance are orthogonal (2026-08-11)
+
+`task: create_symmetric_interface` no longer implicitly authorizes motif
+motion. Its new safe default is `fixed_arrangement: locked`: the complete
+compiled fixed arrangement remains authoritative while graph guidance acts on
+generated atoms. `fixed_arrangement: optimize_components` explicitly enables
+the existing bounded SE(3) component controller. Exact geometry inside every
+coupling group remains hard in both modes. This separates Hubert-style fixed
+C4/C3 layouts with newly generated packing from multi-seed designs whose
+rigid interfaces may change their mutual radius, angle and distance.
+
+### Packing-aware mobile-orbit implementation (2026-08-11)
+
+The core sampler now has one lifecycle transaction for generated-interface
+patch motion and bounded SE(3) motion of all declared mobile motif orbits. It
+replaces the previous split ordering (motif motion before Euler, graph packing
+after Euler). A proposal may return a new fixed target and matching scaffold
+coordinates together; the constraint runtime validates, projects and commits
+them atomically. Rejection, proposal-only execution and proposal exceptions
+restore both motif pose and patch-selection state.
+
+Evidence level: **CPU implementation awaiting LRZ tests**. Required next
+evidence is the focused constraint-runtime/motif-mobility tests, the complete
+unit suite, and one frozen V100/P100 50-step canary with non-zero bounded
+rotation, lower final packing energy, exact motif and symmetry recovery,
+continuous chains and no new CA clashes.

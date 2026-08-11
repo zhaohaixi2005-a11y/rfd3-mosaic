@@ -32,10 +32,10 @@ The product refactor must preserve all currently validated behavior:
 The target architecture is:
 
 ```text
-design.yaml / CLI overrides
-        |
-        v
-UserDesignSpec (simple contig or expert assembly graph)
+input PDB/mmCIF -> SimpleCageIntentSpec -> inspect/resolver -> frozen candidate
+                                      \
+expert UserDesignSpec -----------------+-> UserDesignSpec
+simple central/interface template -----/
         |
         v
 AssemblySpecification + ConstraintPlan
@@ -67,12 +67,26 @@ FunctionalGeometrySpec
 Discovery is additive: it must not hide or replace the explicit route used by
 current golden regressions.
 
-The simple and expert authoring levels are also additive, not separate
-products. Simple mode infers interface intent, neighbour identity and a safe
-initial orbit pose from motif/generation geometry. Expert mode exposes named
-components, ports, interfaces, connections and numerical overrides. Both must
-produce the same `AssemblySpecification`; no feature may introduce a second
-sampler or topology-specific submission script.
+The simple and expert authoring levels are additive, not separate products.
+The already executable central/interface templates are the narrow ordinary
+motif-scaffolding path. The `simple_cage_intent` path now also resolves its
+first conservative executable slice: one binary preserve-exact seed into
+ranked Cn-ring `UserDesignSpec` candidates. A second, experimental slice now
+bridges several disjoint binary preserve-exact seeds only when they are
+already co-positioned in one reference frame: it binds deterministic path
+covers to full-orbit Cn windings and submits them to the shared static
+compiler/replay gate. The generic path-cover output remains topology-only;
+unknown seed poses, hyperedges, heteromer/homomer inference and non-Cn cage
+actions are still unresolved rather than guessed. Expert mode exposes
+named components, ports, interfaces, connections and numerical overrides.
+All three entrances must produce the same `AssemblySpecification`; no feature
+may introduce a second sampler or topology-specific submission script.
+
+The general scientific model is an interface **relation hypergraph** plus an
+independent covalent scaffold graph.  One relation has two or more
+participants; the original two-helix interface seed is the common binary
+special case, not a maximum enforced by the product.  Interface type count,
+ports per component and physical interface multiplicity are separate values.
 
 ## Current milestone: finish the product spine
 
@@ -91,6 +105,110 @@ UserDesignSpec
 Every public capability must cross the complete spine. A schema-only
 constraint, a standalone preparation script or a sampler branch without an
 independent audit is not a completed feature.
+
+Product completion is incremental rather than all-or-nothing. Version 0.1 is
+the protected, normally usable exact motif-scaffolding product: simple
+supplied-interface and central-motif YAMLs, Cn execution, strict preflight,
+provenance, required audits and portable reporting. Complex cage discovery,
+new-interface packing, additional finite/infinite groups and sequence/fold
+validation are versioned capability layers above this baseline. They do not
+block routine use and may not destabilize it.
+
+The practical release train is:
+
+1. **v0.1 exact scaffolding** -- clean installation, simple C3 examples,
+   supplied-interface and central-motif GPU golden replays, reports;
+2. **v0.2 packing guidance** -- generated-interface GPU evidence, calibrated
+   defaults and all-atom post-generation packing metrics;
+3. **v0.3 cage graphs** -- multi-face/multi-orbit Dn/T engineering support,
+   continuous graph-aware pose search and reproducible candidate replay;
+4. **v0.4 broader groups** -- O/I and bounded high-order execution, followed
+   separately by helical semantics;
+5. **v0.5 designability pipeline** -- sequence design, multimer refolding and
+   unified final ranking.
+
+Each release must remain useful without the next one. Experimental options are
+visible through the capability ledger but are not silently selected by the
+ordinary-user templates.
+
+## Flagship acceptance contract: interleaved interface pairs and protein units
+
+The long-term cage target is an arbitrary **N**, not a hard-coded two or eight.
+One input PDB/mmCIF may contain N fixed interface identities. `A/B/C/D/...`
+name different interfaces; each has two physical sides such as
+`Interface_A=(A.left,A.right)`. The supplied interface graph preserves each
+complete `i.left<->i.right` geometry; a
+separate scaffold graph connects halves from neighbouring pairs into polymer
+units containing arbitrary ordered interface-side paths such as `A-C-D` or
+`B-C-D`. They must become one connected protein assembly
+while every required relative geometry and the declared global symmetry remain
+valid. The original two-helix input is the one-pair primitive. This is
+different from merely allowing N YAML interface entries or concatenating all
+fixed fragments into one ordered chain.
+
+The component/interface mapping is deliberately many-to-many. A component
+type may own several local-frame ports, different component types may expose
+different interface sets, and symmetry may instantiate one interface type
+many times. Pairwise relations are the common case, but the final relation IR
+must also permit three-or-more participant hyperedges for cooperative
+multi-subunit junctions.
+
+The ordinary-user surface should eventually require only one input structure,
+fixed chains/residue ranges, optional symmetry preferences and generated
+lengths.
+The expert surface retains explicit components, ports, neighbour transforms,
+orbit assignments and pose bounds. Both lower into the same assembly IR and
+runtime.
+
+The first input-driven slice now exists as `rfd3-mosaic inspect`. It detects
+chain-pair interface patches from one PDB/mmCIF and writes a replayable
+`simple_cage_intent`. The ordinary user may specify broad cage properties and
+the physical usage of each interface identity (`auto`, exact or range), while
+the inspection thresholds are retained as provenance. `plan` and `validate`
+consume this intent. A conservative generic full-orbit filter already ranks
+Cn/Dn/T/O/I group-order compatibility from usage and subunit bounds. Execution
+for the general case remains fail-closed until the architecture resolver
+converts interface-side ownership, polymer paths, symmetry and copy relations
+into a normal public graph and the common `AssemblySpecification`; it must not
+infer a one-to-one topology merely because an input relation is pairwise. The
+pre-positioned binary Cn slice described below is the only current multi-seed
+exception, and it uses supplied coordinates rather than solving them.
+
+The intent-level interface is already variadic: `participants` contains two
+or more chains/fragments and validation checks that their selected contact
+graph is connected. Automatic inspection emits pairwise candidates as a
+conservative starting point, while a user may merge several candidates into a
+cooperative multi-participant interface. Lowering those hyperedges into the
+runtime remains distinct from merely decomposing them into unrelated pairs.
+
+The compiler/runtime contract is:
+
+```text
+one input containing Interface_A ... Interface_N
+    -> bind component types, instances and their local-frame ports
+    -> preserve every declared pairwise or multi-participant relation
+    -> derive arbitrary polymer paths such as A-C-D or B-C-D
+    -> non-duplicating symmetry orbit + stabilizer/coset assignment
+    -> optional ordered paths inside each polymer unit
+    -> joint group-closure, clash and linker-feasibility solve
+    -> one frozen, replayable AssemblySpecification
+    -> unified exact/bounded constraint-orbit diffusion
+    -> per-seed relation audit + whole-cage scaffold audit
+```
+
+Current subset: Assembly IR already stores interface edges and generated
+scaffold links as different instance types, and the adapter emits interface
+audit metadata separately from contigs. A general interface--unit incidence
+analyzer now validates already-expanded graphs, and the pre-positioned Cn
+bridge uses it as a post-lowering invariant. It is a validator, not an inverse
+ownership solver. The local ordered-path addition is useful only for
+multi-fragment polymer units and still awaits LRZ regression. Remaining pieces
+include unknown many-interface component ownership, relation hyperedges,
+general mapping of already-present input chains to symmetry actions,
+mixed vertex/edge/face multiplicities, general N-interface joint pose solving
+and GPU evidence beyond two independently controlled orbits. Until those gates
+pass, the software must not claim general multi-pair interface-seed cage
+design.
 
 The ordered implementation sequence is:
 
@@ -228,7 +346,7 @@ The canonical interface will be one design file and one executable:
 rfd3-mosaic plan design.yaml
 rfd3-mosaic run design.yaml
 rfd3-mosaic status RUN_ID
-rfd3-mosaic evaluate RUN_ID
+rfd3-mosaic report RUN_ID
 ```
 
 Constraints are optional, repeatable declarations. For example:
@@ -355,7 +473,7 @@ checkpoint identity, resolved configuration, input hashes and audit reports.
 
 - replace manual experiment dictionaries with a strict `UserDesignSpec`;
 - accept raw PDB/mmCIF inputs for supported presets;
-- implement `plan`, `run`, `status` and `evaluate`;
+- implement `plan`, `run`, `status` and `report`;
 - keep CLI overrides small and deterministic;
 - render the full execution plan before submission;
 - preserve the existing exact sampler behavior.
@@ -546,6 +664,28 @@ and its repulsive signal does not vanish quadratically as the assembly grows.
 These terms remain part of the common sampler lifecycle and common runtime
 audit; they are not a topology-specific execution branch.
 
+The fourth diagnostics revision adds topology-neutral CA-level orientation,
+contact-depth uniformity, adjacent-backbone protection and smooth
+worst-interface pressure. This closes several failure modes of a pure contact
+field: end-on approach, point protrusions, local token collapse and one good
+interface masking another bad one. These are intentionally proxy objectives;
+solvent burial, atomic shape complementarity, cavity analysis and hydrophobic
+surface require an all-atom post-generation layer and must not be claimed from
+the CA controller alone.
+
+The fifth runtime revision aligns the optimization lifecycle with the final
+quality gate. Required-interface guidance now retains a nonzero terminal
+floor, uses one true sequence-contiguous patch for continuity, orientation and
+shape, and performs a small bounded post-trajectory polish through the same
+joint projector before finalization. Missing coverage or continuity scales the
+gradient up to a declared fraction of the existing per-token trust region;
+this changes neither the hard maximum step nor fixed/symmetry authority.
+Automatic continuity is limited by the longest available generated segment in
+both runtime and final audit, while explicit expert targets remain fail-closed.
+Diagnostics schema v5 reports the actual final proxy state separately from
+the execution audit so a controller that ran cannot be confused with an
+interface that met its quality contract.
+
 The static supplied-interface graph crossed its first GPU canary in T job
 `5735772`. Promotion beyond `gpu_canary` still requires the full LRZ suite,
 strict multi-component regression coverage and the new designed-interface
@@ -555,6 +695,73 @@ stabilizers and mixed vertex/edge/face orbits require a later IR extension and
 must not be simulated by topology-specific scripts. The static graph path is
 `gpu_canary`; the output-stage designed-interface controller remains
 `schema_only` pending its own LRZ tests and GPU evidence.
+
+### Current next implementation order
+
+The next product work is not another topology-specific run script:
+
+1. harden ordinary inspection (separate contact patches, report observed
+   component/interface incidence, freeze user size/multiplicity intent);
+2. implement `SimpleCageIntentSpec -> ranked frozen UserDesignSpec`
+   resolution over ownership, directed scaffold paths, symmetry neighbours
+   and continuous poses;
+3. promote the binary `InterfaceEdgeSpec` into a relation IR with two or more
+   participants, while retaining binary YAML compatibility;
+4. carry requested and realized physical multiplicity, stabilizer and coset
+   provenance in the frozen AssemblySpecification and audits;
+5. close three-or-more-interface GPU cases, then T dynamic, O and I;
+6. add the sequence-design/refolding/ranking layer and release engineering.
+
+Every resolved ordinary candidate must replay through the existing expert
+compiler and produce the same AssemblySpecification. `inspect` or generic
+group-order compatibility alone must never be presented as a solved cage.
+
+The first part of item 2 is now implemented as
+`simple_binary_cn_ring_v1`: exactly one pairwise preserve-exact seed is
+converted into one joint-rigid component, two ports, one supplied-interface
+edge and one adjacent-copy scaffold link. Direction/offset alternatives are
+ranked and strict-replayed rather than hidden.
+
+The next bounded part of item 2 is implemented locally as
+`prepositioned_multi_binary_cn_v1`. It accepts several disjoint binary
+preserve-exact seeds from one authoritative coordinate frame, requires
+complete boundary backbone anchors, enumerates canonical path covers plus
+chemical directions/closing seams/Cn windings, lowers them to ordinary expert
+graphs, validates the expanded interface/unit topology, and then uses the
+existing linker/clash/closure ranking and strict replay. This bridge is
+experimental and `schema_only`; it has not yet crossed its complete LRZ and
+real GPU evidence gates.
+
+The distinction is non-negotiable: `PolymerPathCoverHypothesis` alone remains
+`executable: false`, because it proves only that every seed side participates
+in one alternating combinatorial cycle. The pre-positioned bridge becomes
+executable only for the restricted Cn case by adding input-contact evidence,
+backbone anchors, explicit symmetry winding, `UserDesignSpec` lowering,
+expanded topology validation and strict replay. It does not optimize radius,
+orientation, tilt or axial pose, prove homomer equivalence, lower hyperedges,
+or cover Dn/T/O/I and stabilizer/coset architectures.
+
+### 70% gate for pre-positioned multi-binary Cn resolution
+
+This narrow capability may be called 70% engineering-complete only when:
+
+1. the full LRZ suite passes from one frozen source snapshot;
+2. at least one real two-seed input completes `inspect -> plan -> resolve`
+   with deterministic enumeration, no partial candidate truncation, explicit
+   `automatic_selection: false`, and zero replay failures among advertised
+   runnable YAML files;
+3. a chosen YAML passes public validation, runtime-feature prevalidation,
+   expanded interface/unit topology, linker, clash and group-closure gates;
+4. a newly rendered 50-step V100/P100 run passes every required fixed-seed,
+   symmetry, continuity and scaffold audit, followed by a second input or Cn
+   order without source-specific code; and
+5. manifests, CLI output and documentation retain the word
+   **pre-positioned** and list the unsupported pose/search semantics.
+
+Crossing this gate does not promote general multi-interface cage solving.
+The next work remains continuous multi-seed pose search, component-type and
+homomer/heteromer inference, relation hyperedges, stabilizer/coset orbits,
+Dn/T/O/I execution and downstream sequence/refolding validation.
 
 ## Historical first implementation order
 

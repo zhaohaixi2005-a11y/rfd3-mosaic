@@ -1,5 +1,139 @@
 # RFD3 Multi-Interface Seed（Interface-Seed 2.0）最终架构与实施方案
 
+## 0. 当前规范：一份结构、一个 relation hypergraph、一个 scaffold graph
+
+本项目所说的多个 interface seeds 首先指**一个输入 PDB/mmCIF** 中已经放置
+好的多个固定界面，不是要求用户准备 N 个互相独立的结构文件。总模型不再
+假定每个 interface 都只有 left/right 两侧：一个 interface identity 是含两个
+或更多 participants 的 relation/hyperedge。例如：
+
+```text
+Interface I1 participants = {P1, P2}          # 常见二元界面
+Interface I2 participants = {P3, P4, P5}      # 三亚基协同界面
+Component U1 ports = {P1, P3, P5}
+```
+
+原始的双 helix Interface-Seed 1.0 是 `I1={P1,P2}` 这一二元特例，不是整个
+Mosaic 的上限。文档不再使用 A/B/C 同时表示 interface identity、chain、side
+和 component port；规范术语为 `Interface I_k`、`Participant P_kj`、
+`ComponentType U_m`、`PhysicalInterfaceInstance` 与
+`ScaffoldConnection`。
+
+单个 interface side 在原子选择层仍可含一条或多条 helix，但那是 selector
+细节，不改变 interface identity。复杂 cage 可以在同一输入中包含
+`Interface_A ... Interface_N`；数量和每个 unit 所携带的 interface 数量都不得
+在 schema、compiler、sampler 或 audit 中写死。
+
+每个输入必须同时保留两张不同的图：
+
+```text
+fixed interface graph                 generated scaffold graph
+
+Interface I1: P11 <-> P12            Unit U1: P11 -- P21 -- P31
+Interface I2: P21 <-> P22            Unit U2: P12 -- P22 -- P32
+Interface I3: P31 <-> P32                       ...
+             ...
+
+<-> = supplied non-covalent atomic interface
+ -- = generated covalent scaffold/linker belonging to one protein unit
+```
+
+因此一个 protein unit 是来自若干不同 interface seeds 的半边所形成的有序
+scaffold path。一般形式是：
+
+```text
+Interface_i = relation(P_i1, P_i2, ..., P_in)
+Unit_j = participant(interface_a) -- ... -- participant(interface_k)
+```
+
+每个 unit 可以携带 2、3、4 或更多 interface identities。最关键的是：每个
+relation hyperedge 不能因为编译 contig 而消失；unit 内的 scaffold path 也
+不能被误认为输入中已有的非共价界面。二元 interleaved seed-pair cycle 只是
+这一通用模型的一个受支持特例。
+
+复杂 cage 还必须区分 **component type** 与 **component instance**。例如：
+
+```text
+Component Alpha ports = {A, C, D}
+Component Beta  ports = {B, C, D}
+
+Interface A: Alpha <-> Alpha neighbour
+Interface B: Beta  <-> Beta  neighbour
+Interface C: Alpha <-> Beta
+Interface D: Alpha <-> Beta (a different face and local frame)
+```
+
+因此 component 与 interface 不是一一对应：一个 component 可以是多价的；
+同一种 interface 经 symmetry group action 可以产生多个物理 instances；不同
+component type 可以拥有不同的 interface 组合。若一个真实功能界面由三个或
+更多亚基共同形成，IR 还必须把它表示成 participant 数量大于二的 relation
+hyperedge，而不能强行拆成互不关联的 left/right pair。
+
+每个 port 的“角度”由其相对 component 局部坐标系的 SE(3) frame 表达。全局
+component pose、symmetry group action 与 port local frame 共同决定物理界面
+姿态；普通用户不应手写全局 radius/tilt/angle，软件应从输入 seed 或 pose
+search 中推断并冻结可复现解。
+
+这里需要区分四种身份：
+
+1. **fixed interface pair**：每个 interface identity 的两侧均为任意数量的固定
+   fragments；全部所选原子的内部几何和跨侧相对 packing 由同一个 interface
+   constraint 保存并逐 pair 审计。
+2. **scaffold unit**：generated connections 将用户指定的一组 interface
+   sides（例如 `A-C-D`）编译为同一条有序蛋白链；polymer chain ownership
+   只由 scaffold graph 决定。
+3. **symmetry/orbit ownership**：compiler 必须判断各 interface/unit 是独立类型，
+   还是同一 orbit 的不同 group-action copies，避免把输入中已经存在的 copies
+   再重复 expansion。
+4. **可选 ordered path**：只有当一个 scaffold unit 本身包含三个以上依次连接
+   的 fixed fragments 时，才使用 `A -> B -> C` ordered-path compiler。这是
+   通用功能，但不是上述 cross-pair cage 的主要拓扑定义。
+
+因此当前正确的数据流是：
+
+```text
+one input containing Interface_A ... Interface_N
+-> bind both sides of every interface identity
+-> preserve interface graph: i.left <-> i.right
+-> derive arbitrary ordered polymer paths such as A-C-D or B-C-D
+-> assign interfaces and units to group actions/orbits
+-> emit each physical fragment and polymer unit exactly once
+-> exact constraint-orbit diffusion
+-> per-interface + per-unit + whole-cage audits
+```
+
+当前 Assembly IR 已经把 `interfaces` 与 `generated_segments/scaffold_links`
+存成不同实例类型，RFD3 adapter 也分别生成 interface audit plan 与 contig；这
+一层基本方向是正确的。刚加入的 ordered-path compiler 应保留为同链多片段的
+通用能力，但不能被宣称为 cross-pair cage 的核心完成。真正尚缺的是显式的
+interface/unit ownership、异源 component types、可变 relation cardinality、
+输入 copy 到 group action 的映射、通用
+interface--unit incidence graph 验证，以及至少一个多 interface-per-unit 的
+端到端 GPU canary。原始相邻两半构成的环只是该图模型的一个特例。
+
+> 当前实现边界：公共 schema 的 `UserAssemblyInterfaceSpec.between` 仍固定为
+> 两个节点，runtime `InterfaceEdgeInstance` 也仍是 left/right。新加入的
+> topology analyzer 已能把任意数量 interface sides 聚合成一个 protein unit，
+> 但尚未把多参与者 relation hyperedge 贯通 schema -> Assembly IR -> RFD3。
+> 在该路径完成前，不能宣称复杂异源多价 cage 已完整支持。
+
+### 原始 Interface-Seed 1.0 代码证据
+
+这个定义直接来自最早的实现，而不是新的抽象猜测：
+
+- `model_runners.py:311-372` 只读取输入链 A/B，然后为第 i 个 symmetry copy
+  重命名为第 `2i/2i+1` 条链，因此 `(A,B)、(C,D)、(E,F)` 是固定 interface
+  pairs；
+- `model_runners.py:398-403` 比较 A 与相邻 copy 的 B，决定采用前向还是反向
+  neighbour；
+- `model_runners.py:422-441` 将 contig 占位符 X/Y 替换为**相邻 pair 的两半**，
+  C3 的一个方向得到等价于 `F--A、B--C、D--E` 的 polymer units；
+- `examples/design_interfaceseed_oligos.sh:9` 使用
+  `Y211-241/70-100/X165-194`，明确表明中间 linker 连接 Y 与 X，而不是把
+  输入 interface pair A/B 当成同一条 sequence；
+- `run_inference.py:136-152` 又按 `(A,B)、(C,D)、(E,F)` 成对移动 motif，进一步
+  证明 pair identity 与 generated-chain identity 是不同概念。
+
 ## 两类必须同时支持的固定 motif 拓扑
 
 最终能力不能只等同于当前 LHD101 跨亚基 interface-seed 示例。统一的

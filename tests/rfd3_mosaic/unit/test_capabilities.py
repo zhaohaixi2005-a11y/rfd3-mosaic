@@ -47,6 +47,40 @@ class CapabilityLedgerTestCase(unittest.TestCase):
 
         self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
 
+    def test_multi_chain_interface_seed_cage_is_not_overclaimed(self) -> None:
+        record = capability_by_id("multi_chain_interface_seed_cage")
+
+        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertFalse(record.public_interface)
+
+    def test_multi_seed_path_cover_is_not_overclaimed(self) -> None:
+        record = capability_by_id("multi_seed_polymer_path_cover")
+
+        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertFalse(record.public_interface)
+
+    def test_prepositioned_multi_seed_resolver_is_not_overclaimed(
+        self,
+    ) -> None:
+        record = capability_by_id(
+            "ordinary_prepositioned_multi_seed_cn"
+        )
+
+        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertTrue(record.public_interface)
+
+    def test_ordinary_input_inspection_is_not_overclaimed(self) -> None:
+        record = capability_by_id("ordinary_input_inspection")
+
+        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertTrue(record.public_interface)
+
+    def test_ordinary_ring_resolver_is_not_overclaimed(self) -> None:
+        record = capability_by_id("ordinary_binary_ring_resolution")
+
+        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertTrue(record.public_interface)
+
     def test_capabilities_cli_emits_machine_readable_json(self) -> None:
         output = StringIO()
         with redirect_stdout(output):
@@ -118,6 +152,76 @@ class CapabilityLedgerTestCase(unittest.TestCase):
         self.assertEqual(
             observed,
             {"public_fixed_xyz", "bounded_orbit_mobility"},
+        )
+
+    def test_locked_create_interface_declares_guidance_without_mobility(
+        self,
+    ) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "ordinary-create-interface",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "task": "create_symmetric_interface",
+                "generation": [
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-10",
+                        "terminus": "c",
+                        "length": 30,
+                    }
+                ],
+                "constraints": [
+                    {"kind": "fixed_xyz", "selector": "A1-10"}
+                ],
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {
+                "public_fixed_xyz",
+                "graph_interface_guidance",
+            },
+        )
+
+    def test_optimized_create_interface_declares_mobility_and_guidance(
+        self,
+    ) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "ordinary-mobile-create-interface",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "task": "create_symmetric_interface",
+                "fixed_arrangement": "optimize_components",
+                "generation": [
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-10",
+                        "terminus": "c",
+                        "length": 30,
+                    }
+                ],
+                "constraints": [
+                    {"kind": "fixed_xyz", "selector": "A1-10"}
+                ],
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {
+                "public_fixed_xyz",
+                "bounded_orbit_mobility",
+                "graph_interface_guidance",
+            },
         )
 
     def test_component_initial_poses_require_static_pose_sampling(self) -> None:

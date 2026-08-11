@@ -1,0 +1,65 @@
+schema_version: 1
+name: public-t-designed-interface-packing-v4-v100-t50-s929
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: T
+  axis: [0.0, 0.0, 1.0]
+  secondary_axis: [1.0, 0.0, 0.0]
+  center: [0.0, 0.0, 0.0]
+
+# Expert-path v4 canary. The graph identifies the two interface faces and the
+# concrete tetrahedral neighbour. Numerical packing targets remain automatic.
+components:
+  protomer_seed:
+    selectors: [A12-20, A26-37]
+    geometry: joint_rigid
+
+ports:
+  face_alpha:
+    component: protomer_seed
+    selectors: [A12-20]
+  face_beta:
+    component: protomer_seed
+    selectors: [A26-37]
+
+interfaces:
+  - id: designed_alpha_beta_t_neighbour
+    between: [face_alpha, face_beta]
+    copy_relation: {transform: T:g01}
+    relation: {mode: contact}
+
+connections:
+  - id: scaffold_between_faces
+    from:
+      component: protomer_seed
+      selector: A12-20
+      terminus: c
+    to:
+      component: protomer_seed
+      selector: A26-37
+      terminus: n
+    length: 30
+
+sampling:
+  initial_pose:
+    radius: {minimum: 80.0, maximum: 80.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    radial_direction: [1.0, 0.0, 0.0]
+    orientation: {method: uniform_so3}
+    seed: 92901
+  timesteps: 50
+  seed: 929
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-t-designed-interface-packing-v4-canary-8_7

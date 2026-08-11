@@ -1,0 +1,51 @@
+schema_version: 1
+name: public-c4-c2-quotient-orbit-v100-t50-s943
+
+input: ../examples/rfd3_mosaic/inputs/C4_C2_quotient_seed_backbone.pdb
+symmetry:
+  id: C4
+  axis: [0.0, 0.0, 1.0]
+  center: [0.0, 0.0, 0.0]
+
+finite_orbit_action:
+  coset_representative_ids: [C4:e, C4:r1]
+  stabilizer_transform_ids: [C4:e, C4:r2]
+  transform_to_coset_representative:
+    C4:e: C4:e
+    C4:r1: C4:r1
+    C4:r2: C4:e
+    C4:r3: C4:r1
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: B12-20
+    length: 35
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: c2_seed
+
+  - kind: fixed_xyz
+    selector: B12-20
+    atoms: all
+    coupling_group: c2_seed
+
+sampling:
+  timesteps: 50
+  seed: 943
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-c4-c2-quotient-orbit-canary-8_11-v2

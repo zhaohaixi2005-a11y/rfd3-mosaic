@@ -16,6 +16,7 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 
 from rfd3_mosaic.schema.specs import (
     CopyRelationSpec,
+    FiniteOrbitActionSpec,
     Identifier,
     LinkLengthSpec,
     StrictModel,
@@ -40,6 +41,32 @@ class ConstraintOrbitScope(str, Enum):
     COMPLETE_SYMMETRY_ORBIT = "complete_symmetry_orbit"
 
 
+class UserDesignTask(str, Enum):
+    """Optional ordinary-user workflow with explicit physical semantics.
+
+    Omitting ``task`` preserves the legacy/custom declaration exactly.  The
+    two named tasks are conveniences only: both are compiled through the
+    normal constraint plan and ``AssemblySpecification`` rather than through
+    a separate sampler backend.
+    """
+
+    PRESERVE_SUPPLIED_GEOMETRY = "preserve_supplied_geometry"
+    CREATE_SYMMETRIC_INTERFACE = "create_symmetric_interface"
+
+
+class FixedArrangementPolicy(str, Enum):
+    """Whether exact fixed components retain their assembly placement.
+
+    Interface generation and fixed-component mobility are orthogonal.  A
+    locked arrangement still receives generated-atom packing guidance; only
+    ``optimize_components`` permits the exact rigid components themselves to
+    translate or rotate.
+    """
+
+    LOCKED = "locked"
+    OPTIMIZE_COMPONENTS = "optimize_components"
+
+
 class CylindricalDegreeOfFreedom(str, Enum):
     RADIUS = "radius"
     AZIMUTH = "azimuth"
@@ -54,6 +81,8 @@ class FixedComponentPoseSpec(StrictModel):
         "bounded_se3",
         "radial",
         "radial_axial",
+        "radial_rotation",
+        "radial_axial_rotation",
     ] | None = None
     proposal: Literal["denoiser_fit", "scaffold_objectives"] = (
         "denoiser_fit"
@@ -103,11 +132,28 @@ class FixedComponentPoseSpec(StrictModel):
                 raise ValueError(
                     "bounded_se3 mobility requires max_rotation_deg"
                 )
-            if subspace in {"radial", "radial_axial"}:
-                if self.max_rotation_deg is not None:
+            radial_subspaces = {
+                "radial",
+                "radial_axial",
+                "radial_rotation",
+                "radial_axial_rotation",
+            }
+            if subspace in radial_subspaces:
+                if (
+                    subspace in {"radial", "radial_axial"}
+                    and self.max_rotation_deg is not None
+                ):
                     raise ValueError(
                         f"{subspace} mobility cannot define "
                         "max_rotation_deg"
+                    )
+                if (
+                    subspace
+                    in {"radial_rotation", "radial_axial_rotation"}
+                    and self.max_rotation_deg is None
+                ):
+                    raise ValueError(
+                        f"{subspace} mobility requires max_rotation_deg"
                     )
                 if self.proposal != "scaffold_objectives":
                     raise ValueError(
@@ -449,7 +495,12 @@ class UserContactRelationSpec(StrictModel):
         int,
         Field(ge=1),
     ] | None = None
-    cutoff: Annotated[float, Field(gt=0.0)] = 8.0
+    # This is a heavy-atom contact cutoff.  Eight angstrom is useful for a
+    # coarse CA neighbourhood, but is far too permissive for claiming a
+    # physical all-atom interface: unrelated surface atoms can satisfy it.
+    # Keep the ordinary default at a conventional direct-contact distance;
+    # experts may still override it explicitly.
+    cutoff: Annotated[float, Field(gt=0.0)] = 4.5
 
 
 UserInterfaceRelationSpec = Annotated[
@@ -458,13 +509,108 @@ UserInterfaceRelationSpec = Annotated[
 ]
 
 
+class UserInterfaceUsageSpec(StrictModel):
+    """Requested physical multiplicity of one interface in the assembly.
+
+    Ordinary users may write ``use: auto``, ``use: 12``,
+    ``use: {exact: 12}``, or a minimum/maximum range.  The compiler validates
+    the request against unique physical interface instances after symmetry
+    expansion; it is not interpreted as an instruction to copy coordinates
+    blindly.
+    """
+
+    mode: Literal["auto", "exact", "range"] = "auto"
+    exact: Annotated[int, Field(ge=1)] | None = None
+    minimum: Annotated[int, Field(ge=1)] | None = None
+    maximum: Annotated[int, Field(ge=1)] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_compact_usage(cls, value: object) -> object:
+        if value is None or value == "auto":
+            return {"mode": "auto"}
+        if isinstance(value, int) and not isinstance(value, bool):
+            return {"mode": "exact", "exact": value}
+        if isinstance(value, dict):
+            normalized = dict(value)
+            if not normalized:
+                return {"mode": "auto"}
+            if "mode" not in normalized:
+                normalized["mode"] = (
+                    "exact" if "exact" in normalized else "range"
+                )
+            return normalized
+        return value
+
+    @model_validator(mode="after")
+    def validate_usage(self) -> "UserInterfaceUsageSpec":
+        if self.mode == "auto":
+            if any(
+                value is not None
+                for value in (self.exact, self.minimum, self.maximum)
+            ):
+                raise ValueError("use=auto cannot define multiplicity bounds")
+            return self
+        if self.mode == "exact":
+            if self.exact is None:
+                raise ValueError("exact interface use requires exact")
+            if self.minimum is not None or self.maximum is not None:
+                raise ValueError(
+                    "exact interface use cannot define minimum/maximum"
+                )
+            return self
+        if self.exact is not None:
+            raise ValueError("range interface use cannot define exact")
+        if self.minimum is None and self.maximum is None:
+            raise ValueError(
+                "range interface use requires minimum and/or maximum"
+            )
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
+            raise ValueError(
+                "interface use minimum cannot exceed maximum"
+            )
+        return self
+
+    def accepts(self, observed: int) -> bool:
+        if self.mode == "auto":
+            return True
+        if self.mode == "exact":
+            return observed == self.exact
+        return (
+            (self.minimum is None or observed >= self.minimum)
+            and (self.maximum is None or observed <= self.maximum)
+        )
+
+    @property
+    def description(self) -> str:
+        if self.mode == "auto":
+            return "auto"
+        if self.mode == "exact":
+            return f"exactly {self.exact}"
+        lower = self.minimum if self.minimum is not None else "unbounded"
+        upper = self.maximum if self.maximum is not None else "unbounded"
+        return f"{lower}..{upper}"
+
+
 class UserAssemblyInterfaceSpec(StrictModel):
     """One relationship edge between ports or legacy component nodes."""
 
     id: Identifier
+    # Several pairwise runtime edges may be the contact-supported spanning
+    # tree of one supplied multi-participant interface.  ``use`` then refers
+    # to physical instances of this hyperedge, not to the number of member
+    # pairs.
+    hyperedge_id: Identifier | None = None
     between: Annotated[tuple[Identifier, Identifier], Field(min_length=2)]
     relation: UserInterfaceRelationSpec = Field(
         default_factory=UserPreserveInputRelationSpec
+    )
+    use: UserInterfaceUsageSpec = Field(
+        default_factory=UserInterfaceUsageSpec
     )
     copy_relation: CopyRelationSpec = Field(
         default_factory=lambda: CopyRelationSpec(orbit_offset=0)
@@ -541,6 +687,11 @@ class UserDesignSpec(StrictModel):
     name: Identifier
     input: Path
     symmetry: SymmetryRequest
+    finite_orbit_action: FiniteOrbitActionSpec | None = None
+    task: UserDesignTask | None = None
+    fixed_arrangement: FixedArrangementPolicy = (
+        FixedArrangementPolicy.LOCKED
+    )
     generation: tuple[GenerationClause, ...] = ()
     constraints: tuple[ConstraintClause, ...] = ()
     components: dict[Identifier, UserAssemblyComponentSpec] = Field(
@@ -666,6 +817,97 @@ class UserDesignSpec(StrictModel):
                         f"{endpoint.selector!r} does not belong to component "
                         f"{endpoint.component!r}"
                     )
+        return self
+
+    @model_validator(mode="after")
+    def validate_task_contract(self) -> "UserDesignSpec":
+        """Keep workflow presets explicit, narrow and fail-closed.
+
+        ``fixed_xyz`` always preserves the selected atoms as exact rigid
+        geometry.  Creating generated interface material does not imply that
+        fixed components may move: ``fixed_arrangement=locked`` is the safe
+        default.  Only ``optimize_components`` changes complete rigid poses.
+        Expert authors continue to declare custom component mobility directly
+        instead of combining it with an ordinary-user preset.
+        """
+
+        if self.task is None:
+            if self.fixed_arrangement != FixedArrangementPolicy.LOCKED:
+                raise ValueError(
+                    "fixed_arrangement=optimize_components requires "
+                    "task=create_symmetric_interface; expert designs use "
+                    "component pose declarations"
+                )
+            return self
+        if self.user_mode != "simple":
+            raise ValueError(
+                "task presets are for simple designs; expert assembly graphs "
+                "must declare component pose and interfaces explicitly"
+            )
+        fixed_constraints = tuple(
+            constraint
+            for constraint in self.constraints
+            if isinstance(constraint, FixedXYZConstraint)
+        )
+        non_fixed_constraints = tuple(
+            constraint
+            for constraint in self.constraints
+            if not isinstance(constraint, FixedXYZConstraint)
+        )
+        if not fixed_constraints:
+            raise ValueError(
+                f"task={self.task.value} requires at least one fixed_xyz "
+                "motif declaration"
+            )
+        if non_fixed_constraints:
+            raise ValueError(
+                "ordinary task presets currently accept fixed_xyz motif "
+                "declarations only; use explicit constraints for a custom "
+                "expert design"
+            )
+        mobile = tuple(
+            constraint
+            for constraint in fixed_constraints
+            if constraint.pose.mode != "fixed"
+        )
+        if mobile:
+            raise ValueError(
+                f"task={self.task.value} owns the ordinary motif-orbit pose "
+                "contract; omit fixed_xyz.pose or omit task and declare "
+                "expert mobility explicitly"
+            )
+        if self.task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE:
+            if not self.generation or not all(
+                isinstance(clause, TerminalGeneration)
+                for clause in self.generation
+            ):
+                raise ValueError(
+                    "task=create_symmetric_interface requires terminal "
+                    "generation around one internal fixed motif; supplied "
+                    "fixed interfaces connected by between generation use "
+                    "task=preserve_supplied_geometry"
+                )
+            symmetry_id = (
+                self.symmetry
+                if isinstance(self.symmetry, str)
+                else self.symmetry.id
+            )
+            if (
+                self.fixed_arrangement
+                == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
+                and not symmetry_id.startswith(("C", "D"))
+            ):
+                raise ValueError(
+                    "fixed_arrangement=optimize_components currently "
+                    "supports Cn and Dn because its safe orbit-adaptation "
+                    "controller requires a principal symmetry axis; locked "
+                    "generated-interface guidance is topology-neutral"
+                )
+        elif self.fixed_arrangement != FixedArrangementPolicy.LOCKED:
+            raise ValueError(
+                "preserve_supplied_geometry requires "
+                "fixed_arrangement=locked"
+            )
         return self
 
 

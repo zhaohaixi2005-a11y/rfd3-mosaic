@@ -147,7 +147,7 @@ assembly:
             (AuditRequirement.INTERFACE_GEOMETRY,),
         )
 
-    def test_public_design_frontend_lowers_through_common_assembly_ir(
+    def test_create_interface_task_lowers_to_runtime_guidance_contract(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -165,7 +165,13 @@ schema_version: 1
 name: public-c3
 input: motif.pdb
 symmetry: C3
+task: create_symmetric_interface
+fixed_arrangement: optimize_components
 generation:
+  - kind: terminal
+    anchor: A1
+    terminus: n
+    length: 15
   - kind: terminal
     anchor: A1
     terminus: c
@@ -189,17 +195,103 @@ constraints:
             )
             spec = load_assembly_config(request.specification_path)
 
+            locked_design = root / "locked-design.yaml"
+            locked_design.write_text(
+                design.read_text(encoding="utf-8").replace(
+                    "name: public-c3\n",
+                    "name: public-c3-locked\n",
+                ).replace(
+                    "fixed_arrangement: optimize_components\n",
+                    "",
+                ),
+                encoding="utf-8",
+            )
+            locked_request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(locked_design),
+                    "example_id": "public-c3-locked",
+                },
+                root / "locked-output",
+                project_directory=root,
+                experiment_name="public-c3-locked",
+            )
+            locked_spec = load_assembly_config(
+                locked_request.specification_path
+            )
+
         self.assertEqual(
             request.audit_requirements,
-            (AuditRequirement.EXACT_CONSTRAINT_ORBIT,),
+            (
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
+                AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+                AuditRequirement.BOUNDED_COMPONENT_MOBILITY,
+            ),
         )
         self.assertEqual(set(spec.fragments), {"motif_001"})
-        self.assertEqual(set(spec.generated_segments), {"generated_001"})
+        self.assertEqual(
+            set(spec.generated_segments),
+            {"generated_001", "generated_002"},
+        )
+        self.assertEqual(
+            set(spec.interfaces),
+            {"auto_generated_interface_001"},
+        )
+        inferred = spec.interfaces["auto_generated_interface_001"]
+        self.assertTrue(inferred.required)
+        self.assertEqual(inferred.satisfaction_stage, "output")
+        self.assertEqual(
+            inferred.target_geometry.mode,
+            "geometric_constraints",
+        )
+        self.assertEqual(
+            inferred.target_geometry.contacts.min_heavy_atom_contacts,
+            0,
+        )
+        self.assertEqual(inferred.target_geometry.coverage.mode, "auto")
+        self.assertIsNone(inferred.target_geometry.distance)
+        initialization = spec.initialization["fixed_component_001"]
+        self.assertGreater(initialization.placement.radius.mean, 0.0)
+        self.assertEqual(initialization.placement.radius.range, 0.0)
+        orbit = spec.symmetry.orbits["motif_orbit"]
+        mobility = orbit.component_mobility["fixed_component_001"]
+        self.assertEqual(mobility.mode.value, "orbit_rigid")
+        self.assertEqual(
+            mobility.effective_proposal.value,
+            "scaffold_objectives",
+        )
+        self.assertEqual(
+            request.audit_metadata["public_task"],
+            "create_symmetric_interface",
+        )
         self.assertEqual(
             request.audit_metadata["constraint_plan"]["operators"][0][
                 "operator"
             ],
             "fixed_xyz",
+        )
+        self.assertEqual(
+            locked_request.audit_requirements,
+            (
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
+                AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+            ),
+        )
+        self.assertGreater(
+            locked_spec.initialization[
+                "fixed_component_001"
+            ].placement.radius.mean,
+            0.0,
+        )
+        self.assertEqual(
+            locked_spec.symmetry.orbits["motif_orbit"].component_mobility,
+            {},
+        )
+        self.assertEqual(
+            locked_request.audit_metadata["fixed_arrangement"],
+            "locked",
         )
 
     def test_mobile_component_requires_runtime_mobility_evidence(
@@ -252,8 +344,76 @@ constraints:
             request.audit_requirements,
             (
                 AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
+                AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
                 AuditRequirement.BOUNDED_COMPONENT_MOBILITY,
             ),
+        )
+
+    def test_preserve_task_does_not_invent_interface_or_mobility_audits(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "motif.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA B   1       8.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: supplied-interface-c3
+input: motif.pdb
+symmetry: C3
+task: preserve_supplied_geometry
+generation:
+  - kind: between
+    from_selector: A1
+    to_selector: B1
+    length: 20
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+    coupling_group: supplied_interface
+  - kind: fixed_xyz
+    selector: B1
+    coupling_group: supplied_interface
+""",
+                encoding="utf-8",
+            )
+
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "supplied-interface-c3",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="supplied-interface-c3",
+            )
+            spec = load_assembly_config(request.specification_path)
+
+        self.assertEqual(
+            request.audit_requirements,
+            (AuditRequirement.EXACT_CONSTRAINT_ORBIT,),
+        )
+        self.assertFalse(spec.interfaces)
+        self.assertEqual(set(spec.generated_segments), {"generated_001"})
+        orbit = spec.symmetry.orbits["motif_orbit"]
+        self.assertEqual(orbit.component_mobility, {})
+        self.assertEqual(
+            spec.motion_groups["fixed_component_001"].members,
+            ["motif_001", "motif_002"],
+        )
+        self.assertEqual(
+            request.audit_metadata["public_task"],
+            "preserve_supplied_geometry",
         )
 
     def test_mobile_graph_component_requires_runtime_mobility_evidence(
@@ -372,6 +532,63 @@ connections:
                 AuditRequirement.EXACT_CONSTRAINT_ORBIT,
                 AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
                 AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+            ),
+        )
+
+    def test_optional_contact_graph_does_not_require_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "motif.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA A   2       4.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: optional-contact-graph-c3
+input: motif.pdb
+symmetry: C3
+components:
+  alpha: {selectors: [A1]}
+  beta: {selectors: [A2]}
+interfaces:
+  - id: alpha_beta
+    between: [alpha, beta]
+    required: false
+    copy_relation: {orbit_offset: 1}
+    relation:
+      mode: contact
+      minimum_heavy_atom_contacts: 1
+connections:
+  - id: alpha_to_beta
+    from: alpha.C
+    to: beta.N
+    length: 20
+""",
+                encoding="utf-8",
+            )
+
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "optional-contact-graph-c3",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="optional-contact-graph-c3",
+            )
+
+        self.assertEqual(
+            request.audit_requirements,
+            (
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
             ),
         )
 

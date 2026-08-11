@@ -1,5 +1,375 @@
 # RFD3-Mosaic user CLI
 
+## Three-day demo quick start
+
+Do not start by choosing a symmetry transform, contact count or radius. First
+choose which of the two supported scientific tasks the input represents.
+
+### Task A: preserve an interface that already exists in the input
+
+Use this when the selected fragments already have the relative geometry that
+must survive diffusion. Start from:
+
+```bash
+cp examples/rfd3_mosaic/simple_interface_seed.yaml my-interface.yaml
+```
+
+Keep all fragments that must move as one object in the same
+`coupling_group`. The acceptance statement is: *all supplied fixed atoms pass
+one joint rigid superposition, their complete symmetry orbit is recovered,
+and the generated linker/scaffold passes continuity and clash audits*.
+
+### Task B: keep a motif and create a new interface
+
+Use this when the input motif is fixed internally but the neighbouring
+generated regions must create packing that is not already supplied:
+
+```bash
+cp examples/rfd3_mosaic/simple_central_motif.yaml my-new-interface.yaml
+```
+
+The acceptance statement is stronger than a motif RMSD: *the motif orbit is
+recovered, the generated interface passes its all-atom relation audit, the
+packing proxy reaches its target, and the requested global pore/shape is
+acceptable*. A zero motif RMSD alone is not a passed Task B design.
+
+For either task, use one lifecycle:
+
+```bash
+python -m rfd3_mosaic.cli plan my-design.yaml
+python -m rfd3_mosaic.cli validate my-design.yaml
+python -m rfd3_mosaic.cli submit my-design.yaml
+
+export RFD3_MOSAIC_RUN_ROOT=/absolute/path/to/runs
+python -m rfd3_mosaic.cli status JOB_ID
+python -m rfd3_mosaic.cli report JOB_ID
+```
+
+Use 50 timesteps only as an engineering canary. A presentation or scientific
+candidate should be regenerated with 200 timesteps from a newly frozen
+submission and must pass all task-specific gates.
+
+### Reproduce the two current engineering records
+
+The 5741271 baseline came from the central-motif/new-interface experiment,
+not from 7mwr:
+
+```bash
+python -m rfd3_mosaic.cli plan \
+  experiments/lrz_public_c3_contig_inferred_interface_v100_50step.yaml
+python -m rfd3_mosaic.cli validate \
+  experiments/lrz_public_c3_contig_inferred_interface_v100_50step.yaml
+```
+
+Its input is
+`examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb`, fixed selector
+`A12-20`, and two generated 35-residue termini. Run 5741271 recovered the
+motif and C3 symmetry and passed the final heavy-atom interface audit, but its
+runtime final packing proxy remained unsatisfied and its central radial
+clearance was about 17.9 A. Treat it as a partial Task B baseline.
+
+The 5741324 record is the experimental two-seed resolver path:
+
+```bash
+RESOLUTION_ROOT=/absolute/path/to/resolved-two-seed
+
+python -m rfd3_mosaic.cli plan \
+  experiments/lrz_simple_two_seed_c3_v100_50step_intent.yaml
+python -m rfd3_mosaic.cli resolve \
+  experiments/lrz_simple_two_seed_c3_v100_50step_intent.yaml \
+  --output-dir "$RESOLUTION_ROOT" --timesteps 50 --top 4
+
+SELECTED=$(find "$RESOLUTION_ROOT/selected" \
+  -maxdepth 1 -name 'rank_0001_candidate_*.yaml' -print -quit)
+python -m rfd3_mosaic.cli validate "$SELECTED"
+python -m rfd3_mosaic.cli submit "$SELECTED"
+```
+
+Its source is
+`examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb`; the two selected
+patch pairs are documented in `CURRENT_PRODUCT_STATUS.md`. Generalized
+post-hoc auditing now recovers all 273 fixed heavy atoms and all 6 supplied
+interface instances across `C3 x 2 ASU chains`. The same result still has six
+real CA clashes, however, so it remains a compiler/runtime canary rather than
+a fully accepted cage.
+
+To inspect a frozen run without guessing its source:
+
+```bash
+RUN_DIR=/absolute/path/to/JOB_ID
+sed -n '1,180p' "$RUN_DIR/resolved_config.yaml"
+python -m rfd3_mosaic.cli status "$RUN_DIR"
+python -m rfd3_mosaic.cli report "$RUN_DIR"
+```
+
+## Start here: the normal user path
+
+You do not need to understand Assembly IR, ports, transform IDs, contact
+counts or sampler internals for the two normal motif-scaffolding tasks.
+
+Choose one template:
+
+- `examples/rfd3_mosaic/simple_interface_seed.yaml`: the supplied fragments
+  already form the interface; Mosaic preserves their complete joint geometry
+  and generates the connecting protein;
+- `examples/rfd3_mosaic/simple_central_motif.yaml`: one fixed motif is in the
+  protomer; Mosaic grows both termini and guides the generated neighbouring
+  regions toward a new symmetric interface.
+
+Copy the chosen YAML and normally edit only:
+
+```yaml
+name: my-design
+input: /absolute/path/to/input.pdb
+symmetry: C3
+
+# Edit selectors and generated lengths for the input.
+generation: [...]
+constraints: [...]
+
+sampling:
+  timesteps: 200
+  seed: 42
+
+resources:
+  profile: v100
+
+output:
+  root: /absolute/path/to/runs
+  campaign: my-campaign
+```
+
+Then run exactly this lifecycle:
+
+```bash
+python -m rfd3_mosaic.cli plan my-design.yaml
+python -m rfd3_mosaic.cli validate my-design.yaml
+python -m rfd3_mosaic.cli run my-design.yaml
+
+export RFD3_MOSAIC_RUN_ROOT=/absolute/path/to/runs
+python -m rfd3_mosaic.cli status JOB_ID
+python -m rfd3_mosaic.cli report JOB_ID
+```
+
+Use 50 timesteps for a fast pipeline canary and 200 for a real generation
+campaign. A produced CIF is not automatically a successful design: keep only
+runs reported as `PASSED`, then inspect/rank their interfaces. The expert
+assembly graph is optional and should be used only when one component has
+several named faces or several different symmetry-neighbour interfaces.
+
+## Input-driven ordinary cage mode
+
+For a new multi-interface cage, begin with one PDB/mmCIF containing the
+supplied interface seeds. Mosaic detects chain-pair contact patches and writes
+an editable short intent instead of requiring ports, transform IDs, radius or
+contact-count tuning:
+
+```bash
+rfd3-mosaic inspect input_interfaces.pdb \
+  --output-dir cage_intent \
+  --architecture cage \
+  --subunits-min 12 --subunits-max 60 \
+  --diameter-min 80 --diameter-max 160
+
+rfd3-mosaic plan cage_intent/simple_design.yaml
+rfd3-mosaic validate cage_intent/simple_design.yaml
+```
+
+That command records a broad, unresolved cage request. It is useful for
+inspection and compatibility planning, but its diameter and general-cage
+requirements are intentionally outside the narrow resolver below.
+
+The first executable ordinary resolver is now available for one supplied
+binary, `preserve_exact` interface in a Cn ring:
+
+```bash
+rfd3-mosaic inspect input_interfaces.pdb \
+  --output-dir ring_intent \
+  --architecture ring --composition auto --symmetry C3
+
+rfd3-mosaic resolve ring_intent/simple_design.yaml \
+  --output-dir resolved_ring --timesteps 50 \
+  --symmetry C3
+
+rfd3-mosaic validate \
+  resolved_ring/selected/rank_0001_candidate_000000.yaml
+rfd3-mosaic run \
+  resolved_ring/selected/rank_0001_candidate_000000.yaml
+```
+
+`resolve` never silently executes rank 1. It retains both polymer-chain
+directions and both adjacent-copy directions (deduplicated for C2), compiles
+and ranks every candidate, reloads the written public YAML, and requires the
+strict replay structure hash to equal the structure that was ranked. The
+multi-seed bridge additionally requires native RFD3-adapter replay and the
+expanded topology contract before a YAML appears under `selected/`. Use
+`--timesteps 50` for a canary; omit it for the 200-step production default.
+The selected YAML then follows the same expert `UserDesignSpec ->
+AssemblySpecification -> Mosaic-RFD3 -> audit` path.
+
+### Experimental pre-positioned multi-seed Cn resolution
+
+`resolve` also has one deliberately narrow multi-seed bridge. It is suitable
+only when all supplied seeds are already placed in one meaningful input
+coordinate frame and all of these conditions hold:
+
+- at least two seeds, each with exactly two participants;
+- `geometry: preserve_exact` for every seed;
+- one contiguous, non-overlapping selector per participant;
+- complete `N/CA/C` backbone anchors at both selector boundaries;
+- `goal.architecture: ring` or `auto`, `goal.composition: auto`, and Cn only;
+- no requested diameter/cavity objective, heteromer ownership, stabilizer or
+  coset semantics.
+
+For example, after confirming two detected seed pairs in the editable intent:
+
+```yaml
+goal:
+  architecture: ring
+  composition: auto
+  symmetry: [C3]
+
+interface_seeds:
+  interface_alpha:
+    participants: [A, B]
+    selectors: {A: A/12-20/*, B: B/26-37/*}
+    geometry: preserve_exact
+    use: auto
+  interface_beta:
+    participants: [C, D]
+    selectors: {C: C/8-17/*, D: D/30-41/*}
+    geometry: preserve_exact
+    use: auto
+```
+
+Run the same command and then choose one emitted standard YAML explicitly:
+
+```bash
+rfd3-mosaic plan two_seed_ring.yaml
+rfd3-mosaic resolve two_seed_ring.yaml --output-dir resolved_two_seed
+rfd3-mosaic validate \
+  resolved_two_seed/selected/rank_0001_candidate_000000.yaml
+```
+
+The bridge enumerates rotation/reversal-unique path covers, both chemical
+directions, every possible closing seam and both Cn winding directions
+(`C2` deduplicates the inverse). It verifies that every interface side is
+used once and that the expanded interface/unit graph is valid, then relies on
+the common compiler/ranker for linker reachability, clashes, group closure,
+strict YAML replay and native RFD3-adapter preflight. It never silently runs
+rank 1.
+
+This must not be confused with the generic path-cover primitive. The primitive
+proves only a combinatorial alternating cycle and marks it
+`executable: false`. The experimental bridge adds executable bindings only by
+treating the supplied multi-seed coordinates as authoritative and restricting
+the problem to full-orbit Cn winding. It does not move the seeds into a good
+pose or discover a cage architecture.
+
+The generated YAML has this ordinary-user shape:
+
+```yaml
+kind: simple_cage_intent
+name: my-cage
+input: /path/to/input_interfaces.pdb
+
+goal:
+  architecture: cage
+  composition: auto
+  symmetry: auto
+
+interface_seeds:
+  interface_A_B:
+    participants: [A, B]
+    selectors:
+      A: A/12-20/*
+      B: B/26-37/*
+    use: auto
+    geometry: preserve_exact
+
+  interface_C_D:
+    participants: [C, D]
+    selectors:
+      C: C/8-17/*
+      D: D/30-41/*
+    use: {minimum: 4, maximum: 12}
+    geometry: preserve_exact
+
+generation:
+  length: {minimum: 40, maximum: 100}
+
+resources:
+  profile: v100
+```
+
+`use` is the requested number of physical occurrences of one interface
+identity in the final assembly. Accepted forms are `auto`, an integer such as
+`12`, `{exact: 12}`, or a minimum/maximum range. It does not mean “copy this
+chain 12 times”: after symmetry expansion the compiler counts unique physical
+interface instances and rejects incompatible expert architectures.
+
+`participants` is not limited to two chains. A cooperative interface may use
+`participants: [A, C, D]` (or more) with one selector for every participant.
+Validation requires the participant contact graph to be connected; it does
+not require every participant pair to contact every other pair. Automatic
+inspection initially emits pairwise candidates because those can be detected
+without guessing chemical intent; users may merge them into one cooperative
+multi-participant interface.
+
+The inspection thresholds are frozen in the generated YAML so validation
+replays the same input analysis. Users may delete false-positive interfaces,
+change `use`, and restrict the scientific goal. They do not need to specify
+radius, angle, symmetry-neighbour transform or where a generated contact
+should form.
+
+If the same two input chains touch at two residue-disconnected surfaces,
+`inspect` emits separate IDs such as `interface_A_B_patch_001` and
+`interface_A_B_patch_002`; it no longer merges them into one fictitious large
+interface. The report also lists, for every observed chain, the detected port
+count and interface IDs. At this stage a chain is only an observed input
+component: Mosaic still must decide whether several seed fragments are joined
+into one final polymer unit.
+
+`plan` also performs a conservative generic full-orbit compatibility pass.
+For example, `architecture: cage` plus `use: 12` retains `D6` and `T` as
+generic candidates and rejects incompatible group orders. This is only the
+discrete first filter: the report keeps polymer-unit ownership, connection
+order, neighbour relations and continuous pose explicitly unresolved.
+
+This ordinary intent path supports `inspect`, `plan`, `validate` and the
+narrow executable `resolve` contracts above. The intent itself always refuses
+`run`; users run one explicitly chosen standard YAML emitted by `resolve`.
+General multi-seed cage intents outside the pre-positioned binary Cn contract
+remain blocked until ownership, connectivity, symmetry and pose are frozen.
+Multi-participant interfaces are also not silently decomposed into binary
+edges. This fail-closed boundary prevents Mosaic from assuming that contact
+partners are sequence-adjacent.
+
+For several disjoint binary seeds, the internal deterministic path-cover
+records remain topology-only evidence and `executable: false`. Only the
+pre-positioned binary Cn bridge described above may convert them to runnable
+candidates, and only after backbone anchors, input contact geometry, Cn
+winding, expanded topology, compiler and replay checks succeed. Unknown
+relative poses and all non-Cn cases remain non-executable.
+
+Promotion of this experimental bridge requires the full LRZ suite, one real
+two-seed `inspect -> resolve -> validate` replay with no advertised-candidate
+replay failures, and a newly rendered 50-step V100/P100 result passing every
+required fixed-seed, symmetry, continuity, clash and scaffold audit. Until
+then it is a `schema_only` opt-in feature, not a normal cage-design promise.
+
+`plan --format json` records this boundary explicitly as
+`resolution_stage: intent` and `executable: false`, together with the
+variables the resolver must still freeze. A successful intent validation
+therefore means that the input, seed contacts and scientific request are
+self-consistent; it is not a claim that a runnable cage architecture has
+already been found.
+
+Experts may bypass discovery by writing the explicit
+`components / ports / interfaces / connections` graph. Both authoring modes
+converge on the same compiler, sampler and audits; the ordinary mode is not a
+second RFD3 implementation.
+
 ## Inspect real capability maturity
 
 Before writing a design, inspect which features are stable, engineering,
@@ -73,6 +443,20 @@ structure/log artifact. A Slurm `COMPLETED` state is **not** reported as a
 scientific pass by itself: `passed=true` requires a completed worker summary
 and all required audits to pass.
 
+If inference produced a structure but an older audit implementation crashed,
+rerun the complete applicable audit set without spending another GPU run:
+
+```bash
+rfd3-mosaic audit /path/to/run
+rfd3-mosaic audit 5741324 --root /path/to/runs
+```
+
+`audit` reads the frozen resolved configuration and compiled RFD3 input,
+overwrites the corresponding post-inference reports, reapplies the same
+fail-closed gate used by the live worker, refreshes `experiment_summary.json`
+and the HTML/JSON report, and records `inference_rerun: false`. It refuses to
+guess when required frozen artifacts are absent.
+
 Generate a portable report next to a completed run with:
 
 ```bash
@@ -112,7 +496,7 @@ executor boundary, and current LRZ profiles resolve to `executor: slurm`.
 This intentionally preserves identical Slurm behavior while creating the
 correct extension point for local execution and other schedulers.
 
-## New topology-neutral design declaration (development interface)
+## Expert topology-neutral design reference
 
 The first strict public schema is now available for validation and planning:
 
@@ -202,9 +586,42 @@ Omit `coupling_group` when each selection may have its own rigid-body gauge.
 The audit then aligns each component independently. Absolute-coordinate error
 is not a public constraint and never determines pass/fail.
 
-The component pose is fixed by default. To let independently declared
-components adapt to the generated scaffold while preserving every internal
-distance, set bounded rigid mobility explicitly:
+Interface generation and fixed-component mobility are separate decisions.
+For the ordinary interface-design task, the default is:
+
+```yaml
+task: create_symmetric_interface
+fixed_arrangement: locked
+```
+
+`locked` preserves the complete supplied arrangement: every fixed fragment,
+all symmetry copies, and all inter-fragment distances and angles retain one
+joint pose. Packing guidance still acts on the diffusion-generated residues,
+so new scaffold/interface material can pack around an immovable C3, C4 or
+polyhedral seed. If the input already defines a non-overlapping assembly pose,
+Mosaic retains it exactly. If a single-ASU motif lies on the symmetry
+stabilizer and therefore has no usable assembly radius yet, the compiler
+chooses one deterministic clash-free initial pose and then locks that pose for
+the whole diffusion trajectory.
+
+If each supplied interface must remain internally exact but different rigid
+components may translate or rotate relative to one another, request that
+different physical problem explicitly:
+
+```yaml
+task: create_symmetric_interface
+fixed_arrangement: optimize_components
+```
+
+This enables joint packing-aware component-pose optimization. It changes only
+whole-component SE(3) poses; the selected atoms are never deformed. An
+explicit `sampling.initial_pose` is also honored in either mode and defines
+the frozen starting arrangement deliberately.
+
+For expert declarations without a task preset, the component pose is fixed by
+default. To let independently declared components adapt to the generated
+scaffold while preserving every internal distance, set bounded rigid mobility
+explicitly:
 
 ```yaml
 constraints:
@@ -241,8 +658,9 @@ bounded rigid translation and rotation. Several independently coupled
 components may use `scaffold_objectives` in one run. Their proposals are
 computed from the same immutable timestep snapshot and are accepted or
 rejected atomically against one joint assembly objective. This multi-orbit
-path is CPU-validated and remains an engineering interface until its 50-step
-GPU gate passes. Keeping at least one component fixed is still useful when a
+path has passed C3 and D3 multi-orbit GPU canaries and remains an engineering
+interface while broader symmetry/seed campaigns accumulate. Keeping at least
+one component fixed is still useful when a
 specific relative-pose change must be measured against an explicit gauge
 anchor, but it is no longer a runtime restriction.
 
@@ -304,7 +722,41 @@ proposal was committed or rolled back. For several mobile orbits, the audit
 requires complete finite objective records and explicit atomic-joint decision
 evidence; a final pose inside its numeric bounds is not sufficient by itself.
 
-## Assembly graph for more than two seeds
+## Pairwise interleaved seed topology: a supported special case
+
+Here “more than two seeds” means **several non-covalent interface pairs already
+represented in the single file named by `input:`**. It does not mean one PDB
+per seed and it does not mean that every fixed helix belongs consecutively to
+one protein chain.
+
+Keep the two edge types explicit:
+
+```text
+interface pairs:  A1 <-> B1,  A2 <-> B2,  A3 <-> B3
+protein units:    A1  -- B2,  A2  -- B3,  A3  -- B1
+```
+
+The original Ho-Yeung implementation uses this same interleaving: after
+cyclic expansion, `(A,B)`, `(C,D)`, `(E,F)` remain interface pairs, while the
+generated contigs connect halves of neighbouring pairs. Mosaic must preserve
+both graphs independently.
+
+The general Mosaic model is broader. One interface relation may contain three
+or more participants, and one component may carry ports belonging to several
+different relations:
+
+```text
+interface I1 participants = [P11, P12]
+interface I2 participants = [P21, P22, P23]
+component U1 ports = [P11, P21, P23]
+```
+
+The ordinary cage-intent schema and input-contact validator already accept
+such variadic participant lists and require their contact graph to be
+connected. The current executable expert/Assembly IR relation is still binary;
+joint hyperedge lowering, multiplicity and audit are explicit unfinished work.
+Do not model a cooperative three-participant site as three independent passed
+pairwise interfaces.
 
 Complex rings and cages are declared as a graph, not as `left`, `right`,
 `third`, and progressively more topology-specific fields:
@@ -317,40 +769,71 @@ Complex rings and cages are declared as a graph, not as `left`, `right`,
 - the declared `symmetry` expands every node and edge through one exact group
   action.
 
-There is no two-component schema limit:
+There is no two-pair schema limit. The current expert spelling for three pairs
+is deliberately explicit:
 
 ```yaml
 schema_version: 1
-name: three-seed-c3
-input: motif.pdb
+name: three-interface-pair-c3
+input: three_interface_pairs.pdb
 symmetry: C3
 
 components:
-  seed_alpha:
-    selectors: [A12-20]
-  seed_beta:
-    selectors: [A26-37]
-  catalytic_site:
-    selectors: [B10-18, C30-42]
+  seed_1:
+    selectors: [A12-20, B26-37]
+    geometry: joint_rigid
+  seed_2:
+    selectors: [C12-20, D26-37]
+    geometry: joint_rigid
+  seed_3:
+    selectors: [E12-20, F26-37]
     geometry: joint_rigid
 
+ports:
+  seed_1_a: {component: seed_1, selectors: [A12-20]}
+  seed_1_b: {component: seed_1, selectors: [B26-37]}
+  seed_2_a: {component: seed_2, selectors: [C12-20]}
+  seed_2_b: {component: seed_2, selectors: [D26-37]}
+  seed_3_a: {component: seed_3, selectors: [E12-20]}
+  seed_3_b: {component: seed_3, selectors: [F26-37]}
+
 interfaces:
-  - id: alpha_beta
-    between: [seed_alpha, seed_beta]
+  - id: supplied_pair_1
+    between: [seed_1_a, seed_1_b]
     relation: {mode: preserve_input}
-  - id: beta_site
-    between: [seed_beta, catalytic_site]
-    copy_relation: {orbit_offset: 1}
-    relation:
-      mode: contact
-      distance: {minimum: 3.0, maximum: 8.0}
+  - id: supplied_pair_2
+    between: [seed_2_a, seed_2_b]
+    relation: {mode: preserve_input}
+  - id: supplied_pair_3
+    between: [seed_3_a, seed_3_b]
+    relation: {mode: preserve_input}
 
 connections:
-  - id: alpha_to_beta
-    from: seed_alpha.C
-    to: seed_beta.N
+  - id: unit_1
+    from: {component: seed_1, selector: A12-20, terminus: c}
+    to: {component: seed_2, selector: D26-37, terminus: n}
+    length: {minimum: 25, maximum: 40}
+  - id: unit_2
+    from: {component: seed_2, selector: C12-20, terminus: c}
+    to: {component: seed_3, selector: F26-37, terminus: n}
+    length: {minimum: 25, maximum: 40}
+  - id: unit_3
+    from: {component: seed_3, selector: E12-20, terminus: c}
+    to: {component: seed_1, selector: B26-37, terminus: n}
     length: {minimum: 25, maximum: 40}
 ```
+
+This shows topology semantics, not yet a claim that a completely pre-expanded
+three-pair input has passed the GPU gate. The compiler still needs an explicit
+copy/orbit ownership pass before it can safely decide whether these three
+pairs are independent interface classes or already materialized symmetry
+copies.
+
+Separately, if one protein unit genuinely contains three or more sequential
+fixed fragments, continuous connections may form an ordered path such as
+`fragment_a -> fragment_b -> fragment_c`. The adapter emits the internal
+fragment once. That optional feature must not be confused with the interleaved
+interface-pair topology above.
 
 For cage building blocks with several differently oriented faces, keep the
 faces in one `joint_rigid` component and expose each face as a separate port:
@@ -475,18 +958,20 @@ perfectly restored motif cannot hide a missing designed interface. A required
 edge with too few generated contacts, an out-of-range distance or a sub-2 A
 overlap fails the run. `rfd3-mosaic status` and `report` expose that verdict.
 
-The current design-interface controller is the first bounded CA-level packing
-field, not a learned interface-quality oracle. It is symmetry-neighbour aware
-and avoids the legacy all-to-all radial collapse. Its joint energy combines
+The current design-interface controller is a bounded CA-level packing field,
+not a learned interface-quality oracle. It is symmetry-neighbour aware and
+avoids the legacy all-to-all radial collapse. Its joint energy combines
 nearest-pair attraction, balanced residue coverage on both interface sides,
-contiguous-patch formation, residue-normalized clash repulsion and an optional
-COM-distance target. Symmetry copies are averaged within each declared edge
-before multiple source interfaces are combined, preventing orbit multiplicity
-from acting as an accidental weight.
-Same-chain adjacent token updates are smoothed before the bounded step to
-reduce local backbone crumpling. Runtime reports expose these terms
-separately. Sequence-aware side-chain packing and downstream fold/design
-validation remain later maturity gates.
+contiguous-patch formation, residue-normalized clash repulsion, an optional
+COM-distance target, contact-patch orientation, contact-depth uniformity,
+local CA-spacing protection and smooth worst-interface pressure. Symmetry
+copies are averaged within each declared edge before source interfaces are
+combined, preventing orbit multiplicity from acting as an accidental weight.
+Same-chain adjacent token updates are smoothed before the bounded step.
+Runtime diagnostics expose every term separately. These are differentiable
+backbone proxies; true all-atom shape complementarity, solvent burial,
+side-chain packing and downstream fold/design validation remain later
+maturity gates.
 An output-stage interface must resolve to two distinct output chains; target a
 non-identity symmetry neighbour rather than relying on same-chain self
 distances.
@@ -636,9 +1121,9 @@ This is the first graph execution slice. It deliberately uses one global
 finite symmetry action and lowers all components into the existing common
 `AssemblySpecification`, constraint runtime and audits. Multiple independent
 stabilizers and simultaneous vertex-, edge- and face-orbit semantics are not
-silently approximated; those remain a later IR extension. Until LRZ unit and
-GPU gates pass, `public_assembly_graph` remains `schema_only` in the capability
-ledger.
+silently approximated; those remain a later IR extension. The static public
+assembly graph is `gpu_canary` following the audited T run 5735772; this does
+not promote general stabilizer/coset or multi-participant hyperedge support.
 
 The routine public interface is one command. Users should not copy or edit
 long implementation-oriented Slurm scripts, and they do not need to write
@@ -817,8 +1302,12 @@ Every rendered submission also contains `source_snapshot.tar.gz`. The job
 verifies its archive digest, extracts it into `$RUN_DIR/software`, verifies
 the per-file source manifest, and imports Mosaic, RFD3 and Foundry from that
 private snapshot. Editing or synchronizing the shared checkout while a job is
-queued therefore cannot change the code executed by that job. Runtime design
-inputs remain external files and retain their separate fail-closed hashes.
+queued therefore cannot change the code executed by that job. Public runs also
+store a normalized `public_user_design.yaml` beside `resolved_config.yaml`, so
+later edits to the authoring YAML or execution profile do not invalidate or
+change an already rendered job. Structure inputs remain external files with
+separate fail-closed hashes; changing an input PDB/mmCIF after render is still
+rejected rather than silently changing the queued design.
 
 ## Configuration boundary
 

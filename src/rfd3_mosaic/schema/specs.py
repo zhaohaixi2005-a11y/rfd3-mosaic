@@ -63,6 +63,8 @@ class MobilitySubspace(str, Enum):
 
     RADIAL = "radial"
     RADIAL_AXIAL = "radial_axial"
+    RADIAL_ROTATION = "radial_rotation"
+    RADIAL_AXIAL_ROTATION = "radial_axial_rotation"
     TILT_ONLY = "tilt_only"
     BOUNDED_SE3 = "bounded_se3"
 
@@ -416,10 +418,24 @@ class OrbitMobilitySpec(StrictModel):
             if subspace in {
                 MobilitySubspace.RADIAL,
                 MobilitySubspace.RADIAL_AXIAL,
+                MobilitySubspace.RADIAL_ROTATION,
+                MobilitySubspace.RADIAL_AXIAL_ROTATION,
             } and translation <= 0.0:
                 raise ValueError(
                     f"{subspace.value} mobility requires a positive "
                     "translation bound"
+                )
+            if (
+                subspace
+                in {
+                    MobilitySubspace.RADIAL_ROTATION,
+                    MobilitySubspace.RADIAL_AXIAL_ROTATION,
+                }
+                and rotation <= 0.0
+            ):
+                raise ValueError(
+                    f"{subspace.value} mobility requires a positive "
+                    "rotation bound"
                 )
             if (
                 subspace == MobilitySubspace.TILT_ONLY
@@ -488,6 +504,7 @@ class InterfaceEdgeSpec(StrictModel):
 
     left_port: Identifier
     right_port: Identifier
+    hyperedge_id: Identifier | None = None
     copy_relation: CopyRelationSpec
     required: bool = True
     # Input-stage edges must already be satisfied by the compiled seed.
@@ -562,6 +579,46 @@ class SymmetryTransformSetSpec(StrictModel):
         return self
 
 
+class FiniteOrbitActionSpec(StrictModel):
+    """One transitive finite-group action represented by coset data.
+
+    ``coset_representative_ids`` are the distinct physical copies.  The
+    stabilizer and complete transform-to-representative map make quotient
+    action resolution deterministic for non-commutative groups.
+    """
+
+    coset_representative_ids: Annotated[
+        tuple[TransformIdentifier, ...],
+        Field(min_length=1),
+    ]
+    stabilizer_transform_ids: Annotated[
+        tuple[TransformIdentifier, ...],
+        Field(min_length=1),
+    ]
+    transform_to_coset_representative: dict[
+        TransformIdentifier,
+        TransformIdentifier,
+    ]
+
+    @model_validator(mode="after")
+    def validate_identifiers(self) -> "FiniteOrbitActionSpec":
+        representatives = self.coset_representative_ids
+        stabilizer = self.stabilizer_transform_ids
+        if len(representatives) != len(set(representatives)):
+            raise ValueError("Coset representative IDs must be unique")
+        if len(stabilizer) != len(set(stabilizer)):
+            raise ValueError("Stabilizer transform IDs must be unique")
+        unknown_values = set(
+            self.transform_to_coset_representative.values()
+        ) - set(representatives)
+        if unknown_values:
+            raise ValueError(
+                "Transform-to-coset map references unknown representatives: "
+                f"{sorted(unknown_values)}"
+            )
+        return self
+
+
 class SymmetryOrbitSpec(StrictModel):
     """Expands one or more master groups through a transform set."""
 
@@ -571,6 +628,7 @@ class SymmetryOrbitSpec(StrictModel):
     component_mobility: dict[Identifier, OrbitMobilitySpec] = Field(
         default_factory=dict
     )
+    finite_action: FiniteOrbitActionSpec | None = None
 
     @model_validator(mode="after")
     def require_unique_master_groups(self) -> "SymmetryOrbitSpec":

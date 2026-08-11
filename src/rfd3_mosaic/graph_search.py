@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 import yaml
 
+from rfd3_mosaic.compile import expand_symmetry_instances
 from rfd3_mosaic.design_compiler import (
     lower_user_design,
     transform_registry_for_design,
@@ -28,6 +29,9 @@ from rfd3_mosaic.schema import (
     UserDesignSpec,
     UserSymmetrySpec,
     load_user_design,
+)
+from rfd3_mosaic.topology.interface_seed_graph import (
+    analyze_interleaved_interface_seed_topology,
 )
 
 
@@ -349,6 +353,7 @@ def _strict_replay_candidate(
     replay_directory: Path,
     *,
     expected_structure: Path,
+    expected_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reload and strictly recompile a frozen public candidate.
 
@@ -359,6 +364,52 @@ def _strict_replay_candidate(
     """
 
     replayed = load_user_design(design_path)
+    replay_topology: dict[str, Any] | None = None
+    require_multi_seed_adapter = False
+    metadata = expected_metadata or {}
+    resolution_frontend = metadata.get("resolution_frontend")
+    if resolution_frontend in {
+        "prepositioned_multi_binary_cn_experimental",
+        "independent_multi_binary_cn_global_pose_v1",
+        "prepositioned_multi_interface_hyperedge_v1",
+        "independent_multi_interface_global_pose_v1",
+        "prepositioned_multi_interface_finite_group_v1",
+        "independent_multi_interface_finite_group_global_pose_v1",
+    }:
+        lowered = lower_user_design(replayed)
+        topology = analyze_interleaved_interface_seed_topology(
+            expand_symmetry_instances(lowered.specification)
+        )
+        hyperedge_frontend = resolution_frontend in {
+            "prepositioned_multi_interface_hyperedge_v1",
+            "independent_multi_interface_global_pose_v1",
+            "prepositioned_multi_interface_finite_group_v1",
+            "independent_multi_interface_finite_group_global_pose_v1",
+        }
+        topology_valid = (
+            topology.is_valid_interface_unit_graph
+            if hyperedge_frontend
+            else topology.is_closed_alternating_cycle
+        )
+        if not topology_valid:
+            raise ValueError(
+                "Frozen multi-seed candidate no longer satisfies the "
+                "connected interface/unit topology contract: "
+                + "; ".join(topology.violations)
+            )
+        expected_unit_count = metadata.get("physical_polymer_unit_count")
+        if (
+            expected_unit_count is not None
+            and len(topology.polymer_units) != int(expected_unit_count)
+        ):
+            raise ValueError(
+                "Frozen multi-seed candidate changed its physical polymer "
+                f"unit count ({len(topology.polymer_units)} != "
+                f"{expected_unit_count})"
+            )
+        replay_topology = topology.to_dict()
+        require_multi_seed_adapter = True
+
     replay_directory.mkdir(parents=True, exist_ok=False)
     assembly_path = replay_directory / "assembly.yaml"
     _write_assembly_design(replayed, assembly_path)
@@ -375,13 +426,205 @@ def _strict_replay_candidate(
             "Frozen graph-search candidate did not reproduce the ranked "
             "initialized assembly"
         )
-    return {
+    adapter_result: dict[str, Any] | None = None
+    if require_multi_seed_adapter:
+        # Standalone replay proves the initialized assembly, but executable
+        # candidates must also traverse the native RFD3 adapter.  This catches
+        # invalid ASU paths (for example a cross-copy seam bound as a motif
+        # master) before a YAML is advertised under selected/.
+        from rfd3_mosaic.output.rfd3_adapter import (
+            compile_assembly_rfd3_input,
+        )
+
+        adapter = compile_assembly_rfd3_input(
+            assembly_path,
+            replay_directory / "rfd3_adapter",
+            base_directory=replayed.input.parent,
+            example_id=f"{replayed.name}_strict_replay",
+        )
+        adapter_structure_sha256 = _sha256(adapter.structure_path)
+        if adapter_structure_sha256 != expected_sha256:
+            raise ValueError(
+                "Frozen multi-seed RFD3 adapter changed the ranked "
+                "initialized assembly"
+            )
+        adapter_result = {
+            "rfd3_adapter_validated": True,
+            "rfd3_adapter_input": str(adapter.input_path.resolve()),
+            "rfd3_adapter_input_sha256": _sha256(adapter.input_path),
+            "rfd3_adapter_structure_sha256": adapter_structure_sha256,
+            "rfd3_adapter_contig": adapter.contig,
+        }
+
+    result = {
         "replay_validated": True,
         "replay_directory": str(replay_directory.resolve()),
         "replay_structure_sha256": replay_sha256,
         "replay_atom_count": artifacts.atom_count,
         "replay_residue_count": artifacts.residue_count,
         "replay_chain_count": artifacts.chain_count,
+    }
+    if replay_topology is not None:
+        result["replay_topology"] = replay_topology
+    if adapter_result is not None:
+        result.update(adapter_result)
+    return result
+
+
+def rank_design_candidates(
+    candidates: Iterable[
+        tuple[str, UserDesignSpec, dict[str, Any]]
+    ],
+    output_directory: str | Path,
+    *,
+    top_count: int = 20,
+) -> dict[str, Any]:
+    """Compile, rank, freeze and strictly replay public design candidates.
+
+    This is the shared boundary between architecture frontends and the one
+    production compiler/runtime path.  Callers may discover candidates in
+    different ways, but a selected candidate is always serialized as a
+    normal :class:`UserDesignSpec`, reloaded, strictly recompiled and checked
+    against the initialized structure that was ranked.
+    """
+
+    if top_count < 1:
+        raise ValueError("top_count must be positive")
+    materialized = tuple(candidates)
+    candidate_ids = tuple(item[0] for item in materialized)
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError("Candidate IDs must be unique")
+
+    output = Path(output_directory).expanduser().resolve()
+    if output.exists():
+        unexpected = [
+            path for path in output.iterdir() if path.name != "_inputs"
+        ]
+        if unexpected:
+            raise FileExistsError(
+                "Candidate output directory contains files other than the "
+                f"resolver-owned _inputs directory: {output}"
+            )
+    output.mkdir(parents=True, exist_ok=True)
+    candidates_root = output / "candidates"
+    candidates_root.mkdir(exist_ok=True)
+
+    summaries: list[dict[str, Any]] = []
+    designs: dict[str, UserDesignSpec] = {}
+    for candidate_id, design, metadata in materialized:
+        designs[candidate_id] = design
+        candidate_directory = candidates_root / candidate_id
+        candidate_directory.mkdir(exist_ok=False)
+        symmetry_id = transform_registry_for_design(design).group_name
+        try:
+            assembly_path = candidate_directory / "assembly.yaml"
+            _write_assembly_design(design, assembly_path)
+            artifacts = compile_standalone(
+                assembly_path,
+                candidate_directory / "compiled",
+                base_directory=design.input.parent,
+                strict_validation=False,
+            )
+            manifest = json.loads(
+                artifacts.manifest_path.read_text(encoding="utf-8")
+            )
+            summary = _summary(
+                manifest,
+                candidate_id=candidate_id,
+                symmetry_id=symmetry_id,
+                assignment=dict(
+                    metadata.get("neighbour_transforms", {})
+                ),
+                pose_sample_index=int(
+                    metadata.get("pose_sample_index", 0)
+                ),
+                directory=candidate_directory,
+            )
+            summary.update(metadata)
+            # Architecture frontends may attach deterministic, explanatory
+            # preflight failures that are not visible to the coordinate-only
+            # standalone compiler.  Such candidates remain in the manifest
+            # for diagnosis, but must never be selected or replayed.
+            if summary.get("preflight_failures"):
+                summary["accepted"] = False
+            summaries.append(summary)
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            summaries.append(
+                {
+                    "candidate_id": candidate_id,
+                    "symmetry": symmetry_id,
+                    "accepted": False,
+                    "neighbour_transforms": dict(
+                        metadata.get("neighbour_transforms", {})
+                    ),
+                    "pose_sample_index": int(
+                        metadata.get("pose_sample_index", 0)
+                    ),
+                    "directory": str(candidate_directory.resolve()),
+                    **metadata,
+                    "error": f"{type(error).__name__}: {error}",
+                }
+            )
+
+    ranking = sorted(summaries, key=_ranking_key)
+    selected_root = output / "selected"
+    selected_root.mkdir(exist_ok=True)
+    selected_count = 0
+    replay_failure_count = 0
+    for candidate in ranking:
+        if selected_count >= top_count:
+            break
+        if candidate.get("error") is not None or not candidate["accepted"]:
+            continue
+        candidate_id = str(candidate["candidate_id"])
+        candidate_directory = Path(candidate["directory"])
+        frozen_path = candidate_directory / "resolved_design.yaml"
+        frozen_path.write_text(
+            yaml.safe_dump(
+                _public_payload(designs[candidate_id]),
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        try:
+            replay = _strict_replay_candidate(
+                frozen_path,
+                candidate_directory / "replay",
+                expected_structure=(
+                    candidate_directory / "compiled/presymmetrized_input.cif"
+                ),
+                expected_metadata=candidate,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            candidate["replay_validated"] = False
+            candidate["replay_error"] = f"{type(error).__name__}: {error}"
+            replay_failure_count += 1
+            continue
+        selected_count += 1
+        resolved_path = (
+            selected_root
+            / f"rank_{selected_count:04d}_{candidate_id}.yaml"
+        )
+        resolved_path.write_text(
+            frozen_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        candidate["rank"] = selected_count
+        candidate["resolved_design"] = str(resolved_path)
+        candidate.update(replay)
+
+    return {
+        "candidate_count": len(ranking),
+        "accepted_count": sum(
+            bool(item.get("accepted")) for item in ranking
+        ),
+        "failed_compilation_count": sum(
+            item.get("error") is not None for item in ranking
+        ),
+        "selected_count": selected_count,
+        "replay_failure_count": replay_failure_count,
+        "ranking": ranking,
+        "output_directory": str(output),
     }
 
 
@@ -604,4 +847,8 @@ def search_graph_design(
     return payload
 
 
-__all__ = ["graph_neighbour_assignments", "search_graph_design"]
+__all__ = [
+    "graph_neighbour_assignments",
+    "rank_design_candidates",
+    "search_graph_design",
+]

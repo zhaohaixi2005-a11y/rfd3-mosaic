@@ -86,6 +86,14 @@ class SymmetryConfig(BaseModel):
             "validated, including multiple identical entities per ASU."
         ),
     )
+    declared_action_is_quotient: bool = Field(
+        False,
+        description=(
+            "The declared frames are physical coset representatives of a "
+            "compiler-validated stabilizer quotient, rather than every "
+            "element of the named full symmetry group."
+        ),
+    )
     declared_transform_order: Optional[list[str]] = Field(
         None,
         description=(
@@ -127,13 +135,24 @@ def _resolve_symmetry_frames(
                 "declared matrix set"
             )
         expected_count = get_symmetry_multiplicity_from_id(sym_conf)
-        if len(order) != expected_count:
+        if (
+            not sym_conf.declared_action_is_quotient
+            and len(order) != expected_count
+        ):
             raise ValueError(
                 "Declared symmetry transform count does not match symmetry "
                 f"ID {sym_conf.id}: {len(order)} != {expected_count}"
             )
+        if sym_conf.declared_action_is_quotient and not (
+            2 <= len(order) < expected_count
+        ):
+            raise ValueError(
+                "A declared quotient action must contain at least two and "
+                "fewer than the full-group number of physical frames: "
+                f"{len(order)} vs full multiplicity {expected_count}"
+            )
         frames = []
-        for transform_id in order:
+        for transform_index, transform_id in enumerate(order):
             matrix = np.asarray(matrices[transform_id], dtype=np.float64)
             if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
                 raise ValueError(
@@ -155,6 +174,15 @@ def _resolve_symmetry_frames(
                 raise ValueError(
                     f"Declared symmetry transform {transform_id!r} is not "
                     "a proper rotation"
+                )
+            if transform_index == 0 and not np.allclose(
+                matrix,
+                np.eye(4),
+                atol=1e-6,
+            ):
+                raise ValueError(
+                    "The first declared symmetry frame must be the identity "
+                    "because runtime transform zero is the materialized ASU"
                 )
             frames.append((rotation, matrix[:3, 3].copy()))
         ranked_logger.info(
@@ -198,6 +226,11 @@ def make_symmetric_atom_array(
     # would be a circular import via checks.py), so mypy widens sym_conf back to the
     # declared `SymmetryConfig | dict`; it returns the same SymmetryConfig it was given.
     assert isinstance(sym_conf, SymmetryConfig)
+    if sym_conf.declared_action_is_quotient and has_dist_cond:
+        raise NotImplementedError(
+            "Declared quotient actions are currently supported for exact "
+            "3D motif conditioning, not 2D distance conditioning"
+        )
 
     # Adding utility annotations to the asu atom array
     asu_atom_array = _add_util_annotations(asu_atom_array, sym_conf, sm)
@@ -271,6 +304,11 @@ def make_symmetric_atom_array_for_partial_diffusion(atom_array, sym_conf):
     """
     if not isinstance(sym_conf, SymmetryConfig):
         sym_conf = convery_sym_conf_to_symmetry_config(sym_conf)
+    if sym_conf.declared_action_is_quotient:
+        raise NotImplementedError(
+            "Partial diffusion with a stabilizer quotient action is not "
+            "implemented; use ordinary full-trajectory generation"
+        )
     if (
         sym_conf.use_declared_frames
         and (sym_conf.id or "").strip().upper() in {"T", "O", "I"}

@@ -8,6 +8,9 @@ from rfd3_mosaic.compile import (
     load_interface_seed_config,
 )
 from rfd3_mosaic.schema import InterfaceSeedSpec
+from rfd3_mosaic.topology.stabilizer_cosets import (
+    stabilizer_coset_hypotheses,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -18,6 +21,40 @@ LHD101_CONFIG = (
 
 
 class InstanceExpansionTestCase(unittest.TestCase):
+    def test_tetrahedral_stabilizer_coset_action_expands_three_copies(
+        self,
+    ) -> None:
+        payload = load_interface_seed_config(LHD101_CONFIG).model_dump(
+            mode="python"
+        )
+        payload["symmetry"]["transform_sets"]["ring_c3"] = {
+            "type": "tetrahedral",
+            "order": 12,
+        }
+        action = stabilizer_coset_hypotheses("T", 3)[0]
+        payload["symmetry"]["orbits"]["primary_orbit"][
+            "finite_action"
+        ] = {
+            "coset_representative_ids": action.coset_representative_ids,
+            "stabilizer_transform_ids": action.stabilizer_transform_ids,
+            "transform_to_coset_representative": dict(
+                action.transform_to_coset_representative
+            ),
+        }
+        # The legacy C3 relation is not meaningful in T; this test exercises
+        # orbit materialization, not a particular interface neighbour.
+        payload["interfaces"] = {}
+        payload["scaffold_links"] = {}
+        payload["generated_segments"] = {}
+        spec = InterfaceSeedSpec.model_validate(payload)
+
+        instances = expand_symmetry_instances(spec)
+
+        orbit = instances.constraint_orbits["primary_orbit"]
+        self.assertEqual(len(instances.motion_groups), 3)
+        self.assertEqual(orbit.transform_ids, action.coset_representative_ids)
+        self.assertEqual(len(orbit.group_instance_ids), 3)
+
     def test_lhd101_c3_expands_all_objects(self) -> None:
         spec = load_interface_seed_config(LHD101_CONFIG)
 

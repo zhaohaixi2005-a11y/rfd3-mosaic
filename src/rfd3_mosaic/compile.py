@@ -140,6 +140,67 @@ def expand_symmetry_instances(
         orbit_id: registries[orbit.transform_set]
         for orbit_id, orbit in spec.symmetry.orbits.items()
     }
+    orbit_transform_ids: dict[str, tuple[str, ...]] = {}
+    orbit_transform_to_representative: dict[str, dict[str, str]] = {}
+    for orbit_id, orbit in spec.symmetry.orbits.items():
+        registry = orbit_registries[orbit_id]
+        action = orbit.finite_action
+        if action is None:
+            orbit_transform_ids[orbit_id] = registry.transform_ids
+            orbit_transform_to_representative[orbit_id] = {
+                transform_id: transform_id
+                for transform_id in registry.transform_ids
+            }
+            continue
+        representatives = action.coset_representative_ids
+        stabilizer = action.stabilizer_transform_ids
+        mapping = dict(action.transform_to_coset_representative)
+        registry_ids = set(registry.transform_ids)
+        referenced = set(representatives) | set(stabilizer) | set(mapping)
+        if referenced - registry_ids:
+            raise ValueError(
+                f"Orbit {orbit_id!r} finite action references transforms "
+                f"outside {registry.group_name}: "
+                f"{sorted(referenced - registry_ids)}"
+            )
+        if set(mapping) != registry_ids:
+            raise ValueError(
+                f"Orbit {orbit_id!r} finite action must map every group "
+                "transform exactly once"
+            )
+        if registry.identity_id not in stabilizer:
+            raise ValueError(
+                f"Orbit {orbit_id!r} stabilizer omits group identity"
+            )
+        for left_id in stabilizer:
+            for right_id in stabilizer:
+                if registry.compose_ids(left_id, right_id) not in stabilizer:
+                    raise ValueError(
+                        f"Orbit {orbit_id!r} stabilizer is not closed"
+                    )
+        assigned: set[str] = set()
+        for representative in representatives:
+            coset = {
+                registry.compose_ids(representative, stabilizer_id)
+                for stabilizer_id in stabilizer
+            }
+            if assigned.intersection(coset):
+                raise ValueError(
+                    f"Orbit {orbit_id!r} finite-action cosets overlap"
+                )
+            if any(mapping[item] != representative for item in coset):
+                raise ValueError(
+                    f"Orbit {orbit_id!r} transform map disagrees with "
+                    "its declared left cosets"
+                )
+            assigned.update(coset)
+        if assigned != registry_ids:
+            raise ValueError(
+                f"Orbit {orbit_id!r} finite-action cosets do not partition "
+                "the complete transform registry"
+            )
+        orbit_transform_ids[orbit_id] = representatives
+        orbit_transform_to_representative[orbit_id] = mapping
 
     def resolve_copy_relation(
         orbit_id: str | None,
@@ -155,18 +216,29 @@ def expand_symmetry_instances(
                 )
             return 0
         registry = orbit_registries[orbit_id]
+        selected_transform_ids = orbit_transform_ids[orbit_id]
         if orbit_offset is not None:
-            target_transform_id = registry.transform_id_for_offset(
-                orbit_offset,
-                source_copy_index=source_copy_index,
-            )
+            if spec.symmetry.orbits[orbit_id].finite_action is None:
+                target_transform_id = registry.transform_id_for_offset(
+                    orbit_offset,
+                    source_copy_index=source_copy_index,
+                )
+                return registry.transform_ids.index(target_transform_id)
+            target_copy_index = (
+                source_copy_index + orbit_offset
+            ) % len(selected_transform_ids)
+            return target_copy_index
         else:
             assert transform is not None
-            target_transform_id = registry.transform_id_for_relation(
+            source_transform_id = selected_transform_ids[source_copy_index]
+            target_transform_id = registry.compose_ids(
                 transform,
-                source_copy_index=source_copy_index,
+                source_transform_id,
             )
-        return registry.transform_ids.index(target_transform_id)
+            representative = orbit_transform_to_representative[orbit_id][
+                target_transform_id
+            ]
+        return selected_transform_ids.index(representative)
 
     group_to_orbit: dict[str, str] = {}
     for orbit_id, orbit in spec.symmetry.orbits.items():
@@ -238,6 +310,7 @@ def expand_symmetry_instances(
 
         orbit = spec.symmetry.orbits[orbit_id]
         registry = registries[orbit.transform_set]
+        selected_transform_ids = orbit_transform_ids[orbit_id]
         expansions[group_id] = [
             (
                 orbit_id,
@@ -251,7 +324,7 @@ def expand_symmetry_instances(
                     )
                 ),
             )
-            for copy_index, transform_id in enumerate(registry.transform_ids)
+            for copy_index, transform_id in enumerate(selected_transform_ids)
         ]
 
     motion_group_instances: dict[str, MotionGroupInstance] = {}
@@ -307,17 +380,18 @@ def expand_symmetry_instances(
     constraint_orbit_instances: dict[str, ConstraintOrbitInstance] = {}
     for orbit_id, orbit_spec in spec.symmetry.orbits.items():
         registry = orbit_registries[orbit_id]
+        selected_transform_ids = orbit_transform_ids[orbit_id]
         group_instance_ids = tuple(
             _instance_id(group_id, orbit_id, copy_index)
             for group_id in orbit_spec.master_groups
-            for copy_index in range(len(registry.transform_ids))
+            for copy_index in range(len(selected_transform_ids))
         )
         constraint_orbit_instances[orbit_id] = ConstraintOrbitInstance(
             id=orbit_id,
             transform_set_id=orbit_spec.transform_set,
             master_group_ids=tuple(orbit_spec.master_groups),
             group_instance_ids=group_instance_ids,
-            transform_ids=tuple(registry.transform_ids),
+            transform_ids=selected_transform_ids,
             mobility=resolved_orbit_mobility(orbit_id),
             component_mobility=orbit_spec.component_mobility,
         )
@@ -389,6 +463,7 @@ def expand_symmetry_instances(
             interface_instances[edge_instance_id] = InterfaceEdgeInstance(
                 id=edge_instance_id,
                 source_id=edge_id,
+                hyperedge_id=edge_spec.hyperedge_id,
                 left_port_instance_id=port_index[
                     (edge_spec.left_port, orbit_id, source_copy_index)
                 ],

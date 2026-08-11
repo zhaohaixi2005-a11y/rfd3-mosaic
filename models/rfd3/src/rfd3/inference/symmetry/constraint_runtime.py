@@ -25,6 +25,13 @@ class ConstraintProposalResult:
 
     target: torch.Tensor
     applied: bool
+    # A joint constraint proposal may move both a hard motif orbit and the
+    # generated scaffold that supports it.  Returning only the new target
+    # forced those two changes into separate sampler phases and made atomic
+    # acceptance impossible.  ``coordinates`` is the proposed model
+    # prediction in the same transaction; the runtime validates and projects
+    # it against ``target`` before it can reach the Euler update.
+    coordinates: torch.Tensor | None = None
 
 
 ProposalHook = Callable[
@@ -52,6 +59,14 @@ class MosaicConstraintRuntime:
     proposal_hook: ProposalHook | None = None
     synchronize_conditioning: ConditioningSynchronizer | None = None
     conditioning_refresh_count: int = 0
+    final_fixed_target_rmsd: float | None = field(
+        default=None,
+        init=False,
+    )
+    final_fixed_target_maximum_error: float | None = field(
+        default=None,
+        init=False,
+    )
     _phase_counts: dict[str, int] = field(
         default_factory=lambda: {
             "initialize": 0,
@@ -220,9 +235,26 @@ class MosaicConstraintRuntime:
                     "ConstraintProposalResult"
                 )
             target = self._validated_target(proposal.target)
+            proposal_coordinates = coordinates
+            if proposal.coordinates is not None:
+                proposal_coordinates = torch.as_tensor(
+                    proposal.coordinates,
+                    dtype=coordinates.dtype,
+                    device=coordinates.device,
+                )
+                if proposal_coordinates.shape != coordinates.shape:
+                    raise ValueError(
+                        "Constraint proposal coordinates must match the "
+                        "model prediction shape"
+                    )
+                if not torch.isfinite(proposal_coordinates).all():
+                    raise ValueError(
+                        "Constraint proposal coordinates contain NaN or Inf"
+                    )
             self._phase_counts["proposal"] += 1
             if proposal.applied:
                 self.fixed_target = target.clone()
+                coordinates = proposal_coordinates
                 self._phase_counts["proposal_applied"] += 1
                 if self.synchronize_conditioning is not None:
                     self.synchronize_conditioning(self.fixed_target)
@@ -266,12 +298,36 @@ class MosaicConstraintRuntime:
             coordinates,
             label="Final diffusion state",
         )
+        fixed_errors = torch.linalg.vector_norm(
+            finalized[..., self.fixed_mask, :]
+            - self.fixed_target[..., self.fixed_mask, :],
+            dim=-1,
+        )
+        if fixed_errors.numel():
+            self.final_fixed_target_rmsd = float(
+                torch.sqrt(torch.mean(torch.square(fixed_errors))).item()
+            )
+            self.final_fixed_target_maximum_error = float(
+                fixed_errors.max().item()
+            )
+        else:
+            self.final_fixed_target_rmsd = 0.0
+            self.final_fixed_target_maximum_error = 0.0
+        # This is an internal invariant, not a configurable scientific
+        # threshold.  The hard projector has just restored these exact tensor
+        # values; a larger discrepancy means a lifecycle implementation bug.
+        if self.final_fixed_target_maximum_error > 1.0e-5:
+            raise RuntimeError(
+                "Final hard-constraint projection did not restore the "
+                "runtime fixed target: maximum error "
+                f"{self.final_fixed_target_maximum_error:.8f} A"
+            )
         self._state = "finalized"
         return finalized
 
     def diagnostics(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "proposal_source": self.proposal_source,
             "proposal_interval": self.proposal_interval,
             "state": self._state,
@@ -279,6 +335,10 @@ class MosaicConstraintRuntime:
                 self.conditioning_refresh_count
             ),
             "phase_counts": dict(self._phase_counts),
+            "final_fixed_target_rmsd": self.final_fixed_target_rmsd,
+            "final_fixed_target_maximum_error": (
+                self.final_fixed_target_maximum_error
+            ),
         }
 
 

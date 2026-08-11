@@ -1,0 +1,43 @@
+schema_version: 1
+name: public-c3-locked-packing-v100-t50-s945
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+task: create_symmetric_interface
+fixed_arrangement: locked
+
+# Control arm for the unified interface-design contract. The compiler may
+# establish one deterministic non-overlapping initial orbit if the ASU input
+# is degenerate, but every fixed atom and the complete resolved C3 arrangement
+# remain immutable throughout diffusion. Packing guidance acts only on the
+# generated N/C regions.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 35
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 35
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+
+sampling:
+  timesteps: 50
+  seed: 945
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-c3-locked-packing-canary-8_11

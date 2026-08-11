@@ -2,6 +2,11 @@ schema_version: 1
 name: simple-central-motif-c3
 input: inputs/Prism_C3_G2_fixed_motif.pdb
 symmetry: C3
+task: create_symmetric_interface
+# Safe ordinary-user default: keep the complete supplied C3 motif arrangement
+# fixed while packing guidance acts only on the generated regions. To permit
+# bounded component rotation/radius adaptation instead, explicitly set:
+# fixed_arrangement: optimize_components
 
 # Ordinary-user mode: keep the motif and grow both sides. Mosaic infers that
 # the generated regions must pack against the appropriate symmetry neighbour.
@@ -16,6 +21,8 @@ generation:
     length: 35
 
 constraints:
+  # fixed_xyz keeps every motif atom and the complete supplied arrangement
+  # exact because fixed_arrangement defaults to locked.
   - kind: fixed_xyz
     selector: A12-20
 

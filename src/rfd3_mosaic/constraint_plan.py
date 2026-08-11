@@ -10,7 +10,10 @@ from rfd3_mosaic.schema.design import (
     ConstraintClause,
     ConstraintOrbitScope,
     CylindricalConstraint,
+    FixedComponentPoseSpec,
+    FixedArrangementPolicy,
     FixedXYZConstraint,
+    UserDesignTask,
     UserDesignSpec,
 )
 from rfd3_mosaic.schema.specs import StrictModel
@@ -83,9 +86,41 @@ def _controlled_dofs(constraint: ConstraintClause) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _parameters(constraint: ConstraintClause) -> dict[str, object]:
+_CREATE_INTERFACE_ORBIT_POSE = FixedComponentPoseSpec(
+    mode="bounded_mobile",
+    # Ordinary interface design uses the symmetry axis as a physically
+    # meaningful coordinate system: optimize cage radius, axial placement and
+    # full rigid-body orientation while suppressing arbitrary tangential drift.
+    # Expert declarations can still request unrestricted bounded_se3.
+    subspace="radial_axial_rotation",
+    proposal="scaffold_objectives",
+    max_translation=4.0,
+    max_rotation_deg=10.0,
+    start_fraction=0.05,
+    end_fraction=0.75,
+    response=0.2,
+    max_step_translation=0.25,
+    max_step_rotation_deg=1.0,
+)
+
+
+def _parameters(
+    constraint: ConstraintClause,
+    *,
+    task: UserDesignTask | None = None,
+    fixed_arrangement: FixedArrangementPolicy = FixedArrangementPolicy.LOCKED,
+) -> dict[str, object]:
     if isinstance(constraint, FixedXYZConstraint):
-        return {"pose": constraint.pose.model_dump(mode="json")}
+        pose = (
+            _CREATE_INTERFACE_ORBIT_POSE
+            if (
+                task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE
+                and fixed_arrangement
+                == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
+            )
+            else constraint.pose
+        )
+        return {"pose": pose.model_dump(mode="json")}
     if isinstance(constraint, CylindricalConstraint):
         return {"axis": constraint.axis}
     return {
@@ -166,7 +201,11 @@ def compile_constraint_plan(design: UserDesignSpec) -> ConstraintPlan:
                 if isinstance(constraint, FixedXYZConstraint)
                 else None
             ),
-            parameters=_parameters(constraint),
+            parameters=_parameters(
+                constraint,
+                task=design.task,
+                fixed_arrangement=design.fixed_arrangement,
+            ),
         )
         for index, constraint in enumerate(design.constraints, start=1)
     )

@@ -1208,6 +1208,7 @@ def _interface_constraint_groups(
             {
                 "group_id": edge.id,
                 "source_interface_id": edge.source_id,
+                "hyperedge_id": edge.hyperedge_id or edge.source_id,
                 "orbit_id": edge.orbit_id,
                 "source_copy_index": edge.source_copy_index,
                 "target_copy_index": edge.target_copy_index,

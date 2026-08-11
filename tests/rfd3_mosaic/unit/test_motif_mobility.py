@@ -10,6 +10,13 @@ from rfd3.inference.symmetry.motif_mobility import (
     fit_centered_rigid_pose,
     mobility_window_weight,
 )
+from rfd3.inference.symmetry.graph_interface_guidance import (
+    GraphInterfaceEdge,
+    GraphInterfaceGuidanceConfig,
+    GraphInterfacePatchState,
+    GraphInterfaceTopology,
+    graph_interface_energy,
+)
 from rfd3.inference.symmetry.scaffold_guidance import (
     BoundaryTopology,
     CyclicAxis,
@@ -272,6 +279,332 @@ class MotifMobilityTestCase(unittest.TestCase):
             topology,
             axis,
             config,
+        )
+
+    @staticmethod
+    def _joint_packing_mobility_case():
+        """One mobile C3 motif plus two generated residues per copy."""
+
+        template = torch.tensor(
+            [[
+                [5.0, 0.0, 0.0],
+                [5.0, 1.0, 0.0],
+                [5.0, 0.0, 1.0],
+                [6.0, 0.0, 0.0],
+            ]],
+            dtype=torch.float64,
+        )
+        generated_template = torch.tensor(
+            [[10.0, 0.0, 0.0], [10.0, 1.0, 0.0]],
+            dtype=torch.float64,
+        )
+        transforms = {
+            str(transform_id): (
+                _z_rotation(120.0 * transform_id),
+                torch.zeros(3, dtype=torch.float64),
+            )
+            for transform_id in range(3)
+        }
+        target = torch.empty((1, 18, 3), dtype=torch.float64)
+        fixed_groups = []
+        generated_indices = []
+        for transform_id in range(3):
+            start = transform_id * 6
+            rotation, translation = transforms[str(transform_id)]
+            target[:, start : start + 4] = _apply(
+                template,
+                rotation,
+                translation,
+            )
+            target[0, start + 4 : start + 6] = _apply(
+                generated_template,
+                rotation,
+                translation,
+            )
+            fixed_groups.append(list(range(start, start + 4)))
+            generated_indices.extend((start + 4, start + 5))
+
+        controller_features = {
+            "sym_transform": transforms,
+            "motif_constraint_group_orbit_index": torch.tensor([0, 0, 0]),
+            "motif_constraint_group_orbit_transform_id": torch.tensor(
+                [0, 1, 2]
+            ),
+            "motif_constraint_group_atom_indices": torch.tensor(
+                fixed_groups
+            ),
+            "motif_constraint_group_atom_mask": torch.ones(
+                (3, 4), dtype=torch.bool
+            ),
+            "motif_constraint_orbit_master_group_index": torch.tensor([0]),
+            "motif_constraint_orbit_mobility_mode": torch.tensor([1]),
+            "motif_constraint_orbit_bounds": torch.tensor([[2.0, 10.0]]),
+            "motif_constraint_orbit_subspace": torch.tensor([4]),
+            "motif_constraint_orbit_proposal": torch.tensor([2]),
+            "motif_constraint_orbit_schedule": torch.tensor(
+                [[0.0, 1.0, 1.0, 0.25, 1.0]]
+            ),
+            "motif_constraint_orbit_objective_ids": ((),),
+        }
+        controller = OrbitRigidMotifController.from_features(
+            controller_features,
+            target,
+            start_fraction=0.0,
+            end_fraction=1.0,
+            response=1.0,
+            per_step_translation=0.25,
+            per_step_rotation_degrees=1.0,
+        )
+        assert controller is not None
+
+        generated_mask = torch.zeros(18, dtype=torch.bool)
+        generated_mask[generated_indices] = True
+        junction_pairs = torch.tensor(
+            [[3, 4], [9, 10], [15, 16]], dtype=torch.long
+        )
+        boundary_topology = BoundaryTopology(
+            junction_pairs=junction_pairs,
+            fixed_ca_atom_indices=junction_pairs[:, 0],
+            generated_ca_atom_indices=junction_pairs[:, 1],
+            generated_atom_mask=generated_mask,
+        )
+        axis = CyclicAxis(
+            point=torch.zeros(3, dtype=torch.float64),
+            direction=torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64),
+            transform_ids=(0, 1, 2),
+        )
+        scaffold_config = ScaffoldGuidanceConfig(
+            junction_weight=1.0,
+            clash_weight=0.0,
+            tilt_weight=0.0,
+            prior_weight=0.01,
+        )
+
+        def edge(edge_index, left_indices, right_indices):
+            left = torch.zeros(18, dtype=torch.bool)
+            right = torch.zeros(18, dtype=torch.bool)
+            left[left_indices] = True
+            right[right_indices] = True
+            return GraphInterfaceEdge(
+                edge_id=f"packing@{edge_index}",
+                source_interface_id="packing",
+                left_generated_ca_mask=left,
+                right_generated_ca_mask=right,
+                left_generated_token_ids=torch.tensor(left_indices),
+                right_generated_token_ids=torch.tensor(right_indices),
+                requested_contact_count=2,
+                requested_residues_per_side=2,
+                requested_contiguous_residues_per_side=2,
+                automatic_quality=False,
+                contact_cutoff=5.5,
+                distance_target=None,
+                distance_tolerance=None,
+            )
+
+        interface_topology = GraphInterfaceTopology(
+            edges=(
+                edge(0, [4, 5], [10, 11]),
+                edge(1, [10, 11], [16, 17]),
+                edge(2, [16, 17], [4, 5]),
+            ),
+            generated_atom_mask=generated_mask,
+            junction_ca_pairs=junction_pairs,
+        )
+        interface_config = GraphInterfaceGuidanceConfig(
+            weight=5.0,
+            coverage_weight=0.0,
+            continuity_weight=0.0,
+            orientation_weight=0.0,
+            shape_weight=0.0,
+            backbone_weight=0.0,
+            interface_balance_weight=0.0,
+            patch_exclusivity_weight=0.0,
+            clash_weight=0.0,
+            distance_weight=0.0,
+            target_ca_distance=8.0,
+            capture_ca_distance=20.0,
+            pairs_per_edge=2,
+            start_fraction=0.0,
+            end_fraction=1.0,
+            terminal_weight_floor=1.0,
+            maximum_token_step=0.5,
+            token_smoothing_weight=0.0,
+            patch_blend_radius=0,
+            maximum_patch_rotation_degrees=0.0,
+            final_polish_steps=0,
+        )
+        runtime_features = {
+            "atom_to_token_map": torch.arange(18),
+            "asym_id": torch.tensor([0] * 6 + [1] * 6 + [2] * 6),
+            "residue_index": torch.tensor(list(range(6)) * 3),
+            "is_ca": torch.ones(18, dtype=torch.bool),
+            "is_virtual": torch.zeros(18, dtype=torch.bool),
+        }
+        return (
+            target,
+            transforms,
+            controller,
+            boundary_topology,
+            axis,
+            scaffold_config,
+            interface_topology,
+            interface_config,
+            runtime_features,
+        )
+
+    def test_joint_packing_mobility_commits_one_atomic_transaction(self):
+        (
+            coordinates,
+            transforms,
+            controller,
+            boundary_topology,
+            axis,
+            scaffold_config,
+            interface_topology,
+            interface_config,
+            features,
+        ) = self._joint_packing_mobility_case()
+        baseline = graph_interface_energy(
+            coordinates, interface_topology, interface_config
+        )
+        patch_state = GraphInterfacePatchState(assignments={})
+
+        target, observed, diagnostics = (
+            controller.update_orbits_with_interface_packing(
+                coordinates,
+                features,
+                progress=0.5,
+                topology=boundary_topology,
+                axis=axis,
+                principal_axes=(axis.direction,),
+                scaffold_config=scaffold_config,
+                interface_topology=interface_topology,
+                interface_config=interface_config,
+                patch_state=patch_state,
+                projector=lambda candidate: candidate,
+                apply_update=True,
+            )
+        )
+        final = graph_interface_energy(
+            observed,
+            interface_topology,
+            interface_config,
+            patch_assignments=patch_state.assignments,
+        )
+
+        self.assertTrue(diagnostics["accepted"])
+        self.assertTrue(diagnostics["committed"])
+        self.assertTrue(controller.last_joint_transaction_applied)
+        self.assertLess(float(final.total), float(baseline.total))
+        self.assertFalse(torch.equal(observed, coordinates))
+        master = target[:, :4]
+        for transform_id, start in enumerate((0, 6, 12)):
+            rotation, translation = transforms[str(transform_id)]
+            canonical = (target[:, start : start + 4] - translation) @ rotation
+            self.assertTrue(torch.allclose(canonical, master, atol=1e-6))
+
+    def test_joint_packing_mobility_proposal_only_rolls_back_everything(self):
+        (
+            coordinates,
+            _,
+            controller,
+            boundary_topology,
+            axis,
+            scaffold_config,
+            interface_topology,
+            interface_config,
+            features,
+        ) = self._joint_packing_mobility_case()
+        initial_rotation = controller.motifs[0].state.rotation.clone()
+        initial_translation = controller.motifs[0].state.translation.clone()
+        patch_state = GraphInterfacePatchState(assignments={})
+
+        target, observed, diagnostics = (
+            controller.update_orbits_with_interface_packing(
+                coordinates,
+                features,
+                progress=0.5,
+                topology=boundary_topology,
+                axis=axis,
+                principal_axes=(axis.direction,),
+                scaffold_config=scaffold_config,
+                interface_topology=interface_topology,
+                interface_config=interface_config,
+                patch_state=patch_state,
+                projector=lambda candidate: candidate,
+                apply_update=False,
+            )
+        )
+
+        self.assertTrue(diagnostics["accepted"])
+        self.assertFalse(diagnostics["committed"])
+        self.assertTrue(torch.equal(target, coordinates))
+        self.assertTrue(torch.equal(observed, coordinates))
+        self.assertTrue(
+            torch.equal(controller.motifs[0].state.rotation, initial_rotation)
+        )
+        self.assertTrue(
+            torch.equal(
+                controller.motifs[0].state.translation,
+                initial_translation,
+            )
+        )
+        self.assertEqual(patch_state.assignments, {})
+        self.assertFalse(controller.last_joint_transaction_applied)
+
+    def test_joint_packing_mobility_rolls_back_on_proposal_error(self):
+        (
+            coordinates,
+            _,
+            controller,
+            boundary_topology,
+            axis,
+            scaffold_config,
+            interface_topology,
+            interface_config,
+            features,
+        ) = self._joint_packing_mobility_case()
+        initial_rotation = controller.motifs[0].state.rotation.clone()
+        initial_translation = controller.motifs[0].state.translation.clone()
+        patch_state = GraphInterfacePatchState(assignments={})
+
+        def fail_after_mutation(*args, **kwargs):
+            patch_state.locked = True
+            raise RuntimeError("synthetic packing failure")
+
+        with (
+            patch(
+                "rfd3.inference.symmetry.motif_mobility."
+                "apply_graph_interface_guidance",
+                side_effect=fail_after_mutation,
+            ),
+            self.assertRaisesRegex(RuntimeError, "synthetic packing failure"),
+        ):
+            controller.update_orbits_with_interface_packing(
+                coordinates,
+                features,
+                progress=0.5,
+                topology=boundary_topology,
+                axis=axis,
+                principal_axes=(axis.direction,),
+                scaffold_config=scaffold_config,
+                interface_topology=interface_topology,
+                interface_config=interface_config,
+                patch_state=patch_state,
+                projector=lambda candidate: candidate,
+                apply_update=True,
+            )
+
+        self.assertFalse(patch_state.locked)
+        self.assertEqual(patch_state.assignments, {})
+        self.assertTrue(
+            torch.equal(controller.motifs[0].state.rotation, initial_rotation)
+        )
+        self.assertTrue(
+            torch.equal(
+                controller.motifs[0].state.translation,
+                initial_translation,
+            )
         )
 
     def test_controller_moves_one_master_pose_with_bounded_c3_copies(
@@ -667,6 +1000,58 @@ class MotifMobilityTestCase(unittest.TestCase):
             places=8,
         )
         self.assertTrue(
+            torch.allclose(
+                motif.state.rotation[0],
+                torch.eye(3, dtype=translation.dtype),
+                atol=1e-8,
+            )
+        )
+
+    def test_scaffold_radial_rotation_blocks_translation_leakage(self) -> None:
+        (
+            _,
+            _,
+            _,
+            controller,
+            scaffold,
+            topology,
+            axis,
+            config,
+        ) = self._scaffold_guidance_case()
+        motif = controller.motifs[0]
+        motif.mobility_subspace = "radial_rotation"
+        initial_center = motif.template_master[0].mean(dim=0)
+        radial = initial_center.clone()
+        radial[2] = 0.0
+        radial = radial / torch.linalg.vector_norm(radial)
+
+        controller.update_from_scaffold(
+            scaffold,
+            progress=0.5,
+            topology=topology,
+            axis=axis,
+            principal_axis=axis.direction,
+            config=config,
+            apply_update=True,
+        )
+
+        translation = motif.state.translation[0]
+        tangential = torch.tensor(
+            [-radial[1], radial[0], 0.0],
+            dtype=translation.dtype,
+        )
+        self.assertTrue(controller.last_update_applied)
+        self.assertAlmostEqual(
+            float(torch.dot(translation, axis.direction)),
+            0.0,
+            places=8,
+        )
+        self.assertAlmostEqual(
+            float(torch.dot(translation, tangential)),
+            0.0,
+            places=8,
+        )
+        self.assertFalse(
             torch.allclose(
                 motif.state.rotation[0],
                 torch.eye(3, dtype=translation.dtype),

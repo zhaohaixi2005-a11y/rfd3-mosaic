@@ -1,22 +1,28 @@
 schema_version: 1
 name: simple-interface-seed-c3
-input: inputs/Prism_C3_G2_fixed_motif.pdb
+input: lhd101_c3/inputs/7mwr_interface.pdb
 symmetry: C3
+task: preserve_supplied_geometry
 
-# Ordinary-user mode: these two fixed fragments are one supplied rigid seed;
-# RFD3 generates only the intervening protein region.
+# Ordinary-user mode: the two chains are one experimentally supplied rigid
+# interface seed. Mosaic may place that whole seed away from a degenerate
+# symmetry origin before diffusion, but it never changes the relative seed
+# geometry. RFD3 generates only the intervening protein region.
 generation:
   - kind: between
-    from_selector: A12-20
-    to_selector: D26-37
-    length: {minimum: 70, maximum: 90}
+    from_selector: B211-241
+    to_selector: A165-194
+    orbit_offset: 1
+    length: {minimum: 70, maximum: 100}
 
 constraints:
+  # Both fragments share one fixed coupling group, so their complete
+  # cross-fragment interface geometry and orbit pose remain unchanged.
   - kind: fixed_xyz
-    selector: A12-20
+    selector: A165-194
     coupling_group: supplied_interface
   - kind: fixed_xyz
-    selector: D26-37
+    selector: B211-241
     coupling_group: supplied_interface
 
 sampling:

@@ -84,6 +84,160 @@ class UserDesignConstraintTestCase(unittest.TestCase):
         self.assertEqual(pose["max_translation"], 4.0)
         self.assertEqual(pose["max_rotation_deg"], 12.0)
 
+    def test_omitted_task_does_not_change_fixed_xyz_pose(self) -> None:
+        declared = design(
+            constraints=[{"kind": "fixed_xyz", "selector": "A12-20"}]
+        )
+
+        plan = compile_constraint_plan(declared)
+
+        self.assertIsNone(declared.task)
+        self.assertEqual(
+            plan.operators[0].parameters["pose"]["mode"],
+            "fixed",
+        )
+
+    def test_create_interface_task_derives_safe_orbit_pose_only_when_explicit(
+        self,
+    ) -> None:
+        plan = compile_constraint_plan(
+            design(
+                task="create_symmetric_interface",
+                fixed_arrangement="optimize_components",
+                symmetry="C3",
+                generation=[
+                    {
+                        "kind": "terminal",
+                        "anchor": "A12-20",
+                        "terminus": "n",
+                        "length": 35,
+                    }
+                ],
+                constraints=[
+                    {"kind": "fixed_xyz", "selector": "A12-20"}
+                ],
+            )
+        )
+
+        operator = plan.operators[0]
+        pose = operator.parameters["pose"]
+        self.assertEqual(operator.operator, "fixed_xyz")
+        self.assertEqual(operator.stage, ConstraintStage.HARD_PROJECTOR)
+        self.assertEqual(pose["mode"], "bounded_mobile")
+        self.assertEqual(pose["subspace"], "radial_axial_rotation")
+        self.assertEqual(pose["proposal"], "scaffold_objectives")
+        self.assertEqual(pose["max_translation"], 4.0)
+        self.assertEqual(pose["max_rotation_deg"], 10.0)
+
+    def test_create_interface_task_defaults_to_locked_fixed_arrangement(
+        self,
+    ) -> None:
+        declared = design(
+            task="create_symmetric_interface",
+            symmetry="C3",
+            generation=[
+                {
+                    "kind": "terminal",
+                    "anchor": "A12-20",
+                    "terminus": "n",
+                    "length": 35,
+                }
+            ],
+            constraints=[{"kind": "fixed_xyz", "selector": "A12-20"}],
+        )
+
+        plan = compile_constraint_plan(declared)
+
+        self.assertEqual(declared.fixed_arrangement.value, "locked")
+        self.assertEqual(plan.operators[0].parameters["pose"]["mode"], "fixed")
+
+    def test_locked_create_interface_is_topology_neutral(self) -> None:
+        declared = design(
+            task="create_symmetric_interface",
+            symmetry="T",
+            generation=[
+                {
+                    "kind": "terminal",
+                    "anchor": "A12-20",
+                    "terminus": "n",
+                    "length": 35,
+                }
+            ],
+            constraints=[{"kind": "fixed_xyz", "selector": "A12-20"}],
+        )
+        self.assertEqual(declared.fixed_arrangement.value, "locked")
+
+    def test_polyhedral_component_optimization_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError,
+            "optimize_components currently supports Cn and Dn",
+        ):
+            design(
+                task="create_symmetric_interface",
+                fixed_arrangement="optimize_components",
+                symmetry="T",
+                generation=[
+                    {
+                        "kind": "terminal",
+                        "anchor": "A12-20",
+                        "terminus": "n",
+                        "length": 35,
+                    }
+                ],
+                constraints=[
+                    {"kind": "fixed_xyz", "selector": "A12-20"}
+                ],
+            )
+
+    def test_preserve_task_rejects_custom_mobile_pose(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError,
+            "owns the ordinary motif-orbit pose contract",
+        ):
+            design(
+                task="preserve_supplied_geometry",
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2,B1-2",
+                        "pose": {
+                            "mode": "bounded_mobile",
+                            "max_translation": 3.0,
+                            "max_rotation_deg": 10.0,
+                        },
+                    }
+                ],
+            )
+
+    def test_create_interface_task_rejects_between_generation(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError,
+            "requires terminal generation",
+        ):
+            design(
+                task="create_symmetric_interface",
+                symmetry="C3",
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {"kind": "fixed_xyz", "selector": "A1-2,B1-2"}
+                ],
+            )
+
     def test_fixed_component_rejects_scaffold_proposal(self) -> None:
         with self.assertRaises(ValidationError):
             design(
@@ -166,6 +320,30 @@ class UserDesignConstraintTestCase(unittest.TestCase):
                         }
                     ]
                 )
+
+    def test_radial_rotation_component_keeps_rotation_enabled(self) -> None:
+        plan = compile_constraint_plan(
+            design(
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A12-20",
+                        "pose": {
+                            "mode": "bounded_mobile",
+                            "subspace": "radial_rotation",
+                            "proposal": "scaffold_objectives",
+                            "max_translation": 4.0,
+                            "max_rotation_deg": 12.0,
+                        },
+                    }
+                ]
+            )
+        )
+
+        pose = plan.operators[0].parameters["pose"]
+        self.assertEqual(pose["subspace"], "radial_rotation")
+        self.assertEqual(pose["max_translation"], 4.0)
+        self.assertEqual(pose["max_rotation_deg"], 12.0)
 
     def test_compatibility_constraint_names_compile_canonically(self) -> None:
         plan = compile_constraint_plan(
@@ -389,6 +567,85 @@ constraints:
         self.assertIn("cylindrical [hard_projector]", text)
         self.assertIn("assembly lowering: blocked", text)
 
+    def test_plan_cli_explains_create_interface_task_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "motif.pdb").write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            config = root / "design.yaml"
+            config.write_text(
+                """\
+schema_version: 1
+name: create-interface-plan
+input: motif.pdb
+symmetry: C3
+task: create_symmetric_interface
+fixed_arrangement: optimize_components
+generation:
+  - kind: terminal
+    anchor: A1
+    terminus: c
+    length: 20
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+""",
+                encoding="utf-8",
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                main(["plan", str(config)])
+
+        text = output.getvalue()
+        self.assertIn("task:       create symmetric interface", text)
+        self.assertIn("fixed arrangement=optimize_components", text)
+        self.assertIn("exact rigid components", text)
+        self.assertIn("bounded joint pose/packing optimization", text)
+        self.assertIn("pose=bounded_mobile", text)
+        self.assertIn("assembly lowering: ready", text)
+
+    def test_plan_cli_explains_locked_generated_only_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "motif.pdb").write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            config = root / "design.yaml"
+            config.write_text(
+                """\
+schema_version: 1
+name: locked-create-interface-plan
+input: motif.pdb
+symmetry: C3
+task: create_symmetric_interface
+generation:
+  - kind: terminal
+    anchor: A1
+    terminus: c
+    length: 20
+constraints:
+  - kind: fixed_xyz
+    selector: A1
+""",
+                encoding="utf-8",
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                main(["plan", str(config)])
+
+        text = output.getvalue()
+        self.assertIn("fixed arrangement=locked", text)
+        self.assertIn("complete fixed arrangement", text)
+        self.assertIn("generated-only packing guidance", text)
+        self.assertIn("pose=fixed", text)
+
     def test_plan_cli_explains_joint_seed_copies(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -429,6 +686,47 @@ constraints:
         )
         self.assertIn("x 3 symmetry copies", text)
         self.assertIn("selectors: A1, A2", text)
+
+    def test_plan_reports_physical_quotient_copy_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "motif.pdb").write_text(
+                "ATOM      1   CA ALA A   1       1.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA A   2      -1.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            config = root / "quotient.yaml"
+            config.write_text(
+                """\
+schema_version: 1
+name: quotient-plan
+input: motif.pdb
+symmetry: C4
+finite_orbit_action:
+  coset_representative_ids: [C4:e, C4:r1]
+  stabilizer_transform_ids: [C4:e, C4:r2]
+  transform_to_coset_representative:
+    C4:e: C4:e
+    C4:r1: C4:r1
+    C4:r2: C4:e
+    C4:r3: C4:r1
+constraints:
+  - kind: fixed_xyz
+    selector: A1-2
+    coupling_group: c2_seed
+""",
+                encoding="utf-8",
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                main(["plan", str(config)])
+
+        text = output.getvalue()
+        self.assertIn("x 2 symmetry copies", text)
+        self.assertNotIn("x 4 symmetry copies", text)
 
     def test_submit_cli_rejects_unlowered_public_design(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -486,6 +784,7 @@ sampling:
         text = output.getvalue()
         self.assertIn("User design validation: PASSED", text)
         self.assertIn("geometry:    PASSED", text)
+        self.assertIn("RFD3 input:  PASSED", text)
         self.assertIn("3 atoms", text)
 
     def test_validate_automatically_positions_degenerate_simple_motif(

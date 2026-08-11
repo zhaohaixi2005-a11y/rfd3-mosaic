@@ -37,6 +37,158 @@ def _finite_number(value: Any) -> bool:
     )
 
 
+def _vector3(value: Any) -> tuple[float, float, float] | None:
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 3
+        or not all(_finite_number(component) for component in value)
+    ):
+        return None
+    return tuple(float(component) for component in value)
+
+
+def _dot(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> float:
+    return sum(a * b for a, b in zip(left, right, strict=True))
+
+
+def _norm(vector: tuple[float, float, float]) -> float:
+    return math.sqrt(_dot(vector, vector))
+
+
+def _scale(
+    vector: tuple[float, float, float],
+    factor: float,
+) -> tuple[float, float, float]:
+    return tuple(factor * value for value in vector)
+
+
+def _subtract(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return tuple(a - b for a, b in zip(left, right, strict=True))
+
+
+def _directional_motion_metrics(
+    *,
+    record: dict[str, Any],
+    subspace: str | None,
+    symmetry_axis: Any,
+    tolerance: float,
+) -> dict[str, Any]:
+    restricted = subspace in {
+        "radial",
+        "radial_axial",
+        "radial_rotation",
+        "radial_axial_rotation",
+    }
+    if not restricted:
+        return {
+            "directional_contract_required": False,
+            "directional_contract_valid": True,
+        }
+    if not isinstance(symmetry_axis, dict):
+        return {
+            "directional_contract_required": True,
+            "directional_contract_valid": False,
+            "directional_contract_failure": "missing symmetry axis",
+        }
+    axis_point = _vector3(symmetry_axis.get("point"))
+    axis_direction = _vector3(symmetry_axis.get("direction"))
+    translations = record.get("translation_vectors")
+    centers = record.get("template_master_centers")
+    if (
+        axis_point is None
+        or axis_direction is None
+        or not isinstance(translations, list)
+        or not isinstance(centers, list)
+        or not translations
+        or len(translations) != len(centers)
+    ):
+        return {
+            "directional_contract_required": True,
+            "directional_contract_valid": False,
+            "directional_contract_failure": (
+                "missing finite translation vectors or template centers"
+            ),
+        }
+    axis_norm = _norm(axis_direction)
+    if axis_norm <= tolerance:
+        return {
+            "directional_contract_required": True,
+            "directional_contract_valid": False,
+            "directional_contract_failure": "degenerate symmetry axis",
+        }
+    axis_unit = _scale(axis_direction, 1.0 / axis_norm)
+    radial_values: list[float] = []
+    axial_values: list[float] = []
+    tangential_values: list[float] = []
+    for raw_translation, raw_center in zip(
+        translations,
+        centers,
+        strict=True,
+    ):
+        translation = _vector3(raw_translation)
+        center = _vector3(raw_center)
+        if translation is None or center is None:
+            return {
+                "directional_contract_required": True,
+                "directional_contract_valid": False,
+                "directional_contract_failure": (
+                    "non-finite translation vector or template center"
+                ),
+            }
+        center_offset = _subtract(center, axis_point)
+        radial = _subtract(
+            center_offset,
+            _scale(axis_unit, _dot(center_offset, axis_unit)),
+        )
+        radial_norm = _norm(radial)
+        if radial_norm <= tolerance:
+            return {
+                "directional_contract_required": True,
+                "directional_contract_valid": False,
+                "directional_contract_failure": (
+                    "component center lies on the symmetry axis"
+                ),
+            }
+        radial_unit = _scale(radial, 1.0 / radial_norm)
+        axial = _dot(translation, axis_unit)
+        radial_component = _dot(translation, radial_unit)
+        tangential = _subtract(
+            _subtract(
+                translation,
+                _scale(axis_unit, axial),
+            ),
+            _scale(radial_unit, radial_component),
+        )
+        radial_values.append(radial_component)
+        axial_values.append(axial)
+        tangential_values.append(_norm(tangential))
+
+    maximum_axial = max((abs(value) for value in axial_values), default=0.0)
+    maximum_tangential = max(tangential_values, default=0.0)
+    axial_allowed = subspace in {"radial_axial", "radial_axial_rotation"}
+    valid = bool(
+        maximum_tangential <= tolerance
+        and (axial_allowed or maximum_axial <= tolerance)
+    )
+    return {
+        "directional_contract_required": True,
+        "directional_contract_valid": valid,
+        "maximum_radial_translation_observed": max(
+            (abs(value) for value in radial_values),
+            default=0.0,
+        ),
+        "maximum_axial_translation_observed": maximum_axial,
+        "maximum_tangential_translation_leakage": maximum_tangential,
+        "axial_translation_allowed": axial_allowed,
+    }
+
+
 def _objective_record_is_finite(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
@@ -190,6 +342,7 @@ def audit_component_mobility(
         for record in observed
         if isinstance(record, dict) and record.get("constraint_orbit_id")
     }
+    symmetry_axis = diagnostics.get("symmetry_axis")
 
     component_reports: list[dict[str, Any]] = []
     group_action_contracts: list[bool] = []
@@ -245,6 +398,13 @@ def audit_component_mobility(
         )
         translation_observed = max(translations, default=float("inf"))
         rotation_observed = max(rotations, default=float("inf"))
+        subspace = declaration.get("mobility_subspace")
+        directional = _directional_motion_metrics(
+            record=record,
+            subspace=str(subspace) if subspace is not None else None,
+            symmetry_axis=symmetry_axis,
+            tolerance=tolerance,
+        )
         passed = bool(
             translations
             and rotations
@@ -252,6 +412,7 @@ def audit_component_mobility(
             and group_action_contract
             and translation_observed <= maximum_translation + tolerance
             and rotation_observed <= maximum_rotation + tolerance
+            and directional["directional_contract_valid"]
         )
         component_reports.append(
             {
@@ -259,9 +420,7 @@ def audit_component_mobility(
                 "constraint_orbit_id": declaration.get(
                     "constraint_orbit_id"
                 ),
-                "mobility_subspace": declaration.get(
-                    "mobility_subspace"
-                ),
+                "mobility_subspace": subspace,
                 "declared_group_action_count": len(
                     declared_transform_ids
                 ),
@@ -272,6 +431,7 @@ def audit_component_mobility(
                 "maximum_translation_observed": translation_observed,
                 "maximum_rotation_deg_allowed": maximum_rotation,
                 "maximum_rotation_deg_observed": rotation_observed,
+                **directional,
             }
         )
 

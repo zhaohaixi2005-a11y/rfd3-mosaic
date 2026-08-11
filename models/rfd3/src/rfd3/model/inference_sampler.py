@@ -24,8 +24,12 @@ from rfd3.inference.symmetry.scaffold_guidance import (
 )
 from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceGuidanceConfig,
+    GraphInterfacePatchState,
     apply_graph_interface_guidance,
     build_graph_interface_topology,
+    graph_interface_energy,
+    graph_interface_energy_diagnostics,
+    graph_interface_quality_satisfied,
 )
 from rfd3.inference.symmetry.symmetry_utils import (
     apply_symmetry_to_xyz_atomwise,
@@ -96,17 +100,40 @@ class SampleDiffusionConfig:
     enable_graph_interface_guidance: bool = False
     graph_interface_guidance_weight: float = 1.0
     graph_interface_guidance_coverage_weight: float = 1.0
-    graph_interface_guidance_continuity_weight: float = 0.5
-    graph_interface_guidance_clash_weight: float = 2.0
+    graph_interface_guidance_continuity_weight: float = 1.0
+    graph_interface_guidance_orientation_weight: float = 0.25
+    graph_interface_guidance_shape_weight: float = 0.5
+    graph_interface_guidance_backbone_weight: float = 0.1
+    graph_interface_guidance_interface_balance_weight: float = 0.5
+    graph_interface_guidance_clash_weight: float = 8.0
     graph_interface_guidance_distance_weight: float = 0.25
     graph_interface_guidance_target_ca_distance: float = 8.0
     graph_interface_guidance_clash_ca_distance: float = 3.5
     graph_interface_guidance_pairs_per_edge: int = 8
     graph_interface_guidance_start_fraction: float = 0.05
     graph_interface_guidance_end_fraction: float = 0.80
+    graph_interface_guidance_terminal_weight_floor: float = 0.8
     graph_interface_guidance_maximum_token_step: float = 0.25
+    graph_interface_guidance_unsatisfied_step_fraction: float = 0.50
+    graph_interface_guidance_final_polish_steps: int = 12
     graph_interface_guidance_token_smoothing_weight: float = 0.5
     graph_interface_guidance_token_smoothing_passes: int = 1
+    graph_interface_guidance_continuity_softness: float = 0.75
+    graph_interface_guidance_maximum_tangent_normal_cosine: float = 0.65
+    graph_interface_guidance_backbone_ca_distance: float = 3.8
+    graph_interface_guidance_backbone_ca_tolerance: float = 0.5
+    graph_interface_guidance_patch_exclusivity_weight: float = 1.0
+    graph_interface_guidance_patch_rigid_weight: float = 1.0
+    graph_interface_guidance_patch_blend_radius: int = 2
+    graph_interface_guidance_maximum_patch_rotation_degrees: float = 2.0
+    graph_interface_guidance_patch_lock_fraction: float = 0.50
+    graph_interface_guidance_line_search_steps: int = 5
+    graph_interface_guidance_line_search_contraction: float = 0.5
+    graph_interface_guidance_capture_ca_distance: float = 12.0
+    graph_interface_guidance_maximum_orientation_loss: float = 0.05
+    graph_interface_guidance_maximum_shape_loss: float = 0.08
+    graph_interface_guidance_maximum_backbone_loss: float = 0.02
+    graph_interface_guidance_maximum_patch_exclusivity_loss: float = 0.05
     preserve_fixed_motif_during_symmetry: bool = False
     require_motif_constraint_groups: bool = False
     motif_constraint_conflict_tolerance: float = 1e-4
@@ -580,6 +607,16 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             self._scaffold_guidance_config()
         if self.enable_graph_interface_guidance:
             self._graph_interface_guidance_config()
+        if (
+            self.enable_graph_interface_guidance
+            and self.enable_orbit_rigid_motif_mobility
+            and self.motif_mobility_proposal_source != "scaffold_boundary"
+        ):
+            raise ValueError(
+                "Packing-guided motif mobility requires the unified "
+                "scaffold_boundary proposal path; denoiser-only motif motion "
+                "cannot run beside graph interface guidance"
+            )
         if float(self.symmetry_orbit_max_error) <= 0.0:
             raise ValueError("symmetry_orbit_max_error must be positive")
         if float(self.fixed_target_symmetry_rmsd_tolerance) < 0.0:
@@ -697,6 +734,21 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             continuity_weight=float(
                 self.graph_interface_guidance_continuity_weight
             ),
+            orientation_weight=float(
+                self.graph_interface_guidance_orientation_weight
+            ),
+            shape_weight=float(
+                self.graph_interface_guidance_shape_weight
+            ),
+            backbone_weight=float(
+                self.graph_interface_guidance_backbone_weight
+            ),
+            interface_balance_weight=float(
+                self.graph_interface_guidance_interface_balance_weight
+            ),
+            patch_exclusivity_weight=float(
+                self.graph_interface_guidance_patch_exclusivity_weight
+            ),
             clash_weight=float(
                 self.graph_interface_guidance_clash_weight
             ),
@@ -718,14 +770,68 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             end_fraction=float(
                 self.graph_interface_guidance_end_fraction
             ),
+            terminal_weight_floor=float(
+                self.graph_interface_guidance_terminal_weight_floor
+            ),
             maximum_token_step=float(
                 self.graph_interface_guidance_maximum_token_step
+            ),
+            unsatisfied_step_fraction=float(
+                self.graph_interface_guidance_unsatisfied_step_fraction
+            ),
+            final_polish_steps=int(
+                self.graph_interface_guidance_final_polish_steps
             ),
             token_smoothing_weight=float(
                 self.graph_interface_guidance_token_smoothing_weight
             ),
             token_smoothing_passes=int(
                 self.graph_interface_guidance_token_smoothing_passes
+            ),
+            continuity_softness=float(
+                self.graph_interface_guidance_continuity_softness
+            ),
+            maximum_tangent_normal_cosine=float(
+                self.graph_interface_guidance_maximum_tangent_normal_cosine
+            ),
+            backbone_ca_distance=float(
+                self.graph_interface_guidance_backbone_ca_distance
+            ),
+            backbone_ca_tolerance=float(
+                self.graph_interface_guidance_backbone_ca_tolerance
+            ),
+            patch_rigid_weight=float(
+                self.graph_interface_guidance_patch_rigid_weight
+            ),
+            patch_blend_radius=int(
+                self.graph_interface_guidance_patch_blend_radius
+            ),
+            maximum_patch_rotation_degrees=float(
+                self.graph_interface_guidance_maximum_patch_rotation_degrees
+            ),
+            patch_lock_fraction=float(
+                self.graph_interface_guidance_patch_lock_fraction
+            ),
+            line_search_steps=int(
+                self.graph_interface_guidance_line_search_steps
+            ),
+            line_search_contraction=float(
+                self.graph_interface_guidance_line_search_contraction
+            ),
+            capture_ca_distance=float(
+                self.graph_interface_guidance_capture_ca_distance
+            ),
+            maximum_orientation_loss=float(
+                self.graph_interface_guidance_maximum_orientation_loss
+            ),
+            maximum_shape_loss=float(
+                self.graph_interface_guidance_maximum_shape_loss
+            ),
+            maximum_backbone_loss=float(
+                self.graph_interface_guidance_maximum_backbone_loss
+            ),
+            maximum_patch_exclusivity_loss=float(
+                self.graph_interface_guidance_maximum_patch_exclusivity_loss
             ),
         )
 
@@ -1472,7 +1578,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         scaffold_guidance_config = None
         graph_interface_topology = None
         graph_interface_guidance_config = None
+        graph_interface_patch_state = None
         graph_interface_diagnostics: list[dict[str, Any]] = []
+        joint_packing_mobility = False
         constraint_runtime = None
         if self.enable_graph_interface_guidance:
             graph_interface_topology = build_graph_interface_topology(
@@ -1486,6 +1594,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )
             graph_interface_guidance_config = (
                 self._graph_interface_guidance_config()
+            )
+            graph_interface_patch_state = GraphInterfacePatchState(
+                assignments={}
             )
             ranked_logger.info(
                 "Graph interface guidance initialized: "
@@ -1588,6 +1699,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         "update_interval="
                         f"{self.motif_mobility_update_interval}"
                     )
+                    joint_packing_mobility = bool(
+                        graph_interface_topology is not None
+                    )
+                    if joint_packing_mobility:
+                        ranked_logger.info(
+                            "Unified packing-aware motif mobility enabled: "
+                            "generated patches and all mobile orbit poses are "
+                            "accepted or rolled back atomically"
+                        )
             proposal_hook = None
             if motif_mobility_controller is not None:
 
@@ -1608,21 +1728,104 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                             raise RuntimeError(
                                 "Scaffold guidance was not initialized"
                             )
-                        target = (
-                            motif_mobility_controller
-                            .update_orbits_from_scaffold(
+                        if joint_packing_mobility:
+                            if (
+                                graph_interface_topology is None
+                                or graph_interface_guidance_config is None
+                                or graph_interface_patch_state is None
+                                or constraint_runtime is None
+                            ):
+                                raise RuntimeError(
+                                    "Unified packing mobility was not fully "
+                                    "initialized"
+                                )
+                            if (
+                                progress
+                                >= graph_interface_guidance_config.patch_lock_fraction
+                            ):
+                                graph_interface_patch_state.locked = True
+
+                            def joint_projector(candidate: torch.Tensor):
+                                return self._joint_projector(f).project(
+                                    candidate,
+                                    constraint_target=(
+                                        constraint_runtime.fixed_target
+                                    ),
+                                    constraint_mask=(
+                                        is_motif_atom_with_fixed_coord
+                                    ),
+                                    restore=True,
+                                    label=(
+                                        "Unified packing mobility proposal"
+                                    ),
+                                )
+
+                            joint_update = (
+                                motif_mobility_controller
+                                .update_orbits_with_interface_packing
+                            )
+                            (
+                                target,
+                                proposed_coordinates,
+                                joint_diagnostics,
+                            ) = joint_update(
                                 proposal_coordinates,
+                                f,
                                 progress=progress,
                                 topology=scaffold_guidance_topology,
                                 axis=scaffold_guidance_axis,
                                 principal_axes=(
                                     scaffold_guidance_principal_axes
                                 ),
-                                config=scaffold_guidance_config,
+                                scaffold_config=scaffold_guidance_config,
+                                interface_topology=(
+                                    graph_interface_topology
+                                ),
+                                interface_config=(
+                                    graph_interface_guidance_config
+                                ),
+                                patch_state=graph_interface_patch_state,
+                                projector=joint_projector,
                                 apply_update=bool(
                                     self.motif_mobility_apply_updates
                                 ),
                             )
+                            packing_step = dict(
+                                joint_diagnostics["packing_step"]
+                            )
+                            packing_step.update(
+                                {
+                                    "phase": "joint_packing_mobility",
+                                    "progress": float(progress),
+                                    "joint_transaction_accepted": (
+                                        joint_diagnostics["accepted"]
+                                    ),
+                                    "joint_transaction_committed": (
+                                        joint_diagnostics["committed"]
+                                    ),
+                                }
+                            )
+                            graph_interface_diagnostics.append(packing_step)
+                            return ConstraintProposalResult(
+                                target=target,
+                                applied=bool(
+                                    motif_mobility_controller
+                                    .last_joint_transaction_applied
+                                ),
+                                coordinates=proposed_coordinates,
+                            )
+                        target = motif_mobility_controller.update_orbits_from_scaffold(
+                            proposal_coordinates,
+                            progress=progress,
+                            topology=scaffold_guidance_topology,
+                            axis=scaffold_guidance_axis,
+                            principal_axes=(
+                                scaffold_guidance_principal_axes
+                            ),
+                            config=scaffold_guidance_config,
+                            apply_update=bool(
+                                self.motif_mobility_apply_updates
+                            ),
                         )
                     else:
                         target = motif_mobility_controller.update(
@@ -1880,37 +2083,51 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         f,
                         is_motif_atom_with_fixed_coord,
                     )
-            if graph_interface_topology is not None:
+            if (
+                graph_interface_topology is not None
+                and not joint_packing_mobility
+            ):
                 if graph_interface_guidance_config is None:
                     raise RuntimeError(
                         "Graph interface guidance config was not initialized"
                     )
+                if constraint_runtime is not None:
+                    graph_projector = lambda candidate: (
+                        constraint_runtime.project_post_guidance(
+                            candidate,
+                            step_num=step_num,
+                        )
+                    )
+                else:
+                    graph_projector = lambda candidate: (
+                        self._project_stepwise_updated_coordinates(
+                            candidate,
+                            f,
+                            is_motif_atom_with_fixed_coord,
+                            fixed_target,
+                        )
+                    )
+                if graph_interface_patch_state is None:
+                    raise RuntimeError(
+                        "Graph interface patch state was not initialized"
+                    )
+                progress = step_num / max(len(noise_schedule) - 2, 1)
+                if (
+                    progress
+                    >= graph_interface_guidance_config.patch_lock_fraction
+                ):
+                    graph_interface_patch_state.locked = True
                 X_L, interface_step = apply_graph_interface_guidance(
                     X_L,
                     f,
                     graph_interface_topology,
-                    progress=(
-                        step_num / max(len(noise_schedule) - 2, 1)
-                    ),
+                    progress=progress,
                     config=graph_interface_guidance_config,
+                    projector=graph_projector,
+                    patch_state=graph_interface_patch_state,
                 )
                 interface_step["step_num"] = step_num
                 graph_interface_diagnostics.append(interface_step)
-                # The joint edge energy is group-complete by construction,
-                # but projection removes float32/autograd roundoff and keeps
-                # fixed constraint orbits authoritative.
-                if constraint_runtime is not None:
-                    X_L = constraint_runtime.project_post_guidance(
-                        X_L,
-                        step_num=step_num,
-                    )
-                else:
-                    X_L = self._project_stepwise_updated_coordinates(
-                        X_L,
-                        f,
-                        is_motif_atom_with_fixed_coord,
-                        fixed_target,
-                    )
 
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
@@ -1919,6 +2136,76 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             X_noisy_L_traj.append(X_noisy_L_scaled)
             X_denoised_L_traj.append(X_denoised_L)
             t_hats.append(t_hat)
+
+        final_graph_interface_energy = None
+        final_graph_interface_quality_satisfied = None
+        if graph_interface_topology is not None:
+            if graph_interface_guidance_config is None:
+                raise RuntimeError(
+                    "Graph interface guidance config was not initialized"
+                )
+            # A bounded deterministic polish closes the gap between a useful
+            # interface seen mid-trajectory and the structure that is
+            # actually written.  Every correction is followed by the same
+            # exact joint projector used in the diffusion loop, so fixed
+            # motifs and group symmetry remain authoritative.
+            for polish_index in range(
+                graph_interface_guidance_config.final_polish_steps
+            ):
+                current_energy = graph_interface_energy(
+                    X_L,
+                    graph_interface_topology,
+                    graph_interface_guidance_config,
+                    patch_assignments=(
+                        graph_interface_patch_state.assignments
+                        if graph_interface_patch_state is not None
+                        else None
+                    ),
+                )
+                if graph_interface_quality_satisfied(
+                    current_energy,
+                    clash_ca_distance=(
+                        graph_interface_guidance_config.clash_ca_distance
+                    ),
+                    config=graph_interface_guidance_config,
+                ):
+                    break
+                polish_step_num = (
+                    len(noise_schedule) - 1 + polish_index
+                )
+                if constraint_runtime is not None:
+                    graph_projector = lambda candidate: (
+                        constraint_runtime.project_post_guidance(
+                            candidate,
+                            step_num=polish_step_num,
+                        )
+                    )
+                else:
+                    graph_projector = lambda candidate: (
+                        self._project_stepwise_updated_coordinates(
+                            candidate,
+                            f,
+                            is_motif_atom_with_fixed_coord,
+                            fixed_target,
+                        )
+                    )
+                X_L, interface_step = apply_graph_interface_guidance(
+                    X_L,
+                    f,
+                    graph_interface_topology,
+                    progress=1.0,
+                    config=graph_interface_guidance_config,
+                    projector=graph_projector,
+                    patch_state=graph_interface_patch_state,
+                )
+                interface_step.update(
+                    {
+                        "phase": "final_polish",
+                        "polish_index": polish_index,
+                        "step_num": polish_step_num,
+                    }
+                )
+                graph_interface_diagnostics.append(interface_step)
 
         if constraint_runtime is not None:
             X_L = constraint_runtime.finalize(X_L)
@@ -1931,6 +2218,31 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 coord_atom_lvl_to_be_noised,
                 is_motif_atom_with_fixed_coord,
                 f,
+            )
+
+        if graph_interface_topology is not None:
+            if graph_interface_guidance_config is None:
+                raise RuntimeError(
+                    "Graph interface guidance config was not initialized"
+                )
+            final_graph_interface_energy = graph_interface_energy(
+                X_L,
+                graph_interface_topology,
+                graph_interface_guidance_config,
+                patch_assignments=(
+                    graph_interface_patch_state.assignments
+                    if graph_interface_patch_state is not None
+                    else None
+                ),
+            )
+            final_graph_interface_quality_satisfied = (
+                graph_interface_quality_satisfied(
+                    final_graph_interface_energy,
+                    clash_ca_distance=(
+                        graph_interface_guidance_config.clash_ca_distance
+                    ),
+                    config=graph_interface_guidance_config,
+                )
             )
 
         result = dict(
@@ -1981,6 +2293,46 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         scaffold_guidance_config
                     ).items()
                 }
+            axis_point = getattr(scaffold_guidance_axis, "point", None)
+            axis_direction = getattr(
+                scaffold_guidance_axis,
+                "direction",
+                None,
+            )
+            axis_transform_ids = getattr(
+                scaffold_guidance_axis,
+                "transform_ids",
+                None,
+            )
+            if (
+                isinstance(axis_point, torch.Tensor)
+                and axis_point.numel() == 3
+                and torch.isfinite(axis_point).all()
+                and isinstance(axis_direction, torch.Tensor)
+                and axis_direction.numel() == 3
+                and torch.isfinite(axis_direction).all()
+                and isinstance(axis_transform_ids, (list, tuple))
+            ):
+                mobility_diagnostics["symmetry_axis"] = {
+                    "point": [
+                        float(value)
+                        for value in axis_point.detach()
+                        .cpu()
+                        .reshape(-1)
+                        .tolist()
+                    ],
+                    "direction": [
+                        float(value)
+                        for value in axis_direction.detach()
+                        .cpu()
+                        .reshape(-1)
+                        .tolist()
+                    ],
+                    "transform_ids": [
+                        int(value)
+                        for value in axis_transform_ids
+                    ],
+                }
             result["motif_mobility_diagnostics"] = mobility_diagnostics
             final_orbits = mobility_diagnostics["orbits"]
             maximum_translation = max(
@@ -2009,8 +2361,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f"max_rotation={maximum_rotation:.6f} deg"
             )
         if graph_interface_topology is not None:
+            if final_graph_interface_energy is None:
+                raise RuntimeError(
+                    "Final graph interface energy was not evaluated"
+                )
+            final_proxy = graph_interface_energy_diagnostics(
+                final_graph_interface_energy
+            )
             result["graph_interface_guidance_diagnostics"] = {
-                "schema_version": 3,
+                "schema_version": 7,
                 "runtime_active": True,
                 "edge_count": len(graph_interface_topology.edges),
                 "edge_ids": [
@@ -2026,6 +2385,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     bool(step.get("applied"))
                     for step in graph_interface_diagnostics
                 ),
+                "final_polish_steps": sum(
+                    step.get("phase") == "final_polish"
+                    for step in graph_interface_diagnostics
+                ),
+                "final_proxy_targets_satisfied": (
+                    final_graph_interface_quality_satisfied
+                ),
+                "final_proxy": final_proxy,
             }
         return result
 

@@ -72,6 +72,43 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         evidence=("structure-bound selector, compiler and CLI unit suite",),
     ),
     CapabilityRecord(
+        id="ordinary_input_inspection",
+        title="Ordinary-user input inspection and cage intent",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=True,
+        summary=(
+            "Split residue-disconnected interface patches in one PDB/mmCIF, "
+            "report the observed component/port incidence graph and emit a "
+            "short replayable cage-intent YAML supporting variadic "
+            "participants, user-controlled physical multiplicities and "
+            "basic assembly-size goals."
+        ),
+        dependencies=("public_fixed_xyz",),
+        evidence=(
+            "deterministic contact-patch, component-incidence and intent "
+            "replay tests implemented locally; current LRZ suite pending",
+        ),
+    ),
+    CapabilityRecord(
+        id="ordinary_binary_ring_resolution",
+        title="Ordinary binary-interface Cn ring resolution",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=True,
+        summary=(
+            "Resolve one binary preserve-exact supplied interface into all "
+            "chain-direction and adjacent-copy Cn ring hypotheses, then "
+            "compile, rank, freeze and hash-replay standard public designs."
+        ),
+        dependencies=(
+            "ordinary_input_inspection",
+            "public_assembly_graph",
+        ),
+        evidence=(
+            "deterministic resolver and fail-closed boundary tests added "
+            "locally; complete LRZ suite and GPU replay still pending",
+        ),
+    ),
+    CapabilityRecord(
         id="public_assembly_graph",
         title="Public component/interface/connection assembly graph",
         maturity=CapabilityMaturity.GPU_CANARY,
@@ -88,6 +125,65 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "two reusable faces, one nonidentity neighbour edge and one "
             "generated connection through the public graph; all relation, "
             "constraint, continuity, clash and symmetry audits passed",
+        ),
+    ),
+    CapabilityRecord(
+        id="multi_chain_interface_seed_cage",
+        title="Single-input interleaved interface-seed cage assembly",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=False,
+        summary=(
+            "Preserve any number of two-sided interface identities and "
+            "compile protein units carrying arbitrary interface subsets "
+            "such as A-C-D or B-C-D from "
+            "one input while cross-pair scaffold links assemble polymer "
+            "units such as A_i--B_(i+1), with explicit orbit ownership and "
+            "no duplicated physical fragments."
+        ),
+        dependencies=(
+            "public_assembly_graph",
+            "multi_orbit_joint_control",
+            "graph_pose_search",
+        ),
+    ),
+    CapabilityRecord(
+        id="multi_seed_polymer_path_cover",
+        title="Bounded multi-seed polymer path-cover enumeration",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=False,
+        summary=(
+            "Enumerate deterministic rotation/reversal-unique alternating "
+            "cycles for disjoint binary interface seeds while using every "
+            "seed side exactly once. Results are topology-only and are "
+            "explicitly non-executable until geometry, termini and symmetry "
+            "actions are bound."
+        ),
+        dependencies=("ordinary_input_inspection",),
+        evidence=(
+            "bounded deterministic enumerator and invariant tests added "
+            "locally; complete LRZ suite pending",
+        ),
+    ),
+    CapabilityRecord(
+        id="ordinary_prepositioned_multi_seed_cn",
+        title="Pre-positioned multi-seed Cn ordinary resolution",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=True,
+        summary=(
+            "Bind several disjoint binary preserve-exact seeds from one "
+            "common reference frame into deterministic interleaved polymer "
+            "units, enumerate chemical directions, closing seams and Cn "
+            "windings, then require a valid expanded interface/unit graph "
+            "before common static ranking and strict replay."
+        ),
+        dependencies=(
+            "ordinary_binary_ring_resolution",
+            "multi_seed_polymer_path_cover",
+            "public_assembly_graph",
+        ),
+        evidence=(
+            "implementation and focused tests added locally; complete LRZ "
+            "suite and real multi-seed replay pending",
         ),
     ),
     CapabilityRecord(
@@ -109,8 +205,9 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         public_interface=True,
         summary=(
             "Guide generated residues on compiler-declared symmetry "
-            "neighbour edges toward packing contacts in the unified RFD3 "
-            "sampler while leaving fixed motif orbits authoritative."
+            "neighbour edges with joint contact, coverage, continuity, "
+            "orientation, shape-proxy, anti-collapse and multi-interface "
+            "objectives while fixed motif orbits remain authoritative."
         ),
         dependencies=("public_fixed_xyz",),
     ),
@@ -378,14 +475,21 @@ def required_capabilities_for_design(
         BoundedMobileConstraint,
         CylindricalConstraint,
         FixedXYZConstraint,
+        FixedArrangementPolicy,
         TerminalGeneration,
+        UserDesignTask,
         UserDesignSpec,
     )
 
     if not isinstance(design, UserDesignSpec):
         raise TypeError("Expected a UserDesignSpec")
     identifiers: list[str] = []
-    has_mobile_constraint = False
+    task_optimizes_fixed_components = bool(
+        design.task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE
+        and design.fixed_arrangement
+        == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
+    )
+    has_mobile_constraint = task_optimizes_fixed_components
 
     def require(capability_id: str) -> None:
         if capability_id not in identifiers:
@@ -402,6 +506,8 @@ def required_capabilities_for_design(
         elif isinstance(constraint, BoundedMobileConstraint):
             has_mobile_constraint = True
             require("bounded_orbit_mobility")
+    if task_optimizes_fixed_components:
+        require("bounded_orbit_mobility")
     if design.components:
         require("public_assembly_graph")
         require("public_fixed_xyz")

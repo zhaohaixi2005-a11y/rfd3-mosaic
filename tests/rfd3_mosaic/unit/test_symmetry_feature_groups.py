@@ -78,6 +78,18 @@ class SymmetryFeatureGroupsTestCase(unittest.TestCase):
             features["assembly_interface_automatic_quality"].tolist(),
             [True],
         )
+        self.assertEqual(
+            features["assembly_interface_has_distance_target"].tolist(),
+            [False],
+        )
+        self.assertEqual(
+            features["assembly_interface_distance_target"].tolist(),
+            [0.0],
+        )
+        self.assertEqual(
+            features["assembly_interface_distance_tolerance"].tolist(),
+            [0.0],
+        )
 
     def test_exact_orbit_sampler_requires_true_fabric_precision(
         self,

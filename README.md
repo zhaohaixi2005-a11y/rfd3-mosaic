@@ -1,3 +1,43 @@
+# RFD3-Mosaic
+
+RFD3-Mosaic is a maintained Foundry/RFD3 fork for constraint-compiled design
+of symmetric protein assemblies.  It preserves supplied central motifs and
+cross-subunit interface seeds through every diffusion timestep, supports
+multiple rigid motif orbits and assembly graphs, and produces explicit
+symmetry, motif, mobility, interface and scaffold audits.
+
+The currently usable product path is:
+
+```text
+short user YAML -> AssemblySpecification -> Mosaic-RFD3 -> audited run
+```
+
+Two ordinary motif-scaffolding templates are executable today.  The
+input-driven workflow can inspect one PDB/mmCIF, split independent contact
+patches, accept per-interface physical multiplicity requirements and filter
+candidate symmetries.  Its first executable resolver freezes one binary
+preserve-exact seed into ranked, hash-replayed Cn ring designs. General
+multi-seed cages are not solved.  A bounded path-cover enumerator proposes
+topology-only cycles.  A separate experimental bridge can turn a much narrower
+case--several disjoint, already co-positioned binary `preserve_exact` seeds in
+one reference frame--into ranked full-orbit Cn candidates after backbone-anchor,
+contact, expanded interface/unit-graph and ordinary compiler/replay checks.
+It does not search seed poses, infer heteromer ownership, support hyperedges or
+solve T/O/I cages.  Experts may provide unsupported details through the public
+component/port/interface/connection graph; both routes use the same compiler
+and sampler.
+
+- [User CLI and examples](docs/rfd3_mosaic/USER_CLI.md)
+- [Current implementation status](DEVELOPMENT_STATUS.md)
+- [Concise product maturity report](docs/rfd3_mosaic/CURRENT_PRODUCT_STATUS.md)
+- [Productization and upgrade plan](docs/rfd3_mosaic/RFD3_MOSAIC_PRODUCTIZATION_PLAN.md)
+- [Multi-interface assembly architecture](docs/rfd3_mosaic/RFD3_MULTI_INTERFACE_SEED_FINAL_PLAN.md)
+
+The upstream Foundry documentation is retained below because Mosaic relies on
+its RFD3, RF3 and ProteinMPNN environment.
+
+---
+
 # Protein design with Foundry
 
 Foundry provides tooling and infrastructure for using and training all classes of models for protein design, including design (RFD3), inverse folding (ProteinMPNN) and protein folding (RF3).

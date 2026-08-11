@@ -66,6 +66,7 @@ def audit_graph_interface_guidance(
         )
         for edge in declared
     ]
+    unique_expected_source_ids = list(dict.fromkeys(expected_source_ids))
     if len(expected_ids) != len(set(expected_ids)):
         raise ValueError("Compiled output-stage interface IDs are not unique")
 
@@ -83,6 +84,23 @@ def audit_graph_interface_guidance(
     steps = diagnostics.get("steps", [])
     if not isinstance(steps, list):
         steps = []
+    locked_steps = [step for step in steps if step.get("patch_locked") is True]
+    locked_patch_assignments = [
+        step.get("patch_assignments") for step in locked_steps
+    ]
+    patch_identity_contract = bool(
+        diagnostics_schema_version < 7
+        or (
+            locked_patch_assignments
+            and isinstance(locked_patch_assignments[0], dict)
+            and bool(locked_patch_assignments[0])
+            and all(
+                isinstance(assignments, dict)
+                and assignments == locked_patch_assignments[0]
+                for assignments in locked_patch_assignments
+            )
+        )
+    )
     applied = [step for step in steps if bool(step.get("applied"))]
     finite_applied_steps = []
     packing_evidence_steps = []
@@ -134,11 +152,110 @@ def audit_graph_interface_guidance(
                 == len(expected_ids)
                 and len(step.get("per_edge_total", []))
                 == len(expected_ids)
+                and (
+                    diagnostics_schema_version < 4
+                    or (
+                        all(
+                            _finite(step.get(key))
+                            for key in (
+                                "orientation",
+                                "shape",
+                                "backbone",
+                                "interface_balance",
+                            )
+                        )
+                        and all(
+                            len(step.get(key, [])) == len(expected_ids)
+                            and all(_finite(value) for value in step[key])
+                            for key in (
+                                "per_edge_orientation",
+                                "per_edge_shape",
+                                "per_edge_backbone",
+                            )
+                        )
+                        and len(step.get("per_source_total", []))
+                        == len(unique_expected_source_ids)
+                        and all(
+                            _finite(value)
+                            for value in step.get("per_source_total", [])
+                        )
+                    )
+                )
             )
         )
         finite_applied_steps.append(base_evidence and packing_evidence)
         packing_evidence_steps.append(packing_evidence)
     runtime_active = diagnostics.get("runtime_active") is True
+    final_proxy = diagnostics.get("final_proxy")
+    final_proxy_contract = bool(
+        diagnostics_schema_version < 5
+        or (
+            isinstance(
+                diagnostics.get("final_proxy_targets_satisfied"), bool
+            )
+            and isinstance(final_proxy, dict)
+            and all(
+                isinstance(final_proxy.get(key), list)
+                and len(final_proxy[key]) == len(expected_ids)
+                for key in (
+                    "covered_left_residues",
+                    "covered_right_residues",
+                    "target_residues_per_side",
+                    "contiguous_left_residues",
+                    "contiguous_right_residues",
+                    "target_contiguous_residues_per_side",
+                )
+            )
+            and isinstance(diagnostics.get("final_polish_steps"), int)
+            and int(diagnostics["final_polish_steps"]) >= 0
+            and (
+                diagnostics_schema_version < 6
+                or (
+                    all(
+                        _finite(final_proxy.get(key))
+                        for key in (
+                            "energy",
+                            "attraction",
+                            "coverage",
+                            "continuity",
+                            "orientation",
+                            "shape",
+                            "backbone",
+                            "interface_balance",
+                            "clash",
+                            "distance",
+                        )
+                    )
+                    and all(
+                        isinstance(final_proxy.get(key), list)
+                        and len(final_proxy[key]) == len(expected_ids)
+                        and all(_finite(value) for value in final_proxy[key])
+                        for key in (
+                            "minimum_distances",
+                            "mean_selected_distances",
+                            "per_edge_orientation",
+                            "per_edge_shape",
+                            "per_edge_backbone",
+                            "per_edge_total",
+                        )
+                    )
+                    and isinstance(
+                        final_proxy.get("per_source_total"), list
+                    )
+                    and len(final_proxy["per_source_total"])
+                    == len(unique_expected_source_ids)
+                    and all(
+                        _finite(value)
+                        for value in final_proxy["per_source_total"]
+                    )
+                )
+            )
+        )
+    )
+    final_proxy_targets_satisfied = bool(
+        diagnostics_schema_version < 5
+        or diagnostics.get("final_proxy_targets_satisfied") is True
+    )
     identifier_contract = (
         len(observed_ids) == len(set(observed_ids))
         and set(observed_ids) == set(expected_ids)
@@ -154,8 +271,66 @@ def audit_graph_interface_guidance(
         and applied
         and applied_count == len(applied)
         and all(finite_applied_steps)
+        and final_proxy_contract
     )
-    passed = runtime_active and identifier_contract and execution_contract
+    # Schema v5 made the final coverage/continuity proxy an explicit
+    # generated-interface objective.  Merely proving that the controller ran
+    # is not enough: a trajectory whose own final objective is unsatisfied
+    # must not be reported as a successful guidance result.  Legacy
+    # diagnostics predate this result contract and retain their execution-only
+    # interpretation.
+    passed = bool(
+        runtime_active
+        and identifier_contract
+        and execution_contract
+        and patch_identity_contract
+        and final_proxy_targets_satisfied
+    )
+    final_step = applied[-1] if applied else {}
+    final_metric_source = (
+        final_proxy
+        if diagnostics_schema_version >= 6 and isinstance(final_proxy, dict)
+        else final_step
+    )
+    final_packing_metrics = {
+        key: final_metric_source.get(key)
+        for key in (
+            "energy",
+            "attraction",
+            "coverage",
+            "continuity",
+            "orientation",
+            "shape",
+            "backbone",
+            "junction",
+            "interface_balance",
+            "patch_exclusivity",
+            "clash",
+            "global_safety_clash",
+            "minimum_global_safety_distance",
+            "maximum_token_step",
+            "mean_token_step",
+        )
+        if _finite(final_metric_source.get(key))
+    }
+    final_minimum_distances = [
+        value
+        for value in final_metric_source.get("minimum_distances", [])
+        if _finite(value)
+    ]
+    final_source_totals = [
+        value
+        for value in final_metric_source.get("per_source_total", [])
+        if _finite(value)
+    ]
+    if final_minimum_distances:
+        final_packing_metrics["minimum_edge_distance"] = min(
+            final_minimum_distances
+        )
+    if final_source_totals:
+        final_packing_metrics["maximum_source_objective"] = max(
+            final_source_totals
+        )
     return {
         "audit": "rfd3_mosaic.graph_interface_guidance",
         "schema_version": 1,
@@ -170,11 +345,27 @@ def audit_graph_interface_guidance(
             "declared_edge_count": len(expected_ids),
             "runtime_edge_count": len(observed_ids),
             "identifier_contract_valid": identifier_contract,
+            "patch_identity_contract_valid": patch_identity_contract,
+            "locked_patch_steps": len(locked_steps),
             "trajectory_steps": len(steps),
             "applied_steps": len(applied),
             "finite_applied_steps": sum(finite_applied_steps),
             "packing_evidence_steps": sum(packing_evidence_steps),
+            "final_proxy_contract_valid": final_proxy_contract,
+            "final_proxy_targets_satisfied": (
+                diagnostics.get("final_proxy_targets_satisfied")
+            ),
+            "final_result_contract_valid": (
+                final_proxy_targets_satisfied
+            ),
+            "final_polish_steps": diagnostics.get("final_polish_steps", 0),
+            "final_metrics_source": (
+                "post_finalize_state"
+                if diagnostics_schema_version >= 6
+                else "last_pre_update_guidance_step"
+            ),
             "execution_contract_valid": execution_contract,
+            "final_packing_metrics": final_packing_metrics,
         },
         "declared_edge_ids": expected_ids,
         "runtime_edge_ids": observed_ids,

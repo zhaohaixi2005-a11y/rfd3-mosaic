@@ -76,7 +76,11 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         self,
         *,
         right_shift: float = 0.0,
-        generated_coordinates: dict[str, tuple[float, float, float]]
+        generated_coordinates: dict[
+            str,
+            tuple[float, float, float]
+            | dict[int, tuple[float, float, float]],
+        ]
         | None = None,
     ) -> None:
         lines = []
@@ -96,15 +100,22 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
                 )
                 serial += 1
             if generated_coordinates and chain in generated_coordinates:
-                lines.append(
-                    _atom_line(
-                        serial,
-                        chain,
-                        10,
-                        generated_coordinates[chain],
-                    )
+                generated = generated_coordinates[chain]
+                residue_coordinates = (
+                    generated.items()
+                    if isinstance(generated, dict)
+                    else ((10, generated),)
                 )
-                serial += 1
+                for residue, coordinate in residue_coordinates:
+                    lines.append(
+                        _atom_line(
+                            serial,
+                            chain,
+                            residue,
+                            coordinate,
+                        )
+                    )
+                    serial += 1
         self.result_structure.write_text(
             "".join(lines) + "END\n", encoding="utf-8"
         )
@@ -337,6 +348,103 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             self.assertTrue(edge["contact_residue_coverage_satisfied"])
             self.assertTrue(edge["contact_continuity_satisfied"])
 
+    def test_output_contact_auto_continuity_respects_generated_runs(
+        self,
+    ) -> None:
+        residue_numbers = tuple(
+            residue
+            for start in range(10, 90, 10)
+            for residue in (start, start + 1)
+        )
+        self._write_result(
+            generated_coordinates={
+                "A": {
+                    residue: (10.0, float(index * 10), 0.0)
+                    for index, residue in enumerate(residue_numbers)
+                },
+                "B": {
+                    residue: (14.0, float(index * 10), 0.0)
+                    for index, residue in enumerate(residue_numbers)
+                },
+            }
+        )
+        report = audit_interface_relations(
+            compiled_input=self._compiled_input(
+                {
+                    "mode": "geometric_constraints",
+                    "contacts": {
+                        "min_heavy_atom_contacts": 0,
+                        "cutoff": 8.0,
+                    },
+                    "coverage": {"mode": "auto"},
+                },
+                satisfaction_stage="output",
+                target_copy_offset=1,
+            ),
+            result_json=self.result_json,
+            result_structure=self.result_structure,
+        )
+
+        self.assertTrue(report["passed"])
+        for edge in report["interfaces"]:
+            self.assertEqual(edge["minimum_contact_residues_per_side"], 4)
+            self.assertEqual(
+                edge["minimum_contiguous_contact_residues_per_side"],
+                2,
+            )
+            self.assertEqual(edge["available_contiguous_residues_left"], 2)
+            self.assertEqual(edge["available_contiguous_residues_right"], 2)
+            self.assertTrue(edge["contact_continuity_satisfied"])
+
+    def test_output_contact_explicit_continuity_is_not_relaxed(self) -> None:
+        residue_numbers = tuple(
+            residue
+            for start in range(10, 90, 10)
+            for residue in (start, start + 1)
+        )
+        self._write_result(
+            generated_coordinates={
+                "A": {
+                    residue: (10.0, float(index * 10), 0.0)
+                    for index, residue in enumerate(residue_numbers)
+                },
+                "B": {
+                    residue: (14.0, float(index * 10), 0.0)
+                    for index, residue in enumerate(residue_numbers)
+                },
+            }
+        )
+        report = audit_interface_relations(
+            compiled_input=self._compiled_input(
+                {
+                    "mode": "geometric_constraints",
+                    "contacts": {
+                        "min_heavy_atom_contacts": 0,
+                        "cutoff": 8.0,
+                    },
+                    "coverage": {
+                        "mode": "explicit",
+                        "minimum_contact_residues_per_side": 4,
+                        "minimum_contiguous_contact_residues_per_side": 3,
+                    },
+                },
+                satisfaction_stage="output",
+                target_copy_offset=1,
+            ),
+            result_json=self.result_json,
+            result_structure=self.result_structure,
+        )
+
+        self.assertFalse(report["passed"])
+        for edge in report["interfaces"]:
+            self.assertEqual(
+                edge["minimum_contiguous_contact_residues_per_side"],
+                3,
+            )
+            self.assertEqual(edge["available_contiguous_residues_left"], 2)
+            self.assertEqual(edge["available_contiguous_residues_right"], 2)
+            self.assertFalse(edge["contact_continuity_satisfied"])
+
     def test_output_contact_relation_fails_without_generated_contacts(self) -> None:
         self._write_result()
         report = audit_interface_relations(
@@ -359,6 +467,155 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         self.assertTrue(
             all(edge["evaluated_left_atoms"] == 0 for edge in report["interfaces"])
         )
+
+    def test_cross_seam_port_uses_declared_runtime_provenance(self) -> None:
+        """An original B port may compile as equivalent F@next-action atoms."""
+
+        theta = 2.0 * np.pi / 3.0
+        rotation_one = np.asarray(
+            [
+                [np.cos(theta), -np.sin(theta), 0.0],
+                [np.sin(theta), np.cos(theta), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        rotation_two = rotation_one @ rotation_one
+        rotations = (np.eye(3), rotation_one, rotation_two)
+        left = np.asarray(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        )
+        original_right = left + np.asarray([4.0, 0.0, 0.0])
+        runtime_right = original_right @ rotation_one
+        self.source.write_text(
+            "".join(
+                _atom_line(serial, chain, residue, tuple(coordinate))
+                for serial, (chain, residue, coordinate) in enumerate(
+                    [
+                        *(('A', index, coordinate) for index, coordinate in enumerate(left, 1)),
+                        *((
+                            'B', index, coordinate
+                        ) for index, coordinate in enumerate(original_right, 1)),
+                        *(('F', index, coordinate) for index, coordinate in enumerate(runtime_right, 1)),
+                    ],
+                    start=1,
+                )
+            )
+            + "END\n",
+            encoding="utf-8",
+        )
+        self.result_json.write_text(
+            json.dumps(
+                {
+                    "diffused_index_map": {
+                        **{f"A{i}": f"A{i}" for i in range(1, 4)},
+                        **{f"F{i}": f"B{i + 3}" for i in range(1, 4)},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        lines: list[str] = []
+        serial = 1
+        output_chains = ("A", "B", "C", "D", "E", "F")
+        for action_index, rotation in enumerate(rotations):
+            left_chain = output_chains[action_index * 2]
+            right_chain = output_chains[action_index * 2 + 1]
+            for residue, coordinate in enumerate(left @ rotation.T, 1):
+                lines.append(
+                    _atom_line(serial, left_chain, residue, tuple(coordinate))
+                )
+                serial += 1
+            for residue, coordinate in enumerate(
+                runtime_right @ rotation.T, 4
+            ):
+                lines.append(
+                    _atom_line(serial, right_chain, residue, tuple(coordinate))
+                )
+                serial += 1
+        self.result_structure.write_text(
+            "".join(lines) + "END\n", encoding="utf-8"
+        )
+
+        matrices = {}
+        order = []
+        for index, rotation in enumerate(rotations):
+            transform_id = "C3:e" if index == 0 else f"C3:r{index}"
+            matrix = np.eye(4)
+            matrix[:3, :3] = rotation
+            matrices[transform_id] = matrix.tolist()
+            order.append(transform_id)
+        groups = [
+            {
+                "group_id": f"fixed@cross_seam[{index}]",
+                "constraint_orbit_id": "cross_seam",
+                "members": [
+                    {
+                        "src_components": ["A1", "A2", "A3"],
+                        "sym_transform_id": index,
+                    },
+                    {
+                        "src_components": ["F1", "F2", "F3"],
+                        "sym_transform_id": (index + 1) % 3,
+                    },
+                ],
+            }
+            for index in range(3)
+        ]
+        relations = [
+            {
+                "edge_instance_id": f"edge@orbit[{index}]",
+                "source_interface_id": "edge",
+                "required": True,
+                "satisfaction_stage": "input",
+                "source_copy_index": index,
+                "target_copy_index": index,
+                "left_source_components": ["A1-3"],
+                "right_source_components": ["B1-3"],
+                "target_geometry": {
+                    "mode": "reference_transform",
+                    "from_reference_seed": True,
+                    "translation_tolerance": 0.01,
+                    "rotation_tolerance_deg": 0.1,
+                },
+            }
+            for index in range(3)
+        ]
+        compiled_input = self.root / "cross_seam_rfd3_input.json"
+        compiled_input.write_text(
+            json.dumps(
+                {
+                    "example": {
+                        "input": str(self.source),
+                        "extra": {
+                            "symmetry_multiplicity": 3,
+                            "registry_transform_order": order,
+                            "registry_transform_matrices": matrices,
+                            "motif_constraint_groups": groups,
+                            "assembly_interface_relations": relations,
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        report = audit_interface_relations(
+            compiled_input=compiled_input,
+            result_json=self.result_json,
+            result_structure=self.result_structure,
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["summary"]["asu_chain_count"], 2)
+        self.assertEqual(
+            report["summary"]["satisfied_required_edge_instance_count"], 3
+        )
+        for edge in report["interfaces"]:
+            self.assertTrue(edge["runtime_provenance_remapped"])
+            self.assertEqual(edge["left_runtime_remapped_heavy_atoms"], 0)
+            self.assertEqual(edge["right_runtime_remapped_heavy_atoms"], 3)
+            self.assertEqual(edge["matched_heavy_atoms"], 6)
+            self.assertLess(edge["translation_error"], 0.002)
 
 
 if __name__ == "__main__":

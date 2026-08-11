@@ -383,6 +383,15 @@ class AADesignTrainer(FabricTrainer):
                     "graph_interface_guidance_diagnostics"
                 ] = interface_guidance_diagnostics
 
+        constraint_runtime_diagnostics = network_output.get(
+            "constraint_runtime_diagnostics"
+        )
+        if constraint_runtime_diagnostics is not None:
+            for i in range(len(arrays)):
+                metadata_dict[i]["constraint_runtime_diagnostics"] = (
+                    constraint_runtime_diagnostics
+                )
+
         # Add the seed to the metadata dictionary if provided
         if self.seed is not None:
             for i in range(len(arrays)):

@@ -23,6 +23,9 @@ from rfd3_mosaic.schema import (
     TerminalExtensionInstance,
 )
 from rfd3_mosaic.schema.specs import SymmetryType
+from rfd3_mosaic.topology import (
+    analyze_interleaved_interface_seed_topology,
+)
 
 
 @dataclass(frozen=True)
@@ -38,10 +41,22 @@ class RFD3AdapterOutputs:
 
 
 @dataclass(frozen=True)
-class _ASUScaffoldSegment:
-    """One deterministic scaffold segment emitted as one ASU chain."""
+class _MaterializedScaffoldLink:
+    """One link after choosing its concrete RFD3 linker length."""
 
     link: Any
+    materialized_linker_length: int | None
+    linker_length_policy: str
+    contour_preflight: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _ASUScaffoldSegment:
+    """One ordered fixed-fragment path emitted as one or more ASU chains."""
+
+    links: tuple[_MaterializedScaffoldLink, ...]
+    fragment_instance_ids: tuple[str, ...]
+    selectors: tuple[str, ...]
     from_selector: str
     to_selector: str
     contig_chains: tuple[str, ...]
@@ -254,11 +269,59 @@ def _preflight_native_transform_registry(
     return list(registry.transform_ids)
 
 
+def _runtime_action_index(
+    registry,
+    *,
+    anchor_transform_id: str,
+    target_transform_id: str,
+    context: str,
+    runtime_transform_order: tuple[str, ...] | list[str] | None = None,
+    transform_to_runtime_representative: dict[str, str] | None = None,
+) -> int:
+    """Resolve the native left action carrying an ASU anchor to a target.
+
+    Compiler instances retain their physical registry transforms, whereas
+    RFD3 ``sym_transform_id`` values describe actions relative to the
+    materialized ASU.  Keeping this conversion in one helper is essential for
+    seam-crossing paths and for non-commutative D/T/O/I registries.
+    """
+
+    matching_action_ids = [
+        action_id
+        for action_id in registry.transform_ids
+        if registry.compose_ids(action_id, anchor_transform_id)
+        == target_transform_id
+    ]
+    if len(matching_action_ids) != 1:
+        raise ValueError(
+            f"Could not resolve one native runtime action for {context}: "
+            f"anchor={anchor_transform_id!r}, "
+            f"target={target_transform_id!r}, "
+            f"matches={matching_action_ids}"
+        )
+    selected_order = tuple(runtime_transform_order or registry.transform_ids)
+    representative_map = transform_to_runtime_representative or {
+        transform_id: transform_id
+        for transform_id in registry.transform_ids
+    }
+    action_id = matching_action_ids[0]
+    try:
+        representative_id = representative_map[action_id]
+        return selected_order.index(representative_id)
+    except (KeyError, ValueError) as error:
+        raise ValueError(
+            f"Runtime action {action_id!r} for {context} does not map to "
+            "a declared physical quotient copy"
+        ) from error
+
+
 def _runtime_interface_constraint_groups(
     instances,
     mapping: dict[str, Any],
     links,
     transform_set,
+    runtime_transform_order=None,
+    transform_to_runtime_representative=None,
 ) -> list[dict[str, Any]]:
     """Describe complete cross-chain groups in post-symmetry RFD3 terms."""
 
@@ -288,18 +351,15 @@ def _runtime_interface_constraint_groups(
         canonical_transform_id = canonical_transform_by_source_id[
             fragment.source_id
         ]
-        for index, relation_id in enumerate(registry.transform_ids):
-            if (
-                registry.compose_ids(
-                    relation_id,
-                    canonical_transform_id,
-                )
-                == fragment.transform_id
-            ):
-                return index
-        raise ValueError(
-            "Could not resolve native runtime transform for fragment "
-            f"{fragment.id!r}"
+        return _runtime_action_index(
+            registry,
+            anchor_transform_id=canonical_transform_id,
+            target_transform_id=fragment.transform_id,
+            context=f"interface fragment {fragment.id!r}",
+            runtime_transform_order=runtime_transform_order,
+            transform_to_runtime_representative=(
+                transform_to_runtime_representative
+            ),
         )
 
     groups: list[dict[str, Any]] = []
@@ -349,6 +409,7 @@ def _runtime_interface_constraint_groups(
                 "group_id": edge.id,
                 "constraint_kind": "interface",
                 "source_interface_id": edge.source_id,
+                "hyperedge_id": edge.hyperedge_id or edge.source_id,
                 "orbit_id": edge.orbit_id,
                 "source_copy_index": edge.source_copy_index,
                 "target_copy_index": edge.target_copy_index,
@@ -363,10 +424,17 @@ def _runtime_interface_constraint_orbits(
     *,
     instances,
     transform_set,
+    runtime_transform_order=None,
+    transform_to_runtime_representative=None,
 ) -> list[dict[str, Any]]:
     """Resolve one master group and one group action per interface orbit."""
 
     registry = build_transform_registry(transform_set)
+    selected_order = tuple(runtime_transform_order or registry.transform_ids)
+    representative_map = transform_to_runtime_representative or {
+        transform_id: transform_id
+        for transform_id in registry.transform_ids
+    }
     grouped: dict[
         tuple[str, str],
         list[dict[str, Any]],
@@ -428,33 +496,30 @@ def _runtime_interface_constraint_orbits(
                     "All groups in a motif constraint orbit must contain "
                     "the same member identities"
                 )
-            matching_actions = []
-            for action_index, action_id in enumerate(
-                registry.transform_ids
-            ):
+            matching_actions: dict[int, str] = {}
+            for action_id in registry.transform_ids:
                 if all(
-                    registry.compose_ids(
-                        action_id,
-                        registry.transform_ids[
-                            master_transform_id
-                        ],
-                    )
-                    == registry.transform_ids[
-                        target_members[member_key]
+                    representative_map[
+                        registry.compose_ids(
+                            action_id,
+                            selected_order[master_transform_id],
+                        )
                     ]
+                    == selected_order[target_members[member_key]]
                     for member_key, master_transform_id
                     in master_members.items()
                 ):
-                    matching_actions.append(
-                        (action_index, action_id)
-                    )
+                    representative_id = representative_map[action_id]
+                    matching_actions[
+                        selected_order.index(representative_id)
+                    ] = representative_id
             if len(matching_actions) != 1:
                 raise ValueError(
                     f"Constraint group {group['group_id']!r} has "
                     f"{len(matching_actions)} compatible group actions; "
                     "expected exactly one"
                 )
-            action_index, action_id = matching_actions[0]
+            action_index, action_id = next(iter(matching_actions.items()))
             group["constraint_orbit_id"] = constraint_orbit_id
             group["orbit_transform_id"] = action_index
             group["orbit_registry_transform_id"] = action_id
@@ -520,6 +585,8 @@ def _runtime_fixed_motif_constraints(
     mapping: dict[str, Any],
     anchor_fragment_instance_ids: str | tuple[str, ...],
     transform_set,
+    runtime_transform_order=None,
+    transform_to_runtime_representative=None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Lower fixed fragments into explicit rigid-geometry components.
 
@@ -538,14 +605,10 @@ def _runtime_fixed_motif_constraints(
         raise ValueError("A fixed constraint orbit requires anchor fragments")
     masters = [instances.fragments[item] for item in anchor_ids]
     orbit_ids = {fragment.orbit_id for fragment in masters}
-    if (
-        any(fragment.copy_index != 0 for fragment in masters)
-        or None in orbit_ids
-        or len(orbit_ids) != 1
-    ):
+    if None in orbit_ids or len(orbit_ids) != 1:
         raise ValueError(
-            "A symmetric fixed constraint path requires copy-zero anchors "
-            "from one orbit"
+            "A symmetric fixed constraint path requires anchors from one "
+            "declared orbit"
         )
     orbit_id = next(iter(orbit_ids))
     if len({fragment.source_id for fragment in masters}) != len(masters):
@@ -565,6 +628,14 @@ def _runtime_fixed_motif_constraints(
     groups: list[dict[str, Any]] = []
     orbits: list[dict[str, Any]] = []
     compiled_orbit = instances.constraint_orbits[orbit_id]
+    selected_order = tuple(
+        runtime_transform_order or compiled_orbit.transform_ids
+    )
+    if selected_order != tuple(compiled_orbit.transform_ids):
+        raise ValueError(
+            f"Runtime transform order for orbit {orbit_id!r} disagrees "
+            "with its compiled physical copies"
+        )
     single_component = len(masters_by_component) == 1
     for component_id, component_masters in masters_by_component.items():
         mobility = compiled_orbit.component_mobility.get(
@@ -573,31 +644,44 @@ def _runtime_fixed_motif_constraints(
         )
         bounds = mobility.bounds
         schedule = mobility.effective_schedule
+        # The native RFD3 ASU is the materialized polymer path, which may
+        # cross a compiler symmetry-copy seam.  Runtime ``src_component``
+        # labels therefore come from the *actual path anchors* rather than
+        # from their copy-zero counterparts.  Native symmetry expansion keeps
+        # those labels and records the relative group action separately in
+        # ``sym_transform_id``.
         source_components = {
             master.source_id: _selector_source_components(
                 _fragment_selector(mapping, master.id)
             )
             for master in component_masters
         }
-        copies_by_source_id = {
-            master.source_id: sorted(
-                (
-                    fragment
-                    for fragment in instances.fragments.values()
-                    if fragment.source_id == master.source_id
-                    and fragment.orbit_id == orbit_id
-                ),
-                key=lambda fragment: fragment.copy_index,
-            )
-            for master in component_masters
-        }
-        for source_id, source_copies in copies_by_source_id.items():
-            if len(source_copies) != registry.order:
-                raise ValueError(
-                    f"Fixed motif {source_id!r} has {len(source_copies)} "
-                    f"copies but symmetry registry has {registry.order} "
-                    "transforms"
+        copies_by_source_id: dict[str, dict[str, Any]] = {}
+        for master in component_masters:
+            source_copies = [
+                fragment
+                for fragment in instances.fragments.values()
+                if fragment.source_id == master.source_id
+                and fragment.orbit_id == orbit_id
+            ]
+            copies_by_transform_id = {
+                fragment.transform_id: fragment
+                for fragment in source_copies
+            }
+            if (
+                len(source_copies) != len(selected_order)
+                or len(copies_by_transform_id) != len(selected_order)
+                or set(copies_by_transform_id) != set(
+                    selected_order
                 )
+            ):
+                raise ValueError(
+                    f"Fixed motif {master.source_id!r} does not contain "
+                    "exactly one fragment for every symmetry transform"
+                )
+            copies_by_source_id[master.source_id] = (
+                copies_by_transform_id
+            )
 
         runtime_orbit_id = (
             orbit_id
@@ -607,29 +691,39 @@ def _runtime_fixed_motif_constraints(
         component_groups: list[dict[str, Any]] = []
         group_transform_ids: list[int] = []
         group_registry_transform_ids: list[str] = []
-        for copy_index in range(registry.order):
-            copy_fragments = [
-                copies_by_source_id[master.source_id][copy_index]
-                for master in component_masters
-            ]
-            matches = [
-                (index, action_id)
-                for index, action_id in enumerate(registry.transform_ids)
-                if all(
-                    registry.compose_ids(action_id, master.transform_id)
-                    == fragment.transform_id
-                    for master, fragment in zip(
-                        component_masters, copy_fragments
-                    )
+        for transform_index, transform_id in enumerate(
+            selected_order
+        ):
+            members: list[dict[str, Any]] = []
+            for master in component_masters:
+                target_fragment = copies_by_source_id[
+                    master.source_id
+                ][transform_id]
+                runtime_action = _runtime_action_index(
+                    registry,
+                    anchor_transform_id=master.transform_id,
+                    target_transform_id=target_fragment.transform_id,
+                    context=(
+                        f"fixed fragment {master.id!r} in physical "
+                        f"transform {transform_id!r}"
+                    ),
+                    runtime_transform_order=selected_order,
+                    transform_to_runtime_representative=(
+                        transform_to_runtime_representative
+                    ),
                 )
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    "Could not resolve one group action for fixed "
-                    f"component {component_id!r} copy {copy_index}"
+                members.append(
+                    {
+                        "role": "motif",
+                        "source_fragment_id": master.source_id,
+                        "src_components": source_components[
+                            master.source_id
+                        ],
+                        "sym_transform_id": runtime_action,
+                    }
                 )
-            transform_index, transform_id = matches[0]
-            group_id = f"fixed@{runtime_orbit_id}[{copy_index}]"
+
+            group_id = f"fixed@{runtime_orbit_id}[{transform_index}]"
             group = {
                 "group_id": group_id,
                 "constraint_kind": "fixed_motif",
@@ -637,17 +731,7 @@ def _runtime_fixed_motif_constraints(
                 "coupling_group_id": component_id,
                 "constraint_orbit_id": runtime_orbit_id,
                 "orbit_id": orbit_id,
-                "members": [
-                    {
-                        "role": "motif",
-                        "source_fragment_id": fragment.source_id,
-                        "src_components": source_components[
-                            fragment.source_id
-                        ],
-                        "sym_transform_id": transform_index,
-                    }
-                    for fragment in copy_fragments
-                ],
+                "members": members,
             }
             component_groups.append(group)
             groups.append(group)
@@ -749,6 +833,7 @@ def _runtime_interface_relation_audit_plan(
         {
             "edge_instance_id": edge.id,
             "source_interface_id": edge.source_id,
+            "hyperedge_id": edge.hyperedge_id or edge.source_id,
             "required": edge.required,
             "satisfaction_stage": edge.satisfaction_stage,
             "source_copy_index": edge.source_copy_index,
@@ -917,43 +1002,21 @@ def _compile_asu_scaffold_segments(
     manifest_path: Path,
     linker_length: int | None,
 ) -> tuple[_ASUScaffoldSegment, ...]:
-    """Compile disjoint copy-zero links into deterministic ASU chains.
+    """Compile copy-zero links into non-duplicating ordered ASU paths.
 
-    This first multi-interface adapter stage intentionally supports disjoint
-    segments only.  A fragment that participates in two links requires a
-    later ordered-path compiler; emitting it twice in an RFD3 contig would
-    silently duplicate fixed motif atoms.
+    A fixed fragment may be the target of one link and the source of the next,
+    as in ``A -> B -> C``.  The emitted contig contains B exactly once.  The
+    first implementation deliberately rejects branching and cycles because a
+    single protein chain has at most one N-side and one C-side neighbour.
     """
 
-    segments: list[_ASUScaffoldSegment] = []
-    selector_owners: dict[str, str] = {}
-    for link in sorted(links, key=lambda item: item.id):
-        from_selector = _fragment_selector(
-            mapping,
-            link.from_fragment_instance_id,
-        )
-        to_selector = _fragment_selector(
-            mapping,
-            link.to_fragment_instance_id,
-        )
-        for selector in (from_selector, to_selector):
-            previous = selector_owners.get(selector)
-            if previous is not None:
-                raise NotImplementedError(
-                    "Multi-link RFD3 contigs currently require disjoint "
-                    "fixed-fragment segments; selector "
-                    f"{selector!r} is used by both {previous!r} and "
-                    f"{link.id!r}"
-                )
-            selector_owners[selector] = link.id
-
+    def materialize(link) -> _MaterializedScaffoldLink:
         if link.chain_break:
             if linker_length is not None:
                 raise ValueError(
                     "linker_length cannot be set when an ASU scaffold "
                     "segment is a chain break"
                 )
-            contig_chains = (from_selector, to_selector)
             materialized_length = None
             linker_policy = "not_applicable"
         else:
@@ -980,28 +1043,186 @@ def _compile_asu_scaffold_segments(
                     f"[{link.minimum_length}, {link.maximum_length}] for "
                     f"{link.id!r}, got {materialized_length}"
                 )
-            linker = f"{materialized_length}-{materialized_length}"
-            contig_chains = (
-                f"{from_selector},{linker},{to_selector}",
-            )
 
         contour_preflight = _materialized_linker_contour_preflight(
             manifest_path,
             source_link_id=link.source_id,
             materialized_length=materialized_length,
         )
+        return _MaterializedScaffoldLink(
+            link=link,
+            materialized_linker_length=materialized_length,
+            linker_length_policy=linker_policy,
+            contour_preflight=contour_preflight,
+        )
+
+    ordered_links = tuple(sorted(links, key=lambda item: item.id))
+    if len({link.id for link in ordered_links}) != len(ordered_links):
+        raise ValueError("ASU scaffold link instance IDs must be unique")
+    materialized = {
+        link.id: materialize(link) for link in ordered_links
+    }
+
+    continuous = tuple(link for link in ordered_links if not link.chain_break)
+    breaks = tuple(link for link in ordered_links if link.chain_break)
+    outgoing: dict[str, Any] = {}
+    incoming: dict[str, Any] = {}
+    for link in continuous:
+        previous_out = outgoing.setdefault(
+            link.from_fragment_instance_id,
+            link,
+        )
+        if previous_out.id != link.id:
+            raise NotImplementedError(
+                "Generated scaffold topology branches from fixed fragment "
+                f"{link.from_fragment_instance_id!r}; one protein chain "
+                "cannot have two C-terminal outgoing links"
+            )
+        previous_in = incoming.setdefault(
+            link.to_fragment_instance_id,
+            link,
+        )
+        if previous_in.id != link.id:
+            raise NotImplementedError(
+                "Generated scaffold topology merges into fixed fragment "
+                f"{link.to_fragment_instance_id!r}; one protein chain "
+                "cannot have two N-terminal incoming links"
+            )
+
+    starts = sorted(
+        (
+            fragment_id
+            for fragment_id in outgoing
+            if fragment_id not in incoming
+        ),
+        key=lambda fragment_id: outgoing[fragment_id].id,
+    )
+    if continuous and not starts:
+        raise NotImplementedError(
+            "Generated scaffold topology contains a closed cycle; native "
+            "RFD3 contigs currently require an open N-to-C path"
+        )
+
+    segments: list[_ASUScaffoldSegment] = []
+    visited: set[str] = set()
+    fragment_path_owners: dict[str, str] = {}
+    for start in starts:
+        path_links = []
+        fragment_ids = [start]
+        cursor = start
+        while cursor in outgoing:
+            link = outgoing[cursor]
+            if link.id in visited:
+                raise ValueError(
+                    "Generated scaffold path traversal repeated link "
+                    f"{link.id!r}"
+                )
+            visited.add(link.id)
+            path_links.append(materialized[link.id])
+            cursor = link.to_fragment_instance_id
+            fragment_ids.append(cursor)
+
+        selectors = tuple(
+            _fragment_selector(mapping, fragment_id)
+            for fragment_id in fragment_ids
+        )
+        contig_parts = [selectors[0]]
+        for index, entry in enumerate(path_links):
+            length = entry.materialized_linker_length
+            assert length is not None
+            contig_parts.extend((f"{length}-{length}", selectors[index + 1]))
+        path_name = path_links[0].link.id
+        for fragment_id in fragment_ids:
+            previous = fragment_path_owners.setdefault(fragment_id, path_name)
+            if previous != path_name:
+                raise NotImplementedError(
+                    "A fixed fragment belongs to multiple generated ASU "
+                    f"paths: {fragment_id!r}"
+                )
+        contour_reports = tuple(
+            entry.contour_preflight for entry in path_links
+        )
         segments.append(
             _ASUScaffoldSegment(
-                link=link,
-                from_selector=from_selector,
-                to_selector=to_selector,
-                contig_chains=contig_chains,
-                materialized_linker_length=materialized_length,
-                linker_length_policy=linker_policy,
-                contour_preflight=contour_preflight,
+                links=tuple(path_links),
+                fragment_instance_ids=tuple(fragment_ids),
+                selectors=selectors,
+                from_selector=selectors[0],
+                to_selector=selectors[-1],
+                contig_chains=(",".join(contig_parts),),
+                materialized_linker_length=(
+                    path_links[0].materialized_linker_length
+                    if len(path_links) == 1
+                    else None
+                ),
+                linker_length_policy=(
+                    path_links[0].linker_length_policy
+                    if len(path_links) == 1
+                    else "ordered_path_per_link"
+                ),
+                contour_preflight={
+                    "status": "passed",
+                    "passed": all(
+                        report["passed"] for report in contour_reports
+                    ),
+                    "materialized_linker_length": (
+                        path_links[0].materialized_linker_length
+                        if len(path_links) == 1
+                        else None
+                    ),
+                    "evaluated_link_instances": [
+                        item
+                        for report in contour_reports
+                        for item in report["evaluated_link_instances"]
+                    ],
+                },
             )
         )
-    return tuple(segments)
+
+    if len(visited) != len(continuous):
+        missing = sorted(
+            link.id for link in continuous if link.id not in visited
+        )
+        raise NotImplementedError(
+            "Generated scaffold topology contains a cycle or disconnected "
+            f"non-path component: {missing}"
+        )
+
+    for link in breaks:
+        entry = materialized[link.id]
+        fragment_ids = (
+            link.from_fragment_instance_id,
+            link.to_fragment_instance_id,
+        )
+        for fragment_id in fragment_ids:
+            previous = fragment_path_owners.setdefault(fragment_id, link.id)
+            if previous != link.id:
+                raise NotImplementedError(
+                    "A fixed fragment cannot participate in both a chain "
+                    "break and another generated ASU path: "
+                    f"{fragment_id!r}"
+                )
+        selectors = tuple(
+            _fragment_selector(mapping, fragment_id)
+            for fragment_id in fragment_ids
+        )
+        segments.append(
+            _ASUScaffoldSegment(
+                links=(entry,),
+                fragment_instance_ids=fragment_ids,
+                selectors=selectors,
+                from_selector=selectors[0],
+                to_selector=selectors[1],
+                contig_chains=selectors,
+                materialized_linker_length=None,
+                linker_length_policy="not_applicable",
+                contour_preflight=entry.contour_preflight,
+            )
+        )
+
+    return tuple(
+        sorted(segments, key=lambda segment: segment.links[0].link.id)
+    )
 
 
 def compile_assembly_rfd3_input(
@@ -1044,6 +1265,7 @@ def compile_assembly_rfd3_input(
             candidate_manifest_path,
             config_path=config,
         )
+    spec = load_interface_seed_config(config)
     standalone = compile_standalone(
         config,
         output,
@@ -1061,7 +1283,6 @@ def compile_assembly_rfd3_input(
             f"pose candidate: {rebuilt_structure_sha} != "
             f"{candidate_structure_sha}"
         )
-    spec = load_interface_seed_config(config)
     instances = expand_symmetry_instances(
         spec,
         master_transforms=None,
@@ -1123,18 +1344,90 @@ def compile_assembly_rfd3_input(
         )
     transform_set_id = next(iter(transform_set_ids))
     transform_set = spec.symmetry.transform_sets[transform_set_id]
-    symmetry_id, symmetry_multiplicity = (
+    symmetry_id, full_symmetry_multiplicity = (
         _native_symmetry_id_and_multiplicity(transform_set)
     )
-    registry_transform_order = _preflight_native_transform_registry(
+    full_registry_transform_order = _preflight_native_transform_registry(
         transform_set,
-        symmetry_multiplicity,
+        full_symmetry_multiplicity,
     )
     native_registry = build_transform_registry(transform_set)
-    registry_transform_matrices = {
+    full_registry_transform_matrices = {
         transform_id: native_registry.transform(transform_id).tolist()
         for transform_id in native_registry.transform_ids
     }
+    active_orbit_ids = (
+        {terminal_path.orbit_id}
+        if terminal_path is not None
+        else {link.orbit_id for link in orbit_links}
+    )
+    active_orbits = {
+        orbit_id: spec.symmetry.orbits[orbit_id]
+        for orbit_id in active_orbit_ids
+    }
+    finite_action_payloads = {
+        json.dumps(
+            orbit.finite_action.model_dump(mode="json"),
+            sort_keys=True,
+        )
+        for orbit in active_orbits.values()
+        if orbit.finite_action is not None
+    }
+    if len(finite_action_payloads) > 1:
+        raise NotImplementedError(
+            "One native RFD3 task cannot combine different finite quotient "
+            "actions; split the design into compatible orbit backends"
+        )
+    has_full_orbit = any(
+        orbit.finite_action is None for orbit in active_orbits.values()
+    )
+    has_quotient_orbit = bool(finite_action_payloads)
+    if has_full_orbit and has_quotient_orbit:
+        raise NotImplementedError(
+            "One native RFD3 task cannot mix full-group and quotient-group "
+            "physical copy sets"
+        )
+    finite_action = (
+        next(
+            orbit.finite_action
+            for orbit in active_orbits.values()
+            if orbit.finite_action is not None
+        )
+        if has_quotient_orbit
+        else None
+    )
+    registry_transform_order = (
+        list(finite_action.coset_representative_ids)
+        if finite_action is not None
+        else full_registry_transform_order
+    )
+    transform_to_runtime_representative = (
+        dict(finite_action.transform_to_coset_representative)
+        if finite_action is not None
+        else {
+            transform_id: transform_id
+            for transform_id in full_registry_transform_order
+        }
+    )
+    registry_transform_matrices = {
+        transform_id: full_registry_transform_matrices[transform_id]
+        for transform_id in registry_transform_order
+    }
+    for orbit_id in active_orbit_ids:
+        compiled_order = tuple(
+            instances.constraint_orbits[orbit_id].transform_ids
+        )
+        if compiled_order != tuple(registry_transform_order):
+            raise ValueError(
+                f"Compiled physical copies for orbit {orbit_id!r} do not "
+                "match the RFD3 runtime transform order: "
+                f"{compiled_order} != {tuple(registry_transform_order)}"
+            )
+    symmetry_multiplicity = len(registry_transform_order)
+    if symmetry_multiplicity < 2:
+        raise NotImplementedError(
+            "RFD3 quotient execution requires at least two physical copies"
+        )
 
     segments: tuple[_ASUScaffoldSegment, ...] = ()
     if terminal_path is not None:
@@ -1170,23 +1463,40 @@ def compile_assembly_rfd3_input(
         asu_chain_count = sum(
             len(segment.contig_chains) for segment in segments
         )
+    materialized_links = tuple(
+        entry
+        for segment in segments
+        for entry in segment.links
+    )
+    compiled_links = tuple(entry.link for entry in materialized_links)
 
-    if terminal_path is None and len(segments) == 1:
+    if (
+        terminal_path is None
+        and len(segments) == 1
+        and len(compiled_links) == 1
+    ):
         only_segment = segments[0]
+        only_link = compiled_links[0]
         scaffold_mode = (
             "independent_chains"
-            if only_segment.link.chain_break
+            if only_link.chain_break
             else "continuous_linker"
         )
         configured_linker_range = [
-            only_segment.link.minimum_length,
-            only_segment.link.maximum_length,
+            only_link.minimum_length,
+            only_link.maximum_length,
         ]
         materialized_linker_length = (
             only_segment.materialized_linker_length
         )
         linker_length_policy = only_segment.linker_length_policy
         linker_contour_preflight = only_segment.contour_preflight
+    elif terminal_path is None and len(segments) == 1:
+        scaffold_mode = "ordered_asu_scaffold_path"
+        configured_linker_range = None
+        materialized_linker_length = None
+        linker_length_policy = "ordered_path_per_link"
+        linker_contour_preflight = segments[0].contour_preflight
     elif terminal_path is None:
         scaffold_mode = "multiple_asu_scaffold_segments"
         configured_linker_range = None
@@ -1226,18 +1536,17 @@ def compile_assembly_rfd3_input(
                 terminal_path.anchor_fragment_instance_id
             ),
             transform_set=transform_set,
+            runtime_transform_order=registry_transform_order,
+            transform_to_runtime_representative=(
+                transform_to_runtime_representative
+            ),
         )
     else:
         for segment in segments:
-            for selector, fragment_instance_id in (
-                (
-                    segment.from_selector,
-                    segment.link.from_fragment_instance_id,
-                ),
-                (
-                    segment.to_selector,
-                    segment.link.to_fragment_instance_id,
-                ),
+            for selector, fragment_instance_id in zip(
+                segment.selectors,
+                segment.fragment_instance_ids,
+                strict=True,
             ):
                 fragment = instances.fragments[fragment_instance_id]
                 fixed_atoms[selector] = _rfd3_atom_selection(
@@ -1254,23 +1563,28 @@ def compile_assembly_rfd3_input(
             motif_constraint_groups = _runtime_interface_constraint_groups(
                 instances,
                 mapping,
-                [segment.link for segment in segments],
+                list(compiled_links),
                 transform_set,
+                runtime_transform_order=registry_transform_order,
+                transform_to_runtime_representative=(
+                    transform_to_runtime_representative
+                ),
             )
             motif_constraint_orbits = _runtime_interface_constraint_orbits(
                 motif_constraint_groups,
                 instances=instances,
                 transform_set=transform_set,
+                runtime_transform_order=registry_transform_order,
+                transform_to_runtime_representative=(
+                    transform_to_runtime_representative
+                ),
             )
         else:
-            anchor_fragment_ids = tuple(
+            path_fragment_ids = tuple(
                 dict.fromkeys(
                     fragment_id
                     for segment in segments
-                    for fragment_id in (
-                        segment.link.from_fragment_instance_id,
-                        segment.link.to_fragment_instance_id,
-                    )
+                    for fragment_id in segment.fragment_instance_ids
                 )
             )
             (
@@ -1279,33 +1593,37 @@ def compile_assembly_rfd3_input(
             ) = _runtime_fixed_motif_constraints(
                 instances=instances,
                 mapping=mapping,
-                anchor_fragment_instance_ids=anchor_fragment_ids,
+                anchor_fragment_instance_ids=path_fragment_ids,
                 transform_set=transform_set,
+                runtime_transform_order=registry_transform_order,
+                transform_to_runtime_representative=(
+                    transform_to_runtime_representative
+                ),
             )
-    legacy_link = segments[0].link if len(segments) == 1 else None
+    legacy_link = compiled_links[0] if len(compiled_links) == 1 else None
     selected_orbit_ids = (
         {terminal_path.orbit_id}
         if terminal_path is not None
-        else {segment.link.orbit_id for segment in segments}
+        else {link.orbit_id for link in compiled_links}
     )
     configured_linker_ranges = {
-        segment.link.id: [
-            segment.link.minimum_length,
-            segment.link.maximum_length,
+        entry.link.id: [
+            entry.link.minimum_length,
+            entry.link.maximum_length,
         ]
-        for segment in segments
+        for entry in materialized_links
     }
     materialized_linker_lengths = {
-        segment.link.id: segment.materialized_linker_length
-        for segment in segments
+        entry.link.id: entry.materialized_linker_length
+        for entry in materialized_links
     }
     linker_length_policies = {
-        segment.link.id: segment.linker_length_policy
-        for segment in segments
+        entry.link.id: entry.linker_length_policy
+        for entry in materialized_links
     }
     linker_contour_preflights = {
-        segment.link.id: segment.contour_preflight
-        for segment in segments
+        entry.link.id: entry.contour_preflight
+        for entry in materialized_links
     }
     symmetry = {
         "id": symmetry_id,
@@ -1318,7 +1636,8 @@ def compile_assembly_rfd3_input(
     # the legacy single-chain JSON byte-level schema free of a redundant false
     # field.
     if (
-        asu_chain_count > 1
+        finite_action is not None
+        or asu_chain_count > 1
         or terminal_path is not None
         or not instances.interfaces
         or transform_set.type
@@ -1329,6 +1648,8 @@ def compile_assembly_rfd3_input(
         }
     ):
         symmetry["use_declared_frames"] = True
+        if finite_action is not None:
+            symmetry["declared_action_is_quotient"] = True
         symmetry["declared_transform_order"] = registry_transform_order
         symmetry["declared_transform_matrices"] = (
             registry_transform_matrices
@@ -1364,16 +1685,31 @@ def compile_assembly_rfd3_input(
             legacy_link.target_copy_index if legacy_link is not None else None
         ),
         "asu_scaffold_link_instances": [
-            segment.link.id for segment in segments
+            link.id for link in compiled_links
         ],
         "asu_scaffold_segments": [
             {
-                "link_instance_id": segment.link.id,
-                "source_link_id": segment.link.source_id,
-                "source_copy_index": segment.link.copy_index,
-                "target_copy_index": segment.link.target_copy_index,
+                "link_instance_id": (
+                    segment.links[0].link.id
+                    if len(segment.links) == 1
+                    else None
+                ),
+                "source_link_id": (
+                    segment.links[0].link.source_id
+                    if len(segment.links) == 1
+                    else None
+                ),
+                "link_instance_ids": [
+                    entry.link.id for entry in segment.links
+                ],
+                "source_link_ids": [
+                    entry.link.source_id for entry in segment.links
+                ],
+                "source_copy_index": segment.links[0].link.copy_index,
+                "target_copy_index": segment.links[-1].link.target_copy_index,
                 "from_selector": segment.from_selector,
                 "to_selector": segment.to_selector,
+                "path_selectors": list(segment.selectors),
                 "contig_chains": list(segment.contig_chains),
             }
             for segment in segments
@@ -1404,6 +1740,17 @@ def compile_assembly_rfd3_input(
             else []
         ),
         "symmetry_multiplicity": symmetry_multiplicity,
+        "full_symmetry_multiplicity": full_symmetry_multiplicity,
+        "symmetry_action_kind": (
+            "stabilizer_quotient"
+            if finite_action is not None
+            else "regular_full_group"
+        ),
+        "finite_orbit_action": (
+            finite_action.model_dump(mode="json")
+            if finite_action is not None
+            else None
+        ),
         "asu_chain_count": asu_chain_count,
         "scaffold_mode": scaffold_mode,
         "configured_linker_length_range": configured_linker_range,
@@ -1422,6 +1769,10 @@ def compile_assembly_rfd3_input(
         "registry_preflight": "passed",
         "registry_transform_order": registry_transform_order,
         "registry_transform_matrices": registry_transform_matrices,
+        "full_registry_transform_order": full_registry_transform_order,
+        "full_registry_transform_matrices": (
+            full_registry_transform_matrices
+        ),
         "mosaic_transform_order": list(
             dict.fromkeys(
                 group.transform_id
@@ -1440,6 +1791,12 @@ def compile_assembly_rfd3_input(
             else []
         ),
     }
+    if instances.interfaces and compiled_links:
+        adapter_extra["interleaved_interface_seed_topology"] = (
+            analyze_interleaved_interface_seed_topology(
+                instances
+            ).to_dict()
+        )
     if extra_metadata:
         protected = set(adapter_extra) & set(extra_metadata)
         if protected:
@@ -1461,6 +1818,14 @@ def compile_assembly_rfd3_input(
             "extra": adapter_extra,
         }
     }
+    if finite_action is not None:
+        # RFD3 otherwise centers fixed-motif inputs on their fixed-atom COM.
+        # A complete group orbit has its COM at the group origin, whereas a
+        # stabilizer quotient generally does not.  Applying that translation
+        # without conjugating the declared frames changes the represented
+        # action and invalidates exact fixed-target projection.  The compiler
+        # registry matrices are expressed about the group-frame origin.
+        payload[example_id]["ori_token"] = [0.0, 0.0, 0.0]
     input_path = output / "rfd3_input.json"
     input_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",

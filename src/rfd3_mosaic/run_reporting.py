@@ -308,6 +308,158 @@ def _logical_state(
     return "submitted" if scheduler is None else "unknown"
 
 
+def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
+    """Recover the human-facing design identity from frozen run artifacts.
+
+    A run name is not a sufficient provenance explanation.  In particular,
+    engineering canaries may use repository reference inputs that are not the
+    user's current biological target.  Prefer the frozen compiled input and
+    provenance copied with the run so reports remain useful off-cluster.
+    """
+
+    if run_directory is None or not run_directory.is_dir():
+        return None
+    context: dict[str, Any] = {}
+    resolved_path = run_directory / "resolved_config.yaml"
+    if resolved_path.is_file():
+        try:
+            resolved = _load_yaml(resolved_path)
+        except (OSError, ValueError, yaml.YAMLError):
+            resolved = {}
+        topology = resolved.get("topology") or {}
+        sampling = resolved.get("sampling") or {}
+        resources = resolved.get("resources") or {}
+        context.update(
+            {
+                "topology_kind": topology.get("kind"),
+                "authoring_config": topology.get("config"),
+                "timesteps": sampling.get("timesteps"),
+                "seed": sampling.get("seed"),
+                "profile": resources.get("profile_name"),
+            }
+        )
+
+    compiled_path = run_directory / "input" / "rfd3_input.json"
+    if compiled_path.is_file():
+        try:
+            payload = _load_json(compiled_path)
+            example = next(iter(payload.values())) if len(payload) == 1 else {}
+        except (OSError, ValueError, json.JSONDecodeError):
+            example = {}
+        if isinstance(example, dict):
+            source = example.get("input")
+            if source is not None:
+                source_path = Path(str(source)).expanduser()
+                if not source_path.is_absolute():
+                    source_path = (compiled_path.parent / source_path).resolve()
+                # This is the materialized structure consumed by RFD3, not
+                # necessarily the structure supplied by the user.  Keep the
+                # distinction explicit so resolver runs never obscure where
+                # their biological seed came from.
+                context["compiled_input"] = str(source_path)
+            symmetry = example.get("symmetry") or {}
+            extra = example.get("extra") or {}
+            if isinstance(symmetry, dict):
+                context["symmetry"] = symmetry.get("id")
+            relations = extra.get("assembly_interface_relations") or []
+            stages = {
+                str(relation.get("satisfaction_stage"))
+                for relation in relations
+                if isinstance(relation, dict)
+            }
+            if "output" in stages:
+                task = "create_symmetric_interface"
+            elif "input" in stages:
+                task = "preserve_supplied_geometry"
+            else:
+                task = "fixed_geometry_scaffolding"
+            context.update(
+                {
+                    "task": task,
+                    "symmetry_multiplicity": extra.get(
+                        "symmetry_multiplicity"
+                    ),
+                    "fixed_component_count": len(
+                        extra.get("motif_constraint_orbits") or []
+                    ),
+                }
+            )
+            interface_instances: dict[str, int] = {}
+            for relation in relations:
+                if not isinstance(relation, dict):
+                    continue
+                interface_id = relation.get("source_interface_id")
+                if interface_id is None:
+                    continue
+                label = str(interface_id)
+                interface_instances[label] = (
+                    interface_instances.get(label, 0) + 1
+                )
+            if interface_instances:
+                context["interface_instances"] = interface_instances
+
+    manifest_path = run_directory / "input" / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = _load_json(manifest_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            manifest = {}
+        inputs = manifest.get("inputs") or []
+        source_inputs = [
+            {
+                "path": str(item["path"]),
+                "sha256": item.get("sha256"),
+            }
+            for item in inputs
+            if isinstance(item, dict) and item.get("path")
+        ]
+        if source_inputs:
+            context["source_inputs"] = source_inputs
+            # Retain the singular field for API consumers when there is one
+            # source while still supporting future multi-file assemblies.
+            if len(source_inputs) == 1:
+                context["structure_input"] = source_inputs[0]["path"]
+
+    specification_path = run_directory / "input" / "assembly_specification.yaml"
+    if specification_path.is_file():
+        try:
+            specification = _load_yaml(specification_path)
+        except (OSError, ValueError, yaml.YAMLError):
+            specification = {}
+        assembly = specification.get("assembly") or {}
+        fragments = assembly.get("fragments") or {}
+        ports = assembly.get("ports") or {}
+        interfaces = assembly.get("interfaces") or {}
+        interface_selections: dict[str, list[str]] = {}
+        for interface_id, interface in interfaces.items():
+            if not isinstance(interface, dict):
+                continue
+            selections: list[str] = []
+            for side in ("left_port", "right_port"):
+                port = ports.get(interface.get(side)) or {}
+                for fragment_id in port.get("fragments") or []:
+                    fragment = fragments.get(fragment_id) or {}
+                    selection = fragment.get("selection")
+                    if selection is not None and str(selection) not in selections:
+                        selections.append(str(selection))
+            if selections:
+                interface_selections[str(interface_id)] = selections
+        if interface_selections:
+            context["interface_selections"] = interface_selections
+
+    provenance_path = run_directory / "provenance.json"
+    if provenance_path.is_file():
+        try:
+            provenance = _load_json(provenance_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            provenance = {}
+        public_source = provenance.get("public_user_design_source") or {}
+        if isinstance(public_source, dict) and public_source.get("path"):
+            context["resolved_design_source"] = public_source["path"]
+
+    return {key: value for key, value in context.items() if value is not None}
+
+
 def collect_run_status(
     reference: RunReference,
     *,
@@ -372,6 +524,7 @@ def collect_run_status(
             else None
         ),
         "scheduler": scheduler,
+        "design": _run_design_context(run_directory),
         "worker": worker or None,
         "audits": audits,
         "artifacts": {
@@ -411,12 +564,59 @@ def format_status_text(status: dict[str, Any]) -> str:
             f"elapsed={scheduler.get('elapsed') or '-'} "
             f"node={scheduler.get('node_list') or '-'}"
         )
+    design = status.get("design") or {}
+    if design:
+        lines.extend(
+            [
+                f"task:       {design.get('task', 'unknown')}",
+                f"input:      {design.get('structure_input', 'unknown')}",
+                "symmetry:   "
+                f"{design.get('symmetry', 'unknown')} "
+                f"x{design.get('symmetry_multiplicity', 'unknown')}",
+                "components: "
+                f"{design.get('fixed_component_count', 'unknown')} fixed; "
+                f"t={design.get('timesteps', 'unknown')} "
+                f"seed={design.get('seed', 'unknown')}",
+            ]
+        )
+        compiled_input = design.get("compiled_input")
+        if compiled_input and compiled_input != design.get("structure_input"):
+            lines.append(f"compiled:   {compiled_input}")
+        source_inputs = design.get("source_inputs") or []
+        if len(source_inputs) > 1:
+            for index, item in enumerate(source_inputs, start=1):
+                lines.append(f"source {index}:   {item.get('path', 'unknown')}")
+        interface_instances = design.get("interface_instances") or {}
+        if interface_instances:
+            rendered = ", ".join(
+                f"{interface_id} x{count}"
+                for interface_id, count in sorted(interface_instances.items())
+            )
+            lines.append(f"interfaces: {rendered}")
+        for interface_id, selections in sorted(
+            (design.get("interface_selections") or {}).items()
+        ):
+            lines.append(
+                f"  - {interface_id}: {' + '.join(str(x) for x in selections)}"
+            )
     lines.append("audits:")
     if not status["audits"]:
         lines.append("  - none available")
     for audit in status["audits"]:
         label = "PASS" if audit["passed"] else "FAIL"
         lines.append(f"  - {label:<4} {audit['name']}")
+        if audit["name"] == "graph_interface_guidance_audit.json":
+            metrics = (audit.get("summary") or {}).get(
+                "final_packing_metrics"
+            ) or {}
+            if metrics:
+                lines.append(
+                    "         packing "
+                    f"energy={metrics.get('energy', 'NA')} "
+                    f"orientation={metrics.get('orientation', 'NA')} "
+                    f"shape={metrics.get('shape', 'NA')} "
+                    f"min_edge={metrics.get('minimum_edge_distance', 'NA')}"
+                )
     structures = status["artifacts"]["structures"]
     lines.append(f"structures:  {len(structures)}")
     for path in structures:
@@ -463,6 +663,12 @@ def render_html_report(status: dict[str, Any]) -> str:
     ) or "<li>None available</li>"
     scheduler = status.get("scheduler") or {}
     worker = status.get("worker") or {}
+    design = status.get("design") or {}
+    design_text = (
+        json.dumps(design, sort_keys=True, indent=2)
+        if design
+        else "No frozen design provenance was available."
+    )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -496,6 +702,8 @@ pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}}
 <h2>Required audits</h2>
 <table><thead><tr><th>Report</th><th>Verdict</th><th>Summary</th></tr></thead>
 <tbody>{''.join(audit_rows) or '<tr><td colspan="3">No audits available.</td></tr>'}</tbody></table>
+<h2>Design provenance</h2>
+<div class="card"><pre>{escape(design_text)}</pre></div>
 <h2>Output structures</h2><ul>{structure_items}</ul>
 <h2>Execution details</h2>
 <div class="card"><div class="label">Run directory</div><code>{escape(str(status['run_directory'] or 'not created'))}</code>

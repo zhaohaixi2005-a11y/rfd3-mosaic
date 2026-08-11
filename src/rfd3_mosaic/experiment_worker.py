@@ -23,8 +23,21 @@ from rfd3_mosaic.provenance.software import (
 from rfd3_mosaic.provenance.source_snapshot import (
     verify_source_snapshot_tree,
 )
-from rfd3_mosaic.rfd3_mobility_audit import write_mobility_trajectory
+from rfd3_mosaic.result_auditing import (
+    find_result_json,
+    gate_result_audits,
+    run_result_audits,
+)
 from rfd3_mosaic.run_index import update_run_state
+
+
+_AUTHORING_SOURCE_ROLES = frozenset(
+    {
+        "experiment source",
+        "execution profile",
+        "Foundry compatibility manifest",
+    }
+)
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -45,22 +58,6 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def _result_json(run_dir: Path) -> Path:
-    candidates = sorted(run_dir.glob("*model_0.json"))
-    if len(candidates) != 1:
-        raise RuntimeError(
-            "Expected exactly one model_0 metadata JSON, observed "
-            f"{[str(path) for path in candidates]}"
-        )
-    return candidates[0]
-
-
-def _symmetry_multiplicity(rfd3_input: Path) -> int:
-    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
-    example = next(iter(payload.values()))
-    return int(example["extra"]["symmetry_multiplicity"])
 
 
 def _motif_mobility_runtime(rfd3_input: Path) -> tuple[bool, str]:
@@ -180,7 +177,19 @@ def _verify_render_identity(
     records = identity.get("files")
     if not isinstance(records, list) or not records:
         raise RuntimeError("render_identity lacks frozen runtime dependencies")
-    verify_file_identities(records)
+    # Authoring inputs are provenance once their values have been resolved;
+    # they are not runtime dependencies.  In particular, editing an
+    # experiment/profile while an older job is queued must not invalidate the
+    # already frozen job.  Keep compatibility with schema-v1 render records
+    # that still placed these roles in ``files``.
+    runtime_records = [
+        record
+        for record in records
+        if str(record.get("role")) not in _AUTHORING_SOURCE_ROLES
+    ]
+    if not runtime_records:
+        raise RuntimeError("render_identity lacks executable runtime dependencies")
+    verify_file_identities(runtime_records)
     checkpoint_record = identity.get("checkpoint")
     if not isinstance(checkpoint_record, dict):
         raise RuntimeError("render_identity lacks checkpoint identity")
@@ -335,47 +344,20 @@ def execute(
     ]
     _run(inference_command)
 
-    result_json = _result_json(run_dir)
-    mobility_trajectory_path = run_dir / "mobility_trajectory.json"
-    has_mobility_trajectory = write_mobility_trajectory(
+    result_json = find_result_json(run_dir)
+    audit_outcome = run_result_audits(
+        run_directory=run_dir,
+        rfd3_input=rfd3_input,
         result_json=result_json,
-        output=mobility_trajectory_path,
+        semantic_audits=assembly.semantic_audits,
+        python=sys.executable,
+        command_runner=_run,
     )
-    reports = []
-    for audit in assembly.semantic_audits:
-        report = run_dir / audit.report_name
-        _run(
-            audit.command(
-                python=sys.executable,
-                result_json=result_json,
-                output_report=report,
-            )
-        )
-        reports.append(report)
-
-    scaffold_report = run_dir / "scaffold_validity_audit.json"
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "rfd3_mosaic.rfd3_scaffold_audit",
-            "--result-json",
-            str(result_json),
-            "--rfd3-input",
-            str(rfd3_input),
-            "--output",
-            str(scaffold_report),
-            "--expected-symmetry-multiplicity",
-            str(_symmetry_multiplicity(rfd3_input)),
-            "--report-only",
-        ]
+    gate_result_audits(
+        audit_outcome.reports,
+        python=sys.executable,
+        command_runner=_run,
     )
-    reports.append(scaffold_report)
-
-    gate_command = [sys.executable, "-m", "rfd3_mosaic.rfd3_audit_gate"]
-    for report in reports:
-        gate_command.extend(["--report", str(report)])
-    _run(gate_command)
 
     completion = {
         "status": "completed",
@@ -383,11 +365,11 @@ def execute(
         "topology": kind,
         "resolved_config_sha256": _sha256(frozen),
         "result_json": str(result_json),
-        "reports": [str(path) for path in reports],
+        "reports": [str(path) for path in audit_outcome.reports],
         "runtime_provenance": str(runtime_provenance_path),
         "mobility_trajectory": (
-            str(mobility_trajectory_path)
-            if has_mobility_trajectory
+            str(audit_outcome.mobility_trajectory)
+            if audit_outcome.mobility_trajectory is not None
             else None
         ),
     }

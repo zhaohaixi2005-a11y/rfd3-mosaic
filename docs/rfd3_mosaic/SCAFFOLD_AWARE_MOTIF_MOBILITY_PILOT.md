@@ -1,5 +1,34 @@
 # Scaffold-aware interface-seed mobility pilot
 
+## 2026-08-11 implementation update
+
+This document began as the original one-orbit C5 pilot.  The implementation
+has since advanced beyond that safety boundary: complete-orbit bounded SE(3)
+motion, radial and radial/axial subspaces, synchronized dynamic conditioning,
+and atomic multi-orbit updates have GPU evidence in C3 and D3.  Successful
+engineering runs include `5733341`, `5733680`, `5733718`, `5733719`,
+`5733788` and `5733972`.
+
+The remaining core problem is no longer whether an exact motif orbit can move
+without losing symmetry.  It is whether pose motion and generated-interface
+packing can be optimized as one assembly-wide objective.  Recent jobs
+`5742223`, `5742231` and `5742921` preserve exact motif geometry and symmetry
+and record non-zero translation/rotation, yet form `0/3` requested interfaces
+and contain three chain breaks.  Conversely, older run `5741270` forms `3/3`
+contacts while breaking all three chains.  Neither behavior is acceptable.
+
+The next implementation gate is therefore a unified, snapshot-synchronous
+multi-orbit controller that evaluates packing, junctions, continuity, global
+clashes, orientation, shape and cavity/compactness together; projects each
+proposal into its declared SE(3) subspace; refreshes exact targets and
+conditioning; and accepts or rolls back the complete joint update.  Large
+global pose errors are a separate pre-diffusion optimization problem.  For
+example, T run `5742211` started with relevant partners approximately
+`94.92 A` apart and cannot be rescued by bounded local timestep movement.
+
+The older C5 commands below remain historical pilot/reproducibility material,
+not the recommended public production entry point.
+
 ## Purpose
 
 The validated production path keeps every cross-protomer interface seed
@@ -172,3 +201,25 @@ A positive pilot result means that a bounded, symmetry-safe external
 controller can improve local scaffold compatibility while RFD3 is denoising.
 It does not yet establish support for Dn, multiple independent motif orbits,
 large pose rescue, ligands, or a generally optimal ring/cage morphology.
+
+## 2026-08-11 unified packing-aware mobility checkpoint
+
+The sampler no longer has to run scaffold-driven motif mobility and generated
+interface guidance as independent timestep controllers. When both are
+enabled, one transaction now owns the generated patch proposal, all mobile
+motif-orbit SE(3) proposals, exact projection, packing/junction/clash
+evaluation, conditioning refresh, and commit or rollback.
+
+The SE(3) pose gradient now includes graph packing in addition to the original
+junction, clash, tilt and pose-prior terms. A candidate must improve packing
+and the combined objective without worsening protected edge distance, global
+safety distance or junction geometry. Proposal-only runs and exceptions
+restore both orbit poses and stateful patch assignments. The former post-Euler
+graph controller is disabled for joint timesteps, preventing two local
+acceptors from fighting each other.
+
+Evidence level is **local implementation awaiting LRZ tests**, not GPU
+validated. Promotion requires the focused and full Torch suites plus a frozen
+50-step V100/P100 canary demonstrating non-zero bounded rotation, lower final
+packing energy, exact motif/symmetry recovery, continuous chains and no new CA
+clashes.

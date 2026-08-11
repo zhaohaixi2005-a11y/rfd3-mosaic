@@ -2,17 +2,24 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
 
 from rfd3_mosaic.output import compile_rfd3_input, compile_standalone
 from rfd3_mosaic.output.rfd3_adapter import (
+    _compile_asu_scaffold_segments,
     _native_symmetry_id_and_multiplicity,
     _selector_source_components,
 )
+from rfd3_mosaic.rfd3_prevalidate import prevalidate_rfd3_input
 from rfd3_mosaic.schema.specs import (
     SymmetryTransformSetSpec,
     SymmetryType,
+)
+from rfd3_mosaic.topology.stabilizer_cosets import (
+    stabilizer_coset_hypotheses,
 )
 
 
@@ -41,6 +48,140 @@ LHD101_CYCLIC_CONFIGS = {
     )
     for order in (5, 6, 7)
 }
+
+
+class OrderedASUScaffoldPathTestCase(unittest.TestCase):
+    """Protect arbitrary-length single-input fixed-fragment paths."""
+
+    @staticmethod
+    def _link(
+        link_id: str,
+        source: str,
+        target: str,
+        *,
+        minimum_length: int = 5,
+        maximum_length: int = 5,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=link_id,
+            source_id=link_id,
+            from_fragment_instance_id=source,
+            to_fragment_instance_id=target,
+            chain_break=False,
+            minimum_length=minimum_length,
+            maximum_length=maximum_length,
+            copy_index=0,
+            target_copy_index=0,
+            orbit_id="motif_orbit",
+        )
+
+    @staticmethod
+    def _contour_report(*_args, materialized_length, **_kwargs):
+        return {
+            "status": "passed",
+            "passed": True,
+            "materialized_linker_length": materialized_length,
+            "evaluated_link_instances": [],
+        }
+
+    def _compile(self, links):
+        selectors = {
+            "fragment_a": "A1-2",
+            "fragment_b": "B1-2",
+            "fragment_c": "C1-2",
+            "fragment_d": "D1-2",
+        }
+        with (
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter._fragment_selector",
+                side_effect=lambda _mapping, fragment_id: selectors[
+                    fragment_id
+                ],
+            ),
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter."
+                "_materialized_linker_contour_preflight",
+                side_effect=self._contour_report,
+            ),
+        ):
+            return _compile_asu_scaffold_segments(
+                links,
+                mapping={},
+                manifest_path=Path("unused-manifest.json"),
+                linker_length=None,
+            )
+
+    def test_ordered_path_materializes_intermediate_seed_once(self) -> None:
+        segments = self._compile(
+            (
+                self._link(
+                    "link_bc",
+                    "fragment_b",
+                    "fragment_c",
+                    minimum_length=7,
+                    maximum_length=7,
+                ),
+                self._link("link_ab", "fragment_a", "fragment_b"),
+            )
+        )
+
+        self.assertEqual(len(segments), 1)
+        segment = segments[0]
+        self.assertEqual(
+            segment.fragment_instance_ids,
+            ("fragment_a", "fragment_b", "fragment_c"),
+        )
+        self.assertEqual(
+            segment.contig_chains,
+            ("A1-2,5-5,B1-2,7-7,C1-2",),
+        )
+        self.assertEqual(segment.contig_chains[0].count("B1-2"), 1)
+        self.assertEqual(
+            [entry.link.id for entry in segment.links],
+            ["link_ab", "link_bc"],
+        )
+
+    def test_ordered_path_length_is_data_driven(self) -> None:
+        segments = self._compile(
+            (
+                self._link("link_ab", "fragment_a", "fragment_b"),
+                self._link("link_bc", "fragment_b", "fragment_c"),
+                self._link("link_cd", "fragment_c", "fragment_d"),
+            )
+        )
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(
+            segments[0].fragment_instance_ids,
+            (
+                "fragment_a",
+                "fragment_b",
+                "fragment_c",
+                "fragment_d",
+            ),
+        )
+        self.assertEqual(len(segments[0].links), 3)
+
+    def test_ordered_path_rejects_chain_branching(self) -> None:
+        with self.assertRaisesRegex(
+            NotImplementedError,
+            "two C-terminal outgoing links",
+        ):
+            self._compile(
+                (
+                    self._link("link_ab", "fragment_a", "fragment_b"),
+                    self._link("link_ac", "fragment_a", "fragment_c"),
+                )
+            )
+
+    def test_ordered_path_rejects_closed_cycles(self) -> None:
+        with self.assertRaisesRegex(NotImplementedError, "closed cycle"):
+            self._compile(
+                (
+                    self._link("link_ab", "fragment_a", "fragment_b"),
+                    self._link("link_ba", "fragment_b", "fragment_a"),
+                )
+            )
 
 
 class RFD3AdapterTestCase(unittest.TestCase):
@@ -208,6 +349,129 @@ class RFD3AdapterTestCase(unittest.TestCase):
             [0, 1, 2],
         )
         self.assertTrue(emitted["symmetry"]["use_declared_frames"])
+
+    def test_compiles_finite_quotient_orbit_into_physical_frames(
+        self,
+    ) -> None:
+        source = self.output_directory / "quotient_motif.pdb"
+        source.write_text(
+            "".join(
+                (
+                    "ATOM      1  N   ALA A   1       9.000   0.000   0.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      2  CA  ALA A   1      10.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      3  C   ALA A   1      11.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      4  N   GLY A   2      12.000   0.000   0.000"
+                    "  1.00 20.00           N  \n",
+                    "ATOM      5  CA  GLY A   2      13.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "ATOM      6  C   GLY A   2      14.000   0.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "END\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+        action = stabilizer_coset_hypotheses("C4", 2)[0]
+        config = self.output_directory / "quotient.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "mode": "constraint_assembly",
+                        "fragments": {
+                            "motif": {
+                                "source": str(source),
+                                "selection": "A/1-2/*",
+                                "entity_type": "protein",
+                                "role": "functional_motif",
+                                "fixed_atoms": "all",
+                            }
+                        },
+                        "motion_groups": {
+                            "motif_group": {
+                                "members": ["motif"],
+                                "mode": "fixed",
+                            }
+                        },
+                        "symmetry": {
+                            "transform_sets": {
+                                "ring": {"type": "cyclic", "order": 4}
+                            },
+                            "orbits": {
+                                "motif_orbit": {
+                                    "transform_set": "ring",
+                                    "master_groups": ["motif_group"],
+                                    "finite_action": {
+                                        "coset_representative_ids": list(
+                                            action.coset_representative_ids
+                                        ),
+                                        "stabilizer_transform_ids": list(
+                                            action.stabilizer_transform_ids
+                                        ),
+                                        "transform_to_coset_representative": dict(
+                                            action.transform_to_coset_representative
+                                        ),
+                                    },
+                                }
+                            },
+                        },
+                        "generated_segments": {
+                            "n_flank": {
+                                "anchor": {
+                                    "fragment": "motif",
+                                    "terminus": "N",
+                                },
+                                "length": {"minimum": 5, "maximum": 5},
+                            }
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "quotient-output",
+            example_id="quotient-c4-c2",
+        )
+        emitted = json.loads(outputs.input_path.read_text())[
+            "quotient-c4-c2"
+        ]
+
+        self.assertEqual(emitted["symmetry"]["id"], "C4")
+        self.assertTrue(
+            emitted["symmetry"]["declared_action_is_quotient"]
+        )
+        self.assertEqual(
+            emitted["symmetry"]["declared_transform_order"],
+            list(action.coset_representative_ids),
+        )
+        self.assertEqual(emitted["ori_token"], [0.0, 0.0, 0.0])
+        self.assertEqual(emitted["extra"]["symmetry_multiplicity"], 2)
+        self.assertEqual(
+            emitted["extra"]["full_symmetry_multiplicity"],
+            4,
+        )
+        self.assertEqual(
+            emitted["extra"]["symmetry_action_kind"],
+            "stabilizer_quotient",
+        )
+        self.assertEqual(
+            emitted["extra"]["motif_constraint_orbits"][0][
+                "group_transform_ids"
+            ],
+            [0, 1],
+        )
+        report = prevalidate_rfd3_input(outputs.input_path)
+        self.assertEqual(report["expected_multiplicity"], 2)
+        self.assertEqual(report["full_symmetry_multiplicity"], 4)
+        self.assertEqual(report["symmetry_transform_ids"], [0, 1])
 
     def test_compiles_tetrahedral_terminal_design_with_declared_frames(
         self,
@@ -574,6 +838,120 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 "right_component": "fixed",
             },
         )
+
+    def test_single_input_three_fragment_path_is_emitted_once(self) -> None:
+        source = self.output_directory / "three_fragment_seed.pdb"
+        atom_lines = []
+        serial = 1
+        for residue_number, residue_name, origin in (
+            (1, "ALA", 9.0),
+            (2, "GLY", 19.0),
+            (3, "SER", 29.0),
+        ):
+            for atom_name, offset, element in (
+                ("N", 0.0, "N"),
+                ("CA", 1.0, "C"),
+                ("C", 2.0, "C"),
+            ):
+                atom_lines.append(
+                    f"ATOM  {serial:5d} {atom_name:>4s} {residue_name:>3s} "
+                    f"A{residue_number:4d}    {origin + offset:8.3f}"
+                    "   0.000   0.000  1.00 20.00           "
+                    f"{element:>2s}  \n"
+                )
+                serial += 1
+        atom_lines.append("END\n")
+        source.write_text("".join(atom_lines), encoding="utf-8")
+
+        config = self.output_directory / "three_fragment_seed.yaml"
+        fragments = {
+            name: {
+                "source": str(source),
+                "selection": f"A/{residue_number}-{residue_number}/*",
+                "entity_type": "protein",
+                "role": "functional_motif",
+                "fixed_atoms": "all",
+            }
+            for name, residue_number in (
+                ("seed_a", 1),
+                ("seed_b", 2),
+                ("seed_c", 3),
+            )
+        }
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "mode": "constraint_assembly",
+                        "fragments": fragments,
+                        "motion_groups": {
+                            "seed_geometry": {
+                                "members": ["seed_a", "seed_b", "seed_c"],
+                                "mode": "fixed",
+                            }
+                        },
+                        "symmetry": {
+                            "transform_sets": {
+                                "ring": {"type": "cyclic", "order": 3}
+                            },
+                            "orbits": {
+                                "motif_orbit": {
+                                    "transform_set": "ring",
+                                    "master_groups": ["seed_geometry"],
+                                }
+                            },
+                        },
+                        "generated_segments": {
+                            "link_ab": {
+                                "from_endpoint": {
+                                    "fragment": "seed_a",
+                                    "terminus": "C",
+                                },
+                                "to_endpoint": {
+                                    "fragment": "seed_b",
+                                    "terminus": "N",
+                                },
+                                "length": {"minimum": 5, "maximum": 5},
+                            },
+                            "link_bc": {
+                                "from_endpoint": {
+                                    "fragment": "seed_b",
+                                    "terminus": "C",
+                                },
+                                "to_endpoint": {
+                                    "fragment": "seed_c",
+                                    "terminus": "N",
+                                },
+                                "length": {"minimum": 5, "maximum": 5},
+                            },
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "three-fragment-output",
+            example_id="three-fragment-c3",
+        )
+        emitted = json.loads(outputs.input_path.read_text())["three-fragment-c3"]
+        extra = emitted["extra"]
+
+        self.assertEqual(extra["scaffold_mode"], "ordered_asu_scaffold_path")
+        self.assertEqual(extra["asu_chain_count"], 1)
+        self.assertEqual(len(extra["asu_scaffold_segments"]), 1)
+        self.assertEqual(
+            extra["asu_scaffold_segments"][0]["source_link_ids"],
+            ["link_ab", "link_bc"],
+        )
+        path_selectors = extra["asu_scaffold_segments"][0]["path_selectors"]
+        self.assertEqual(len(path_selectors), 3)
+        self.assertEqual(emitted["contig"].count(path_selectors[1]), 1)
+        self.assertEqual(len(emitted["select_fixed_atoms"]), 3)
 
     def test_c12_compiles_to_a_native_input(self) -> None:
         config = yaml.safe_load(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 
@@ -23,8 +24,10 @@ from rfd3_mosaic.schema import (
     AssemblySpecification,
     AtomScope,
     BetweenGeneration,
+    FixedArrangementPolicy,
     SymmetryTransformSetSpec,
     TerminalGeneration,
+    UserDesignTask,
     UserDesignSpec,
     UserSymmetrySpec,
 )
@@ -80,11 +83,96 @@ class BoundConstraintPlan:
 
 
 @dataclass(frozen=True)
+class InterfaceUsageResolution:
+    interface_id: str
+    requested: str
+    physical_instance_count: int
+    satisfied: bool
+
+
+@dataclass(frozen=True)
 class LoweredUserDesign:
     specification: AssemblySpecification
     constraint_plan: ConstraintPlan
     sampling_plan: SamplingPlan
     bound_constraints: BoundConstraintPlan
+    interface_usage: tuple[InterfaceUsageResolution, ...] = ()
+
+
+def _resolve_interface_usage(
+    design: UserDesignSpec,
+    specification: AssemblySpecification,
+) -> tuple[InterfaceUsageResolution, ...]:
+    """Validate user multiplicities against unique expanded relations."""
+
+    if not design.interfaces:
+        return ()
+    # Local import keeps the public schema/lowering layer independent from
+    # compilation module initialization while using the canonical expansion.
+    from rfd3_mosaic.compile import expand_symmetry_instances
+
+    instances = expand_symmetry_instances(specification)
+    physical_by_source: dict[str, set[tuple[str, str]]] = {}
+    for edge in instances.interfaces.values():
+        physical_by_source.setdefault(edge.source_id, set()).add(
+            tuple(
+                sorted(
+                    (
+                        edge.left_port_instance_id,
+                        edge.right_port_instance_id,
+                    )
+                )
+            )
+        )
+
+    grouped: dict[str, list[object]] = {}
+    for interface in design.interfaces:
+        group_id = interface.hyperedge_id or interface.id
+        grouped.setdefault(group_id, []).append(interface)
+
+    resolutions: list[InterfaceUsageResolution] = []
+    for group_id, members in grouped.items():
+        usage_payloads = {
+            json.dumps(
+                member.use.model_dump(mode="json", exclude_none=True),
+                sort_keys=True,
+            )
+            for member in members
+        }
+        if len(usage_payloads) != 1:
+            raise ValueError(
+                f"Interface hyperedge {group_id!r} has inconsistent use "
+                "requirements across its pairwise runtime members"
+            )
+        observed_counts = {
+            len(physical_by_source.get(member.id, set()))
+            for member in members
+        }
+        if len(observed_counts) != 1:
+            raise ValueError(
+                f"Interface hyperedge {group_id!r} expands its member "
+                f"relations with inconsistent multiplicities: "
+                f"{sorted(observed_counts)}"
+            )
+        observed = next(iter(observed_counts))
+        usage = members[0].use
+        satisfied = usage.accepts(observed)
+        resolution = InterfaceUsageResolution(
+            interface_id=group_id,
+            requested=usage.description,
+            physical_instance_count=observed,
+            satisfied=satisfied,
+        )
+        resolutions.append(resolution)
+        if not satisfied:
+            raise ValueError(
+                f"Interface {group_id!r} requested "
+                f"{usage.description} physical instances, but the "
+                f"declared symmetry/copy relation produces {observed}; use "
+                "auto, change the requested range, or let architecture "
+                "search choose a compatible symmetry"
+            )
+    return tuple(resolutions)
 
 
 def parse_public_selector(selector: str) -> tuple[SelectorSegment, ...]:
@@ -875,6 +963,40 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 for component_id, payload in initialization.items()
             }
 
+    # A usable supplied pose always wins.  If a simple ASU motif lies on a
+    # symmetry stabilizer, however, it does not yet define a non-overlapping
+    # complete assembly.  Establish one deterministic compile-time pose so
+    # ordinary users do not have to invent a radius.  ``locked`` freezes that
+    # resolved pose during diffusion; ``optimize_components`` may subsequently
+    # adapt it inside the declared mobility bounds.
+    if (
+        design.user_mode == "simple"
+        and len(motion_group_ids) == 1
+        and not initialization
+    ):
+        component_id = next(iter(motion_group_ids))
+        component_atom_ids = frozenset().union(
+            *(
+                generation_atom_ids[segment]
+                for segment in ordered_segments
+                if component_by_segment[segment] == component_id
+            )
+        )
+        component_atoms = tuple(
+            atom
+            for atom in source_atoms
+            if _atom_identity(atom) in component_atom_ids
+        )
+        automatic_initialization, _ = _automatic_simple_component_plan(
+            design,
+            declared_registry,
+            component_atoms,
+        )
+        if automatic_initialization is not None:
+            initialization[motion_group_ids[component_id]] = (
+                automatic_initialization
+            )
+
     ports: dict[str, object] = {}
     public_port_ids: dict[str, str] = {}
     for port_id, port in design.ports.items():
@@ -920,6 +1042,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         interfaces[interface.id] = {
             "left_port": left_port,
             "right_port": right_port,
+            "hyperedge_id": interface.hyperedge_id,
             "copy_relation": interface.copy_relation.model_dump(
                 mode="json",
                 exclude_none=True,
@@ -942,7 +1065,10 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     # joins supplied fixed fragments and therefore does not invent a new
     # interface objective.  Explicit graph interfaces remain available for
     # advanced multi-face cages and take precedence over this inference.
-    if not design.interfaces:
+    infer_terminal_interfaces = (
+        design.task != UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
+    )
+    if not design.interfaces and infer_terminal_interfaces:
         terminal_components: list[str] = []
         for clause in design.generation:
             if not isinstance(clause, TerminalGeneration):
@@ -981,6 +1107,28 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                     design,
                     initialization[motion_group_id],
                 )
+            elif (
+                design.fixed_arrangement
+                == FixedArrangementPolicy.LOCKED
+            ):
+                # Preserve the supplied complete-orbit frame exactly.  The
+                # generated scaffold may still receive interface guidance,
+                # but the fixed target and all inter-copy distances/angles
+                # are immutable.
+                heavy_coordinates = np.asarray(
+                    [
+                        atom.coordinate
+                        for atom in component_atoms
+                        if atom.element.upper() != "H"
+                    ],
+                    dtype=np.float64,
+                )
+                if heavy_coordinates.size == 0:
+                    heavy_coordinates = np.asarray(
+                        [atom.coordinate for atom in component_atoms],
+                        dtype=np.float64,
+                    )
+                master_center = heavy_coordinates.mean(axis=0)
             else:
                 automatic_initialization, master_center = (
                     _automatic_simple_component_plan(
@@ -1024,7 +1172,10 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                     "mode": "geometric_constraints",
                     "contacts": {
                         "min_heavy_atom_contacts": 0,
-                        "cutoff": 8.0,
+                        # Heavy-atom output evidence must represent direct
+                        # packing, not the much broader CA neighbourhood used
+                        # by the differentiable runtime proxy.
+                        "cutoff": 4.5,
                     },
                     "coverage": {"mode": "auto"},
                 },
@@ -1051,6 +1202,13 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                         "transform_set": "declared",
                         "master_groups": list(motion_group_ids.values()),
                         "component_mobility": component_mobility,
+                        "finite_action": (
+                            design.finite_orbit_action.model_dump(
+                                mode="json"
+                            )
+                            if design.finite_orbit_action is not None
+                            else None
+                        ),
                     }
                 },
             },
@@ -1060,11 +1218,13 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             "initialization": initialization,
         }
     )
+    interface_usage = _resolve_interface_usage(design, specification)
     return LoweredUserDesign(
         specification=specification,
         constraint_plan=plan,
         sampling_plan=sampling_plan,
         bound_constraints=bound,
+        interface_usage=interface_usage,
     )
 
 
@@ -1072,6 +1232,7 @@ __all__ = [
     "AtomIdentity",
     "BoundConstraintOperator",
     "BoundConstraintPlan",
+    "InterfaceUsageResolution",
     "LoweredUserDesign",
     "SelectorSegment",
     "bind_constraint_plan",

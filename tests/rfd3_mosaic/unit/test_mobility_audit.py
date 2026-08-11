@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -24,9 +25,12 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
         group_action_count: int = 3,
         observed_group_action_count: int | None = None,
         symmetry_id: str = "C3",
+        translation_vector: tuple[float, float, float] | None = None,
     ) -> tuple[Path, Path]:
         if observed_group_action_count is None:
             observed_group_action_count = group_action_count
+        if translation_vector is None:
+            translation_vector = (translation, 0.0, 0.0)
         mobile_orbits = [
             {
                 "constraint_orbit_id": f"mobile_orbit_{index}",
@@ -70,6 +74,11 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                         "conditioning_refresh_count": 3 if active else 1,
                         "mobile_orbit_count": mobile_count,
                         "symmetry_id": symmetry_id,
+                        "symmetry_axis": {
+                            "point": [0.0, 0.0, 0.0],
+                            "direction": [0.0, 0.0, 1.0],
+                            "transform_ids": list(range(group_action_count)),
+                        },
                         "runtime_group_action_count": (
                             observed_group_action_count
                         ),
@@ -100,6 +109,12 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                                 ),
                                 "component_id": f"mobile_component_{index}",
                                 "translation_norms": [translation],
+                                "translation_vectors": [
+                                    list(translation_vector)
+                                ],
+                                "template_master_centers": [
+                                    [10.0, 0.0, 0.0]
+                                ],
                                 "rotation_degrees": [rotation],
                                 "group_action_count": (
                                     observed_group_action_count
@@ -235,6 +250,70 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
         component = report["summary"]["components"][0]
         self.assertEqual(component["mobility_subspace"], "radial")
         self.assertEqual(component["maximum_rotation_deg_allowed"], 0.0)
+        self.assertTrue(component["directional_contract_valid"])
+
+    def test_accepts_radial_rotation_without_directional_leakage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            compiled, result = self._write_inputs(
+                Path(temporary),
+                subspace="radial_rotation",
+            )
+            report = audit_component_mobility(
+                compiled_input=compiled,
+                result_json=result,
+            )
+
+        self.assertTrue(report["passed"])
+        component = report["summary"]["components"][0]
+        self.assertEqual(component["mobility_subspace"], "radial_rotation")
+        self.assertTrue(component["directional_contract_valid"])
+        self.assertEqual(
+            component["maximum_tangential_translation_leakage"],
+            0.0,
+        )
+
+    def test_rejects_radial_rotation_with_axial_leakage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            compiled, result = self._write_inputs(
+                Path(temporary),
+                translation=math.sqrt(2.0),
+                translation_vector=(1.0, 0.0, 1.0),
+                subspace="radial_rotation",
+            )
+            report = audit_component_mobility(
+                compiled_input=compiled,
+                result_json=result,
+            )
+
+        self.assertFalse(report["passed"])
+        component = report["summary"]["components"][0]
+        self.assertFalse(component["directional_contract_valid"])
+        self.assertEqual(
+            component["maximum_axial_translation_observed"],
+            1.0,
+        )
+
+    def test_radial_axial_rotation_allows_axial_motion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            compiled, result = self._write_inputs(
+                Path(temporary),
+                translation=math.sqrt(2.0),
+                translation_vector=(1.0, 0.0, 1.0),
+                subspace="radial_axial_rotation",
+            )
+            report = audit_component_mobility(
+                compiled_input=compiled,
+                result_json=result,
+            )
+
+        self.assertTrue(report["passed"])
+        component = report["summary"]["components"][0]
+        self.assertTrue(component["directional_contract_valid"])
+        self.assertTrue(component["axial_translation_allowed"])
+        self.assertEqual(
+            component["maximum_tangential_translation_leakage"],
+            0.0,
+        )
 
     def test_rejects_declared_mobility_that_never_became_active(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

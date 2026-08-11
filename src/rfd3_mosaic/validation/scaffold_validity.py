@@ -8,6 +8,9 @@ from typing import Any
 import numpy as np
 
 from rfd3_mosaic.structure import AtomRecord
+from rfd3_mosaic.validation.assembly_morphology import (
+    audit_assembly_morphology,
+)
 
 
 def audit_scaffold_geometry(
@@ -363,8 +366,26 @@ def audit_scaffold_geometry(
         else not symmetry_failures
         and bool(transform_comparisons)
     )
+    morphology: dict[str, Any] = {
+        "enabled": False,
+        "passed": True,
+        "measurement_only": True,
+        "diagnostic_only": True,
+        "summary": None,
+        "axes": [],
+        "failures": [],
+    }
+    if validated_symmetry_transforms is not None:
+        morphology = audit_assembly_morphology(
+            atoms,
+            symmetry_transforms=validated_symmetry_transforms,
+        )
+        morphology["enabled"] = True
+    morphology_summary = morphology.get("summary") or {}
     return {
         "audit": "rfd3_mosaic.scaffold_geometry",
+        # Morphology is an additive diagnostics block; keep the existing
+        # scaffold-report schema compatible for old run consumers.
         "schema_version": 2,
         "passed": (
             passed_continuity
@@ -417,6 +438,34 @@ def audit_scaffold_geometry(
                 ),
                 default=0.0,
             ),
+            "assembly_morphology_available": bool(
+                morphology.get("enabled")
+                and morphology.get("summary") is not None
+            ),
+            "assembly_morphology_measurement_only": bool(
+                morphology.get("measurement_only", True)
+            ),
+            "assembly_central_pore_diameter": morphology_summary.get(
+                "central_pore_diameter"
+            ),
+            "assembly_central_pore_diameter_p05": morphology_summary.get(
+                "central_pore_diameter_p05"
+            ),
+            "assembly_outer_radial_diameter": morphology_summary.get(
+                "outer_radial_diameter"
+            ),
+            "assembly_outer_radial_diameter_p95": morphology_summary.get(
+                "outer_radial_diameter_p95"
+            ),
+            "assembly_spherical_inner_diameter": morphology_summary.get(
+                "spherical_inner_diameter"
+            ),
+            "assembly_spherical_outer_diameter": morphology_summary.get(
+                "spherical_outer_diameter"
+            ),
+            "assembly_principal_axis_unique": morphology_summary.get(
+                "principal_axis_unique"
+            ),
         },
         "thresholds": {
             "min_cn_distance": min_cn_distance,
@@ -453,4 +502,5 @@ def audit_scaffold_geometry(
             },
             "failures": symmetry_failures,
         },
+        "morphology": morphology,
     }

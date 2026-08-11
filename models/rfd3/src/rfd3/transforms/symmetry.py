@@ -551,6 +551,8 @@ class AddSymmetryFeats(Transform):
                 "radial_axial": 2,
                 "tilt_only": 3,
                 "bounded_se3": 4,
+                "radial_rotation": 5,
+                "radial_axial_rotation": 6,
             }
             proposal_codes = {
                 None: 0,
@@ -704,6 +706,7 @@ class AddSymmetryFeats(Transform):
         automatic_quality_flags = []
         distance_targets = []
         distance_tolerances = []
+        has_distance_targets = []
         satisfaction_stages = []
 
         def expanded_source_components(values) -> list[str]:
@@ -757,8 +760,9 @@ class AddSymmetryFeats(Transform):
                     geometry.get("minimum_heavy_atom_contacts", 0)
                 )
                 cutoff = float(geometry.get("contact_cutoff", 4.5))
-                distance_target = float("nan")
-                distance_tolerance = float("nan")
+                distance_target = 0.0
+                distance_tolerance = 0.0
+                has_distance_target = False
                 minimum_coverage = 0
                 minimum_contiguous = 0
                 automatic_quality = False
@@ -771,9 +775,17 @@ class AddSymmetryFeats(Transform):
                     contacts.get("min_heavy_atom_contacts", 0)
                 )
                 cutoff = float(contacts.get("cutoff", 8.0))
-                distance_target = float(distance.get("target", float("nan")))
-                distance_tolerance = float(
-                    distance.get("tolerance", float("nan"))
+                declared_distance_target = distance.get("target")
+                has_distance_target = declared_distance_target is not None
+                distance_target = (
+                    float(declared_distance_target)
+                    if has_distance_target
+                    else 0.0
+                )
+                distance_tolerance = (
+                    float(distance.get("tolerance", 0.0))
+                    if has_distance_target
+                    else 0.0
                 )
                 minimum_coverage = int(
                     coverage.get("minimum_contact_residues_per_side") or 0
@@ -808,6 +820,7 @@ class AddSymmetryFeats(Transform):
             automatic_quality_flags.append(automatic_quality)
             distance_targets.append(distance_target)
             distance_tolerances.append(distance_tolerance)
+            has_distance_targets.append(has_distance_target)
             satisfaction_stages.append(
                 str(relation.get("satisfaction_stage", "input"))
             )
@@ -853,6 +866,10 @@ class AddSymmetryFeats(Transform):
             "assembly_interface_distance_tolerance": torch.tensor(
                 distance_tolerances,
                 dtype=torch.float32,
+            ),
+            "assembly_interface_has_distance_target": torch.tensor(
+                has_distance_targets,
+                dtype=torch.bool,
             ),
             "assembly_interface_ids": tuple(edge_ids),
             "assembly_interface_source_ids": tuple(source_interface_ids),

@@ -1,0 +1,54 @@
+schema_version: 1
+kind: simple_cage_intent
+name: ordinary-two-seed-c3-t50-s940
+
+# Engineering canary: two disjoint contact patches cut from one real 7mwr
+# A/B interface. This validates the multi-seed resolver/runtime bridge; it is
+# not evidence for discovering two independent biological interface types.
+input: ../examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+
+goal:
+  architecture: ring
+  composition: auto
+  symmetry: [C3]
+  # Two polymer units per C3 group action.
+  subunits:
+    minimum: 6
+    maximum: 6
+
+interface_seeds:
+  interface_alpha:
+    participants: [A, B]
+    selectors:
+      A: A/186-189/*
+      B: B/238-240/*
+    use: {exact: 3}
+    geometry: preserve_exact
+
+  interface_beta:
+    participants: [A, B]
+    selectors:
+      A: A/191-192/*
+      B: B/234-235/*
+    use: {exact: 3}
+    geometry: preserve_exact
+
+generation:
+  length:
+    minimum: 10
+    maximum: 30
+
+inspection:
+  contact_cutoff: 4.5
+  minimum_atom_contacts: 4
+  minimum_contact_residues_per_side: 2
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: ordinary-two-seed-c3-canary-8_10

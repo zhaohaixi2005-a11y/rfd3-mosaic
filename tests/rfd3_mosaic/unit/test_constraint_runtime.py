@@ -73,6 +73,15 @@ class ConstraintRuntimeTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(runtime.diagnostics()["state"], "finalized")
+        self.assertEqual(runtime.diagnostics()["schema_version"], 2)
+        self.assertEqual(
+            runtime.diagnostics()["final_fixed_target_rmsd"],
+            0.0,
+        )
+        self.assertEqual(
+            runtime.diagnostics()["final_fixed_target_maximum_error"],
+            0.0,
+        )
 
     def test_rejects_out_of_order_lifecycle_calls(self) -> None:
         target = torch.zeros((1, 1, 3))
@@ -168,6 +177,87 @@ class ConstraintRuntimeTestCase(unittest.TestCase):
             0,
         )
 
+    def test_joint_proposal_commits_target_and_scaffold_coordinates(self) -> None:
+        target = torch.zeros((1, 2, 3))
+
+        def propose(_, __):
+            coordinates = torch.full_like(target, 7.0)
+            return ConstraintProposalResult(
+                target=torch.full_like(target, 3.0),
+                coordinates=coordinates,
+                applied=True,
+            )
+
+        runtime = MosaicConstraintRuntime(
+            projector=self._projector([]),
+            fixed_target=target,
+            fixed_mask=torch.tensor([True, False]),
+            proposal_hook=propose,
+        )
+        runtime.initialize_state(target)
+        output = runtime.process_model_prediction(
+            torch.ones_like(target),
+            step_num=0,
+            total_steps=1,
+        )
+
+        self.assertTrue(torch.all(output[:, 0, :] == 3.0))
+        # The proposal coordinate is first symmetrized by the test projector.
+        self.assertTrue(torch.all(output[:, 1, :] == 8.0))
+        self.assertTrue(torch.all(runtime.fixed_target == 3.0))
+
+    def test_rejected_joint_proposal_cannot_leak_scaffold_coordinates(
+        self,
+    ) -> None:
+        target = torch.zeros((1, 2, 3))
+
+        def reject(_, __):
+            return ConstraintProposalResult(
+                target=torch.full_like(target, 3.0),
+                coordinates=torch.full_like(target, 100.0),
+                applied=False,
+            )
+
+        runtime = MosaicConstraintRuntime(
+            projector=self._projector([]),
+            fixed_target=target,
+            fixed_mask=torch.tensor([True, False]),
+            proposal_hook=reject,
+        )
+        runtime.initialize_state(target)
+        output = runtime.process_model_prediction(
+            torch.ones_like(target),
+            step_num=0,
+            total_steps=1,
+        )
+
+        self.assertTrue(torch.all(output[:, 0, :] == 0.0))
+        self.assertTrue(torch.all(output[:, 1, :] == 2.0))
+
+    def test_joint_proposal_rejects_coordinate_shape_change(self) -> None:
+        target = torch.zeros((1, 2, 3))
+
+        def invalid(_, __):
+            return ConstraintProposalResult(
+                target=target,
+                coordinates=torch.zeros((1, 3, 3)),
+                applied=True,
+            )
+
+        runtime = MosaicConstraintRuntime(
+            projector=self._projector([]),
+            fixed_target=target,
+            fixed_mask=torch.tensor([True, False]),
+            proposal_hook=invalid,
+        )
+        runtime.initialize_state(target)
+        with self.assertRaisesRegex(ValueError, "must match"):
+            runtime.process_model_prediction(
+                target,
+                step_num=0,
+                total_steps=1,
+            )
+
     def test_rejects_nonfinite_target(self) -> None:
         with self.assertRaisesRegex(ValueError, "NaN or Inf"):
             MosaicConstraintRuntime(
@@ -175,6 +265,25 @@ class ConstraintRuntimeTestCase(unittest.TestCase):
                 fixed_target=torch.tensor([[[float("nan"), 0.0, 0.0]]]),
                 fixed_mask=torch.tensor([True]),
             )
+
+    def test_finalize_rejects_a_broken_constraint_restorer(self) -> None:
+        projector = UnifiedJointProjector(
+            project_symmetry=lambda coordinates: coordinates,
+            restore_constraints=lambda coordinates, target, mask: coordinates,
+            validate_closure=lambda coordinates, label: None,
+        )
+        target = torch.zeros((1, 1, 3))
+        runtime = MosaicConstraintRuntime(
+            projector=projector,
+            fixed_target=target,
+            fixed_mask=torch.tensor([True]),
+        )
+        runtime.initialize_state(target)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "did not restore the runtime fixed target",
+        ):
+            runtime.finalize(torch.ones_like(target))
 
 
 if __name__ == "__main__":

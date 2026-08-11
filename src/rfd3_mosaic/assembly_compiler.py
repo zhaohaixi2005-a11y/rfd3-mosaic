@@ -58,6 +58,88 @@ class CompiledAssembly:
     semantic_audits: tuple[CompiledAudit, ...]
 
 
+def compile_audit_requirements(
+    requirements: tuple[AuditRequirement, ...],
+    *,
+    compiled_input: str | Path,
+    adapter_mapping: str | Path | None = None,
+    specification: str | Path | None = None,
+    base_directory: str | Path | None = None,
+) -> tuple[CompiledAudit, ...]:
+    """Translate semantic requirements into topology-neutral audit commands.
+
+    This is shared by the live experiment worker and the post-hoc ``audit``
+    command.  Keeping the command construction here guarantees that auditing
+    an existing result applies the same modules and report names as the
+    original execution path.
+    """
+
+    input_path = Path(compiled_input)
+    audits: list[CompiledAudit] = []
+    for requirement in requirements:
+        if requirement == AuditRequirement.EXACT_CONSTRAINT_ORBIT:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_constraint_orbit_audit",
+                    report_name="constraint_orbit_audit.json",
+                    input_arguments=(("--compiled-input", str(input_path)),),
+                )
+            )
+        elif requirement == AuditRequirement.INTERFACE_GEOMETRY:
+            if adapter_mapping is None or specification is None:
+                raise ValueError(
+                    "Interface-geometry auditing requires the frozen adapter "
+                    "mapping and assembly specification"
+                )
+            arguments: list[tuple[str, str]] = [
+                ("--adapter-mapping", str(adapter_mapping)),
+                ("--config", str(specification)),
+            ]
+            if base_directory is not None:
+                arguments.append(
+                    ("--base-directory", str(base_directory))
+                )
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_seed_audit",
+                    report_name="seed_integrity_audit.json",
+                    input_arguments=tuple(arguments),
+                )
+            )
+        elif requirement == AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_interface_relation_audit",
+                    report_name="assembly_interface_relation_audit.json",
+                    input_arguments=(("--compiled-input", str(input_path)),),
+                )
+            )
+        elif requirement == AuditRequirement.GRAPH_INTERFACE_GUIDANCE:
+            audits.append(
+                CompiledAudit(
+                    module=(
+                        "rfd3_mosaic."
+                        "rfd3_graph_interface_guidance_audit"
+                    ),
+                    report_name="graph_interface_guidance_audit.json",
+                    input_arguments=(("--compiled-input", str(input_path)),),
+                )
+            )
+        elif requirement == AuditRequirement.BOUNDED_COMPONENT_MOBILITY:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_mobility_audit",
+                    report_name="component_mobility_audit.json",
+                    input_arguments=(("--compiled-input", str(input_path)),),
+                )
+            )
+        else:
+            raise ValueError(
+                f"Unsupported audit requirement {requirement!r}"
+            )
+    return tuple(audits)
+
+
 def compile_experiment_assembly(
     topology: Mapping[str, Any],
     output_directory: str | Path,
@@ -91,69 +173,13 @@ def compile_experiment_assembly(
         extra_metadata=request.audit_metadata,
     )
 
-    audits: list[CompiledAudit] = []
-    for requirement in request.audit_requirements:
-        if requirement == AuditRequirement.EXACT_CONSTRAINT_ORBIT:
-            audits.append(
-                CompiledAudit(
-                    module="rfd3_mosaic.rfd3_constraint_orbit_audit",
-                    report_name="constraint_orbit_audit.json",
-                    input_arguments=(
-                        ("--compiled-input", str(artifacts.input_path)),
-                    ),
-                )
-            )
-        elif requirement == AuditRequirement.INTERFACE_GEOMETRY:
-            audits.append(
-                CompiledAudit(
-                    module="rfd3_mosaic.rfd3_seed_audit",
-                    report_name="seed_integrity_audit.json",
-                    input_arguments=(
-                        ("--adapter-mapping", str(artifacts.mapping_path)),
-                        ("--config", str(request.specification_path)),
-                        ("--base-directory", str(project)),
-                    ),
-                )
-            )
-        elif requirement == AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS:
-            audits.append(
-                CompiledAudit(
-                    module=(
-                        "rfd3_mosaic.rfd3_interface_relation_audit"
-                    ),
-                    report_name="assembly_interface_relation_audit.json",
-                    input_arguments=(
-                        ("--compiled-input", str(artifacts.input_path)),
-                    ),
-                )
-            )
-        elif requirement == AuditRequirement.GRAPH_INTERFACE_GUIDANCE:
-            audits.append(
-                CompiledAudit(
-                    module=(
-                        "rfd3_mosaic."
-                        "rfd3_graph_interface_guidance_audit"
-                    ),
-                    report_name="graph_interface_guidance_audit.json",
-                    input_arguments=(
-                        ("--compiled-input", str(artifacts.input_path)),
-                    ),
-                )
-            )
-        elif requirement == AuditRequirement.BOUNDED_COMPONENT_MOBILITY:
-            audits.append(
-                CompiledAudit(
-                    module="rfd3_mosaic.rfd3_mobility_audit",
-                    report_name="component_mobility_audit.json",
-                    input_arguments=(
-                        ("--compiled-input", str(artifacts.input_path)),
-                    ),
-                )
-            )
-        else:
-            raise ValueError(
-                f"Unsupported audit requirement {requirement!r}"
-            )
+    audits = compile_audit_requirements(
+        request.audit_requirements,
+        compiled_input=artifacts.input_path,
+        adapter_mapping=artifacts.mapping_path,
+        specification=request.specification_path,
+        base_directory=project,
+    )
     return CompiledAssembly(
         input_path=artifacts.input_path,
         example_id=request.example_id,
@@ -164,5 +190,6 @@ def compile_experiment_assembly(
 __all__ = [
     "CompiledAudit",
     "CompiledAssembly",
+    "compile_audit_requirements",
     "compile_experiment_assembly",
 ]

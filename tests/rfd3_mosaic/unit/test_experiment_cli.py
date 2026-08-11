@@ -16,12 +16,82 @@ from rfd3_mosaic.experiment import (
     resolve_experiment,
 )
 from rfd3_mosaic.experiment_worker import (
+    _graph_interface_guidance_runtime,
     _motif_mobility_runtime,
     _verify_render_identity,
 )
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
+    def test_worker_enables_only_required_output_geometry_guidance(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "rfd3_input.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "example": {
+                            "extra": {
+                                "assembly_interface_relations": [
+                                    {
+                                        "required": True,
+                                        "satisfaction_stage": "output",
+                                        "target_geometry": {
+                                            "mode": "geometric_constraints",
+                                            "contacts": {
+                                                "min_heavy_atom_contacts": 0,
+                                                "cutoff": 4.5,
+                                            },
+                                            "coverage": {"mode": "auto"},
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            enabled = _graph_interface_guidance_runtime(path)
+
+        self.assertTrue(enabled)
+
+    def test_worker_does_not_guide_preserved_input_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "rfd3_input.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "example": {
+                            "extra": {
+                                "motif_constraint_orbits": [
+                                    {"mobility_mode": "fixed"}
+                                ],
+                                "assembly_interface_relations": [
+                                    {
+                                        "required": True,
+                                        "satisfaction_stage": "input",
+                                        "target_geometry": {
+                                            "mode": "reference_transform"
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            guidance_enabled = _graph_interface_guidance_runtime(path)
+            mobility_enabled, source = _motif_mobility_runtime(path)
+
+        self.assertFalse(guidance_enabled)
+        self.assertFalse(mobility_enabled)
+        self.assertEqual(source, "denoiser")
+
     def test_worker_enables_multiple_scaffold_objective_orbits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "rfd3_input.json"
@@ -410,6 +480,77 @@ class ExperimentConfigTestCase(unittest.TestCase):
             plan["design"]["effective_constraints"][0]["operator"],
             "fixed_xyz",
         )
+
+    def test_render_freezes_public_design_away_from_mutable_source(self) -> None:
+        public = self.root / "mutable-public-design.yaml"
+        public.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "name": "frozen-public-design",
+                    "input": str(self.template_structure),
+                    "symmetry": "C3",
+                    "generation": [
+                        {
+                            "kind": "terminal",
+                            "anchor": "A1",
+                            "terminus": "n",
+                            "length": 20,
+                        }
+                    ],
+                    "constraints": [
+                        {"kind": "fixed_xyz", "selector": "A1"},
+                    ],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        envelope = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "frozen-public-envelope",
+                "topology": {"kind": "user_design", "config": str(public)},
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs", "campaign": "public"},
+            }
+        )
+        script = render_submission(
+            resolve_experiment(envelope),
+            output_directory=self.root / "public-rendered",
+        )
+        resolved_payload = yaml.safe_load(
+            (script.parent / "resolved_config.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        frozen_design = script.parent / "public_user_design.yaml"
+        self.assertEqual(
+            Path(resolved_payload["topology"]["config"]),
+            frozen_design,
+        )
+        self.assertEqual(
+            resolved_payload["provenance"]["public_user_design_source"][
+                "path"
+            ],
+            str(public.resolve()),
+        )
+
+        source_root = self.root / "public-extracted-source"
+        source_root.mkdir()
+        with tarfile.open(
+            script.parent / "source_snapshot.tar.gz",
+            mode="r:gz",
+        ) as handle:
+            handle.extractall(source_root)
+
+        public.write_text("changed: after submission\n", encoding="utf-8")
+        self.profile.write_text("changed: after submission\n", encoding="utf-8")
+        _verify_render_identity(resolved_payload, source_root=source_root)
+
+        frozen_design.write_text("tampered: true\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "public user design"):
+            _verify_render_identity(resolved_payload, source_root=source_root)
 
     def test_plan_command_supports_machine_readable_output(self) -> None:
         arguments = _parser().parse_args(

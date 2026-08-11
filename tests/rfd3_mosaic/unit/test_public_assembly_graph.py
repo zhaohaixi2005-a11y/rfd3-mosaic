@@ -225,6 +225,143 @@ class PublicAssemblyGraphTestCase(unittest.TestCase):
         self.assertEqual(len(instances.ports), 9)
         self.assertEqual(len(instances.interfaces), 6)
 
+    def test_interface_count_is_data_driven_not_hard_coded(self) -> None:
+        """The graph/compiler must not encode a two- or eight-edge limit."""
+
+        payload = self._multi_face_payload()
+        payload["interfaces"].extend(
+            {
+                "id": f"additional_seed_relation_{index:02d}",
+                "between": [
+                    "face_alpha" if index % 2 == 0 else "face_beta",
+                    "face_gamma",
+                ],
+                "copy_relation": {
+                    "transform": "C3:r1" if index % 2 == 0 else "C3:r2"
+                },
+                "relation": {"mode": "preserve_input"},
+            }
+            for index in range(6)
+        )
+
+        specification = lower_user_design(
+            UserDesignSpec.model_validate(payload)
+        ).specification
+        instances = expand_symmetry_instances(specification)
+
+        self.assertEqual(len(specification.interfaces), 8)
+        self.assertEqual(len(instances.interfaces), 24)
+
+    def test_interface_use_validates_physical_multiplicity(self) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"][0]["use"] = 3
+
+        lowered = lower_user_design(UserDesignSpec.model_validate(payload))
+
+        resolution = lowered.interface_usage[0]
+        self.assertEqual(resolution.interface_id, "alpha_to_beta_neighbour")
+        self.assertEqual(resolution.requested, "exactly 3")
+        self.assertEqual(resolution.physical_instance_count, 3)
+        self.assertTrue(resolution.satisfied)
+
+    def test_hyperedge_use_is_counted_once_not_once_per_member_pair(
+        self,
+    ) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"] = [
+            {
+                "id": "three_way__member_01",
+                "hyperedge_id": "three_way",
+                "between": ["face_alpha", "face_beta"],
+                "copy_relation": {"transform": "C3:r1"},
+                "relation": {"mode": "preserve_input"},
+                "use": {"exact": 3},
+            },
+            {
+                "id": "three_way__member_02",
+                "hyperedge_id": "three_way",
+                "between": ["face_beta", "face_gamma"],
+                "copy_relation": {"transform": "C3:r1"},
+                "relation": {"mode": "preserve_input"},
+                "use": {"exact": 3},
+            },
+        ]
+
+        lowered = lower_user_design(UserDesignSpec.model_validate(payload))
+
+        self.assertEqual(len(lowered.interface_usage), 1)
+        resolution = lowered.interface_usage[0]
+        self.assertEqual(resolution.interface_id, "three_way")
+        self.assertEqual(resolution.physical_instance_count, 3)
+        self.assertEqual(
+            {
+                edge.hyperedge_id
+                for edge in lowered.specification.interfaces.values()
+            },
+            {"three_way"},
+        )
+        instances = expand_symmetry_instances(lowered.specification)
+        self.assertEqual(
+            {edge.hyperedge_id for edge in instances.interfaces.values()},
+            {"three_way"},
+        )
+
+    def test_hyperedge_members_require_one_usage_contract(self) -> None:
+        payload = self._multi_face_payload()
+        for interface in payload["interfaces"]:
+            interface["hyperedge_id"] = "one_site"
+        payload["interfaces"][0]["use"] = {"exact": 3}
+        payload["interfaces"][1]["use"] = "auto"
+
+        with self.assertRaisesRegex(ValueError, "inconsistent use"):
+            lower_user_design(UserDesignSpec.model_validate(payload))
+
+    def test_omitted_interface_use_defaults_to_auto(self) -> None:
+        design = UserDesignSpec.model_validate(self._multi_face_payload())
+
+        self.assertEqual(
+            tuple(interface.use.description for interface in design.interfaces),
+            ("auto", "auto"),
+        )
+
+    def test_interface_use_rejects_incompatible_symmetry(self) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"][0]["use"] = {"exact": 4}
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "requested exactly 4 physical instances.*produces 3",
+        ):
+            lower_user_design(UserDesignSpec.model_validate(payload))
+
+    def test_interface_use_accepts_range_and_auto_forms(self) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"][0]["use"] = {
+            "minimum": 2,
+            "maximum": 4,
+        }
+        payload["interfaces"][1]["use"] = "auto"
+
+        lowered = lower_user_design(UserDesignSpec.model_validate(payload))
+
+        self.assertEqual(
+            tuple(item.requested for item in lowered.interface_usage),
+            ("2..4", "auto"),
+        )
+
+    def test_interface_use_rejects_inverted_range(self) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"][0]["use"] = {
+            "minimum": 5,
+            "maximum": 2,
+        }
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "minimum cannot exceed maximum",
+        ):
+            UserDesignSpec.model_validate(payload)
+
     def test_rejects_port_selector_outside_owning_component(self) -> None:
         payload = self._multi_face_payload()
         payload["ports"]["face_alpha"]["selectors"] = ["A7"]
@@ -320,7 +457,7 @@ class PublicAssemblyGraphTestCase(unittest.TestCase):
         geometry = spec.interfaces["beta_gamma"].target_geometry
 
         self.assertEqual(geometry.contacts.min_heavy_atom_contacts, 0)
-        self.assertEqual(geometry.contacts.cutoff, 8.0)
+        self.assertEqual(geometry.contacts.cutoff, 4.5)
         self.assertEqual(geometry.coverage.mode, "auto")
 
     def test_graph_components_compile_as_fixed_constraint_components(
@@ -479,7 +616,13 @@ class PublicAssemblyGraphTestCase(unittest.TestCase):
         )
         self.assertIn(
             "alpha_to_beta_neighbour: face_alpha -> "
-            "face_beta@C3:r1 relation=preserve_input required=True",
+            "face_beta@C3:r1 relation=preserve_input "
+            "use=auto required=True",
+            text,
+        )
+        self.assertIn(
+            "alpha_to_beta_neighbour: requested=auto "
+            "physical_instances=3",
             text,
         )
 

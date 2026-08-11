@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import math
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -24,6 +24,13 @@ from rfd3.inference.symmetry.scaffold_guidance import (
     insert_master_orbit,
     propose_bounded_se3_step,
     scaffold_orbit_energy,
+)
+from rfd3.inference.symmetry.graph_interface_guidance import (
+    GraphInterfaceGuidanceConfig,
+    GraphInterfacePatchState,
+    GraphInterfaceTopology,
+    apply_graph_interface_guidance,
+    graph_interface_energy,
 )
 
 
@@ -263,6 +270,8 @@ class OrbitRigidMotifController:
         self.update_calls = 0
         self.active_window_calls = 0
         self.last_update_applied = False
+        self.last_joint_transaction_applied = False
+        self.last_joint_packing_diagnostics: dict[str, Any] | None = None
         self._diagnostic_trajectory: list[dict[str, Any]] = []
 
     @classmethod
@@ -308,6 +317,8 @@ class OrbitRigidMotifController:
                 "bounded_se3",
                 "radial",
                 "radial_axial",
+                "radial_rotation",
+                "radial_axial_rotation",
             }:
                 raise ValueError(
                     "Dynamic motif conditioning does not yet execute "
@@ -328,7 +339,13 @@ class OrbitRigidMotifController:
                     "source"
                 )
             if (
-                orbit.mobility_subspace in {"radial", "radial_axial"}
+                orbit.mobility_subspace
+                in {
+                    "radial",
+                    "radial_axial",
+                    "radial_rotation",
+                    "radial_axial_rotation",
+                }
                 and orbit.proposal_source != "scaffold_objectives"
             ):
                 raise ValueError(
@@ -457,6 +474,50 @@ class OrbitRigidMotifController:
                 self.sym_transforms,
             )
         return target
+
+    def _mobile_pose_snapshot(
+        self,
+    ) -> tuple[OrbitRigidPoseState, ...]:
+        """Clone every mobile pose for an atomic multi-controller rollback."""
+
+        return tuple(
+            OrbitRigidPoseState(
+                rotation=motif.state.rotation.clone(),
+                translation=motif.state.translation.clone(),
+                last_proposal_rmsd=motif.state.last_proposal_rmsd.clone(),
+            )
+            for motif in self.motifs
+        )
+
+    def _restore_mobile_pose_snapshot(
+        self,
+        snapshot: tuple[OrbitRigidPoseState, ...],
+    ) -> None:
+        if len(snapshot) != len(self.motifs):
+            raise ValueError("Mobility rollback snapshot has the wrong size")
+        for motif, state in zip(self.motifs, snapshot, strict=True):
+            motif.state = OrbitRigidPoseState(
+                rotation=state.rotation.clone(),
+                translation=state.translation.clone(),
+                last_proposal_rmsd=state.last_proposal_rmsd.clone(),
+            )
+
+    def _insert_mobile_target(
+        self,
+        coordinates: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Restore only mobile-orbit atoms into one scaffold snapshot."""
+
+        if coordinates.shape != target.shape:
+            raise ValueError(
+                "Joint packing coordinates and target must have equal shape"
+            )
+        updated = coordinates.clone()
+        for motif in self.motifs:
+            indices = torch.unique(motif.group_atom_indices.flatten())
+            updated[:, indices, :] = target[:, indices, :]
+        return updated
 
     def _inverse_average_proposal(self, motif, raw_coordinates):
         canonical_copies = []
@@ -841,6 +902,7 @@ class OrbitRigidMotifController:
         principal_axes: tuple[torch.Tensor, ...],
         config: ScaffoldGuidanceConfig,
         apply_update: bool,
+        pose_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """Jointly propose and atomically apply scaffold-driven orbit poses.
 
@@ -948,7 +1010,12 @@ class OrbitRigidMotifController:
                     * motif.response
                     * motif_window
                 )
-                if motif.mobility_subspace in {"radial", "radial_axial"}:
+                if motif.mobility_subspace in {
+                    "radial",
+                    "radial_axial",
+                    "radial_rotation",
+                    "radial_axial_rotation",
+                }:
                     axis_direction = axis.direction.to(
                         dtype=current_translation.dtype,
                         device=current_translation.device,
@@ -978,19 +1045,26 @@ class OrbitRigidMotifController:
                         )
                     radial = radial / radial_norm
                     translation_basis = radial[None, :]
-                    if motif.mobility_subspace == "radial_axial":
+                    if motif.mobility_subspace in {
+                        "radial_axial",
+                        "radial_axial_rotation",
+                    }:
                         translation_basis = torch.stack(
                             (radial, axis_direction),
                             dim=0,
                         )
-                    rotation_basis = torch.empty(
-                        (0, 3),
-                        dtype=current_rotation.dtype,
-                        device=current_rotation.device,
-                    )
-                    maximum_step_rotation = 0.0
-                    maximum_total_rotation = 0.0
-                    rotation_step_size = 0.0
+                    if motif.mobility_subspace in {
+                        "radial",
+                        "radial_axial",
+                    }:
+                        rotation_basis = torch.empty(
+                            (0, 3),
+                            dtype=current_rotation.dtype,
+                            device=current_rotation.device,
+                        )
+                        maximum_step_rotation = 0.0
+                        maximum_total_rotation = 0.0
+                        rotation_step_size = 0.0
 
                 def energy_function(rotation, translation):
                     master = self._master_coordinates_for_pose(
@@ -1005,7 +1079,7 @@ class OrbitRigidMotifController:
                         motif.group_transform_ids,
                         self.sym_transforms,
                     )
-                    return scaffold_orbit_energy(
+                    energy = scaffold_orbit_energy(
                         candidate_target,
                         scaffold[0],
                         topology,
@@ -1015,6 +1089,22 @@ class OrbitRigidMotifController:
                         pose_translation=translation,
                         config=config,
                     )
+                    if pose_energy is not None:
+                        packing = pose_energy(candidate_target)
+                        if packing.ndim != 0 or not torch.isfinite(packing):
+                            raise ValueError(
+                                "Additional motif pose energy must be one "
+                                "finite scalar"
+                            )
+                        # Keep the established diagnostics schema while making
+                        # the actual SE(3) gradient packing-aware.  The outer
+                        # atomic transaction records the packing contribution
+                        # separately and is still the authoritative acceptor.
+                        energy = replace(
+                            energy,
+                            total=energy.total + packing,
+                        )
+                    return energy
 
                 proposal = propose_bounded_se3_step(
                     current_rotation,
@@ -1197,6 +1287,282 @@ class OrbitRigidMotifController:
         )
         return target
 
+    def update_orbits_with_interface_packing(
+        self,
+        scaffold_coordinates: torch.Tensor,
+        features: dict[str, Any],
+        *,
+        progress: float,
+        topology: BoundaryTopology,
+        axis: CyclicAxis,
+        principal_axes: tuple[torch.Tensor, ...],
+        scaffold_config: ScaffoldGuidanceConfig,
+        interface_topology: GraphInterfaceTopology,
+        interface_config: GraphInterfaceGuidanceConfig,
+        patch_state: GraphInterfacePatchState,
+        projector: Callable[[torch.Tensor], torch.Tensor],
+        apply_update: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        """Propose motif poses and generated packing as one transaction.
+
+        The historical runtime updated the motif target before Euler and the
+        generated interface after Euler.  Each controller could therefore
+        accept a locally improving move that made the other controller's
+        geometry worse.  This method snapshots both mutable states, proposes
+        a symmetry-projected generated patch and bounded motif poses from the
+        same scaffold, then accepts or rolls back the complete transaction.
+        """
+
+        if scaffold_coordinates.shape != self.base_target.shape:
+            raise ValueError(
+                "Joint packing scaffold must match the motif target shape"
+            )
+        if self.base_target.shape[0] != 1:
+            raise ValueError(
+                "Joint packing mobility supports one pose batch"
+            )
+        self.last_joint_transaction_applied = False
+        pose_snapshot = self._mobile_pose_snapshot()
+        patch_snapshot = dict(patch_state.assignments)
+        patch_locked_snapshot = bool(patch_state.locked)
+
+        def rollback_mutable_state() -> None:
+            self._restore_mobile_pose_snapshot(pose_snapshot)
+            patch_state.assignments.clear()
+            patch_state.assignments.update(patch_snapshot)
+            patch_state.locked = patch_locked_snapshot
+            self.last_update_applied = False
+
+        baseline_target = self.materialize_target()
+        baseline_coordinates = self._insert_mobile_target(
+            scaffold_coordinates,
+            baseline_target,
+        )
+        baseline_graph = graph_interface_energy(
+            baseline_coordinates,
+            interface_topology,
+            interface_config,
+            patch_assignments=patch_state.assignments,
+        )
+        baseline_rotations = tuple(
+            motif.state.rotation[0].clone() for motif in self.motifs
+        )
+        baseline_translations = tuple(
+            motif.state.translation[0].clone() for motif in self.motifs
+        )
+        baseline_scaffold_total, baseline_scaffold_terms = (
+            self._joint_scaffold_energy(
+                baseline_target[0],
+                baseline_coordinates[0],
+                topology=topology,
+                axis=axis,
+                principal_axes=principal_axes,
+                rotations=baseline_rotations,
+                translations=baseline_translations,
+                config=scaffold_config,
+            )
+        )
+
+        try:
+            packed_coordinates, packing_step = apply_graph_interface_guidance(
+                baseline_coordinates,
+                features,
+                interface_topology,
+                progress=progress,
+                config=interface_config,
+                projector=projector,
+                patch_state=patch_state,
+            )
+        except Exception:
+            rollback_mutable_state()
+            raise
+
+        def packing_aware_pose_energy(
+            candidate_target: torch.Tensor,
+        ) -> torch.Tensor:
+            candidate_coordinates = self._insert_mobile_target(
+                packed_coordinates,
+                candidate_target[None, ...],
+            )
+            return graph_interface_energy(
+                candidate_coordinates,
+                interface_topology,
+                interface_config,
+                patch_assignments=patch_state.assignments,
+            ).total
+
+        try:
+            self.update_orbits_from_scaffold(
+                packed_coordinates,
+                progress=progress,
+                topology=topology,
+                axis=axis,
+                principal_axes=principal_axes,
+                config=scaffold_config,
+                # Commit provisionally.  The joint decision below is
+                # authoritative and restores this snapshot on any failure or
+                # proposal-only run.
+                apply_update=True,
+                pose_energy=packing_aware_pose_energy,
+            )
+        except Exception:
+            rollback_mutable_state()
+            raise
+        motif_pose_changed = bool(self.last_update_applied)
+        try:
+            candidate_target = self.materialize_target()
+            candidate_coordinates = self._insert_mobile_target(
+                packed_coordinates,
+                candidate_target,
+            )
+            candidate_graph = graph_interface_energy(
+                candidate_coordinates,
+                interface_topology,
+                interface_config,
+                patch_assignments=patch_state.assignments,
+            )
+            candidate_rotations = tuple(
+                motif.state.rotation[0] for motif in self.motifs
+            )
+            candidate_translations = tuple(
+                motif.state.translation[0] for motif in self.motifs
+            )
+            candidate_scaffold_total, candidate_scaffold_terms = (
+                self._joint_scaffold_energy(
+                    candidate_target[0],
+                    candidate_coordinates[0],
+                    topology=topology,
+                    axis=axis,
+                    principal_axes=principal_axes,
+                    rotations=candidate_rotations,
+                    translations=candidate_translations,
+                    config=scaffold_config,
+                )
+            )
+        except Exception:
+            rollback_mutable_state()
+            raise
+
+        baseline_total = baseline_graph.total + baseline_scaffold_total
+        candidate_total = candidate_graph.total + candidate_scaffold_total
+        packing_improved = bool(
+            torch.isfinite(candidate_graph.total)
+            and float(candidate_graph.total.detach().cpu().item())
+            < float(baseline_graph.total.detach().cpu().item()) - 1.0e-10
+        )
+
+        def minimum_not_worse(
+            initial: torch.Tensor,
+            candidate: torch.Tensor,
+        ) -> bool:
+            initial_value = float(initial.min().detach().cpu().item())
+            candidate_value = float(candidate.min().detach().cpu().item())
+            required = (
+                interface_config.clash_ca_distance
+                if initial_value >= interface_config.clash_ca_distance
+                else initial_value
+            )
+            return candidate_value >= required - 1.0e-6
+
+        edge_safe = minimum_not_worse(
+            baseline_graph.minimum_distances,
+            candidate_graph.minimum_distances,
+        )
+        global_safe = minimum_not_worse(
+            baseline_graph.minimum_global_safety_distance.reshape(1),
+            candidate_graph.minimum_global_safety_distance.reshape(1),
+        )
+        baseline_junction = float(
+            baseline_graph.junction.detach().cpu().item()
+        )
+        candidate_junction = float(
+            candidate_graph.junction.detach().cpu().item()
+        )
+        junction_limit = (
+            interface_config.maximum_backbone_loss
+            if baseline_junction
+            <= interface_config.maximum_backbone_loss
+            else baseline_junction
+        )
+        junction_safe = candidate_junction <= junction_limit + 1.0e-8
+        combined_improved = bool(
+            torch.isfinite(candidate_total)
+            and float(candidate_total.detach().cpu().item())
+            < float(baseline_total.detach().cpu().item()) - 1.0e-10
+        )
+        transaction_has_change = bool(
+            packing_step.get("proposal_accepted", False)
+            or motif_pose_changed
+        )
+        accepted = bool(
+            transaction_has_change
+            and packing_improved
+            and combined_improved
+            and edge_safe
+            and global_safe
+            and junction_safe
+        )
+        committed = bool(accepted and apply_update)
+
+        diagnostics = {
+            "joint_packing_transaction": True,
+            "accepted": accepted,
+            "committed": committed,
+            "proposal_only": not apply_update,
+            "motif_pose_changed": motif_pose_changed,
+            "generated_patch_changed": bool(
+                packing_step.get("proposal_accepted", False)
+            ),
+            "packing_improved": packing_improved,
+            "combined_improved": combined_improved,
+            "edge_safe": edge_safe,
+            "global_safe": global_safe,
+            "junction_safe": junction_safe,
+            "baseline_total": float(
+                baseline_total.detach().cpu().item()
+            ),
+            "candidate_total": float(
+                candidate_total.detach().cpu().item()
+            ),
+            "baseline_packing": float(
+                baseline_graph.total.detach().cpu().item()
+            ),
+            "candidate_packing": float(
+                candidate_graph.total.detach().cpu().item()
+            ),
+            "baseline_scaffold": baseline_scaffold_terms,
+            "candidate_scaffold": candidate_scaffold_terms,
+            "packing_step": packing_step,
+        }
+        self.last_joint_packing_diagnostics = diagnostics
+
+        if not committed:
+            rollback_mutable_state()
+            target = baseline_target
+            coordinates = baseline_coordinates
+        else:
+            self.last_joint_transaction_applied = True
+            target = candidate_target
+            coordinates = candidate_coordinates
+
+        if self._diagnostic_trajectory:
+            self._diagnostic_trajectory[-1].update(
+                {
+                    "joint_packing_transaction": True,
+                    "joint_packing_accepted": accepted,
+                    "joint_packing_committed": committed,
+                    "joint_packing_energy_delta": diagnostics[
+                        "candidate_total"
+                    ]
+                    - diagnostics["baseline_total"],
+                    "packing_energy_delta": diagnostics[
+                        "candidate_packing"
+                    ]
+                    - diagnostics["baseline_packing"],
+                }
+            )
+        return target, coordinates, diagnostics
+
     @staticmethod
     def _pose_diagnostics(motif: OrbitRigidMotif) -> dict[str, Any]:
         rotation_degrees = []
@@ -1207,6 +1573,7 @@ class OrbitRigidMotifController:
             motif.state.translation,
             dim=-1,
         )
+        template_master_centers = motif.template_master.mean(dim=1)
         return {
             "constraint_orbit_id": motif.constraint_orbit_id,
             "component_id": motif.coupling_group_id,
@@ -1218,6 +1585,14 @@ class OrbitRigidMotifController:
             "translation_norms": [
                 float(value)
                 for value in translation_norms.detach().cpu().tolist()
+            ],
+            "translation_vectors": [
+                [float(component) for component in vector]
+                for vector in motif.state.translation.detach().cpu().tolist()
+            ],
+            "template_master_centers": [
+                [float(component) for component in center]
+                for center in template_master_centers.detach().cpu().tolist()
             ],
             "rotation_degrees": rotation_degrees,
             "proposal_rmsd": [

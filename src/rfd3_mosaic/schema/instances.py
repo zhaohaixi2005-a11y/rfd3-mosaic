@@ -72,6 +72,7 @@ class InterfaceEdgeInstance(StrictModel):
 
     id: str
     source_id: Identifier
+    hyperedge_id: Identifier | None = None
     left_port_instance_id: str
     right_port_instance_id: str
     required: bool

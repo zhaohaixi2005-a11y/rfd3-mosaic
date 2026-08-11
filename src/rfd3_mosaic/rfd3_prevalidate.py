@@ -648,6 +648,7 @@ def prevalidate_rfd3_input(
 
     # Imports stay lazy so schema/compiler users do not require an RFD3 runtime.
     import numpy as np
+    import torch
     from rfd3.inference.input_parsing import (
         DesignInputSpecification,
         ensure_input_is_abspath,
@@ -696,6 +697,18 @@ def prevalidate_rfd3_input(
             "specification": raw_spec,
         }
     )["feats"]
+    nonfinite_runtime_features = sorted(
+        name
+        for name, value in runtime_symmetry_features.items()
+        if isinstance(value, torch.Tensor)
+        and (value.is_floating_point() or value.is_complex())
+        and not bool(torch.isfinite(value).all().item())
+    )
+    if nonfinite_runtime_features:
+        raise ValueError(
+            "RFD3 input construction emitted non-finite runtime features: "
+            + ", ".join(nonfinite_runtime_features)
+        )
     group_membership = runtime_symmetry_features.get(
         "motif_constraint_group_membership"
     )
@@ -752,8 +765,21 @@ def prevalidate_rfd3_input(
         "example_id": selected_id,
         "expected_symmetry_id": expected_symmetry_id,
         "compiler": extra.get("compiler"),
-        "expected_multiplicity": _expected_multiplicity(
-            expected_symmetry_id
+        "expected_multiplicity": int(
+            extra.get(
+                "symmetry_multiplicity",
+                _expected_multiplicity(expected_symmetry_id),
+            )
+        ),
+        "full_symmetry_multiplicity": int(
+            extra.get(
+                "full_symmetry_multiplicity",
+                _expected_multiplicity(expected_symmetry_id),
+            )
+        ),
+        "symmetry_action_kind": extra.get(
+            "symmetry_action_kind",
+            "regular_full_group",
         ),
         "expected_asu_chain_count": int(extra.get("asu_chain_count", 1)),
         "atom_count": int(len(atom_array)),

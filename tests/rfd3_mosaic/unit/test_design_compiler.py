@@ -136,13 +136,14 @@ class DesignCompilerTestCase(unittest.TestCase):
         self.assertEqual(automatic.satisfaction_stage, "output")
         self.assertEqual(automatic.copy_relation.transform, "C3:r1")
         self.assertEqual(automatic.target_geometry.coverage.mode, "auto")
+        self.assertEqual(automatic.target_geometry.contacts.cutoff, 4.5)
         self.assertEqual(spec.fragments["motif_001"].fixed_atoms, "all")
         self.assertEqual(
             spec.symmetry.transform_sets["declared"].order,
             3,
         )
 
-    def test_simple_mode_automatically_moves_axis_degenerate_motif(
+    def test_optimized_task_automatically_moves_axis_degenerate_motif(
         self,
     ) -> None:
         structure = self.root / "axis_motif.pdb"
@@ -155,6 +156,8 @@ class DesignCompilerTestCase(unittest.TestCase):
                 "name": "automatic-simple-pose",
                 "input": str(structure),
                 "symmetry": "C3",
+                "task": "create_symmetric_interface",
+                "fixed_arrangement": "optimize_components",
                 "generation": [
                     {
                         "kind": "terminal",
@@ -181,6 +184,47 @@ class DesignCompilerTestCase(unittest.TestCase):
                 "auto_generated_interface_001"
             ].copy_relation.transform,
             "C3:r1",
+        )
+
+    def test_locked_task_freezes_automatically_resolved_initial_orbit(
+        self,
+    ) -> None:
+        structure = self.root / "locked_axis_motif.pdb"
+        structure.write_text(
+            _atom_line(1, "CA", "A", 1, 0.0) + "END\n",
+            encoding="utf-8",
+        )
+        lowered = lower_user_design(
+            UserDesignSpec.model_validate(
+                {
+                    "name": "locked-simple-pose",
+                    "input": str(structure),
+                    "symmetry": "C3",
+                    "task": "create_symmetric_interface",
+                    "generation": [
+                        {
+                            "kind": "terminal",
+                            "anchor": "A1",
+                            "terminus": "c",
+                            "length": 20,
+                        }
+                    ],
+                    "constraints": [
+                        {"kind": "fixed_xyz", "selector": "A1"},
+                    ],
+                }
+            )
+        )
+
+        initialization = lowered.specification.initialization[
+            "fixed_component_001"
+        ]
+        self.assertGreater(initialization.placement.radius.mean, 0.0)
+        self.assertEqual(
+            lowered.specification.symmetry.orbits[
+                "motif_orbit"
+            ].component_mobility,
+            {},
         )
 
     def test_between_generation_does_not_invent_output_interface(self) -> None:
@@ -210,6 +254,143 @@ class DesignCompilerTestCase(unittest.TestCase):
         )
 
         self.assertEqual(lowered.specification.interfaces, {})
+
+    def test_preserve_task_keeps_complete_supplied_geometry_orbit_fixed(
+        self,
+    ) -> None:
+        lowered = lower_user_design(
+            self._design(
+                task="preserve_supplied_geometry",
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "supplied_interface",
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "supplied_interface",
+                    },
+                ],
+            )
+        )
+
+        orbit = lowered.specification.symmetry.orbits["motif_orbit"]
+        group = lowered.specification.motion_groups["fixed_component_001"]
+        self.assertEqual(group.mode.value, "fixed")
+        self.assertEqual(group.members, ["motif_001", "motif_002"])
+        self.assertEqual(orbit.component_mobility, {})
+
+    def test_create_interface_task_keeps_internal_geometry_exact_and_moves_orbit(
+        self,
+    ) -> None:
+        lowered = lower_user_design(
+            self._design(
+                task="create_symmetric_interface",
+                fixed_arrangement="optimize_components",
+                generation=[
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "n",
+                        "length": 20,
+                    },
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "c",
+                        "length": 20,
+                    },
+                ],
+                constraints=[
+                    {"kind": "fixed_xyz", "selector": "A1-2"}
+                ],
+            )
+        )
+
+        operator = lowered.constraint_plan.operators[0]
+        orbit = lowered.specification.symmetry.orbits["motif_orbit"]
+        group = lowered.specification.motion_groups["fixed_component_001"]
+        mobility = orbit.component_mobility["fixed_component_001"]
+        self.assertEqual(operator.operator, "fixed_xyz")
+        self.assertEqual(operator.controlled_dofs, ("cartesian_xyz",))
+        self.assertEqual(group.mode.value, "fixed")
+        self.assertEqual(group.members, ["motif_001"])
+        self.assertEqual(mobility.mode.value, "orbit_rigid")
+        self.assertEqual(
+            mobility.effective_subspace.value,
+            "radial_axial_rotation",
+        )
+        self.assertEqual(
+            mobility.effective_proposal.value,
+            "scaffold_objectives",
+        )
+        self.assertEqual(mobility.bounds.max_translation, 4.0)
+        self.assertEqual(mobility.bounds.max_rotation_deg, 10.0)
+
+    def test_simple_create_interface_requires_explicit_multi_component_graph(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Simple mode found terminal generation on multiple",
+        ):
+            lower_user_design(
+                self._design(
+                    task="create_symmetric_interface",
+                    generation=[
+                        {
+                            "kind": "terminal",
+                            "anchor": "A1-2",
+                            "terminus": "c",
+                            "length": 20,
+                        },
+                        {
+                            "kind": "terminal",
+                            "anchor": "B1-2",
+                            "terminus": "c",
+                            "length": 20,
+                        },
+                    ],
+                    constraints=[
+                        {"kind": "fixed_xyz", "selector": "A1-2"},
+                        {"kind": "fixed_xyz", "selector": "B1-2"},
+                    ],
+                )
+            )
+
+    def test_locked_create_interface_has_guidance_without_mobility(self) -> None:
+        lowered = lower_user_design(
+            self._design(
+                task="create_symmetric_interface",
+                generation=[
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "c",
+                        "length": 20,
+                    }
+                ],
+                constraints=[{"kind": "fixed_xyz", "selector": "A1-2"}],
+            )
+        )
+
+        orbit = lowered.specification.symmetry.orbits["motif_orbit"]
+        self.assertEqual(orbit.component_mobility, {})
+        self.assertEqual(
+            lowered.constraint_plan.operators[0].parameters["pose"]["mode"],
+            "fixed",
+        )
+        self.assertEqual(len(lowered.specification.interfaces), 1)
 
     def test_fixed_coupling_groups_lower_to_motion_components(self) -> None:
         lowered = lower_user_design(

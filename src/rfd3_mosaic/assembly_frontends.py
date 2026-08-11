@@ -22,7 +22,6 @@ from rfd3_mosaic.design_compiler import lower_user_design
 from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.schema import (
     AssemblySpecification,
-    FixedXYZConstraint,
     load_user_design,
 )
 
@@ -366,24 +365,34 @@ def lower_experiment_topology(
         )
         load_assembly_config(specification_path)
         audit_requirements = [AuditRequirement.EXACT_CONSTRAINT_ORBIT]
-        if design.interfaces:
+        # Semantic audits must follow the lowered Assembly IR, not only the
+        # fields written explicitly in the public YAML.  Simple terminal
+        # designs acquire an output-stage symmetry-neighbour interface during
+        # lowering, so consulting ``design.interfaces`` here would enable the
+        # sampler guidance while silently omitting both interface audits.
+        compiled_interfaces = tuple(
+            lowered.specification.interfaces.values()
+        )
+        if compiled_interfaces:
             audit_requirements.append(
                 AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS
             )
         if any(
-            interface.required and interface.relation.mode == "contact"
-            for interface in design.interfaces
+            interface.required
+            and interface.satisfaction_stage == "output"
+            and interface.target_geometry.mode == "geometric_constraints"
+            for interface in compiled_interfaces
         ):
             audit_requirements.append(
                 AuditRequirement.GRAPH_INTERFACE_GUIDANCE
             )
+        # Audit the effective lowered runtime contract.  Task presets may
+        # derive mobility without mutating the user's fixed_xyz declaration,
+        # so checking only the public YAML would let a moving component run
+        # without its required mobility evidence.
         if any(
-            isinstance(constraint, FixedXYZConstraint)
-            and constraint.pose.mode == "bounded_mobile"
-            for constraint in design.constraints
-        ) or any(
-            component.pose.mode == "bounded_mobile"
-            for component in design.components.values()
+            bool(orbit.component_mobility)
+            for orbit in lowered.specification.symmetry.orbits.values()
         ):
             audit_requirements.append(
                 AuditRequirement.BOUNDED_COMPONENT_MOBILITY
@@ -394,6 +403,12 @@ def lower_experiment_topology(
             audit_requirements=tuple(audit_requirements),
             audit_metadata={
                 "public_design": str(design_path),
+                "public_task": (
+                    design.task.value
+                    if design.task is not None
+                    else None
+                ),
+                "fixed_arrangement": design.fixed_arrangement.value,
                 "constraint_plan": lowered.constraint_plan.model_dump(
                     mode="json"
                 ),

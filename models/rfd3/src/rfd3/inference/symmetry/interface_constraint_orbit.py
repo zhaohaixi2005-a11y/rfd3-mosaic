@@ -31,6 +31,8 @@ _MOBILITY_SUBSPACES = {
     2: "radial_axial",
     3: "tilt_only",
     4: "bounded_se3",
+    5: "radial_rotation",
+    6: "radial_axial_rotation",
 }
 _MOBILITY_PROPOSALS = {
     0: None,
@@ -416,12 +418,27 @@ class ConstraintOrbitLayout:
                 )
             if mode == "orbit_rigid":
                 if (
-                    subspace in {"radial", "radial_axial"}
+                    subspace
+                    in {
+                        "radial",
+                        "radial_axial",
+                        "radial_rotation",
+                        "radial_axial_rotation",
+                    }
                     and maximum_translation <= 0.0
                 ):
                     raise ValueError(
                         f"{subspace} mobility requires a positive "
                         "translation bound"
+                    )
+                if (
+                    subspace
+                    in {"radial_rotation", "radial_axial_rotation"}
+                    and maximum_rotation <= 0.0
+                ):
+                    raise ValueError(
+                        f"{subspace} mobility requires a positive rotation "
+                        "bound"
                     )
                 if (
                     subspace == "tilt_only"

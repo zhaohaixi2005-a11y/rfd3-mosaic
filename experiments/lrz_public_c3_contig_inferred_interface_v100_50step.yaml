@@ -1,0 +1,40 @@
+schema_version: 1
+name: public-c3-contig-inferred-interface-t50-s930
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+task: create_symmetric_interface
+
+# Ordinary-user path: declare only the fixed central motif and the two
+# generated terminal regions. The compiler infers the symmetry-neighbour
+# interface and the sampler derives packing targets automatically.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 35
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 35
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+
+sampling:
+  timesteps: 50
+  seed: 930
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-contig-inferred-interface-packing-v5-8_10

@@ -53,20 +53,58 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
             json.dumps(
                 {
                     "graph_interface_guidance_diagnostics": {
-                        "schema_version": 3,
+                        "schema_version": 7,
                         "runtime_active": True,
                         "edge_count": 1,
                         "edge_ids": [edge_id],
                         "source_interface_ids": ["edge"],
                         "applied_steps": 1,
+                        "final_polish_steps": 1,
+                        "final_proxy_targets_satisfied": True,
+                        "final_proxy": {
+                            "energy": 1.5,
+                            "attraction": 0.1,
+                            "coverage": 0.2,
+                            "continuity": 0.3,
+                            "orientation": 0.4,
+                            "shape": 0.5,
+                            "backbone": 0.6,
+                            "interface_balance": 0.7,
+                            "clash": 0.0,
+                            "distance": 0.0,
+                            "minimum_distances": [7.25],
+                            "mean_selected_distances": [8.0],
+                            "covered_left_residues": [3],
+                            "covered_right_residues": [3],
+                            "target_residues_per_side": [3],
+                            "contiguous_left_residues": [3],
+                            "contiguous_right_residues": [3],
+                            "target_contiguous_residues_per_side": [2],
+                            "per_edge_orientation": [0.4],
+                            "per_edge_shape": [0.5],
+                            "per_edge_backbone": [0.6],
+                            "per_edge_total": [1.5],
+                            "per_source_total": [1.5],
+                        },
                         "steps": [
                             {
                                 "applied": True,
+                                "patch_locked": True,
+                                "patch_assignments": {
+                                    "edge@0": {
+                                        "left_token_ids": [1, 2, 3],
+                                        "right_token_ids": [7, 8, 9],
+                                    }
+                                },
                                 "window_weight": 1.0,
                                 "energy": 2.0,
                                 "attraction": 2.0,
                                 "coverage": 0.5,
                                 "continuity": 0.25,
+                                "orientation": 0.1,
+                                "shape": 0.2,
+                                "backbone": 0.0,
+                                "interface_balance": 0.0,
                                 "clash": 0.0,
                                 "distance": 0.0,
                                 "maximum_token_step": 0.25,
@@ -78,7 +116,11 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
                                 "target_contiguous_residues_per_side": [2],
                                 "contiguous_left_residues": [3],
                                 "contiguous_right_residues": [3],
+                                "per_edge_orientation": [0.1],
+                                "per_edge_shape": [0.2],
+                                "per_edge_backbone": [0.0],
                                 "per_edge_total": [2.75],
+                                "per_source_total": [2.75],
                             }
                         ],
                     }
@@ -98,7 +140,49 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         self.assertEqual(report["summary"]["applied_steps"], 1)
         self.assertEqual(
             report["summary"]["diagnostics_schema_version"],
-            3,
+            7,
+        )
+        self.assertEqual(
+            report["summary"]["final_packing_metrics"]["orientation"],
+            0.4,
+        )
+        self.assertEqual(
+            report["summary"]["final_packing_metrics"][
+                "minimum_edge_distance"
+            ],
+            7.25,
+        )
+        self.assertEqual(
+            report["summary"]["final_metrics_source"],
+            "post_finalize_state",
+        )
+        self.assertTrue(
+            report["summary"]["patch_identity_contract_valid"]
+        )
+
+    def test_v7_rejects_patch_hopping_after_lock(self) -> None:
+        self._write_result()
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        diagnostics = payload["graph_interface_guidance_diagnostics"]
+        second = dict(diagnostics["steps"][0])
+        second["patch_assignments"] = {
+            "edge@0": {
+                "left_token_ids": [2, 3, 4],
+                "right_token_ids": [8, 9, 10],
+            }
+        }
+        diagnostics["steps"].append(second)
+        diagnostics["applied_steps"] = 2
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["summary"]["patch_identity_contract_valid"]
         )
 
     def test_accepts_legacy_v1_runtime_evidence(self) -> None:
@@ -143,6 +227,59 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
 
         self.assertFalse(report["passed"])
         self.assertFalse(report["summary"]["identifier_contract_valid"])
+
+    def test_v5_rejects_missing_orientation_evidence(self) -> None:
+        self._write_result()
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        payload["graph_interface_guidance_diagnostics"]["steps"][0].pop(
+            "per_edge_orientation"
+        )
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["summary"]["packing_evidence_steps"], 0)
+
+    def test_v5_rejects_unsatisfied_final_proxy(self) -> None:
+        self._write_result()
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        diagnostics = payload["graph_interface_guidance_diagnostics"]
+        diagnostics["final_proxy_targets_satisfied"] = False
+        diagnostics["final_proxy"]["covered_left_residues"] = [1]
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["summary"]["final_proxy_targets_satisfied"]
+        )
+        self.assertTrue(report["summary"]["final_proxy_contract_valid"])
+        self.assertFalse(
+            report["summary"]["final_result_contract_valid"]
+        )
+
+    def test_v5_rejects_missing_final_proxy_evidence(self) -> None:
+        self._write_result()
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        diagnostics = payload["graph_interface_guidance_diagnostics"]
+        diagnostics.pop("final_proxy")
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["summary"]["final_proxy_contract_valid"])
 
     def test_rejects_missing_runtime_diagnostics(self) -> None:
         self.result.write_text("{}", encoding="utf-8")

@@ -161,6 +161,234 @@ def _chain_sort_key(chain: str) -> tuple[int, ...]:
     return (1, *chain.encode("utf-8"))
 
 
+def _runtime_action_index(value, registry_order: list[str]) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid boolean symmetry action {value!r}")
+    if isinstance(value, int):
+        index = value
+    elif isinstance(value, str) and value in registry_order:
+        index = registry_order.index(value)
+    else:
+        try:
+            index = int(str(value))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Unknown runtime symmetry action {value!r}"
+            ) from error
+    if not 0 <= index < len(registry_order):
+        raise ValueError(
+            f"Runtime symmetry action {index} is outside the declared "
+            f"registry of size {len(registry_order)}"
+        )
+    return index
+
+
+def _mapped_output_coordinate(
+    source_key: tuple[str, int, str],
+    *,
+    action_index: int,
+    index_map: dict,
+    output_lookup: dict[tuple[str, int, str], np.ndarray],
+    output_chains: list[str],
+    asu_chain_count: int,
+) -> np.ndarray:
+    source_chain, source_residue, atom_name = source_key
+    destination = index_map.get(f"{source_chain}{source_residue}")
+    if destination is None:
+        raise ValueError(
+            f"Result JSON does not map fixed residue {source_chain}{source_residue}"
+        )
+    master_chain, output_residue = _parse_component(str(destination))
+    try:
+        master_position = output_chains.index(master_chain)
+    except ValueError as error:
+        raise ValueError(
+            f"Mapped master output chain {master_chain!r} is not present in "
+            "the loaded design"
+        ) from error
+    asu_chain_index = master_position % asu_chain_count
+    output_index = action_index * asu_chain_count + asu_chain_index
+    output_chain = output_chains[output_index]
+    try:
+        return output_lookup[(output_chain, output_residue, atom_name)]
+    except KeyError as error:
+        raise ValueError(
+            "Output object is missing mapped fixed atom "
+            f"{(output_chain, output_residue, atom_name)!r}"
+        ) from error
+
+
+def _fixed_alignment_coordinates(
+    *,
+    example: dict,
+    result: dict,
+    source_lookup: dict[tuple[str, int, str], np.ndarray],
+    output_lookup: dict[tuple[str, int, str], np.ndarray],
+    output_chains: list[str],
+    asu_chain_count: int,
+    registry_order: list[str],
+    registry_matrices: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build provenance-exact fixed atom pairs across all ASU chains.
+
+    A physical constraint group can span several output chains and can use a
+    different symmetry action for each source fragment.  The compiler's
+    ``motif_constraint_groups`` plus ``diffused_index_map`` are therefore the
+    authority; chain count and sequence matching are not.
+    """
+
+    extra = example.get("extra") or {}
+    index_map = result.get("diffused_index_map") or {}
+    if not isinstance(index_map, dict) or not index_map:
+        raise ValueError("Result JSON contains no fixed-residue index mapping")
+    expected: list[np.ndarray] = []
+    observed: list[np.ndarray] = []
+    orbits = extra.get("motif_constraint_orbits")
+    groups = extra.get("motif_constraint_groups")
+    fixed_orbits = [
+        orbit
+        for orbit in orbits or []
+        if isinstance(orbit, dict)
+        and orbit.get("mobility_mode", "fixed") == "fixed"
+    ]
+
+    if fixed_orbits and isinstance(groups, list) and groups:
+        for orbit in fixed_orbits:
+            orbit_id = str(orbit.get("constraint_orbit_id", ""))
+            residue_ids = {
+                _parse_component(str(value))
+                for value in orbit.get("source_components", [])
+            }
+            orbit_keys = {
+                key for key in source_lookup if (key[0], key[1]) in residue_ids
+            }
+            if not orbit_keys:
+                raise ValueError(
+                    f"Fixed constraint orbit {orbit_id!r} matched no loaded "
+                    "reference atoms"
+                )
+            selected_groups = [
+                group
+                for group in groups
+                if isinstance(group, dict)
+                and str(group.get("constraint_orbit_id", "")) == orbit_id
+            ]
+            group_ids = orbit.get("group_ids")
+            if isinstance(group_ids, list) and group_ids:
+                by_id = {
+                    str(group.get("group_id")): group
+                    for group in selected_groups
+                }
+                missing = [
+                    str(group_id)
+                    for group_id in group_ids
+                    if str(group_id) not in by_id
+                ]
+                if missing:
+                    raise ValueError(
+                        f"Fixed constraint orbit {orbit_id!r} is missing "
+                        f"runtime groups {missing}"
+                    )
+                selected_groups = [
+                    by_id[str(group_id)] for group_id in group_ids
+                ]
+            if not selected_groups:
+                raise ValueError(
+                    f"Fixed constraint orbit {orbit_id!r} has no runtime groups"
+                )
+
+            for group in selected_groups:
+                members = group.get("members")
+                if not isinstance(members, list) or not members:
+                    raise ValueError(
+                        f"Runtime motif group {group.get('group_id')!r} has "
+                        "no members"
+                    )
+                group_keys: set[tuple[str, int, str]] = set()
+                for member in members:
+                    components = member.get("src_components")
+                    if not isinstance(components, list) or not components:
+                        raise ValueError(
+                            "Runtime motif group member declares no source "
+                            "components"
+                        )
+                    member_residues = {
+                        _parse_component(str(value)) for value in components
+                    }
+                    member_keys = sorted(
+                        key
+                        for key in orbit_keys
+                        if (key[0], key[1]) in member_residues
+                    )
+                    if not member_keys:
+                        raise ValueError(
+                            "Runtime motif group member matched no loaded "
+                            f"reference atoms: {components!r}"
+                        )
+                    overlap = group_keys.intersection(member_keys)
+                    if overlap:
+                        raise ValueError(
+                            "Runtime motif group members overlap on fixed "
+                            f"atoms: {sorted(overlap)[:5]}"
+                        )
+                    group_keys.update(member_keys)
+                    action_index = _runtime_action_index(
+                        member.get("sym_transform_id"),
+                        registry_order,
+                    )
+                    matrix = np.asarray(
+                        registry_matrices[registry_order[action_index]],
+                        dtype=float,
+                    )
+                    for key in member_keys:
+                        coordinate = source_lookup[key]
+                        expected.append(
+                            coordinate @ matrix[:3, :3].T + matrix[:3, 3]
+                        )
+                        observed.append(
+                            _mapped_output_coordinate(
+                                key,
+                                action_index=action_index,
+                                index_map=index_map,
+                                output_lookup=output_lookup,
+                                output_chains=output_chains,
+                                asu_chain_count=asu_chain_count,
+                            )
+                        )
+                if group_keys != orbit_keys:
+                    missing = orbit_keys - group_keys
+                    raise ValueError(
+                        f"Runtime motif group {group.get('group_id')!r} does "
+                        "not cover its complete fixed orbit: "
+                        f"missing={sorted(missing)[:5]}"
+                    )
+    else:
+        atom_keys = sorted(source_lookup)
+        for action_index, transform_id in enumerate(registry_order):
+            matrix = np.asarray(
+                registry_matrices[transform_id],
+                dtype=float,
+            )
+            for key in atom_keys:
+                coordinate = source_lookup[key]
+                expected.append(
+                    coordinate @ matrix[:3, :3].T + matrix[:3, 3]
+                )
+                observed.append(
+                    _mapped_output_coordinate(
+                        key,
+                        action_index=action_index,
+                        index_map=index_map,
+                        output_lookup=output_lookup,
+                        output_chains=output_chains,
+                        asu_chain_count=asu_chain_count,
+                    )
+                )
+    if not expected:
+        raise ValueError("No globally fixed atoms were available for alignment")
+    return np.asarray(expected, dtype=float), np.asarray(observed, dtype=float)
+
+
 def _normalized_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
@@ -348,27 +576,9 @@ def mosaic_align_fixed(
             "The loaded reference object contains none of the compiled "
             "fixed atoms"
         )
-    atom_keys = sorted(source_lookup)
-
-    residue_map: dict[tuple[str, int], int] = {}
-    for source_chain, source_residue in source_residues:
-        destination = (result.get("diffused_index_map") or {}).get(
-            f"{source_chain}{source_residue}"
-        )
-        if destination is not None:
-            _, output_residue = _parse_component(str(destination))
-            residue_map[(source_chain, source_residue)] = output_residue
-    if not residue_map:
-        raise ValueError("Result JSON contains no fixed-residue index mapping")
-
     output_lookup = _atom_lookup(design, label_order=True)
-    fixed_output_residues = set(residue_map.values())
     output_chains = sorted(
-        {
-            chain
-            for chain, residue, _ in output_lookup
-            if residue in fixed_output_residues
-        },
+        {chain for chain, _, _ in output_lookup},
         key=_chain_sort_key,
     )
 
@@ -378,37 +588,27 @@ def mosaic_align_fixed(
     multiplicity = int(extra.get("symmetry_multiplicity", 0))
     if not isinstance(order, list) or not isinstance(matrices, dict):
         raise ValueError("Compiled input lacks the symmetry registry")
-    if len(order) != multiplicity or len(output_chains) != multiplicity:
+    if (
+        len(order) != multiplicity
+        or not output_chains
+        or len(output_chains) % multiplicity != 0
+    ):
         raise ValueError(
             "Symmetry multiplicity mismatch: "
             f"transforms={len(order)}, output_chains={len(output_chains)}, "
             f"declared={multiplicity}"
         )
-
-    expected_copies = []
-    observed_copies = []
-    master = np.asarray([source_lookup[key] for key in atom_keys])
-    for output_chain, transform_id in zip(output_chains, order):
-        matrix = np.asarray(matrices[str(transform_id)], dtype=float)
-        expected_copies.append(
-            master @ matrix[:3, :3].T + matrix[:3, 3]
-        )
-        observed = []
-        for source_chain, source_residue, atom_name in atom_keys:
-            output_residue = residue_map[(source_chain, source_residue)]
-            try:
-                observed.append(
-                    output_lookup[(output_chain, output_residue, atom_name)]
-                )
-            except KeyError as error:
-                raise ValueError(
-                    "Output object is missing mapped fixed atom "
-                    f"{(output_chain, output_residue, atom_name)!r}"
-                ) from error
-        observed_copies.append(np.asarray(observed, dtype=float))
-
-    expected = np.concatenate(expected_copies, axis=0)
-    observed = np.concatenate(observed_copies, axis=0)
+    asu_chain_count = len(output_chains) // multiplicity
+    expected, observed = _fixed_alignment_coordinates(
+        example=example,
+        result=result,
+        source_lookup=source_lookup,
+        output_lookup=output_lookup,
+        output_chains=output_chains,
+        asu_chain_count=asu_chain_count,
+        registry_order=[str(value) for value in order],
+        registry_matrices=matrices,
+    )
     rotation, translation, rmsd = _kabsch(observed, expected)
 
     cmd.create(output_object, design)

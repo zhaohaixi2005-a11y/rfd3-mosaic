@@ -13,6 +13,7 @@ from typing import Sequence
 
 import yaml
 
+from rfd3_mosaic.assembly_compiler import compile_experiment_assembly
 from rfd3_mosaic.capabilities import (
     capability_manifest,
     required_capabilities_for_design,
@@ -29,7 +30,8 @@ from rfd3_mosaic.experiment import (
 )
 from rfd3_mosaic.execution import executor_for_id
 from rfd3_mosaic.graph_search import search_graph_design
-from rfd3_mosaic.output import compile_standalone
+from rfd3_mosaic.posthoc_audit import audit_existing_run
+from rfd3_mosaic.rfd3_prevalidate import prevalidate_rfd3_input
 from rfd3_mosaic.run_index import (
     list_run_records,
     rebuild_run_index,
@@ -41,12 +43,25 @@ from rfd3_mosaic.run_reporting import (
     resolve_run_reference,
     write_report,
 )
+from rfd3_mosaic.seed_library import materialize_seed_library
 from rfd3_mosaic.schema import (
     BetweenGeneration,
+    SimpleCageIntentSpec,
     UserDesignSpec,
+    load_simple_cage_intent,
     load_user_design,
 )
 from rfd3_mosaic.sampling_plan import compile_sampling_plan
+from rfd3_mosaic.simple_architecture import analyze_simple_architectures
+from rfd3_mosaic.simple_resolver import (
+    enumerate_simple_design_candidates,
+    resolve_simple_intent,
+)
+from rfd3_mosaic.structure_inspection import (
+    inspect_declared_interface_relation,
+    inspect_structure_interfaces,
+    write_structure_inspection,
+)
 
 
 def _add_quick_runtime_arguments(parser: argparse.ArgumentParser) -> None:
@@ -76,6 +91,113 @@ def _parser() -> argparse.ArgumentParser:
         help="Show implemented features and their validation maturity.",
     )
     capabilities.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+    )
+
+    inspect = commands.add_parser(
+        "inspect",
+        help=(
+            "Analyze an input PDB/mmCIF, detect candidate interface seeds "
+            "and write a short ordinary-user cage intent."
+        ),
+    )
+    inspect.add_argument("input", type=Path)
+    inspect.add_argument("--output-dir", required=True, type=Path)
+    inspect.add_argument("--name")
+    inspect.add_argument(
+        "--architecture",
+        choices=("auto", "ring", "cage"),
+        default="auto",
+    )
+    inspect.add_argument(
+        "--composition",
+        choices=("auto", "homomer", "heteromer"),
+        default="auto",
+    )
+    inspect.add_argument(
+        "--symmetry",
+        dest="inspect_symmetries",
+        action="append",
+        help="Allowed symmetry; repeat it, or omit for automatic discovery.",
+    )
+    inspect.add_argument("--contact-cutoff", type=float, default=4.5)
+    inspect.add_argument("--minimum-atom-contacts", type=int, default=4)
+    inspect.add_argument(
+        "--minimum-contact-residues-per-side",
+        type=int,
+        default=2,
+    )
+    inspect.add_argument("--length-min", type=int, default=40)
+    inspect.add_argument("--length-max", type=int, default=100)
+    inspect.add_argument("--subunits-min", type=int)
+    inspect.add_argument("--subunits-max", type=int)
+    inspect.add_argument("--diameter-min", type=float)
+    inspect.add_argument("--diameter-max", type=float)
+    inspect.add_argument("--cavity-diameter-min", type=float)
+    inspect.add_argument("--cavity-diameter-max", type=float)
+    inspect.add_argument("--profile", default="p100")
+
+    resolve = commands.add_parser(
+        "resolve",
+        help=(
+            "Enumerate, rank and freeze an ordinary cage intent as normal "
+            "replayable public design YAML candidates."
+        ),
+    )
+    resolve.add_argument("config", type=Path)
+    resolve.add_argument("--output-dir", required=True, type=Path)
+    resolve.add_argument(
+        "--symmetry",
+        dest="resolve_symmetries",
+        action="append",
+        help="Candidate Cn symmetry; repeat, or use the intent choices.",
+    )
+    resolve.add_argument("--pose-samples", type=int, default=1)
+    resolve.add_argument(
+        "--optimize-poses",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run deterministic CPU rigid-component pose optimization for "
+            "multi-seed intents before freezing candidates (default: on)."
+        ),
+    )
+    resolve.add_argument(
+        "--pose-optimize-top",
+        type=int,
+        default=4,
+        help="Number of initial topology candidates optimized on CPU.",
+    )
+    resolve.add_argument(
+        "--pose-optimization-levels",
+        type=int,
+        default=3,
+        help="Number of coarse-to-fine deterministic pattern-search levels.",
+    )
+    resolve.add_argument(
+        "--pose-maximum-translation",
+        type=float,
+        default=12.0,
+        help="Maximum per-component displacement from its input pose (A).",
+    )
+    resolve.add_argument(
+        "--pose-maximum-rotation-deg",
+        type=float,
+        default=25.0,
+        help="Maximum per-axis rotation from the input pose (degrees).",
+    )
+    resolve.add_argument("--seed-start", type=int, default=0)
+    resolve.add_argument(
+        "--timesteps",
+        type=int,
+        default=200,
+        help="RFD3 steps frozen into every resolved candidate (2-200).",
+    )
+    resolve.add_argument("--top", type=int, default=20)
+    resolve.add_argument("--max-candidates", type=int, default=4096)
+    resolve.add_argument(
         "--format",
         choices=("text", "json"),
         default="text",
@@ -195,6 +317,25 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("--root", type=Path)
     report.add_argument("--output", type=Path)
     report.add_argument("--no-scheduler", action="store_true")
+
+    audit = commands.add_parser(
+        "audit",
+        help=(
+            "Rerun all applicable result audits for an existing output "
+            "without rerunning RFD3."
+        ),
+    )
+    audit.add_argument("target", help="Run directory, receipt, or Slurm JobID.")
+    audit.add_argument(
+        "--root",
+        type=Path,
+        help="Search root for a numeric JobID (or set RFD3_MOSAIC_RUN_ROOT).",
+    )
+    audit.add_argument(
+        "--no-scheduler",
+        action="store_true",
+        help="Refresh the report without querying sacct/squeue.",
+    )
 
     runs = commands.add_parser(
         "runs",
@@ -372,6 +513,7 @@ class _PublicGeometryPreflight:
     atom_count: int
     residue_count: int
     chain_count: int
+    runtime_features_validated: bool
 
 
 def _preflight_public_design_geometry(
@@ -385,33 +527,45 @@ def _preflight_public_design_geometry(
     validate/render/run/submit commands all use it before scheduling RFD3.
     """
 
-    lowered = lower_user_design(design)
     with tempfile.TemporaryDirectory(
         prefix="rfd3-mosaic-preflight-",
     ) as temporary_directory:
         root = Path(temporary_directory)
-        config_path = root / "assembly.yaml"
-        config_path.write_text(
+        design_path = root / "public_user_design.yaml"
+        design_path.write_text(
             yaml.safe_dump(
-                {
-                    "assembly": lowered.specification.model_dump(
-                        mode="json",
-                    )
-                },
+                design.model_dump(
+                    mode="json",
+                    by_alias=True,
+                    exclude_none=True,
+                ),
                 sort_keys=False,
             ),
             encoding="utf-8",
         )
-        outputs = compile_standalone(
-            config_path,
+        assembly = compile_experiment_assembly(
+            {
+                "kind": "user_design",
+                "config": str(design_path),
+                "example_id": design.name,
+            },
             root / "compiled",
-            base_directory=design.input.parent,
-            strict_validation=True,
+            project_directory=design.input.parent,
+            experiment_name=design.name,
+        )
+        report = prevalidate_rfd3_input(
+            assembly.input_path,
+            example_id=assembly.example_id,
+            report_path=root / "rfd3_prevalidation.json",
         )
         return _PublicGeometryPreflight(
-            atom_count=outputs.atom_count,
-            residue_count=outputs.residue_count,
-            chain_count=outputs.chain_count,
+            atom_count=int(report["atom_count"]),
+            residue_count=sum(
+                int(value)
+                for value in report["residues_per_chain"].values()
+            ),
+            chain_count=int(report["chain_count"]),
+            runtime_features_validated=True,
         )
 
 
@@ -464,6 +618,310 @@ def _load_public_design_if_present(path: Path) -> UserDesignSpec | None:
     return None
 
 
+def _load_simple_intent_if_present(
+    path: Path,
+) -> SimpleCageIntentSpec | None:
+    source = path.expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Configuration does not exist: {source}")
+    payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("kind") != "simple_cage_intent":
+        return None
+    return load_simple_cage_intent(source)
+
+
+def _simple_intent_analysis(
+    intent: SimpleCageIntentSpec,
+) -> dict[str, object]:
+    seed_sources = {
+        (seed.source or intent.input).expanduser().resolve()
+        for seed in intent.interface_seeds.values()
+    }
+    if (
+        any(seed.source is not None for seed in intent.interface_seeds.values())
+        and len(seed_sources) > 1
+    ):
+        with tempfile.TemporaryDirectory(
+            prefix="rfd3-mosaic-seed-library-plan-"
+        ) as raw:
+            materialized = materialize_seed_library(intent, Path(raw))
+            payload = _simple_intent_analysis(materialized.intent)
+        payload["input"] = "independent interface-seed library"
+        payload["seed_library"] = {
+            "mode": materialized.manifest["mode"],
+            "seed_count": materialized.manifest["seed_count"],
+            "sources": {
+                seed_id: record["source"]
+                for seed_id, record in materialized.manifest["seeds"].items()
+            },
+            "file_frames_are_assembly_coordinates": False,
+        }
+        payload["architecture_resolution"] = (
+            "global_seed_pose_and_topology_resolution_ready"
+        )
+        payload["ordinary_resolver"]["supported_contract"] = (
+            "independent binary preserve_exact seed files; physical "
+            "multiplicity filtering; canonical local frames; global Cn "
+            "pose starts; joint bounded SE(3) refinement; strict replay"
+        )
+        return payload
+    inspection = inspect_structure_interfaces(
+        intent.input,
+        contact_cutoff=intent.inspection.contact_cutoff,
+        minimum_atom_contacts=intent.inspection.minimum_atom_contacts,
+        minimum_contact_residues_per_side=(
+            intent.inspection.minimum_contact_residues_per_side
+        ),
+    )
+    declared_evidence = []
+    for seed_id, seed in intent.interface_seeds.items():
+        evidence = inspect_declared_interface_relation(
+            intent.input,
+            interface_id=seed_id,
+            participants=seed.participants,
+            selectors=seed.selectors,
+            contact_cutoff=intent.inspection.contact_cutoff,
+            minimum_atom_contacts=(
+                intent.inspection.minimum_atom_contacts
+            ),
+            minimum_contact_residues_per_side=(
+                intent.inspection.minimum_contact_residues_per_side
+            ),
+        )
+        if not evidence.contact_graph_connected:
+            raise ValueError(
+                f"Declared interface seed {seed_id!r} does not form a "
+                "connected participant contact graph under its frozen "
+                "input-contact thresholds"
+            )
+        declared_evidence.append(
+            {
+                "id": seed_id,
+                "participants": list(evidence.participant_chains),
+                "active_contact_pairs": [
+                    list(pair) for pair in evidence.active_contact_pairs
+                ],
+                "contact_graph_connected": True,
+            }
+        )
+    symmetry = (
+        "auto"
+        if intent.goal.symmetry == "auto"
+        else list(intent.goal.symmetry)
+    )
+    hypotheses = analyze_simple_architectures(intent)
+    accepted_hypotheses = [item for item in hypotheses if item.accepted]
+    unresolved_variables = sorted(
+        {
+            variable
+            for item in accepted_hypotheses
+            for variable in item.unresolved
+        }
+    )
+    declared_incidence: dict[str, list[str]] = {}
+    for seed_id, seed in intent.interface_seeds.items():
+        for participant in seed.participants:
+            declared_incidence.setdefault(participant, []).append(seed_id)
+    generation_length = intent.generation.length
+    generation_length_payload = (
+        generation_length
+        if isinstance(generation_length, int)
+        else generation_length.model_dump(mode="json")
+    )
+    try:
+        executable_hypotheses = enumerate_simple_design_candidates(intent)
+        resolver_ready = True
+        resolver_candidate_count = len(executable_hypotheses)
+        resolver_blocker = None
+    except (NotImplementedError, TypeError, ValueError) as error:
+        resolver_ready = False
+        resolver_candidate_count = 0
+        resolver_blocker = str(error)
+    return {
+        "schema_version": 1,
+        "kind": intent.kind,
+        "authoring_mode": "ordinary",
+        "resolution_stage": "intent",
+        "executable": False,
+        "name": intent.name,
+        "input": str(intent.input),
+        "goal": {
+            "architecture": intent.goal.architecture,
+            "composition": intent.goal.composition,
+            "symmetry": symmetry,
+            "subunits": (
+                intent.goal.subunits.model_dump(mode="json")
+                if intent.goal.subunits is not None
+                else None
+            ),
+            "diameter_angstrom": (
+                intent.goal.diameter_angstrom.model_dump(mode="json")
+                if intent.goal.diameter_angstrom is not None
+                else None
+            ),
+            "cavity_diameter_angstrom": (
+                intent.goal.cavity_diameter_angstrom.model_dump(mode="json")
+                if intent.goal.cavity_diameter_angstrom is not None
+                else None
+            ),
+        },
+        "generation": {
+            "length": generation_length_payload,
+        },
+        "resources": intent.resources.model_dump(
+            mode="json",
+            exclude_none=True,
+        ),
+        "output": (
+            intent.output.model_dump(mode="json", exclude_none=True)
+            if intent.output is not None
+            else None
+        ),
+        "interface_seeds": [
+            {
+                "id": seed_id,
+                "participants": list(seed.participants),
+                "selectors": dict(seed.selectors),
+                "source": str(seed.source or intent.input),
+                "use": seed.use.description,
+                "geometry": seed.geometry,
+            }
+            for seed_id, seed in intent.interface_seeds.items()
+        ],
+        "detected_chain_count": len(inspection.chains),
+        "detected_interface_candidate_count": len(
+            inspection.interface_candidates
+        ),
+        "component_interface_sets": [
+            {
+                "chain_id": item.chain_id,
+                "detected_port_count": item.detected_port_count,
+                "interface_ids": list(item.interface_ids),
+            }
+            for item in inspection.component_interface_sets
+        ],
+        "declared_component_interface_sets": [
+            {
+                "participant": participant,
+                "declared_port_count": len(interface_ids),
+                "interface_ids": sorted(interface_ids),
+            }
+            for participant, interface_ids in sorted(
+                declared_incidence.items()
+            )
+        ],
+        "inspection": intent.inspection.model_dump(mode="json"),
+        "declared_interface_evidence": declared_evidence,
+        "architecture_hypotheses": [
+            item.to_dict() for item in hypotheses
+        ],
+        "accepted_architecture_hypothesis_count": len(
+            accepted_hypotheses
+        ),
+        "blocking_unresolved_variables": (
+            [] if resolver_ready else unresolved_variables
+        ),
+        "architecture_resolution": (
+            "ordinary_resolver_ready"
+            if resolver_ready
+            else "candidate_symmetries_ready_connectivity_unresolved"
+            if accepted_hypotheses
+            else "requires_stabilizer_or_multi_component_search"
+        ),
+        "ordinary_resolver": {
+            "ready": resolver_ready,
+            "candidate_count": resolver_candidate_count,
+            "supported_contract": (
+                "several disjoint pre-positioned binary preserve_exact "
+                "seeds; bounded path-cover; full-orbit Cn winding"
+                if len(intent.interface_seeds) > 1
+                else "one binary preserve_exact seed; full-orbit Cn ring"
+            ),
+            "blocker": resolver_blocker,
+        },
+    }
+
+
+def _print_simple_intent_plan(
+    intent: SimpleCageIntentSpec,
+    *,
+    output_format: str,
+) -> None:
+    payload = _simple_intent_analysis(intent)
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    print("RFD3-Mosaic ordinary-user cage intent")
+    print(f"name:         {payload['name']}")
+    print(f"input:        {payload['input']}")
+    goal = payload["goal"]
+    print(f"architecture: {goal['architecture']}")
+    print(f"composition:  {goal['composition']}")
+    print(f"symmetry:     {goal['symmetry']}")
+    length = payload["generation"]["length"]
+    if isinstance(length, int):
+        length_text = str(length)
+    else:
+        length_text = f"{length['minimum']}..{length['maximum']}"
+    print(f"generation:   {length_text} residues per resolved connection")
+    print("interface seeds:")
+    for seed in payload["interface_seeds"]:
+        print(
+            f"  - {seed['id']}: "
+            f"participants={','.join(seed['participants'])} "
+            f"use={seed['use']} geometry={seed['geometry']}"
+        )
+    print(
+        "input analysis: "
+        f"{payload['detected_chain_count']} chains, "
+        f"{payload['detected_interface_candidate_count']} "
+        "candidate interfaces"
+    )
+    print(
+        "architecture resolution: "
+        f"{payload['architecture_resolution']}"
+    )
+    resolver = payload["ordinary_resolver"]
+    if resolver["ready"]:
+        print(
+            "ordinary resolve: ready; "
+            f"{resolver['candidate_count']} deterministic candidate(s)"
+        )
+        print("next: rfd3-mosaic resolve <intent> --output-dir <dir>")
+    else:
+        print(f"ordinary resolve: blocked: {resolver['blocker']}")
+    print("observed component/interface incidence:")
+    for component in payload["component_interface_sets"]:
+        interfaces = ",".join(component["interface_ids"]) or "none"
+        print(
+            f"  - chain {component['chain_id']}: "
+            f"ports={component['detected_port_count']} "
+            f"interfaces={interfaces}"
+        )
+    print("declared seed-participant incidence:")
+    for component in payload["declared_component_interface_sets"]:
+        interfaces = ",".join(component["interface_ids"])
+        print(
+            f"  - participant {component['participant']}: "
+            f"ports={component['declared_port_count']} "
+            f"interfaces={interfaces}"
+        )
+    print("execution stage: intent only (not yet a frozen assembly)")
+    if payload["blocking_unresolved_variables"]:
+        print("Mosaic must still solve:")
+        for variable in payload["blocking_unresolved_variables"]:
+            print(f"  - {variable}")
+    print("finite-group orbit-action candidates:")
+    for hypothesis in payload["architecture_hypotheses"]:
+        status = "compatible" if hypothesis["accepted"] else "rejected"
+        print(
+            f"  - {hypothesis['symmetry']}: {status}, "
+            f"group_actions={hypothesis['group_action_count']}"
+        )
+
+
 def _symmetry_copy_count(symmetry_id: str) -> int:
     """Return the finite number of proper symmetry copies."""
 
@@ -487,7 +945,11 @@ def _public_rigid_component_plan(
         if isinstance(design.symmetry, str)
         else design.symmetry.id
     )
-    copy_count = _symmetry_copy_count(symmetry_id)
+    copy_count = (
+        len(design.finite_orbit_action.coset_representative_ids)
+        if design.finite_orbit_action is not None
+        else _symmetry_copy_count(symmetry_id)
+    )
     components: dict[str, dict[str, object]] = {}
     component_atoms: dict[str, set[object]] = {}
     for operator in constraints.operators:
@@ -549,7 +1011,17 @@ def _print_public_design_plan(
         }
     inferred_interfaces = []
     automatic_initializations = []
+    interface_usage = []
     if lowering["status"] == "ready":
+        interface_usage = [
+            {
+                "interface_id": item.interface_id,
+                "requested": item.requested,
+                "physical_instance_count": item.physical_instance_count,
+                "satisfied": item.satisfied,
+            }
+            for item in lowered.interface_usage
+        ]
         inferred_interfaces = [
             {
                 "id": interface_id,
@@ -595,6 +1067,7 @@ def _print_public_design_plan(
     payload = {
         "schema_version": 1,
         "user_mode": design.user_mode,
+        "task": design.task.value if design.task is not None else None,
         "name": design.name,
         "input": str(design.input),
         "symmetry": symmetry_id,
@@ -612,6 +1085,7 @@ def _print_public_design_plan(
         "interfaces": [
             item.model_dump(mode="json") for item in design.interfaces
         ],
+        "interface_usage": interface_usage,
         "inferred_interfaces": inferred_interfaces,
         "automatic_initializations": automatic_initializations,
         "connections": [
@@ -646,6 +1120,20 @@ def _print_public_design_plan(
             else "expert (explicit assembly graph)"
         )
     )
+    if design.task is None:
+        print("task:       custom/legacy declarations (no task preset)")
+    elif design.task.value == "preserve_supplied_geometry":
+        print(
+            "task:       preserve supplied geometry "
+            "(fixed motif orbit; generate only declared regions)"
+        )
+    else:
+        arrangement = design.fixed_arrangement.value
+        print(
+            "task:       create symmetric interface "
+            "(generated packing guidance; fixed arrangement="
+            f"{arrangement})"
+        )
     print(f"name:       {design.name}")
     print(f"input:      {design.input}")
     print(f"symmetry:   {symmetry_id}")
@@ -654,7 +1142,25 @@ def _print_public_design_plan(
         f"{len(design.generation) + len(design.connections)} region(s)"
     )
     if inferred_interfaces:
-        print("inferred design mode: fixed central motif -> generated interface")
+        if (
+            design.task is not None
+            and design.task.value == "create_symmetric_interface"
+        ):
+            if design.fixed_arrangement.value == "locked":
+                print(
+                    "inferred design mode: complete fixed arrangement + "
+                    "generated-only packing guidance"
+                )
+            else:
+                print(
+                    "inferred design mode: exact rigid components + bounded "
+                    "joint pose/packing optimization"
+                )
+        else:
+            print(
+                "inferred design mode: fixed central motif -> generated "
+                "interface"
+            )
         for interface in inferred_interfaces:
             relation = interface["copy_relation"]
             neighbour = relation.get(
@@ -695,12 +1201,27 @@ def _print_public_design_plan(
                     if relation.transform is not None
                     else f"orbit_offset={relation.orbit_offset}"
                 )
+                hyperedge = (
+                    f"hyperedge={interface.hyperedge_id} member; "
+                    if interface.hyperedge_id is not None
+                    else ""
+                )
                 print(
-                    f"  - {interface.id}: "
+                    f"  - {interface.id}: {hyperedge}"
                     f"{interface.between[0]} -> "
                     f"{interface.between[1]}@{neighbour} "
                     f"relation={interface.relation.mode} "
+                    f"use={interface.use.description} "
                     f"required={interface.required}"
+                )
+        if interface_usage:
+            print("resolved interface multiplicity:")
+            for usage in interface_usage:
+                print(
+                    f"  - {usage['interface_id']}: "
+                    f"requested={usage['requested']} "
+                    "physical_instances="
+                    f"{usage['physical_instance_count']}"
                 )
     if (
         sampling.initial_pose is None
@@ -808,6 +1329,69 @@ def main(argv: Sequence[str] | None = None) -> None:
     if arguments.command == "capabilities":
         _print_capabilities(output_format=arguments.format)
         return
+    if arguments.command == "inspect":
+        try:
+            inspection = inspect_structure_interfaces(
+                arguments.input,
+                contact_cutoff=arguments.contact_cutoff,
+                minimum_atom_contacts=arguments.minimum_atom_contacts,
+                minimum_contact_residues_per_side=(
+                    arguments.minimum_contact_residues_per_side
+                ),
+            )
+            if not inspection.interface_candidates:
+                raise ValueError(
+                    "No candidate interfaces passed the inspection gates; "
+                    "check the input assembly or relax the explicit inspect "
+                    "thresholds"
+                )
+            name = _safe_default_name(
+                arguments.name or f"{arguments.input.stem}-cage"
+            )
+            report_path, intent_path = write_structure_inspection(
+                inspection,
+                arguments.output_dir,
+                intent_name=name,
+                architecture=arguments.architecture,
+                composition=arguments.composition,
+                symmetries=tuple(arguments.inspect_symmetries or ()),
+                generated_length_minimum=arguments.length_min,
+                generated_length_maximum=arguments.length_max,
+                subunit_minimum=arguments.subunits_min,
+                subunit_maximum=arguments.subunits_max,
+                diameter_minimum=arguments.diameter_min,
+                diameter_maximum=arguments.diameter_max,
+                cavity_diameter_minimum=arguments.cavity_diameter_min,
+                cavity_diameter_maximum=arguments.cavity_diameter_max,
+                profile=arguments.profile,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            parser.error(str(error))
+        print("RFD3-Mosaic structure inspection: PASSED")
+        print(f"chains:               {len(inspection.chains)}")
+        print(
+            "candidate interfaces: "
+            f"{len(inspection.interface_candidates)}"
+        )
+        for candidate in inspection.interface_candidates:
+            print(
+                f"  - {candidate.interface_id}: "
+                f"{candidate.left_chain}<->{candidate.right_chain} "
+                f"contacts={candidate.heavy_atom_contact_count} "
+                "contact_residues="
+                f"{candidate.left_contact_residue_count}/"
+                f"{candidate.right_contact_residue_count}"
+            )
+        print("detected component faces:")
+        for component in inspection.component_interface_sets:
+            interfaces = ", ".join(component.interface_ids) or "none"
+            print(
+                f"  - chain {component.chain_id}: "
+                f"{component.detected_port_count} port(s) [{interfaces}]"
+            )
+        print(f"inspection report:    {report_path}")
+        print(f"editable simple YAML: {intent_path}")
+        return
     if arguments.command == "runs":
         try:
             if arguments.limit < 1:
@@ -850,6 +1434,48 @@ def main(argv: Sequence[str] | None = None) -> None:
                 f"{record.get('experiment') or 'unknown'}"
             )
         return
+    if arguments.command == "audit":
+        try:
+            reference = resolve_run_reference(
+                arguments.target,
+                root=arguments.root,
+            )
+            if reference.run_directory is None:
+                raise ValueError(
+                    "The referenced job has no run directory to audit"
+                )
+            result = audit_existing_run(reference.run_directory)
+            status = collect_run_status(
+                reference,
+                include_scheduler=not arguments.no_scheduler,
+            )
+            report_path = write_report(status)
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            parser.error(str(error))
+        print("RFD3-Mosaic post-hoc audit")
+        print(f"run:       {result.run_directory}")
+        print("inference: reused existing output (not rerun)")
+        audit_states = {
+            item["name"]: item for item in status.get("audits") or []
+        }
+        for report in result.reports:
+            record = audit_states.get(report.name) or {}
+            label = (
+                "PASS"
+                if record.get("passed") is True
+                else "FAIL"
+                if report.is_file()
+                else "MISSING"
+            )
+            print(f"- {label} {report.name}")
+        print(f"verdict:   {'PASSED' if result.passed else 'FAILED'}")
+        if result.error:
+            print(f"failure:   {result.error}")
+        print(f"HTML report: {report_path}")
+        print(f"JSON report: {report_path.with_suffix('.json')}")
+        if not result.passed:
+            raise SystemExit(1)
+        return
     if arguments.command in {"status", "report"}:
         try:
             reference = resolve_run_reference(
@@ -873,13 +1499,144 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"JSON report: {report_path.with_suffix('.json')}")
         return
     quick_command = arguments.command in {"central", "interface"}
+    simple_intent: SimpleCageIntentSpec | None = None
     public_design: UserDesignSpec | None = None
     if not quick_command:
         try:
-            public_design = _load_public_design_if_present(arguments.config)
+            simple_intent = _load_simple_intent_if_present(arguments.config)
+            if simple_intent is None:
+                public_design = _load_public_design_if_present(
+                    arguments.config
+                )
         except (FileNotFoundError, OSError, TypeError, ValueError) as error:
             parser.error(str(error))
+    if simple_intent is not None:
+        if arguments.command == "resolve":
+            try:
+                result = resolve_simple_intent(
+                    simple_intent,
+                    arguments.output_dir,
+                    source_path=arguments.config,
+                    symmetry_ids=arguments.resolve_symmetries,
+                    pose_samples=arguments.pose_samples,
+                    seed_start=arguments.seed_start,
+                    timesteps=arguments.timesteps,
+                    top_count=arguments.top,
+                    max_candidates=arguments.max_candidates,
+                    optimize_poses=arguments.optimize_poses,
+                    pose_optimize_top=arguments.pose_optimize_top,
+                    pose_optimization_levels=(
+                        arguments.pose_optimization_levels
+                    ),
+                    pose_maximum_translation=(
+                        arguments.pose_maximum_translation
+                    ),
+                    pose_maximum_rotation_deg=(
+                        arguments.pose_maximum_rotation_deg
+                    ),
+                )
+            except (
+                NotImplementedError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ) as error:
+                parser.error(str(error))
+            if arguments.format == "json":
+                print(json.dumps(result, indent=2, sort_keys=True))
+                return
+            print("RFD3-Mosaic ordinary intent resolution")
+            print(f"resolver:    {result['resolver']}")
+            print(f"candidates:  {result['candidate_count']}")
+            print(f"accepted:    {result['accepted_count']}")
+            print(f"selected:    {result['selected_count']}")
+            print(
+                "automatic CPU recommendation: "
+                + (
+                    str(result["recommended_design"])
+                    if result.get("recommended_design")
+                    else "none (no strictly replayable candidate)"
+                )
+            )
+            pose_optimization = result.get(
+                "continuous_pose_optimization",
+                {},
+            )
+            print(
+                "CPU pose optimization: "
+                + (
+                    "enabled"
+                    if pose_optimization.get("enabled")
+                    else "disabled"
+                )
+            )
+            for candidate in result["ranking"][: arguments.top]:
+                state = (
+                    "READY"
+                    if candidate.get("resolved_design")
+                    else "REJECTED"
+                )
+                print(
+                    f"  - rank={candidate.get('rank', '-')} "
+                    f"{state} symmetry={candidate['symmetry']} "
+                    f"topology={candidate.get('topology_id')} "
+                    "physical_units="
+                    f"{candidate.get('physical_polymer_unit_count', '-')}"
+                )
+                if candidate.get("resolved_design"):
+                    print(f"    design: {candidate['resolved_design']}")
+                elif candidate.get("error"):
+                    print(f"    error: {candidate['error']}")
+            print(f"manifest:    {result['manifest_path']}")
+            return
+        if arguments.command == "plan":
+            try:
+                _print_simple_intent_plan(
+                    simple_intent,
+                    output_format=arguments.format,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                parser.error(str(error))
+            return
+        if arguments.command == "validate":
+            try:
+                payload = _simple_intent_analysis(simple_intent)
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                parser.error(str(error))
+            print("Simple cage intent validation: PASSED")
+            print(f"name:       {payload['name']}")
+            print(
+                "interfaces: "
+                f"{len(payload['interface_seeds'])}"
+            )
+            print(
+                "compatible finite-group orbit actions: "
+                f"{payload['accepted_architecture_hypothesis_count']}"
+            )
+            print(
+                "next stage: "
+                f"{payload['architecture_resolution']}"
+            )
+            if payload["ordinary_resolver"]["ready"]:
+                print(
+                    "resolvable: yes (run resolve, then choose a strictly "
+                    "replayed YAML)"
+                )
+            else:
+                print("executable: no (architecture not frozen)")
+            return
+        parser.error(
+            "Simple cage intent is valid but not yet frozen into one "
+            "AssemblySpecification; run resolve and choose one replayed "
+            "selected YAML before render/run"
+        )
     if public_design is not None:
+        if arguments.command == "resolve":
+            parser.error(
+                "resolve expects kind: simple_cage_intent; this file is "
+                "already a standard executable public design"
+            )
         if arguments.command == "search":
             try:
                 result = search_graph_design(
@@ -980,6 +1737,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 f"{preflight.residue_count} residues, "
                 f"{preflight.chain_count} chains)"
             )
+            print("RFD3 input:  PASSED (runtime features are finite)")
             return
         if arguments.command == "plan":
             try:

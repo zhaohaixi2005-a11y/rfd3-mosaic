@@ -56,6 +56,44 @@ def _component(value: str) -> tuple[str, int]:
     return value[:cursor], int(value[cursor:])
 
 
+def _chain_sort_key(chain: str) -> tuple[int, ...]:
+    """Sort output chains in the compiler's A..Z, AA..AZ allocation order."""
+
+    if chain and chain.isalpha() and chain.isupper():
+        value = 0
+        for character in chain:
+            value = value * 26 + ord(character) - ord("A") + 1
+        return (0, value)
+    return (1, *chain.encode("utf-8"))
+
+
+def _runtime_action_index(
+    value: Any,
+    registry_order: list[str],
+) -> int:
+    """Resolve one runtime action encoded as an index or registry id."""
+
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid boolean symmetry action {value!r}")
+    if isinstance(value, int):
+        index = value
+    elif isinstance(value, str) and value in registry_order:
+        index = registry_order.index(value)
+    else:
+        try:
+            index = int(str(value))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Unknown runtime symmetry action {value!r}"
+            ) from error
+    if not 0 <= index < len(registry_order):
+        raise ValueError(
+            f"Runtime symmetry action {index} is outside the declared "
+            f"registry of size {len(registry_order)}"
+        )
+    return index
+
+
 def _is_heavy(atom) -> bool:
     name = atom.atom_name.lstrip("0123456789").upper()
     return not (atom.element.upper().startswith("H") or name.startswith("H"))
@@ -91,7 +129,7 @@ def _derive_result_structure(result_json: Path) -> Path:
 def _constraint_components(
     example: dict[str, Any],
     source_lookup: dict[tuple[str, int, str], np.ndarray],
-) -> list[tuple[str, list[tuple[str, int, str]], str]]:
+) -> list[tuple[str, list[tuple[str, int, str]], str, str | None]]:
     """Return explicitly coupled fixed-geometry atom components.
 
     New compiler inputs describe one source-component list per runtime
@@ -103,15 +141,21 @@ def _constraint_components(
         "motif_constraint_orbits"
     )
     if not isinstance(orbits, list) or not orbits:
-        return [("fixed_component_001", sorted(source_lookup), "fixed")]
+        return [
+            ("fixed_component_001", sorted(source_lookup), "fixed", None)
+        ]
     if any(
         not isinstance(orbit, dict)
         or not isinstance(orbit.get("source_components"), list)
         for orbit in orbits
     ):
-        return [("fixed_component_001", sorted(source_lookup), "fixed")]
+        return [
+            ("fixed_component_001", sorted(source_lookup), "fixed", None)
+        ]
 
-    components: list[tuple[str, list[tuple[str, int, str]]]] = []
+    components: list[
+        tuple[str, list[tuple[str, int, str]], str, str | None]
+    ] = []
     assigned: set[tuple[str, int, str]] = set()
     for index, orbit in enumerate(orbits, start=1):
         residue_ids = {
@@ -148,6 +192,7 @@ def _constraint_components(
                 ),
                 atom_keys,
                 str(orbit.get("mobility_mode", "fixed")),
+                str(orbit.get("constraint_orbit_id", "")) or None,
             )
         )
     uncovered = set(source_lookup) - assigned
@@ -157,6 +202,215 @@ def _constraint_components(
             f"atoms ({len(uncovered)} uncovered)"
         )
     return components
+
+
+def _declared_constraint_groups(
+    example: dict[str, Any],
+    constraint_orbit_id: str | None,
+) -> list[dict[str, Any]]:
+    """Return runtime groups for one constraint orbit in declared order."""
+
+    if constraint_orbit_id is None:
+        return []
+    groups = (example.get("extra") or {}).get("motif_constraint_groups")
+    if not isinstance(groups, list):
+        return []
+    selected = [
+        group
+        for group in groups
+        if isinstance(group, dict)
+        and str(group.get("constraint_orbit_id", ""))
+        == constraint_orbit_id
+    ]
+    if not selected:
+        return []
+
+    orbits = (example.get("extra") or {}).get("motif_constraint_orbits")
+    orbit = next(
+        (
+            item
+            for item in orbits or []
+            if isinstance(item, dict)
+            and str(item.get("constraint_orbit_id", ""))
+            == constraint_orbit_id
+        ),
+        None,
+    )
+    group_ids = orbit.get("group_ids") if isinstance(orbit, dict) else None
+    if not isinstance(group_ids, list) or not group_ids:
+        return selected
+    by_id = {str(group.get("group_id")): group for group in selected}
+    missing = [str(group_id) for group_id in group_ids if str(group_id) not in by_id]
+    if missing:
+        raise ValueError(
+            f"Constraint orbit {constraint_orbit_id!r} is missing runtime "
+            f"groups {missing}"
+        )
+    extras = set(by_id) - {str(group_id) for group_id in group_ids}
+    if extras:
+        raise ValueError(
+            f"Constraint orbit {constraint_orbit_id!r} declares unexpected "
+            f"runtime groups {sorted(extras)}"
+        )
+    return [by_id[str(group_id)] for group_id in group_ids]
+
+
+def _mapped_output_coordinate(
+    *,
+    source_key: tuple[str, int, str],
+    action_index: int,
+    index_map: dict[str, Any],
+    output_lookup: dict[tuple[str, int, str], np.ndarray],
+    ordered_output_chains: list[str],
+    asu_chain_count: int,
+) -> np.ndarray | None:
+    source_chain, source_residue, atom_name = source_key
+    destination = index_map.get(f"{source_chain}{source_residue}")
+    if destination is None:
+        return None
+    master_chain, output_residue = _component(str(destination))
+    try:
+        master_position = ordered_output_chains.index(master_chain)
+    except ValueError:
+        return None
+    asu_chain_index = master_position % asu_chain_count
+    output_index = action_index * asu_chain_count + asu_chain_index
+    if not 0 <= output_index < len(ordered_output_chains):
+        return None
+    return output_lookup.get(
+        (
+            ordered_output_chains[output_index],
+            output_residue,
+            atom_name,
+        )
+    )
+
+
+def _component_runtime_copies(
+    *,
+    example: dict[str, Any],
+    constraint_orbit_id: str | None,
+    atom_keys: list[tuple[str, int, str]],
+    source_lookup: dict[tuple[str, int, str], np.ndarray],
+    index_map: dict[str, Any],
+    output_lookup: dict[tuple[str, int, str], np.ndarray],
+    ordered_output_chains: list[str],
+    asu_chain_count: int,
+    registry_order: list[str],
+    registry_matrices: dict[str, Any],
+) -> tuple[list[np.ndarray], list[np.ndarray], list[int], list[int]]:
+    """Materialize expected/observed atoms for every physical group.
+
+    ``diffused_index_map`` identifies the asymmetric-unit output chain slot.
+    A runtime motif group may then place different source fragments under
+    different symmetry actions (for example one half of a supplied interface
+    crosses the Cn seam).  Consequently neither one output chain per action
+    nor one common action per group is a valid general assumption.
+    """
+
+    declared_groups = _declared_constraint_groups(
+        example,
+        constraint_orbit_id,
+    )
+    expected_copies: list[np.ndarray] = []
+    observed_copies: list[np.ndarray] = []
+    matched_per_copy: list[int] = []
+    expected_per_copy: list[int] = []
+    component_key_set = set(atom_keys)
+
+    if not declared_groups:
+        declared_groups = [
+            {
+                "members": [
+                    {
+                        "src_components": [
+                            f"{chain}{residue}"
+                            for chain, residue in sorted(
+                                {(key[0], key[1]) for key in atom_keys}
+                            )
+                        ],
+                        "sym_transform_id": action_index,
+                    }
+                ]
+            }
+            for action_index in range(len(registry_order))
+        ]
+
+    for group in declared_groups:
+        members = group.get("members")
+        if not isinstance(members, list) or not members:
+            raise ValueError(
+                f"Runtime motif group {group.get('group_id')!r} has no members"
+            )
+        expected: list[np.ndarray] = []
+        observed: list[np.ndarray] = []
+        group_keys: set[tuple[str, int, str]] = set()
+        for member in members:
+            if not isinstance(member, dict):
+                raise ValueError("Runtime motif group member must be an object")
+            components = member.get("src_components")
+            if not isinstance(components, list) or not components:
+                raise ValueError(
+                    "Runtime motif group member declares no source components"
+                )
+            residue_ids = {_component(str(value)) for value in components}
+            member_keys = [
+                key for key in atom_keys if (key[0], key[1]) in residue_ids
+            ]
+            if not member_keys:
+                raise ValueError(
+                    "Runtime motif group member matched no selected source "
+                    f"atoms: {components!r}"
+                )
+            overlap = group_keys.intersection(member_keys)
+            if overlap:
+                raise ValueError(
+                    "Runtime motif group members overlap on source atoms: "
+                    f"{sorted(overlap)[:5]}"
+                )
+            group_keys.update(member_keys)
+            action_index = _runtime_action_index(
+                member.get("sym_transform_id"),
+                registry_order,
+            )
+            matrix = np.asarray(
+                registry_matrices[registry_order[action_index]],
+                dtype=float,
+            )
+            for key in member_keys:
+                source_coordinate = source_lookup[key]
+                expected.append(
+                    source_coordinate @ matrix[:3, :3].T + matrix[:3, 3]
+                )
+                coordinate = _mapped_output_coordinate(
+                    source_key=key,
+                    action_index=action_index,
+                    index_map=index_map,
+                    output_lookup=output_lookup,
+                    ordered_output_chains=ordered_output_chains,
+                    asu_chain_count=asu_chain_count,
+                )
+                if coordinate is not None:
+                    observed.append(coordinate)
+
+        if group_keys != component_key_set:
+            missing = component_key_set - group_keys
+            extra = group_keys - component_key_set
+            raise ValueError(
+                f"Runtime motif group {group.get('group_id')!r} does not "
+                "cover its complete constraint component: "
+                f"missing={sorted(missing)[:5]}, extra={sorted(extra)[:5]}"
+            )
+        expected_per_copy.append(len(expected))
+        matched_per_copy.append(len(observed))
+        expected_copies.append(np.asarray(expected, dtype=float))
+        observed_copies.append(np.asarray(observed, dtype=float))
+    return (
+        expected_copies,
+        observed_copies,
+        matched_per_copy,
+        expected_per_copy,
+    )
 
 
 def audit_constraint_orbit(
@@ -172,6 +426,27 @@ def audit_constraint_orbit(
     example = _single_example(input_path)
     result = _load_json(result_json_path)
     extra = example.get("extra") or {}
+    quotient_action = (
+        extra.get("symmetry_action_kind") == "stabilizer_quotient"
+    )
+    runtime_diagnostics = result.get("constraint_runtime_diagnostics")
+    runtime_fixed_target_rmsd: float | None = None
+    runtime_fixed_target_maximum: float | None = None
+    runtime_fixed_target_contract_valid = False
+    if isinstance(runtime_diagnostics, dict):
+        raw_rmsd = runtime_diagnostics.get("final_fixed_target_rmsd")
+        raw_maximum = runtime_diagnostics.get(
+            "final_fixed_target_maximum_error"
+        )
+        if raw_rmsd is not None and raw_maximum is not None:
+            runtime_fixed_target_rmsd = float(raw_rmsd)
+            runtime_fixed_target_maximum = float(raw_maximum)
+            runtime_fixed_target_contract_valid = bool(
+                np.isfinite(runtime_fixed_target_rmsd)
+                and np.isfinite(runtime_fixed_target_maximum)
+                and runtime_diagnostics.get("state") == "finalized"
+                and runtime_fixed_target_maximum <= 1.0e-5
+            )
     declared_selectors = extra.get("fixed_constraint_selectors")
     if declared_selectors is None:
         declared_selectors = extra.get("probe_fixed_selectors")
@@ -216,20 +491,18 @@ def audit_constraint_orbit(
         raise ValueError(f"Selectors {selectors!r} matched no source atoms")
 
     index_map = result.get("diffused_index_map", {})
-    residue_map: dict[tuple[str, int], int] = {}
-    master_output_chain: str | None = None
+    residue_map: dict[tuple[str, int], tuple[str, int]] = {}
     for source_chain, start, end in parsed_selectors:
         for source_residue in range(start, end + 1):
             destination = index_map.get(f"{source_chain}{source_residue}")
             if destination is None:
                 continue
             output_chain, output_residue = _component(str(destination))
-            if master_output_chain is None:
-                master_output_chain = output_chain
-            elif output_chain != master_output_chain:
-                raise ValueError("Fixed motif maps to multiple master chains")
-            residue_map[(source_chain, source_residue)] = output_residue
-    if master_output_chain is None:
+            residue_map[(source_chain, source_residue)] = (
+                output_chain,
+                output_residue,
+            )
+    if not residue_map:
         raise ValueError("Result metadata contains no central-motif mapping")
 
     output_atoms = read_structure_atoms(
@@ -245,13 +518,13 @@ def audit_constraint_orbit(
         for atom in output_atoms
         if atom.record_type == "ATOM" and _is_heavy(atom)
     }
-    candidate_chains = sorted(
+    ordered_output_chains = sorted(
         {
             atom.chain_id
             for atom in output_atoms
             if atom.record_type == "ATOM"
-            and atom.residue_number in set(residue_map.values())
-        }
+        },
+        key=_chain_sort_key,
     )
 
     matrices = example.get("extra", {}).get("registry_transform_matrices")
@@ -259,56 +532,65 @@ def audit_constraint_orbit(
     multiplicity = int(example["extra"]["symmetry_multiplicity"])
     if not isinstance(matrices, dict) or not isinstance(order, list):
         raise ValueError("Compiled input lacks the validated transform registry")
-    if len(order) != multiplicity or len(candidate_chains) != multiplicity:
+    if (
+        len(order) != multiplicity
+        or not ordered_output_chains
+        or len(ordered_output_chains) % multiplicity != 0
+    ):
         raise ValueError(
-            "Output chain count or transform count does not match symmetry "
-            f"multiplicity {multiplicity}: chains={candidate_chains}, order={order}"
+            "Output chain count is not divisible by symmetry multiplicity "
+            "or the registry is incomplete: "
+            f"multiplicity={multiplicity}, chains={ordered_output_chains}, "
+            f"order={order}"
         )
+    asu_chain_count = len(ordered_output_chains) // multiplicity
 
     component_reports = []
-    for component_id, atom_keys, mobility_mode in _constraint_components(
+    for (
+        component_id,
+        atom_keys,
+        mobility_mode,
+        constraint_orbit_id,
+    ) in _constraint_components(
         example, source_lookup
     ):
         if mobility_mode not in {"fixed", "orbit_rigid"}:
             raise ValueError(
                 f"Unsupported fixed-component mobility mode {mobility_mode!r}"
             )
-        master = np.asarray([source_lookup[key] for key in atom_keys])
-        expected_copies = []
-        observed_copies = []
-        matched_per_copy = []
-        for chain_id, transform_name in zip(candidate_chains, order):
-            matrix = np.asarray(matrices[str(transform_name)], dtype=float)
-            expected = master @ matrix[:3, :3].T + matrix[:3, 3]
-            observed = []
-            keep = []
-            for atom_index, (
-                source_chain,
-                source_residue,
-                atom_name,
-            ) in enumerate(atom_keys):
-                output_residue = residue_map.get(
-                    (source_chain, source_residue)
-                )
-                coordinate = output_lookup.get(
-                    (chain_id, output_residue, atom_name)
-                )
-                if coordinate is None:
-                    continue
-                keep.append(atom_index)
-                observed.append(coordinate)
-            expected_copies.append(expected[np.asarray(keep, dtype=int)])
-            observed_copies.append(np.asarray(observed, dtype=float))
-            matched_per_copy.append(len(observed))
+        (
+            expected_copies,
+            observed_copies,
+            matched_per_copy,
+            expected_per_copy,
+        ) = _component_runtime_copies(
+            example=example,
+            constraint_orbit_id=constraint_orbit_id,
+            atom_keys=atom_keys,
+            source_lookup=source_lookup,
+            index_map=index_map,
+            output_lookup=output_lookup,
+            ordered_output_chains=ordered_output_chains,
+            asu_chain_count=asu_chain_count,
+            registry_order=[str(value) for value in order],
+            registry_matrices=matrices,
+        )
 
         matched = sum(matched_per_copy)
-        expected_count = len(atom_keys) * multiplicity
+        expected_count = sum(expected_per_copy)
         completeness = matched / expected_count if expected_count else 0.0
-        if not matched or len(set(matched_per_copy)) != 1:
+        complete_shapes = all(
+            expected.shape == observed.shape and len(expected) > 0
+            for expected, observed in zip(
+                expected_copies,
+                observed_copies,
+            )
+        )
+        if not matched or not complete_shapes:
             joint_rmsd = float("inf")
             joint_maximum = float("inf")
             distance_matrix_rmsd = float("inf")
-            per_copy_rmsd = [float("inf")] * multiplicity
+            per_copy_rmsd = [float("inf")] * len(expected_copies)
         else:
             expected_joint = np.concatenate(expected_copies, axis=0)
             observed_joint = np.concatenate(observed_copies, axis=0)
@@ -344,6 +626,30 @@ def audit_constraint_orbit(
             if mobility_mode == "fixed"
             else "per_copy_rigid_with_bounded_orbit_pose"
         )
+        legacy_reference_joint_rmsd = None
+        legacy_reference_joint_maximum = None
+        legacy_reference_distance_matrix_rmsd = None
+        acceptance_reference = "compiled_source_geometry"
+        if (
+            quotient_action
+            and mobility_mode == "fixed"
+            and runtime_fixed_target_contract_valid
+        ):
+            # A quotient input is materialized from a full presymmetrized
+            # structure but executed from physical coset representatives.
+            # Reapplying coset matrices to that materialized source can use
+            # the wrong source frame in this legacy audit reconstruction.
+            # The sampler records a direct atomwise comparison against the
+            # exact runtime target immediately before serialization; use that
+            # authoritative invariant for fixed quotient actions while
+            # retaining the reconstructed values as diagnostics.
+            legacy_reference_joint_rmsd = joint_rmsd
+            legacy_reference_joint_maximum = joint_maximum
+            legacy_reference_distance_matrix_rmsd = distance_matrix_rmsd
+            joint_rmsd = float(runtime_fixed_target_rmsd)
+            joint_maximum = float(runtime_fixed_target_maximum)
+            distance_matrix_rmsd = 0.0
+            acceptance_reference = "runtime_fixed_target"
         acceptance_rmsd = (
             joint_rmsd
             if mobility_mode == "fixed"
@@ -367,6 +673,16 @@ def audit_constraint_orbit(
                 "maximum_per_copy_internal_rmsd": max(per_copy_rmsd),
                 "per_copy_internal_rmsd": per_copy_rmsd,
                 "acceptance_rmsd": acceptance_rmsd,
+                "acceptance_reference": acceptance_reference,
+                "legacy_reference_joint_orbit_rmsd": (
+                    legacy_reference_joint_rmsd
+                ),
+                "legacy_reference_joint_orbit_maximum_error": (
+                    legacy_reference_joint_maximum
+                ),
+                "legacy_reference_orbit_distance_matrix_rmsd": (
+                    legacy_reference_distance_matrix_rmsd
+                ),
             }
         )
 
@@ -393,7 +709,7 @@ def audit_constraint_orbit(
     ]
     return {
         "audit": "rfd3_mosaic.fixed_constraint_orbit",
-        "schema_version": 1,
+        "schema_version": 2,
         "passed": passed,
         "inputs": {
             "compiled_input": str(input_path),
@@ -413,8 +729,16 @@ def audit_constraint_orbit(
         },
         "summary": {
             "symmetry_multiplicity": multiplicity,
-            "output_chains": candidate_chains,
+            "output_chains": ordered_output_chains,
+            "asu_chain_count": asu_chain_count,
             "constraint_component_count": len(component_reports),
+            "runtime_fixed_target_contract_valid": (
+                runtime_fixed_target_contract_valid
+            ),
+            "runtime_fixed_target_rmsd": runtime_fixed_target_rmsd,
+            "runtime_fixed_target_maximum_error": (
+                runtime_fixed_target_maximum
+            ),
             "expected_heavy_atoms": expected_count,
             "matched_heavy_atoms": matched,
             "atom_completeness": completeness,

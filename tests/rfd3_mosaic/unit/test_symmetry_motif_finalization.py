@@ -111,6 +111,44 @@ class _RecordingScaffoldController:
 
 
 class SymmetryMotifFinalizationTestCase(unittest.TestCase):
+    def test_graph_packing_and_mobility_require_unified_proposal_path(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "unified scaffold_boundary"):
+            SampleDiffusionWithSymmetry(
+                gamma_0=0.6,
+                preserve_fixed_motif_during_symmetry=True,
+                symmetry_state_mode="orbit_average",
+                symmetry_noise_mode="coupled",
+                enable_graph_interface_guidance=True,
+                enable_orbit_rigid_motif_mobility=True,
+                motif_mobility_proposal_source="denoiser",
+            )
+
+    def test_graph_interface_core_configuration_is_wired_to_sampler(
+        self,
+    ) -> None:
+        sampler = SampleDiffusionWithSymmetry(
+            gamma_0=0.6,
+            graph_interface_guidance_patch_exclusivity_weight=2.5,
+            graph_interface_guidance_patch_rigid_weight=0.9,
+            graph_interface_guidance_patch_blend_radius=3,
+            graph_interface_guidance_maximum_patch_rotation_degrees=4.0,
+            graph_interface_guidance_patch_lock_fraction=0.4,
+            graph_interface_guidance_line_search_steps=7,
+            graph_interface_guidance_capture_ca_distance=13.0,
+        )
+
+        config = sampler._graph_interface_guidance_config()
+
+        self.assertEqual(config.patch_exclusivity_weight, 2.5)
+        self.assertEqual(config.patch_rigid_weight, 0.9)
+        self.assertEqual(config.patch_blend_radius, 3)
+        self.assertEqual(config.maximum_patch_rotation_degrees, 4.0)
+        self.assertEqual(config.patch_lock_fraction, 0.4)
+        self.assertEqual(config.line_search_steps, 7)
+        self.assertEqual(config.capture_ca_distance, 13.0)
+
     def test_scaffold_runtime_accepts_multiple_declared_mobile_orbits(
         self,
     ) -> None:

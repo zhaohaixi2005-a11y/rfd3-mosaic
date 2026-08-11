@@ -193,6 +193,259 @@ class CentralMotifAuditTestCase(unittest.TestCase):
             )
             self.assertEqual(report["summary"]["matched_heavy_atoms"], 4)
 
+    def test_audits_cross_seam_group_with_two_asu_output_chains(
+        self,
+    ) -> None:
+        """Runtime group members, not chain count, define physical copies."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.cif"
+            source.write_text(
+                MMCIF_HEADER
+                + "ATOM C CA ALA A 1 1 A 1.0 0.0 0.0 1\n"
+                + "ATOM N N ALA A 1 1 A 1.0 1.0 0.0 1\n"
+                + "ATOM C CA LEU F 1 1 F 3.0 0.0 1.0 1\n"
+                + "ATOM N N LEU F 1 1 F 3.0 1.0 1.0 1\n#\n",
+                encoding="utf-8",
+            )
+            identity = [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+            action_1 = [
+                [1.0, 0.0, 0.0, 10.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+            action_2 = [
+                [1.0, 0.0, 0.0, 20.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+            orbit_id = "cross_seam_component"
+            group_ids = [f"cross_seam[{index}]" for index in range(3)]
+            groups = []
+            for index, right_action in enumerate((1, 2, 0)):
+                groups.append(
+                    {
+                        "constraint_orbit_id": orbit_id,
+                        "group_id": group_ids[index],
+                        "members": [
+                            {
+                                "src_components": ["A1"],
+                                "sym_transform_id": index,
+                            },
+                            {
+                                "src_components": ["F1"],
+                                "sym_transform_id": right_action,
+                            },
+                        ],
+                    }
+                )
+            probe = root / "rfd3_input.json"
+            probe.write_text(
+                json.dumps(
+                    {
+                        "probe": {
+                            "input": source.name,
+                            "select_fixed_atoms": {
+                                "A1-1": "ALL",
+                                "F1-1": "ALL",
+                            },
+                            "extra": {
+                                "symmetry_multiplicity": 3,
+                                "asu_chain_count": 2,
+                                "registry_transform_order": [
+                                    "C3:e",
+                                    "C3:r1",
+                                    "C3:r2",
+                                ],
+                                "registry_transform_matrices": {
+                                    "C3:e": identity,
+                                    "C3:r1": action_1,
+                                    "C3:r2": action_2,
+                                },
+                                "motif_constraint_orbits": [
+                                    {
+                                        "constraint_orbit_id": orbit_id,
+                                        "coupling_group_id": "fixed_pair",
+                                        "source_components": ["A1", "F1"],
+                                        "group_ids": group_ids,
+                                        "mobility_mode": "fixed",
+                                    }
+                                ],
+                                "motif_constraint_groups": groups,
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result_json = root / "result.json"
+            result_json.write_text(
+                json.dumps(
+                    {"diffused_index_map": {"A1": "E2", "F1": "F3"}}
+                ),
+                encoding="utf-8",
+            )
+            result_structure = root / "result.cif"
+            result_structure.write_text(
+                MMCIF_HEADER
+                # action 0, ASU slots 0/1
+                + "ATOM C CA ALA A 2 2 A 1.0 5.0 2.0 1\n"
+                + "ATOM N N ALA A 2 2 A 1.0 6.0 2.0 1\n"
+                + "ATOM C CA LEU B 3 3 B 3.0 5.0 3.0 1\n"
+                + "ATOM N N LEU B 3 3 B 3.0 6.0 3.0 1\n"
+                # action 1, ASU slots 0/1
+                + "ATOM C CA ALA C 2 2 C 11.0 5.0 2.0 1\n"
+                + "ATOM N N ALA C 2 2 C 11.0 6.0 2.0 1\n"
+                + "ATOM C CA LEU D 3 3 D 13.0 5.0 3.0 1\n"
+                + "ATOM N N LEU D 3 3 D 13.0 6.0 3.0 1\n"
+                # action 2, ASU slots 0/1
+                + "ATOM C CA ALA E 2 2 E 21.0 5.0 2.0 1\n"
+                + "ATOM N N ALA E 2 2 E 21.0 6.0 2.0 1\n"
+                + "ATOM C CA LEU F 3 3 F 23.0 5.0 3.0 1\n"
+                + "ATOM N N LEU F 3 3 F 23.0 6.0 3.0 1\n#\n",
+                encoding="utf-8",
+            )
+
+            report = audit_constraint_orbit(
+                compiled_input=probe,
+                result_json=result_json,
+                result_structure=result_structure,
+            )
+
+            self.assertTrue(report["passed"])
+            self.assertEqual(report["summary"]["asu_chain_count"], 2)
+            self.assertEqual(
+                report["summary"]["output_chains"],
+                ["A", "B", "C", "D", "E", "F"],
+            )
+            self.assertEqual(report["summary"]["matched_heavy_atoms"], 12)
+            self.assertLess(report["summary"]["joint_orbit_rmsd"], 1e-6)
+
+    def test_quotient_uses_direct_runtime_fixed_target_contract(self) -> None:
+        """A physical quotient must not re-transform a materialized source."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.cif"
+            source.write_text(
+                MMCIF_HEADER
+                + "ATOM C CA ALA A 1 1 A 1.0 0.0 0.0 1\n#\n",
+                encoding="utf-8",
+            )
+            identity = [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+            action = [
+                [1.0, 0.0, 0.0, 10.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+            orbit_id = "quotient_orbit"
+            probe = root / "rfd3_input.json"
+            probe.write_text(
+                json.dumps(
+                    {
+                        "probe": {
+                            "input": source.name,
+                            "select_fixed_atoms": {"A1-1": "ALL"},
+                            "extra": {
+                                "symmetry_multiplicity": 2,
+                                "symmetry_action_kind": "stabilizer_quotient",
+                                "registry_transform_order": ["C4:e", "C4:r1"],
+                                "registry_transform_matrices": {
+                                    "C4:e": identity,
+                                    "C4:r1": action,
+                                },
+                                "motif_constraint_orbits": [
+                                    {
+                                        "constraint_orbit_id": orbit_id,
+                                        "coupling_group_id": "fixed_seed",
+                                        "source_components": ["A1"],
+                                        "group_ids": ["q[0]", "q[1]"],
+                                        "mobility_mode": "fixed",
+                                    }
+                                ],
+                                "motif_constraint_groups": [
+                                    {
+                                        "constraint_orbit_id": orbit_id,
+                                        "group_id": "q[0]",
+                                        "members": [
+                                            {
+                                                "src_components": ["A1"],
+                                                "sym_transform_id": 0,
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "constraint_orbit_id": orbit_id,
+                                        "group_id": "q[1]",
+                                        "members": [
+                                            {
+                                                "src_components": ["A1"],
+                                                "sym_transform_id": 1,
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result_json = root / "result.json"
+            result_json.write_text(
+                json.dumps(
+                    {
+                        "diffused_index_map": {"A1": "A1"},
+                        "constraint_runtime_diagnostics": {
+                            "schema_version": 2,
+                            "state": "finalized",
+                            "final_fixed_target_rmsd": 0.0,
+                            "final_fixed_target_maximum_error": 0.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result_structure = root / "result.cif"
+            result_structure.write_text(
+                MMCIF_HEADER
+                + "ATOM C CA ALA A 1 1 A 1.0 0.0 0.0 1\n"
+                + "ATOM C CA ALA B 1 1 B 21.0 0.0 0.0 1\n#\n",
+                encoding="utf-8",
+            )
+
+            report = audit_constraint_orbit(
+                compiled_input=probe,
+                result_json=result_json,
+                result_structure=result_structure,
+            )
+
+            self.assertTrue(report["passed"])
+            component = report["summary"]["constraint_components"][0]
+            self.assertEqual(
+                component["acceptance_reference"],
+                "runtime_fixed_target",
+            )
+            self.assertEqual(component["joint_orbit_rmsd"], 0.0)
+            self.assertGreater(
+                component["legacy_reference_joint_orbit_rmsd"],
+                1.0,
+            )
+
     def test_independent_components_allow_independent_rigid_gauges(
         self,
     ) -> None:

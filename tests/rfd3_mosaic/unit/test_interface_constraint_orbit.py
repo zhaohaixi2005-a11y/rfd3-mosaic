@@ -78,6 +78,34 @@ class InterfaceConstraintOrbitLayoutTestCase(unittest.TestCase):
         self.assertAlmostEqual(orbit.schedule[0], 0.05, places=6)
         self.assertAlmostEqual(orbit.schedule[4], 0.75, places=6)
 
+    def test_resolves_radial_rotation_feature_code(self) -> None:
+        features = _features()
+        features["motif_constraint_orbit_subspace"] = torch.tensor([5])
+
+        layout = InterfaceConstraintOrbitLayout.from_features(
+            features,
+            atom_count=6,
+        )
+
+        self.assertEqual(
+            layout.orbits[0].mobility_subspace,
+            "radial_rotation",
+        )
+
+    def test_resolves_radial_axial_rotation_feature_code(self) -> None:
+        features = _features()
+        features["motif_constraint_orbit_subspace"] = torch.tensor([6])
+
+        layout = InterfaceConstraintOrbitLayout.from_features(
+            features,
+            atom_count=6,
+        )
+
+        self.assertEqual(
+            layout.orbits[0].mobility_subspace,
+            "radial_axial_rotation",
+        )
+
     def test_rejects_partial_feature_transport(self) -> None:
         features = _features()
         del features["motif_constraint_orbit_bounds"]

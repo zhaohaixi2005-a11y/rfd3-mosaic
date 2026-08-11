@@ -27,6 +27,13 @@ from rfd3_mosaic.schema import load_user_design
 SCHEMA_VERSION = 1
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TOPOLOGY_KINDS = {"interface_seed", "central_motif", "user_design"}
+AUTHORING_SOURCE_ROLES = frozenset(
+    {
+        "experiment source",
+        "execution profile",
+        "Foundry compatibility manifest",
+    }
+)
 SAMPLER_PRESETS: dict[str, dict[str, Any]] = {
     "exact_mosaic": {
         "kind": "symmetry",
@@ -275,11 +282,11 @@ def _freeze_render_identity(payload: dict[str, Any]) -> dict[str, Any]:
     repository = collect_repository_provenance(
         Path(payload["project_directory"])
     )
-    dependency_records = [
+    all_dependency_records = [
         file_identity(path, role=role)
         for role, path in _runtime_dependency_files(payload)
     ]
-    by_role = {record["role"]: record for record in dependency_records}
+    by_role = {record["role"]: record for record in all_dependency_records}
     provenance = payload["provenance"]
     expected_source_hashes = {
         "experiment source": provenance["experiment_sha256"],
@@ -295,12 +302,61 @@ def _freeze_render_identity(payload: dict[str, Any]) -> dict[str, Any]:
                 f"{role} changed between resolution and render: "
                 f"{expected_sha256} != {observed_sha256}"
             )
+    dependency_records = [
+        record
+        for record in all_dependency_records
+        if record["role"] not in AUTHORING_SOURCE_ROLES
+    ]
+    authoring_source_records = [
+        record
+        for record in all_dependency_records
+        if record["role"] in AUTHORING_SOURCE_ROLES
+    ]
     return {
         "schema_version": 1,
         "repository": repository,
         "files": dependency_records,
+        "authoring_sources": authoring_source_records,
         "checkpoint": checkpoint_record,
     }
+
+
+def _freeze_public_user_design(
+    payload: dict[str, Any],
+    output_directory: Path,
+) -> None:
+    """Make queued public runs independent of the mutable authoring YAML.
+
+    The resolved experiment used to retain the path to the user's live design
+    file.  A queued worker therefore read a different design whenever that
+    file was edited after submission, even though the Mosaic source code was
+    already executing from an immutable snapshot.  Store a normalized design
+    beside the resolved experiment and point the worker at that frozen copy.
+    Runtime structures remain separately fingerprinted by render_identity.
+    """
+
+    topology = payload["topology"]
+    if topology["kind"] != "user_design":
+        return
+    source = Path(topology["config"]).expanduser().resolve()
+    design = load_user_design(source)
+    frozen_path = output_directory / "public_user_design.yaml"
+    frozen_path.write_text(
+        yaml.safe_dump(
+            design.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=True,
+            ),
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    payload["provenance"]["public_user_design_source"] = {
+        "path": str(source),
+        "sha256": _sha256(source),
+    }
+    topology["config"] = str(frozen_path.resolve())
 
 
 @dataclass(frozen=True)
@@ -799,9 +855,10 @@ def render_submission(
         )
     else:
         output = Path(output_directory).expanduser().resolve()
-    resolved_payload = copy.deepcopy(experiment.payload)
-    render_identity = _freeze_render_identity(resolved_payload)
     output.mkdir(parents=True, exist_ok=False)
+    resolved_payload = copy.deepcopy(experiment.payload)
+    _freeze_public_user_design(resolved_payload, output)
+    render_identity = _freeze_render_identity(resolved_payload)
     source_archive = output / "source_snapshot.tar.gz"
     try:
         render_identity["source_snapshot"] = create_source_snapshot(

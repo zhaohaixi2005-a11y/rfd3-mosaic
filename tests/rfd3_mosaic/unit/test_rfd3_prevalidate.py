@@ -4,13 +4,19 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import yaml
 
+from rfd3_mosaic.design_compiler import lower_user_design
 from rfd3_mosaic.output import compile_rfd3_input
 from rfd3_mosaic.rfd3_prevalidate import (
     _audit_runtime_transform_matrices,
     _expected_multiplicity,
     _validate_report,
     prevalidate_rfd3_input,
+)
+from rfd3_mosaic.schema import SimpleCageIntentSpec
+from rfd3_mosaic.simple_resolver import (
+    enumerate_simple_design_candidates,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -21,6 +27,113 @@ LHD101_CONFIG = (
 
 
 class RFD3PrevalidationLogicTestCase(unittest.TestCase):
+    def test_cross_copy_multi_seed_path_builds_runtime_constraint_groups(
+        self,
+    ) -> None:
+        """Exercise the runtime token binding for a real C3 seam path.
+
+        This is deliberately stronger than adapter compilation.  Candidate
+        000007 contains two supplied binary interface seeds and one polymer
+        link that crosses from the master copy to the previous C3 copy.  The
+        emitted contig therefore fixes physical fragments from more than one
+        symmetry copy.  ``AddSymmetryFeats`` must bind every motif-constraint
+        member to those actual fixed runtime atoms; canonicalizing the seam
+        fragment back to copy zero leaves an empty member and is rejected by
+        :func:`prevalidate_rfd3_input`.
+        """
+
+        structure = (
+            REPOSITORY_ROOT
+            / "examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb"
+        )
+        intent = SimpleCageIntentSpec.model_validate(
+            {
+                "name": "cross-copy-runtime-constraint-regression",
+                "input": structure,
+                "goal": {
+                    "architecture": "ring",
+                    "composition": "auto",
+                    "symmetry": ["C3"],
+                    "subunits": {"minimum": 6, "maximum": 6},
+                },
+                "interface_seeds": {
+                    "interface_alpha": {
+                        "participants": ["A", "B"],
+                        "selectors": {
+                            "A": "A/186-189/*",
+                            "B": "B/238-240/*",
+                        },
+                        "use": {"exact": 3},
+                    },
+                    "interface_beta": {
+                        "participants": ["A", "B"],
+                        "selectors": {
+                            "A": "A/191-192/*",
+                            "B": "B/234-235/*",
+                        },
+                        "use": {"exact": 3},
+                    },
+                },
+                "generation": {
+                    "length": {"minimum": 10, "maximum": 30}
+                },
+            }
+        )
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("C3",),
+            timesteps=50,
+        )
+        candidate = next(
+            item
+            for item in candidates
+            if item.candidate_id == "candidate_000007"
+        )
+        self.assertEqual(candidate.connection_orbit_offset, -1)
+        self.assertEqual(
+            sum(offset != 0 for _, _, offset in candidate.polymer_links),
+            1,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assembly_path = root / "assembly.yaml"
+            lowered = lower_user_design(candidate.design)
+            assembly_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "assembly": lowered.specification.model_dump(
+                            mode="json"
+                        )
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            outputs = compile_rfd3_input(
+                assembly_path,
+                root / "adapter",
+                base_directory=structure.parent,
+                example_id="cross_copy_runtime_constraint_regression",
+            )
+            emitted = json.loads(
+                outputs.input_path.read_text(encoding="utf-8")
+            )[outputs.example_id]
+            report = prevalidate_rfd3_input(outputs.input_path)
+
+        self.assertIn("/0", outputs.contig)
+        declared_groups = emitted["extra"]["motif_constraint_groups"]
+        self.assertEqual(len(declared_groups), 6)
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(
+            report["resolved_motif_constraint_group_count"],
+            len(declared_groups),
+        )
+        self.assertEqual(
+            report["motif_constraint_group_covered_atom_count"],
+            report["fixed_coordinate_atom_count"],
+        )
+
     def test_compiled_lhd101_uses_one_materialized_linker_build(
         self,
     ) -> None:
