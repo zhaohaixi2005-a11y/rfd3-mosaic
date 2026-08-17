@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+import biotite.structure as struc
 import numpy as np
 
 from rfd3.inference.symmetry.frames import (
@@ -12,6 +13,7 @@ from rfd3.inference.symmetry.frames import (
 )
 from rfd3.inference.symmetry.symmetry_utils import (
     SymmetryConfig,
+    _expand_declared_compact_chain_layout,
     _resolve_symmetry_frames,
     make_symmetric_atom_array_for_partial_diffusion,
 )
@@ -20,6 +22,68 @@ from rfd3_mosaic.schema.specs import SymmetryType
 
 
 class RFD3DihedralFrameCompatibilityTestCase(unittest.TestCase):
+    def test_compact_entities_expand_over_independent_cosets(self) -> None:
+        atoms = struc.AtomArray(4)
+        atoms.coord = np.asarray(
+            [
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 3.0, 0.0],
+            ]
+        )
+        atoms.chain_id = np.asarray(["A", "A", "B", "B"])
+        atoms.res_id = np.asarray([1, 1, 1, 1])
+        atoms.res_name = np.asarray(["ALA", "ALA", "GLY", "GLY"])
+        atoms.atom_name = np.asarray(["N", "CA", "N", "CA"])
+        atoms.element = np.asarray(["N", "C", "N", "C"])
+        atoms.set_annotation(
+            "pn_unit_iid",
+            np.asarray(["A", "A", "B", "B"]),
+        )
+        frames = get_symmetry_frames_from_symmetry_id("C4")
+
+        expanded = _expand_declared_compact_chain_layout(
+            atoms,
+            frames=frames,
+            compact_layout=[
+                {
+                    "entity_id": 7,
+                    "transform_indices": [0, 2],
+                    "asu_transform_index": 0,
+                },
+                {
+                    "entity_id": 11,
+                    "transform_indices": [1, 3],
+                    "asu_transform_index": 1,
+                },
+            ],
+        )
+
+        self.assertEqual(expanded.array_length(), 8)
+        self.assertEqual(len(np.unique(expanded.chain_id)), 4)
+        self.assertEqual(
+            set(zip(expanded.sym_entity_id, expanded.sym_transform_id)),
+            {(7, 0), (7, 2), (11, 1), (11, 3)},
+        )
+        for entity_id in (7, 11):
+            self.assertEqual(
+                int(np.count_nonzero(
+                    expanded.is_sym_asu
+                    & (expanded.sym_entity_id == entity_id)
+                )),
+                2,
+            )
+        for chain_id in np.unique(expanded.chain_id):
+            self.assertEqual(
+                sorted(
+                    expanded.mosaic_preexpanded_orbit_slot[
+                        expanded.chain_id == chain_id
+                    ].tolist()
+                ),
+                [0, 1],
+            )
+
     def test_compiler_validated_multi_asu_uses_declared_frames(self) -> None:
         native = get_symmetry_frames_from_symmetry_id("D3")
         order = [f"D3:t{index}" for index in range(len(native))]

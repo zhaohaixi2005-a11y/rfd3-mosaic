@@ -470,10 +470,26 @@ def _strict_replay_candidate(
             example_id=f"{replayed.name}_strict_replay",
         )
         adapter_structure_sha256 = _sha256(adapter.structure_path)
-        if adapter_structure_sha256 != expected_sha256:
+        adapter_payload = json.loads(
+            adapter.input_path.read_text(encoding="utf-8")
+        )[adapter.example_id]
+        adapter_extra = adapter_payload.get("extra", {})
+        ranked_structure_sha256 = adapter_extra.get(
+            "full_standalone_structure_sha256",
+            adapter_structure_sha256,
+        )
+        if ranked_structure_sha256 != expected_sha256:
             raise ValueError(
                 "Frozen supplied-interface RFD3 adapter changed the ranked "
                 "initialized assembly"
+            )
+        if adapter_extra.get("adapter_structure_sha256") not in {
+            None,
+            adapter_structure_sha256,
+        }:
+            raise ValueError(
+                "Frozen supplied-interface RFD3 adapter structure hash "
+                "does not match its emitted compact input"
             )
         # Adapter emission alone proves serialization, not that AtomWorks can
         # build the runtime atom/features representation.  Keep selection and

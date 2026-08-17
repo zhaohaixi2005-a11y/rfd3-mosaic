@@ -786,7 +786,7 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
         )
         self.assertEqual(selected["invented_interface_count"], 0)
 
-    def test_o_strictly_replays_and_i_fails_at_runtime_chain_capacity(
+    def test_o_and_i_mixed_component_interfaces_strictly_replay(
         self,
     ) -> None:
         cases = (
@@ -852,21 +852,64 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
                     },
                 )
                 self.assertEqual(selected["invented_interface_count"], 0)
-                if symmetry == "O":
+                self.assertEqual(
+                    report["selected_count"], 1, report["ranking"]
+                )
+                self.assertTrue(selected["replay_validated"])
+                self.assertTrue(selected["rfd3_adapter_prevalidated"])
+                self.assertEqual(
+                    selected["rfd3_runtime_chain_count"],
+                    48 if symmetry == "O" else 120,
+                )
+                if symmetry == "I":
+                    replay_input = (
+                        Path(selected["directory"])
+                        / "replay"
+                        / "rfd3_adapter"
+                        / "rfd3_input.json"
+                    )
+                    emitted = next(
+                        iter(json.loads(replay_input.read_text()).values())
+                    )
+                    compact_layout = emitted["symmetry"][
+                        "declared_compact_chain_layout"
+                    ]
+                    self.assertEqual(len(compact_layout), 7)
                     self.assertEqual(
-                        report["selected_count"], 1, report["ranking"]
+                        sum(
+                            len(record["transform_indices"])
+                            for record in compact_layout
+                        ),
+                        120,
                     )
-                    self.assertTrue(selected["replay_validated"])
-                    self.assertTrue(selected["rfd3_adapter_prevalidated"])
-                else:
-                    self.assertEqual(report["selected_count"], 0)
-                    self.assertIn(
-                        "120 physical polymer chains",
-                        selected["error"],
+                    self.assertEqual(
+                        emitted["extra"]["symmetry_action_kind"],
+                        "compact_mixed_stabilizer_quotients",
                     )
-                    self.assertIn(
-                        "local-neighbourhood backend",
-                        selected["error"],
+                    self.assertEqual(
+                        emitted["extra"]["compact_parser_chain_count"],
+                        7,
+                    )
+                    self.assertEqual(
+                        emitted["extra"]["compact_physical_chain_count"],
+                        120,
+                    )
+                    self.assertEqual(
+                        emitted["input"],
+                        "compact_presymmetrized_input.cif",
+                    )
+                    compact_cif = replay_input.with_name(emitted["input"])
+                    atom_rows = [
+                        line.split()
+                        for line in compact_cif.read_text().splitlines()
+                        if line.startswith(("ATOM ", "HETATM "))
+                    ]
+                    self.assertTrue(atom_rows)
+                    self.assertTrue(
+                        all(fields[3] == fields[18] for fields in atom_rows)
+                    )
+                    self.assertTrue(
+                        all(fields[6] == fields[17] for fields in atom_rows)
                     )
 
     def test_two_seed_candidates_use_the_standard_expert_graph(self) -> None:

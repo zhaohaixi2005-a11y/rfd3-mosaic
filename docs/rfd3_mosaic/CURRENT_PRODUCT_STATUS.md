@@ -37,13 +37,17 @@ mixed-valency interfaces and GPU/scientific validation are not implied by the
 CPU closeout.
 
 The same contract now strictly replays for an octahedral C2--C4 interface:
-12 C2 components, 6 C4 components and 24 supplied-interface instances.  Its
+12 C2 components, 6 C4 components and 24 supplied-interface instances. Its
 48 continuous protein chains are encoded path-wise rather than wasting one
-AtomWorks chain ID per fixed fragment.  Icosahedral C2--C5 incidence is also
-fully enumerated (30 C2, 12 C5 and 60 interfaces), but its 120 physical chains
-exceed the installed explicit parser's capacity.  I therefore remains
-fail-closed pending the mixed-orbit local-neighbourhood runtime; it is not a
-completed RFD3 execution claim.
+AtomWorks chain ID per fixed fragment.
+
+The static pre-positioned icosahedral C2--C5 regression also completes strict
+CPU replay. Mosaic encodes seven representative input chains plus their
+entity-specific cosets, and RFD3 reconstructs the exact 120-chain physical
+assembly (`30 x C2`, `12 x C5`, 60 supplied interfaces). This bypasses the
+input parser's chain-ID limit without deleting physical copies. It is CPU
+execution evidence for a synthetic regression, not GPU/scientific validation
+and not a local-neighbourhood memory optimization.
 
 ### Packing guidance CPU closeout (GPU evidence pending)
 

@@ -1130,14 +1130,6 @@ def _compile_atoms(
     fragment_order = list(instances.fragments)
     compact_polymer_paths = len(fragment_order) > 52
     if compact_polymer_paths:
-        if len(polymer_paths) > 52:
-            raise NotImplementedError(
-                "The preexpanded assembly contains "
-                f"{len(polymer_paths)} physical polymer chains, exceeding "
-                "AtomWorks' 52 one-character chain identifier namespace; "
-                "use a local-neighbourhood backend instead of materializing "
-                "every physical component"
-            )
         chain_id_by_fragment = {
             fragment_id: _chain_id(path_index)
             for path_index, path in enumerate(polymer_paths)

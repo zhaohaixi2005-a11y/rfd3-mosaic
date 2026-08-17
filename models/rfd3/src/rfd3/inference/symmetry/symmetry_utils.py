@@ -15,7 +15,9 @@ from rfd3.inference.symmetry.atom_array import (
     add_2d_entity_annotations,
     add_src_sym_component_annotations,
     add_sym_annotations,
+    add_sym_transform_annotations,
     annotate_unsym_atom_array,
+    apply_symmetry_to_atomarray_coord,
     fix_3D_sym_motif_annotations,
     get_symmetry_unit,
     reannotate_2d_conditions,
@@ -118,6 +120,152 @@ class SymmetryConfig(BaseModel):
             "entity_id and is_asu; coordinates are not expanded again."
         ),
     )
+    declared_compact_chain_layout: Optional[list[dict]] = Field(
+        None,
+        description=(
+            "Compiler-owned entity-specific expansion for a compact input "
+            "ASU. One record per parsed input chain declares entity_id, "
+            "transform_indices and asu_transform_index. Unlike the legacy "
+            "full-ASU expansion, each entity may use a different quotient "
+            "of the declared finite-group frames."
+        ),
+    )
+
+
+def _runtime_chain_identifier(index: int) -> str:
+    """Return deterministic CIF-safe IDs for post-contig physical chains."""
+
+    if index < 0:
+        raise ValueError("Runtime chain index cannot be negative")
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    if index < len(alphabet):
+        return alphabet[index]
+    return f"X{index - len(alphabet) + 1}"
+
+
+def _expand_declared_compact_chain_layout(
+    asu_atom_array,
+    *,
+    frames,
+    compact_layout: list[dict],
+):
+    """Expand each parsed chain only over its declared physical coset.
+
+    AtomWorks parses the compact contig before this function runs, so its
+    one-character input-chain grammar sees only the component
+    representatives. Physical output chains are created here from the exact
+    compiler-declared transform indices.
+    """
+
+    chain_ids = list(
+        dict.fromkeys(np.asarray(asu_atom_array.chain_id).tolist())
+    )
+    if len(compact_layout) != len(chain_ids):
+        raise ValueError(
+            "Compact chain layout length does not match parsed input "
+            f"chains: {len(compact_layout)} != {len(chain_ids)}"
+        )
+
+    observed_entities: set[int] = set()
+    physical_chains = []
+    runtime_chain_index = 0
+    for source_chain_id, record in zip(
+        chain_ids,
+        compact_layout,
+        strict=True,
+    ):
+        entity_id = int(record["entity_id"])
+        if entity_id < 0 or entity_id in observed_entities:
+            raise ValueError(
+                "Compact chain layout requires one unique nonnegative "
+                f"entity_id per input chain, got {entity_id}"
+            )
+        observed_entities.add(entity_id)
+        transform_indices = tuple(
+            int(value) for value in record["transform_indices"]
+        )
+        if not transform_indices or len(set(transform_indices)) != len(
+            transform_indices
+        ):
+            raise ValueError(
+                "Compact chain transform_indices must be nonempty and unique"
+            )
+        if any(
+            transform_index < 0 or transform_index >= len(frames)
+            for transform_index in transform_indices
+        ):
+            raise ValueError(
+                "Compact chain transform index is outside the declared "
+                "frame set"
+            )
+        asu_transform_index = int(record["asu_transform_index"])
+        if asu_transform_index not in transform_indices:
+            raise ValueError(
+                "Compact chain asu_transform_index must belong to its "
+                "transform_indices"
+            )
+
+        source = asu_atom_array[
+            asu_atom_array.chain_id == source_chain_id
+        ].copy()
+        residue_ids = np.asarray(source.res_id)
+        atom_names = np.asarray(source.atom_name)
+        local_residue_order = {
+            residue_id: index
+            for index, residue_id in enumerate(
+                dict.fromkeys(residue_ids.tolist())
+            )
+        }
+        keys = tuple(
+            (local_residue_order[residue_id], str(atom_name))
+            for residue_id, atom_name in zip(
+                residue_ids,
+                atom_names,
+                strict=True,
+            )
+        )
+        if len(keys) != len(set(keys)):
+            raise ValueError(
+                "Compact source chain contains duplicate local atom keys: "
+                f"chain={source_chain_id!r}"
+            )
+        slot_by_key = {
+            key: slot for slot, key in enumerate(sorted(keys))
+        }
+        orbit_slots = np.asarray(
+            [slot_by_key[key] for key in keys],
+            dtype=np.int64,
+        )
+
+        for transform_index in transform_indices:
+            physical = source.copy()
+            runtime_chain_id = _runtime_chain_identifier(
+                runtime_chain_index
+            )
+            runtime_chain_index += 1
+            physical.chain_id[:] = runtime_chain_id
+            if "pn_unit_iid" in physical.get_annotation_categories():
+                physical.pn_unit_iid[:] = runtime_chain_id
+            physical = add_sym_transform_annotations(
+                physical,
+                transform_index,
+                frames[transform_index],
+                is_asu=(transform_index == asu_transform_index),
+            )
+            physical.sym_entity_id[:] = entity_id
+            physical.set_annotation(
+                "mosaic_preexpanded_orbit_slot",
+                orbit_slots,
+            )
+            physical = apply_symmetry_to_atomarray_coord(
+                physical,
+                frames[transform_index],
+            )
+            physical_chains.append(physical)
+
+    if not physical_chains:
+        raise ValueError("Compact chain layout produced no physical chains")
+    return struc.concatenate(physical_chains)
 
 
 def convery_sym_conf_to_symmetry_config(sym_conf: dict) -> SymmetryConfig:
@@ -250,6 +398,32 @@ def make_symmetric_atom_array(
     frames = _resolve_symmetry_frames(sym_conf, src_atom_array)
 
     preexpanded_layout = sym_conf.declared_preexpanded_chain_layout
+    compact_layout = sym_conf.declared_compact_chain_layout
+    if preexpanded_layout is not None and compact_layout is not None:
+        raise ValueError(
+            "declared_preexpanded_chain_layout and "
+            "declared_compact_chain_layout are mutually exclusive"
+        )
+    if compact_layout is not None:
+        if not sym_conf.use_declared_frames:
+            raise ValueError(
+                "declared_compact_chain_layout requires "
+                "use_declared_frames=true"
+            )
+        if has_dist_cond:
+            raise NotImplementedError(
+                "Compact mixed-entity expansion currently supports exact "
+                "3D motif conditioning, not 2D distance conditioning"
+            )
+        asu_atom_array = add_sym_annotations(asu_atom_array, sym_conf)
+        asu_atom_array = _expand_declared_compact_chain_layout(
+            asu_atom_array,
+            frames=frames,
+            compact_layout=compact_layout,
+        )
+        asu_atom_array = fix_3D_sym_motif_annotations(asu_atom_array)
+        asu_atom_array = add_src_sym_component_annotations(asu_atom_array)
+        return _del_util_annotations(asu_atom_array)
     if preexpanded_layout is not None:
         if not sym_conf.use_declared_frames:
             raise ValueError(
@@ -463,6 +637,11 @@ def make_symmetric_atom_array_for_partial_diffusion(atom_array, sym_conf):
     if sym_conf.declared_action_is_quotient:
         raise NotImplementedError(
             "Partial diffusion with a stabilizer quotient action is not "
+            "implemented; use ordinary full-trajectory generation"
+        )
+    if sym_conf.declared_compact_chain_layout is not None:
+        raise NotImplementedError(
+            "Partial diffusion with compact mixed-entity expansion is not "
             "implemented; use ordinary full-trajectory generation"
         )
     if (

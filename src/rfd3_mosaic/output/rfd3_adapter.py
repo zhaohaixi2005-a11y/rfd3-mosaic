@@ -1,6 +1,7 @@
 """Compile standalone Interface-Seed artifacts into an RFD3 input JSON."""
 
 from dataclasses import dataclass
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -191,6 +192,184 @@ def _fragment_selector(
     return f"{chain_id}{residue_numbers[0]}-{residue_numbers[-1]}"
 
 
+def _ordered_fragment_paths(links) -> tuple[tuple[str, ...], ...]:
+    """Partition selected scaffold links into deterministic open paths."""
+
+    outgoing = {}
+    incoming = {}
+    nodes: set[str] = set()
+    for link in links:
+        if link.chain_break:
+            raise NotImplementedError(
+                "Compact mixed-entity execution requires continuous "
+                "scaffold paths"
+            )
+        left = link.from_fragment_instance_id
+        right = link.to_fragment_instance_id
+        nodes.update((left, right))
+        if left in outgoing or right in incoming:
+            raise NotImplementedError(
+                "Compact mixed-entity execution requires nonbranching paths"
+            )
+        outgoing[left] = right
+        incoming[right] = left
+    starts = sorted(node for node in nodes if node not in incoming)
+    paths = []
+    visited: set[str] = set()
+    for start in starts:
+        path = []
+        cursor = start
+        while cursor not in visited:
+            visited.add(cursor)
+            path.append(cursor)
+            if cursor not in outgoing:
+                break
+            cursor = outgoing[cursor]
+        paths.append(tuple(path))
+    if visited != nodes:
+        raise NotImplementedError(
+            "Compact mixed-entity execution cannot encode cyclic scaffold "
+            "paths"
+        )
+    return tuple(paths)
+
+
+def _write_compact_mixed_standalone_artifacts(
+    *,
+    structure_path: Path,
+    mapping: dict[str, Any],
+    output_directory: Path,
+    links,
+) -> tuple[Path, Path, dict[str, Any], tuple[tuple[str, ...], ...]]:
+    """Write representative contig chains while retaining full provenance."""
+
+    paths = _ordered_fragment_paths(links)
+    if len(paths) > 52:
+        raise NotImplementedError(
+            "Compact mixed-entity ASU still requires more than 52 input "
+            f"chains: {len(paths)}"
+        )
+    chain_ids = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    fragment_layout = {
+        fragment_id: (chain_ids[path_index], str(path_index + 1))
+        for path_index, path in enumerate(paths)
+        for fragment_id in path
+    }
+    selected_records = [
+        copy.deepcopy(record)
+        for record in mapping["atom_mappings"]
+        if record["instance"]["fragment_instance_id"] in fragment_layout
+    ]
+    selected_records.sort(
+        key=lambda record: int(record["compiled"]["atom_index"])
+    )
+    if not selected_records:
+        raise ValueError("Compact mixed-entity layout selected no atoms")
+
+    atom_index_map: dict[int, int] = {}
+    for new_index, record in enumerate(selected_records):
+        old_index = int(record["compiled"]["atom_index"])
+        atom_index_map[old_index] = new_index
+        chain_id, entity_id = fragment_layout[
+            record["instance"]["fragment_instance_id"]
+        ]
+        record["compiled"]["atom_index"] = new_index
+        record["compiled"]["chain_id"] = chain_id
+        record["compiled"]["entity_id"] = entity_id
+    old_atom_index_by_new = {
+        new: old for old, new in atom_index_map.items()
+    }
+
+    atom_rows = {}
+    source_lines = structure_path.read_text(encoding="utf-8").splitlines()
+    first_atom_line = None
+    last_atom_line = None
+    for line_index, line in enumerate(source_lines):
+        if not line.startswith(("ATOM ", "HETATM ")):
+            continue
+        fields = line.split()
+        atom_rows[int(fields[1]) - 1] = fields
+        if first_atom_line is None:
+            first_atom_line = line_index
+        last_atom_line = line_index
+    if first_atom_line is None or last_atom_line is None:
+        raise ValueError("Standalone CIF contains no atom rows")
+
+    compact_rows = []
+    for record in selected_records:
+        old_index = old_atom_index_by_new[
+            record["compiled"]["atom_index"]
+        ]
+        fields = list(atom_rows[old_index])
+        fields[1] = str(record["compiled"]["atom_index"] + 1)
+        fields[6] = record["compiled"]["chain_id"]
+        fields[7] = str(record["compiled"]["entity_id"])
+        fields[17] = record["compiled"]["chain_id"]
+        compact_rows.append(" ".join(fields))
+    compact_structure_path = output_directory / "compact_presymmetrized_input.cif"
+    compact_structure_path.write_text(
+        "\n".join(
+            source_lines[:first_atom_line]
+            + compact_rows
+            + source_lines[last_atom_line + 1 :]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    compact_mapping = copy.deepcopy(mapping)
+    compact_mapping["atom_mappings"] = selected_records
+    compact_mapping["source_polymer_chain_count"] = len(paths)
+    compact_mapping["source_polymer_paths"] = [list(path) for path in paths]
+    compact_mapping["fragment_ranges"] = {}
+    compact_residue_indices = {
+        key: index
+        for index, key in enumerate(
+            dict.fromkeys(
+                (
+                    str(record["compiled"]["chain_id"]),
+                    int(record["compiled"]["label_seq_id"]),
+                )
+                for record in selected_records
+            )
+        )
+    }
+    for path in paths:
+        for fragment_id in path:
+            records = [
+                record
+                for record in selected_records
+                if record["instance"]["fragment_instance_id"]
+                == fragment_id
+            ]
+            compact_mapping["fragment_ranges"][fragment_id] = {
+                "chain_id": records[0]["compiled"]["chain_id"],
+                "entity_id": records[0]["compiled"]["entity_id"],
+                "compiled_atom_indices": [
+                    record["compiled"]["atom_index"] for record in records
+                ],
+                "compiled_residue_indices": sorted({
+                    compact_residue_indices[(
+                        str(record["compiled"]["chain_id"]),
+                        int(record["compiled"]["label_seq_id"]),
+                    )]
+                    for record in records
+                }),
+            }
+    compact_mapping["interface_constraint_groups"] = []
+    compact_mapping_path = output_directory / "compact_mapping.json"
+    compact_mapping_path.write_text(
+        json.dumps(compact_mapping, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return (
+        compact_structure_path,
+        compact_mapping_path,
+        compact_mapping,
+        paths,
+    )
+
+
 def _rfd3_atom_selection(fixed_atoms: str | list[str] | None) -> str:
     if fixed_atoms is None:
         return "ALL"
@@ -332,6 +511,7 @@ def _runtime_interface_constraint_groups(
     runtime_transform_order=None,
     transform_to_runtime_representative=None,
     preexpanded_mixed_orbits: bool = False,
+    compact_mixed_orbits: bool = False,
 ) -> list[dict[str, Any]]:
     """Describe complete cross-chain groups in post-symmetry RFD3 terms."""
 
@@ -346,7 +526,7 @@ def _runtime_interface_constraint_groups(
             fragment = instances.fragments[fragment_instance_id]
             selector = _fragment_selector(mapping, fragment_instance_id)
             selector_by_fragment_instance_id[fragment_instance_id] = selector
-            if preexpanded_mixed_orbits:
+            if preexpanded_mixed_orbits and not compact_mixed_orbits:
                 # Every physical quotient copy is already a separate input
                 # chain.  Repeated source_fragment ids therefore correctly
                 # map to different selectors and must not be collapsed into
@@ -366,7 +546,7 @@ def _runtime_interface_constraint_groups(
     registry = build_transform_registry(transform_set)
 
     def correspondence_components(fragment) -> list[str]:
-        if not preexpanded_mixed_orbits:
+        if not preexpanded_mixed_orbits or compact_mixed_orbits:
             return _selector_source_components(
                 selector_by_source_id[fragment.source_id]
             )
@@ -431,7 +611,7 @@ def _runtime_interface_constraint_groups(
             port = instances.ports[port_instance_id]
             for fragment_instance_id in port.fragment_instance_ids:
                 fragment = instances.fragments[fragment_instance_id]
-                if preexpanded_mixed_orbits:
+                if preexpanded_mixed_orbits and not compact_mixed_orbits:
                     try:
                         source_component = (
                             selector_by_fragment_instance_id[
@@ -1840,6 +2020,8 @@ def compile_assembly_rfd3_input(
         master_transforms=None,
     )
     mapping = _load_json(standalone.mapping_path)
+    adapter_structure_path = standalone.structure_path
+    adapter_mapping_path = standalone.mapping_path
 
     generated_orbit_ids = {
         segment.orbit_id
@@ -1885,19 +2067,42 @@ def compile_assembly_rfd3_input(
     preexpanded_runtime_layout = (
         preexpanded_mixed_orbits or preexpanded_stabilizer_asu
     )
+    compact_mixed_runtime = (
+        preexpanded_mixed_orbits
+        and int(mapping.get("source_polymer_chain_count", 0)) > 52
+    )
+    compact_paths: tuple[tuple[str, ...], ...] | None = None
 
     link_by_id = {
         link.id: link
         for link in instances.scaffold_links.values()
-        if preexpanded_runtime_layout or link.copy_index == 0
+        if (
+            (preexpanded_runtime_layout and not compact_mixed_runtime)
+            or link.copy_index == 0
+        )
     }
     for segment in instances.generated_segments.values():
         if (
             isinstance(segment, ScaffoldLinkInstance)
-            and (preexpanded_runtime_layout or segment.copy_index == 0)
+            and (
+                (preexpanded_runtime_layout and not compact_mixed_runtime)
+                or segment.copy_index == 0
+            )
         ):
             link_by_id.setdefault(segment.id, segment)
     orbit_links = list(link_by_id.values())
+    if compact_mixed_runtime:
+        (
+            adapter_structure_path,
+            adapter_mapping_path,
+            mapping,
+            compact_paths,
+        ) = _write_compact_mixed_standalone_artifacts(
+            structure_path=standalone.structure_path,
+            mapping=mapping,
+            output_directory=output,
+            links=orbit_links,
+        )
     terminal_extensions = [
         segment
         for segment in instances.generated_segments.values()
@@ -2086,6 +2291,7 @@ def compile_assembly_rfd3_input(
             len(segment.contig_chains) for segment in segments
         )
     preexpanded_chain_layout: list[dict[str, Any]] | None = None
+    compact_chain_layout: list[dict[str, Any]] | None = None
     stabilized_segment_transform_ids: tuple[str, ...] | None = None
     if preexpanded_stabilizer_asu:
         if finite_action is None:
@@ -2101,6 +2307,45 @@ def compile_assembly_rfd3_input(
             registry_transform_order=registry_transform_order,
             identity_transform_id=native_registry.identity_id,
         )
+    elif compact_mixed_runtime:
+        compact_chain_layout = []
+        next_entity_id = 0
+        for segment in segments:
+            segment_orbit_ids = {
+                entry.link.orbit_id for entry in segment.links
+            }
+            if len(segment_orbit_ids) != 1 or None in segment_orbit_ids:
+                raise ValueError(
+                    "A compact mixed-entity path must belong to exactly "
+                    "one component orbit"
+                )
+            orbit_id = next(iter(segment_orbit_ids))
+            orbit = instances.constraint_orbits[orbit_id]
+            transform_indices = [
+                full_registry_transform_order.index(transform_id)
+                for transform_id in orbit.transform_ids
+            ]
+            if not transform_indices or 0 not in transform_indices:
+                raise ValueError(
+                    "A compact mixed-entity orbit must contain the identity "
+                    "transform"
+                )
+            for _ in segment.contig_chains:
+                compact_chain_layout.append({
+                    "entity_id": next_entity_id,
+                    "orbit_id": orbit_id,
+                    "transform_indices": transform_indices,
+                    "transform_ids": list(orbit.transform_ids),
+                    "asu_transform_index": 0,
+                })
+                next_entity_id += 1
+        if compact_paths is None or len(compact_chain_layout) != len(
+            compact_paths
+        ):
+            raise ValueError(
+                "Compact mixed-entity chain layout does not match the "
+                "materialized representative polymer paths"
+            )
     elif preexpanded_mixed_orbits:
         entity_ids: dict[tuple[tuple[str, ...], int], int] = {}
         preexpanded_chain_layout = []
@@ -2293,6 +2538,7 @@ def compile_assembly_rfd3_input(
                     transform_to_runtime_representative
                 ),
                 preexpanded_mixed_orbits=preexpanded_runtime_layout,
+                compact_mixed_orbits=compact_mixed_runtime,
             )
             motif_constraint_orbits = _runtime_interface_constraint_orbits(
                 motif_constraint_groups,
@@ -2382,6 +2628,8 @@ def compile_assembly_rfd3_input(
             symmetry["declared_preexpanded_chain_layout"] = (
                 preexpanded_chain_layout
             )
+        if compact_chain_layout is not None:
+            symmetry["declared_compact_chain_layout"] = compact_chain_layout
     adapter_extra = {
         "compiler": "rfd3_mosaic.static_adapter",
         "native_compiler_path": "assembly_ir_to_rfd3_features",
@@ -2399,7 +2647,8 @@ def compile_assembly_rfd3_input(
             else None
         ),
         "pose_candidate_structure_sha256": candidate_structure_sha,
-        "adapter_structure_sha256": rebuilt_structure_sha,
+        "adapter_structure_sha256": _sha256(adapter_structure_path),
+        "full_standalone_structure_sha256": rebuilt_structure_sha,
         "assembly_config": str(config),
         # Compatibility key consumed by the existing interface audit.
         "interface_seed_config": str(config),
@@ -2470,7 +2719,9 @@ def compile_assembly_rfd3_input(
         "symmetry_multiplicity": symmetry_multiplicity,
         "full_symmetry_multiplicity": full_symmetry_multiplicity,
         "symmetry_action_kind": (
-            "mixed_stabilizer_quotients"
+            "compact_mixed_stabilizer_quotients"
+            if compact_mixed_runtime
+            else "mixed_stabilizer_quotients"
             if preexpanded_mixed_orbits
             else "preexpanded_stabilized_asu"
             if preexpanded_stabilizer_asu
@@ -2479,6 +2730,20 @@ def compile_assembly_rfd3_input(
             else "regular_full_group"
         ),
         "preexpanded_chain_layout": preexpanded_chain_layout,
+        "compact_chain_layout": compact_chain_layout,
+        "compact_parser_chain_count": (
+            len(compact_chain_layout)
+            if compact_chain_layout is not None
+            else None
+        ),
+        "compact_physical_chain_count": (
+            sum(
+                len(record["transform_indices"])
+                for record in compact_chain_layout
+            )
+            if compact_chain_layout is not None
+            else None
+        ),
         "finite_orbit_action": (
             finite_action.model_dump(mode="json")
             if finite_action is not None
@@ -2523,7 +2788,9 @@ def compile_assembly_rfd3_input(
             _runtime_interface_relation_audit_plan(
                 instances=instances,
                 mapping=mapping,
-                preexpanded_mixed_orbits=preexpanded_runtime_layout,
+                preexpanded_mixed_orbits=(
+                    preexpanded_runtime_layout and not compact_mixed_runtime
+                ),
             )
             if instances.interfaces
             else []
@@ -2547,7 +2814,7 @@ def compile_assembly_rfd3_input(
     payload = {
         example_id: {
             "dialect": 2,
-            "input": standalone.structure_path.name,
+            "input": adapter_structure_path.name,
             "contig": contig,
             "select_fixed_atoms": fixed_atoms,
             "redesign_motif_sidechains": False,
@@ -2571,8 +2838,8 @@ def compile_assembly_rfd3_input(
     )
     return RFD3AdapterOutputs(
         input_path=input_path,
-        structure_path=standalone.structure_path,
-        mapping_path=standalone.mapping_path,
+        structure_path=adapter_structure_path,
+        mapping_path=adapter_mapping_path,
         manifest_path=standalone.manifest_path,
         example_id=example_id,
         contig=contig,

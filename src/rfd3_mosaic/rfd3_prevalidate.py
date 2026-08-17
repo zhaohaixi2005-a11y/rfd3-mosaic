@@ -570,7 +570,13 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     expected = report["expected_multiplicity"]
     preexpanded_layout = report.get("preexpanded_chain_layout")
-    if isinstance(preexpanded_layout, list):
+    compact_layout = report.get("compact_chain_layout")
+    if isinstance(compact_layout, list):
+        expected_chain_count = sum(
+            len(record["transform_indices"])
+            for record in compact_layout
+        )
+    elif isinstance(preexpanded_layout, list):
         expected_chain_count = len(preexpanded_layout)
     else:
         expected_asu_chains = report.get("expected_asu_chain_count", 1)
@@ -581,6 +587,13 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
             f"{report['chain_count']}"
         )
     expected_transform_ids = (
+        sorted({
+            int(transform_index)
+            for record in compact_layout
+            for transform_index in record["transform_indices"]
+        })
+        if isinstance(compact_layout, list)
+        else
         sorted(
             {
                 int(record["transform_index"])
@@ -595,7 +608,23 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
             "symmetry transform IDs do not cover every declared physical "
             "copy"
         )
-    if isinstance(preexpanded_layout, list):
+    if isinstance(compact_layout, list):
+        chain_ids = report.get("chain_ids") or []
+        cursor = 0
+        for record in compact_layout:
+            count = len(record["transform_indices"])
+            entity_chain_ids = chain_ids[cursor : cursor + count]
+            cursor += count
+            residue_counts = {
+                int(report["residues_per_chain"][chain_id])
+                for chain_id in entity_chain_ids
+            }
+            if len(residue_counts) != 1:
+                failures.append(
+                    "chain residue counts differ within a compact symmetry "
+                    f"entity {record['entity_id']}"
+                )
+    elif isinstance(preexpanded_layout, list):
         chain_ids = report.get("chain_ids") or []
         if len(chain_ids) == len(preexpanded_layout):
             counts_by_entity: dict[int, set[int]] = {}
@@ -815,6 +844,7 @@ def prevalidate_rfd3_input(
         declared_order,
         allow_declared_subset=bool(
             extra.get("preexpanded_chain_layout")
+            or extra.get("compact_chain_layout")
         ),
     )
     if compiler.startswith("rfd3_mosaic."):
@@ -866,6 +896,7 @@ def prevalidate_rfd3_input(
         "preexpanded_chain_layout": extra.get(
             "preexpanded_chain_layout"
         ),
+        "compact_chain_layout": extra.get("compact_chain_layout"),
         "expected_asu_chain_count": int(extra.get("asu_chain_count", 1)),
         "atom_count": int(len(atom_array)),
         "chain_count": len(chain_ids),

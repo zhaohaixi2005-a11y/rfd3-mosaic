@@ -346,11 +346,15 @@ component multiplicities and exact coset mapping.
 The identical ordinary contract supports a pre-positioned O/C2--C4 interface
 with `use: {exact: 24}`. Mosaic derives `12 x C2` and `6 x C4`, compacts fixed
 fragments belonging to the same generated polymer path into one input chain,
-and strictly prevalidates the resulting 48-chain RFD3 design. An I/C2--C5
-request is recognized and its `30 x C2`, `12 x C5`, 60-interface incidence is
-reported, but the current explicit AtomWorks route cannot encode its 120
-physical chains. Such a request fails closed and requires the future
-mixed-orbit local-neighbourhood execution path.
+and strictly prevalidates the resulting 48-chain RFD3 design.
+
+A pre-positioned I/C2--C5 request with `use: {exact: 60}` is also executable
+through strict CPU replay. Mosaic derives `30 x C2` and `12 x C5`, writes seven
+representative parser chains with explicit per-entity cosets, and RFD3 expands
+them to all 120 physical chains. Reports distinguish
+`compact_parser_chain_count: 7` from `compact_physical_chain_count: 120`.
+Compact input avoids the parser identifier limit; it does not reduce runtime
+memory and is not yet a claim of GPU or scientific I-cage validation.
 
 This input must already place the two oligomers in their meaningful relative
 interface pose. Independently supplied C2 and C3 files whose relative pose is

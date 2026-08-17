@@ -5,6 +5,30 @@ Last updated: 2026-08-17
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
 
+## 2026-08-17 compact icosahedral mixed-stabilizer CPU closure
+
+The pre-positioned I/C2--C5 supplied-interface path now completes strict CPU
+replay instead of stopping at AtomWorks' 52 one-character input-chain limit.
+The adapter writes seven representative polymer chains and declares an
+entity-specific coset layout. RFD3 expands those representatives into the
+exact 120-chain physical assembly: `30 x C2 + 12 x C5`, with 60 instances of
+the one user-supplied interface and zero invented interface identities.
+
+The compact file is an input representation, not a reduced physical model.
+Standalone ranking and hash replay still use the full assembly; runtime
+prevalidation proves 120 output chains, exact transform annotations, finite
+features and fixed-target compatibility. The manifest separately records the
+seven parser chains and 120 physical chains so the two counts cannot be
+confused.
+
+This closes CPU schema/compiler/strict-replay execution for the synthetic,
+pre-positioned static I/C2--C5 regression. It does **not** claim CUDA memory
+feasibility, scientific interface quality, dynamic mixed-orbit mobility or a
+local-neighbourhood network execution backend. Those remain separate gates.
+
+The complete CPU regression gate after this closure is
+`801 tests in 127.681s, OK` on `mightymorphin` with CUDA hidden.
+
 ## 2026-08-17 octahedral mixed-stabilizer CPU extension
 
 The static supplied-oligomer incidence path now generalizes from T/C2--C3 to
@@ -20,11 +44,8 @@ an artificial fragment-count failure: the structure has 48 physical polymer
 chains and therefore fits the installed parser's 52 one-character IDs.
 
 The same exact stabilizer/coset and incidence construction is implemented for
-I/C2--C5 (`30 x C2 + 12 x C5`, 60 physical interfaces), but explicit runtime
-materialization contains 120 polymer chains.  It now fails early with that
-physical count and directs execution to the local-neighbourhood backend.  It
-is not reported as executable I support until that backend can carry the
-mixed component layout through RFD3.
+I/C2--C5 (`30 x C2 + 12 x C5`, 60 physical interfaces). Its later compact
+input closure is recorded above; this section remains the O milestone history.
 
 The complete CPU regression gate after this extension is
 `800 tests in 123.087s, OK` on `mightymorphin` with CUDA hidden.
