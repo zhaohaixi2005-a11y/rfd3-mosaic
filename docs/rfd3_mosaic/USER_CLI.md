@@ -302,6 +302,52 @@ seed_layout: solve
 seed_layout: preserve_input
 ```
 
+### One supplied interface between different-valency oligomers
+
+`preserve_input` also supports the first mixed-stabilizer ordinary workflow.
+The input contains the complete two sides of one natural interface; each side
+may contain several protomer chains. The chain count is the component
+valency, while `use.exact` is the number of physical interface instances in
+the final assembly:
+
+```yaml
+schema_version: 1
+mode: simple
+name: tetrahedral-c2-c3-interface
+input: my_prepositioned_c2_c3_interface.pdb
+
+goal:
+  architecture: cage
+  composition: auto
+  symmetry: [T]
+
+seed_layout: preserve_input
+
+interface_seeds:
+  natural_interface:
+    participants: [c2, c3]
+    selectors:
+      c2: A/12-20/*,A/28-36/*,B/12-20/*,B/28-36/*
+      c3: C/12-20/*,C/28-36/*,D/12-20/*,D/28-36/*,E/12-20/*,E/28-36/*
+    use: {exact: 12}
+    geometry: preserve_exact
+
+generation:
+  length: {minimum: 8, maximum: 30}
+```
+
+For this contract Mosaic derives `6 x C2`, `4 x C3` and `12` physical
+interfaces from the tetrahedral stabilizer/coset incidence. It preserves the
+user's interface geometry and never invents another interface type. A selected
+candidate must pass standalone hash replay, native RFD3 adapter construction
+and runtime feature prevalidation. The `resolution_manifest.json` records the
+component multiplicities and exact coset mapping.
+
+This input must already place the two oligomers in their meaningful relative
+interface pose. Independently supplied C2 and C3 files whose relative pose is
+unknown remain fail-closed because their SE(3) optimization must preserve two
+different stabilizer frames simultaneously.
+
 Use `solve` when the seed structures are individually correct but their
 mutual placement is arbitrary. Use `preserve_input` when the whole input is an
 already meaningful assembly. `preserve_input` rejects seeds from unrelated
@@ -1395,14 +1441,16 @@ The routine two-CIF workflow is recommended for visual inspection. Use the
 metadata-backed form only when the exact compiled residue provenance is itself
 part of the analysis.
 
-This is the first graph execution slice. It deliberately uses one global
-finite symmetry action and lowers all components into the existing common
-`AssemblySpecification`, constraint runtime and audits. Multiple independent
-stabilizers and simultaneous vertex-, edge- and face-orbit semantics are not
-silently approximated; those remain a later IR extension. The static public
-assembly graph is `gpu_canary` following the audited T run 5735772; this does
-not promote general stabilizer/coset support or the new multi-participant
-hyperedge slice before its own LRZ and GPU gates.
+The original graph execution slice used one global finite symmetry action.
+The CPU compiler now additionally supports the first geometry-bound mixed
+component action: one pre-positioned C2--C3 supplied interface under T lowers
+to separate six-copy and four-copy component coset orbits and one twelve-edge
+physical interface orbit. Multiple independently positioned stabilizer
+components, simultaneous arbitrary vertex/edge/face orbit combinations and
+dynamic mixed-orbit mobility are still not silently approximated. The static
+public assembly graph remains `gpu_canary` following the audited T run
+5735772; the mixed C2--C3 slice is CPU strict-replay validated and has not yet
+earned a separate GPU/scientific claim.
 
 The routine public interface is one command. Users should not copy or edit
 long implementation-oriented Slurm scripts, and they do not need to write

@@ -105,17 +105,25 @@ def _write_t_c2_c3_interface_seed(path: Path) -> None:
     registry = build_transform_registry(finite_symmetry_spec("T"))
     lines: list[str] = []
     serial = 1
-    for chains, stabilizer_ids in (
-        (("A", "B"), plan.left.action.stabilizer_transform_ids),
-        (("C", "D", "E"), plan.right.action.stabilizer_transform_ids),
+    for chains, stabilizer_ids, interface_offset in (
+        (
+            ("A", "B"),
+            plan.left.action.stabilizer_transform_ids,
+            np.asarray((0.0, 0.0, 0.0)),
+        ),
+        (
+            ("C", "D", "E"),
+            plan.right.action.stabilizer_transform_ids,
+            np.asarray((0.0, 4.0, 0.0)),
+        ),
     ):
         for chain, transform_id in zip(chains, stabilizer_ids, strict=True):
             transform = registry.transform(transform_id)
             for residue in range(1, 7):
                 base = np.asarray(
-                    (18.0 + 0.3 * residue, 7.0, 1.4 * residue),
+                    (60.0 + 0.3 * residue, 25.0, 1.4 * residue),
                     dtype=np.float64,
-                )
+                ) + interface_offset
                 for atom_name, offset in (
                     ("N", (-0.45, 0.0, -0.35)),
                     ("CA", (0.0, 0.0, 0.0)),
@@ -472,8 +480,16 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
         )
 
         self.assertEqual(report["candidate_count"], 1)
-        self.assertEqual(report["accepted_count"], 1)
-        self.assertEqual(report["selected_count"], 1)
+        self.assertEqual(
+            report["accepted_count"],
+            1,
+            report["ranking"],
+        )
+        self.assertEqual(
+            report["selected_count"],
+            1,
+            report["ranking"],
+        )
         self.assertEqual(report["replay_failure_count"], 0)
         selected = report["ranking"][0]
         self.assertTrue(selected["replay_validated"])
@@ -686,6 +702,72 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
         )
         self.assertEqual(len(instances.interfaces), 12)
         self.assertEqual(len(instances.motion_groups), 10)
+
+    def test_one_supplied_t_c2_c3_interface_strictly_replays(self) -> None:
+        source = self.root / "t_c2_c3_replay_interface.pdb"
+        _write_t_c2_c3_interface_seed(source)
+        intent = SimpleCageIntentSpec.model_validate({
+            "name": "ordinary-t-c2-c3-interface-replay",
+            "input": source,
+            "goal": {
+                "architecture": "cage",
+                "composition": "auto",
+                "symmetry": ["T"],
+            },
+            "interface_seeds": {
+                "natural_interface": {
+                    "participants": ["c2", "c3"],
+                    "selectors": {
+                        "c2": "A1-2,A5-6,B1-2,B5-6",
+                        "c3": "C1-2,C5-6,D1-2,D5-6,E1-2,E5-6",
+                    },
+                    "use": {"exact": 12},
+                    "geometry": "preserve_exact",
+                }
+            },
+            "generation": {"length": {"minimum": 2, "maximum": 2}},
+        })
+
+        report = resolve_simple_intent(
+            intent,
+            self.root / "t-c2-c3-resolution",
+            symmetry_ids=("T",),
+            timesteps=50,
+            top_count=1,
+        )
+
+        self.assertEqual(report["candidate_count"], 1)
+        self.assertEqual(
+            report["accepted_count"],
+            1,
+            report["ranking"],
+        )
+        self.assertEqual(
+            report["selected_count"],
+            1,
+            report["ranking"],
+        )
+        self.assertEqual(report["replay_failure_count"], 0)
+        self.assertEqual(
+            report["resolver"],
+            "rfd3_mosaic.supplied_oligomer_interface_incidence_v1",
+        )
+        self.assertEqual(
+            report["resolved_component_incidence"][
+                "component_orbit_multiplicities"
+            ],
+            {"component__c2": 6, "component__c3": 4},
+        )
+        selected = report["ranking"][0]
+        self.assertTrue(selected["replay_validated"])
+        self.assertTrue(selected["rfd3_adapter_validated"])
+        self.assertTrue(selected["rfd3_adapter_prevalidated"])
+        self.assertEqual(selected["physical_interface_count"], 12)
+        self.assertEqual(
+            selected["supplied_interface_ids"],
+            ["natural_interface"],
+        )
+        self.assertEqual(selected["invented_interface_count"], 0)
 
     def test_two_seed_candidates_use_the_standard_expert_graph(self) -> None:
         candidates = enumerate_simple_design_candidates(

@@ -114,6 +114,8 @@ class SimpleDesignCandidate:
     polymer_links: tuple[tuple[str, str, int | str], ...] = ()
     polymer_units_per_copy: int = 1
     physical_polymer_unit_count: int | None = None
+    physical_interface_count: int | None = None
+    component_orbit_multiplicities: tuple[tuple[str, int], ...] = ()
     expanded_topology_status: str | None = None
     unresolved_variables: tuple[str, ...] = ()
     preflight_failures: tuple[str, ...] = ()
@@ -150,6 +152,10 @@ class SimpleDesignCandidate:
             "polymer_units_per_copy": self.polymer_units_per_copy,
             "physical_polymer_unit_count": (
                 self.physical_polymer_unit_count
+            ),
+            "physical_interface_count": self.physical_interface_count,
+            "component_orbit_multiplicities": dict(
+                self.component_orbit_multiplicities
             ),
             "expanded_topology_status": self.expanded_topology_status,
             "unresolved_variables": list(self.unresolved_variables),
@@ -486,12 +492,24 @@ def _enumerate_mixed_component_interface_candidates(
                 physical_polymer_unit_count=len(
                     instances.generated_segments
                 ),
+                physical_interface_count=len(instances.interfaces),
+                component_orbit_multiplicities=(
+                    (
+                        f"component__{left_id}",
+                        plan.left.physical_component_count,
+                    ),
+                    (
+                        f"component__{right_id}",
+                        plan.right.physical_component_count,
+                    ),
+                ),
                 expanded_topology_status="connected_component_incidence",
                 stabilizer_evidence={
                     "left_action": _action_payload(plan.left.action),
                     "right_action": _action_payload(plan.right.action),
                     "physical_edges": [list(edge) for edge in plan.physical_edges],
                 },
+                supplied_interface_ids=(interface_id,),
             ))
         if reasons:
             rejections[symmetry_id] = reasons
@@ -516,13 +534,17 @@ def _supported_interface_seeds(
     intent: SimpleCageIntentSpec,
 ) -> tuple[tuple[str, Any], ...]:
     seeds = tuple(sorted(intent.interface_seeds.items()))
+    mixed_component_seed = (
+        len(seeds) == 1
+        and _requires_mixed_component_incidence(seeds[0][1])
+    )
     for interface_id, seed in seeds:
         _validate_seed_contract(interface_id, seed)
         for participant in seed.participants:
             selector = seed.selectors[participant]
             segments = tuple(parse_public_selector(selector))
             chains = {segment.chain_id for segment in segments}
-            if len(chains) != 1:
+            if len(chains) != 1 and not mixed_component_seed:
                 raise NotImplementedError(
                     f"Multi-seed interface {interface_id!r} participant "
                     f"{participant!r} selects several source chains. "
@@ -530,21 +552,27 @@ def _supported_interface_seeds(
                     "fragments on one source polymer, but cross-chain "
                     "covalent topology requires expert component paths"
                 )
-            ordered = tuple(
-                sorted(
-                    segments,
-                    key=lambda item: (
-                        item.residue_start,
-                        item.residue_end,
-                    ),
-                )
-            )
-            for left, right in zip(ordered, ordered[1:]):
-                if left.residue_end >= right.residue_start:
-                    raise ValueError(
-                        f"Multi-seed interface {interface_id!r} participant "
-                        f"{participant!r} has overlapping fixed ranges"
+            for chain_id in chains:
+                ordered = tuple(
+                    sorted(
+                        (
+                            segment
+                            for segment in segments
+                            if segment.chain_id == chain_id
+                        ),
+                        key=lambda item: (
+                            item.residue_start,
+                            item.residue_end,
+                        ),
                     )
+                )
+                for left, right in zip(ordered, ordered[1:]):
+                    if left.residue_end >= right.residue_start:
+                        raise ValueError(
+                            f"Multi-seed interface {interface_id!r} "
+                            f"participant {participant!r} has overlapping "
+                            f"fixed ranges on chain {chain_id!r}"
+                        )
 
     selected_ranges: list[tuple[str, str, int, int]] = []
     for interface_id, seed in seeds:
@@ -2713,13 +2741,19 @@ def resolve_simple_intent(
         None,
     )
     multi_seed = len(seed_records) > 1
+    mixed_component_incidence = (
+        len(seed_records) == 1
+        and _requires_mixed_component_incidence(seed_records[0][1])
+    )
     hyperedge_seed = any(
         len(seed.participants) > 2 for _, seed in seed_records
     )
     manifest = {
         "schema_version": 1,
         "resolver": (
-            "rfd3_mosaic.user_declared_polymer_global_pose_v1"
+            "rfd3_mosaic.supplied_oligomer_interface_incidence_v1"
+            if mixed_component_incidence
+            else "rfd3_mosaic.user_declared_polymer_global_pose_v1"
             if multi_seed
             and materialized.independent_frames
             and working_intent.polymer_connections
@@ -2789,6 +2823,21 @@ def resolve_simple_intent(
             if recommended is not None
             else None
         ),
+        "resolved_component_incidence": (
+            {
+                "physical_interface_count": recommended.get(
+                    "physical_interface_count"
+                ),
+                "component_orbit_multiplicities": recommended.get(
+                    "component_orbit_multiplicities", {}
+                ),
+                "stabilizer_evidence": recommended.get(
+                    "stabilizer_evidence"
+                ),
+            }
+            if mixed_component_incidence and recommended is not None
+            else None
+        ),
         "continuous_pose_optimization": {
             "requested": optimize_poses,
             "required_by_independent_seed_library": (
@@ -2837,7 +2886,12 @@ def resolve_simple_intent(
         },
         "selection_required": ranked["selected_count"] > 0,
         "supported_contract": (
-            "several user-supplied preserve_exact interface seeds; canonical "
+            "one user-supplied preserve_exact oligomer--oligomer interface; "
+            "participant valencies inferred from source protomer chains; "
+            "finite-group stabilizer/coset component orbits; exact physical "
+            "interface multiplicity; no invented interface identity"
+            if mixed_component_incidence
+            else "several user-supplied preserve_exact interface seeds; canonical "
             "local frames; deterministic global finite-group pose starts; "
             "bounded joint SE(3) refinement; polymer path-cover; no invented "
             "interface identities"

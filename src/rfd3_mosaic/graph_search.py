@@ -398,6 +398,7 @@ def _strict_replay_candidate(
     adapter_validated_frontends = {
         *topology_validated_frontends,
         "single_supplied_hyperedge_explicit_paths_v1",
+        "supplied_oligomer_interface_incidence_v1",
     }
     if resolution_frontend in topology_validated_frontends:
         lowered = lower_user_design(replayed)

@@ -12,6 +12,30 @@ cluster canaries and are not inferred from local CPU success.
 
 ## Current implementation checkpoint
 
+### Mixed-multiplicity finite-group components: first CPU slice closed
+
+Ordinary mode can now execute one complete, pre-positioned
+oligomer--oligomer interface whose two participants have different
+stabilizers. The reference tetrahedral case derives six C2 components and four
+C3 components from one user-supplied C2--C3 interface used twelve times. It
+expands all twelve physical interface incidences without inventing a new
+interface identity, strictly reproduces the ranked structure, traverses the
+native RFD3 adapter and passes AtomWorks runtime-feature prevalidation.
+
+The selected manifest explicitly records:
+
+- `physical_interface_count: 12`;
+- component orbit multiplicities `component__c2: 6` and
+  `component__c3: 4`;
+- both stabilizer subgroups, coset representatives and the complete physical
+  edge incidence map;
+- the original supplied interface ID and `invented_interface_count: 0`.
+
+This is a static `seed_layout: preserve_input` contract. Stabilizer-aware
+unknown-pose placement, dynamic mixed-orbit motion, several independent
+mixed-valency interfaces and GPU/scientific validation are not implied by the
+CPU closeout.
+
 ### Packing guidance CPU closeout (GPU evidence pending)
 
 Generated-interface guidance now uses observed `capture -> expand -> polish`
@@ -35,7 +59,7 @@ The latest compatibility-preserving pass closes three CPU execution gaps:
   again on the final RFD3 structure.
 
 These changes retain all existing C3/D3/T, static quotient, fixed/mobile and
-packing paths. The repository-local Python 3.12 gate now passes 797 tests.
+packing paths. The Python 3.12 CPU gate now passes 798 tests.
 The three-user-seed T resolver now accepts user-authoritative finite-group
 relations on polymer connections. The reference intent freezes `T:g01` and
 `T:g03`, produces one topology rather than eight equivalent generator
@@ -395,7 +419,9 @@ gate are now complete.
   and rotation for several interfaces. Explicit stabilizer-frame placement
   and systematic calibration of radius/axial/azimuth/tilt/twist schedules
   across T/O/I remain open.
-- Vertex/edge/face stabilizers, cosets and mixed-multiplicity components.
+- General vertex/edge/face combinations, several mixed-multiplicity interface
+  types and unknown-pose stabilizer-frame optimization. The first static,
+  pre-positioned T C2--C3 incidence is CPU closed.
 - Dynamic T production evidence; O and I GPU closure; helical semantics;
   high-order local-neighbourhood GPU equivalence.
 - ProteinMPNN, multimer refolding, interface-energy/designability ranking and

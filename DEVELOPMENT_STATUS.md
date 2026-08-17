@@ -5,6 +5,41 @@ Last updated: 2026-08-17
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
 
+## 2026-08-17 mixed-stabilizer component incidence CPU closeout
+
+The ordinary resolver now closes the first executable mixed-multiplicity cage
+slice. A user supplies one complete oligomer--oligomer interface in a shared
+coordinate frame, declares its physical usage, and selects a finite cage
+group. Mosaic infers each participant's valency from its source protomer
+chains, enumerates exact stabilizer/coset actions, expands the physical
+component/interface incidence graph, and freezes the result through the same
+expert compiler and RFD3 path used by every other design.
+
+The tetrahedral regression proves the concrete contract:
+
+```text
+one supplied C2--C3 interface; use.exact=12; symmetry=T
+-> 6 physical C2 components + 4 physical C3 components
+-> 12 supplied-interface instances; invented interfaces=0
+-> standalone strict replay=PASS
+-> native RFD3 adapter=PASS
+-> AtomWorks runtime feature prevalidation=PASS
+```
+
+This work also removes an ordinary-frontend error that rejected multi-chain
+oligomer participants before the already implemented mixed-orbit compiler
+could run. Strict replay now treats
+`supplied_oligomer_interface_incidence_v1` as an executable RFD3 frontend, and
+the resolution manifest records physical interface count, component orbit
+multiplicities and the exact stabilizer/coset evidence.
+
+The demonstrated scope is pre-positioned, static and geometry-preserving. It
+does not claim unknown relative placement of independently supplied
+stabilized components, dynamic mixed-orbit mobility, arbitrary quotient
+interface-edge orbits, or final CUDA/scientific quality. Those remain
+separate fail-closed modules. The complete CPU gate after this change is
+`798 tests in 113.999s, OK` on `mightymorphin` with CUDA hidden.
+
 ## 2026-08-17 three-supplied-interface tetrahedral CPU closeout
 
 The ordinary multi-interface resolver now accepts an optional authoritative
@@ -60,7 +95,7 @@ recovery.
 A separate short-lived laboratory workstation now provides an additional
 compatibility buffer while the AI cluster is unavailable.  A repository-local
 Python 3.12 environment with PyTorch 2.7.1/CUDA 12.6 on an 8 GB RTX 3070 passes
-the same complete 797-test CPU gate. An externally supplied
+the same complete CPU gate. An externally supplied
 `rfd3_latest.ckpt` is readable and its two available copies have identical
 SHA256
 `9b3f85923e0d51e9453e15cdd2f8c666e7ce096a60577f57d11bbc54ae6d67c1`.
@@ -569,8 +604,9 @@ Active experimental core:
   Cn/Dn/T/O/I placements, jointly refines radius/azimuth/axial/rotation, runs
   hard linker/clash/closure checks, and freezes ranked candidates through the
   common compiler/replay path. It never invents an interface identity and does
-  not silently select a candidate. Stabilizer/coset component orbits still fail
-  closed until their geometry-aware pose solver is implemented;
+  not silently select a candidate. Unknown-pose stabilizer/coset component
+  optimization still fails closed; a pre-positioned static T C2--C3 component
+  incidence now has a separate CPU strict-replay path;
 
 - simple terminal-contig designs now infer that generated symmetry-neighbour
   regions must form an interface, choose a concrete nonidentity neighbour and
