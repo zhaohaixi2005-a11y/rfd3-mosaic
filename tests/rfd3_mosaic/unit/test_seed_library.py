@@ -4,10 +4,14 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from rfd3_mosaic.schema import SimpleCageIntentSpec
 from rfd3_mosaic.seed_library import materialize_seed_library
-from rfd3_mosaic.simple_resolver import enumerate_simple_design_candidates
+from rfd3_mosaic.simple_resolver import (
+    enumerate_simple_design_candidates,
+    resolve_simple_intent,
+)
 from rfd3_mosaic.structure import read_structure_atoms
 
 
@@ -106,6 +110,41 @@ class SeedLibraryTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def assert_nested_close(
+        self,
+        first: object,
+        second: object,
+        *,
+        tolerance: float = 2.0e-3,
+    ) -> None:
+        if isinstance(first, dict) and isinstance(second, dict):
+            self.assertEqual(set(first), set(second))
+            for key in first:
+                self.assert_nested_close(
+                    first[key], second[key], tolerance=tolerance
+                )
+            return
+        if isinstance(first, list) and isinstance(second, list):
+            self.assertEqual(len(first), len(second))
+            for left, right in zip(first, second, strict=True):
+                self.assert_nested_close(
+                    left, right, tolerance=tolerance
+                )
+            return
+        if (
+            isinstance(first, (int, float))
+            and not isinstance(first, bool)
+            and isinstance(second, (int, float))
+            and not isinstance(second, bool)
+        ):
+            self.assertAlmostEqual(
+                float(first),
+                float(second),
+                delta=tolerance,
+            )
+            return
+        self.assertEqual(first, second)
 
     def test_independent_seed_frame_is_rigid_transform_invariant(self) -> None:
         first = self.root / "alpha.pdb"
@@ -209,6 +248,83 @@ class SeedLibraryTestCase(unittest.TestCase):
                     for pose in candidate.design.sampling.initial_poses.values()
                 )
             )
+
+    def test_strict_replay_is_invariant_to_seed_file_world_frame(self) -> None:
+        first = self.root / "alpha.pdb"
+        second = self.root / "beta.pdb"
+        transformed = self.root / "beta_transformed.pdb"
+        _write_seed(first)
+        _write_seed(second)
+        angle = math.radians(41.0)
+        rotation = np.asarray(
+            (
+                (math.cos(angle), 0.0, math.sin(angle)),
+                (0.0, 1.0, 0.0),
+                (-math.sin(angle), 0.0, math.cos(angle)),
+            ),
+            dtype=np.float64,
+        )
+        _write_seed(
+            transformed,
+            rotation=rotation,
+            translation=np.asarray((-103.0, 59.0, 27.0)),
+        )
+
+        common = {
+            "symmetry_ids": ("C3",),
+            "pose_samples": 1,
+            "seed_start": 73,
+            "timesteps": 10,
+            "top_count": 1,
+            "max_candidates": 64,
+            "pose_optimize_top": 1,
+            "pose_optimization_levels": 1,
+        }
+        original = resolve_simple_intent(
+            _intent(first, second),
+            self.root / "original-resolution",
+            **common,
+        )
+        moved = resolve_simple_intent(
+            _intent(first, transformed),
+            self.root / "moved-resolution",
+            **common,
+        )
+
+        self.assertEqual(original["accepted_count"], moved["accepted_count"])
+        self.assertEqual(original["selected_count"], moved["selected_count"])
+        self.assertGreater(original["selected_count"], 0, original["ranking"])
+        first_rank = original["ranking"][0]
+        moved_rank = moved["ranking"][0]
+        for key in (
+            "topology_id",
+            "connection_order",
+            "connection_orbit_offset",
+            "hard_clashes",
+            "failed_required_interfaces",
+            "infeasible_links",
+            "replay_validated",
+        ):
+            self.assertEqual(first_rank[key], moved_rank[key], key)
+        first_design = yaml.safe_load(
+            Path(first_rank["resolved_design"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        moved_design = yaml.safe_load(
+            Path(moved_rank["resolved_design"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        # The canonicalized input paths live in different resolution
+        # directories.  Every executable declaration downstream of that
+        # path must nevertheless be identical.
+        first_design.pop("input")
+        moved_design.pop("input")
+        # A rigid transform written through the 0.001 A PDB coordinate
+        # format cannot be recovered byte-for-byte.  The executable pose is
+        # nevertheless invariant within two input coordinate quanta.
+        self.assert_nested_close(first_design, moved_design)
 
     def test_independent_seed_participant_preserves_multiple_helices(
         self,

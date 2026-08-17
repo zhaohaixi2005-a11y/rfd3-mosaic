@@ -6,6 +6,9 @@ from rfd3.inference.symmetry.constraint_runtime import (
     ConstraintProposalResult,
     MosaicConstraintRuntime,
 )
+from rfd3.inference.symmetry.cylindrical_projector import (
+    CylindricalCoordinateProjector,
+)
 from rfd3.inference.symmetry.joint_projector import UnifiedJointProjector
 
 
@@ -284,6 +287,105 @@ class ConstraintRuntimeTestCase(unittest.TestCase):
             "did not restore the runtime fixed target",
         ):
             runtime.finalize(torch.ones_like(target))
+
+    def test_cylindrical_dofs_are_projected_at_every_runtime_phase(self) -> None:
+        labels: list[str] = []
+        reference = torch.tensor(
+            [[[2.0, 0.0, 3.0], [0.0, 4.0, -1.0], [1.0, 1.0, 1.0]]]
+        )
+        keep = torch.tensor(
+            [
+                [True, False, False],
+                [False, True, True],
+                [False, False, False],
+            ]
+        )
+        cylindrical = CylindricalCoordinateProjector(
+            reference=reference,
+            keep_mask=keep,
+            axis=torch.tensor([0.0, 0.0, 1.0]),
+            center=torch.zeros(3),
+        )
+        runtime = MosaicConstraintRuntime(
+            projector=self._projector(labels),
+            fixed_target=reference,
+            fixed_mask=torch.zeros(3, dtype=torch.bool),
+            cylindrical_projector=cylindrical,
+        )
+        state = torch.tensor(
+            [[[0.0, 8.0, 9.0], [6.0, 0.0, 7.0], [5.0, 5.0, 5.0]]]
+        )
+        initialized = runtime.initialize_state(state)
+        # Token 0 keeps radius=2 but retains its post-symmetry azimuth/axial.
+        self.assertAlmostEqual(
+            torch.linalg.vector_norm(initialized[0, 0, :2]).item(),
+            2.0,
+            places=5,
+        )
+        # Token 1 keeps the reference +Y azimuth and z=-1 while retaining
+        # the sampled radial magnitude after symmetry projection.
+        self.assertAlmostEqual(initialized[0, 1, 0].item(), 0.0, places=5)
+        self.assertGreater(initialized[0, 1, 1].item(), 0.0)
+        self.assertAlmostEqual(initialized[0, 1, 2].item(), -1.0, places=5)
+        output = runtime.process_model_prediction(
+            initialized,
+            step_num=0,
+            total_steps=1,
+        )
+        output = runtime.project_state_update(output, step_num=0)
+        output = runtime.project_post_guidance(output, step_num=0)
+        output = runtime.finalize(output)
+        self.assertLessEqual(cylindrical.maximum_error(output), 1.0e-6)
+        self.assertTrue(
+            runtime.diagnostics()["cylindrical_projector_active"]
+        )
+        self.assertEqual(len(labels), 10)
+
+    def test_cylindrical_projection_composes_independent_dofs(self) -> None:
+        reference = torch.tensor([[[3.0, 0.0, 2.0]]])
+        sampled = torch.tensor([[[0.0, 5.0, 9.0]]])
+
+        radius_only = CylindricalCoordinateProjector(
+            reference=reference,
+            keep_mask=torch.tensor([[True, False, False]]),
+            axis=torch.tensor([0.0, 0.0, 2.0]),
+            center=torch.zeros(3),
+        ).project(sampled)
+        torch.testing.assert_close(
+            radius_only,
+            torch.tensor([[[0.0, 3.0, 9.0]]]),
+        )
+
+        azimuth_only = CylindricalCoordinateProjector(
+            reference=reference,
+            keep_mask=torch.tensor([[False, True, False]]),
+            axis=torch.tensor([0.0, 0.0, 1.0]),
+            center=torch.zeros(3),
+        ).project(sampled)
+        torch.testing.assert_close(
+            azimuth_only,
+            torch.tensor([[[5.0, 0.0, 9.0]]]),
+        )
+
+        axial_only = CylindricalCoordinateProjector(
+            reference=reference,
+            keep_mask=torch.tensor([[False, False, True]]),
+            axis=torch.tensor([0.0, 0.0, 1.0]),
+            center=torch.zeros(3),
+        ).project(sampled)
+        torch.testing.assert_close(
+            axial_only,
+            torch.tensor([[[0.0, 5.0, 2.0]]]),
+        )
+
+    def test_cylindrical_azimuth_rejects_axis_reference(self) -> None:
+        with self.assertRaisesRegex(ValueError, "lies on the symmetry axis"):
+            CylindricalCoordinateProjector(
+                reference=torch.tensor([[[0.0, 0.0, 2.0]]]),
+                keep_mask=torch.tensor([[False, True, False]]),
+                axis=torch.tensor([0.0, 0.0, 1.0]),
+                center=torch.zeros(3),
+            )
 
 
 if __name__ == "__main__":

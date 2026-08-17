@@ -176,6 +176,13 @@ native RFD3 prevalidation 全通过。用户可在 `polymer_connections` 上声�
 component equivalence、native variadic RFD3 tensor 与 sequence/refolding 闭环仍
 是未实现或未闭环能力，必须 fail closed，不能用近似 full orbit 冒充。
 
+CPU pose optimizer 现按用户声明的 polymer connection graph 生成原子化联动
+方向：相连的两个完整 seed 可以同向或反向平移/旋转，而其余 seed 保持不动。
+这补上了逐组件 polling 无法跨越的 linker/clash 硬约束屏障；每次联动仍在完整
+symmetry-expanded assembly 上统一验收。独立 seed 文件的世界坐标也已加入完整
+resolve -> compile -> strict replay 刚体变换不变性回归：离散拓扑与执行声明必须
+相同，连续数值按 PDB 0.001 A 输入精度比较。
+
 当前 Assembly IR 已经把 `interfaces` 与 `generated_segments/scaffold_links`
 存成不同实例类型，RFD3 adapter 也分别生成 interface audit plan 与 contig；这
 一层基本方向是正确的。刚加入的 ordered-path compiler 应保留为同链多片段的

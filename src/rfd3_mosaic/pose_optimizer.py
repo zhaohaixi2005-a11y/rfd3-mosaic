@@ -16,6 +16,7 @@ useful than pretending that a smooth gradient exists.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import itertools
 import json
 import math
 from pathlib import Path
@@ -120,7 +121,7 @@ class PoseOptimizationResult:
 
     def metadata(self) -> dict[str, Any]:
         return {
-            "method": "deterministic_bounded_pattern_search_v1",
+            "method": "deterministic_connection_block_pattern_search_v2",
             "evaluation_count": self.evaluation_count,
             "accepted_update_count": self.accepted_update_count,
             "converged": self.converged,
@@ -137,6 +138,79 @@ class PoseOptimizationResult:
             },
             "trajectory": list(self.trajectory),
         }
+
+
+def _joint_component_patterns(
+    design: UserDesignSpec,
+    component_ids: tuple[str, ...],
+) -> tuple[tuple[float, ...], ...]:
+    """Return deterministic atomic directions for coupled pose polling.
+
+    A single-coordinate move can be rejected even when moving two connected
+    supplied seeds together is feasible (for example, when a linker must
+    remain within its contour bound throughout the search).  The original
+    optimizer only tried one all-component direction and one order-dependent
+    alternating direction.  Here the user's polymer graph supplies the
+    physically relevant two-component blocks.  Designs without explicit
+    connections retain a complete pair fallback so the optimizer is still
+    useful for expert inputs.
+
+    Patterns are canonicalized up to global sign because the caller polls
+    both directions explicitly.
+    """
+
+    if not component_ids:
+        return ()
+    index_by_component = {
+        component_id: index
+        for index, component_id in enumerate(component_ids)
+    }
+    patterns: list[tuple[float, ...]] = []
+    seen: set[tuple[float, ...]] = set()
+
+    def add(pattern: tuple[float, ...]) -> None:
+        if not any(pattern):
+            return
+        first_nonzero = next(value for value in pattern if value != 0.0)
+        canonical = (
+            pattern
+            if first_nonzero > 0.0
+            else tuple(-value for value in pattern)
+        )
+        if canonical not in seen:
+            seen.add(canonical)
+            patterns.append(canonical)
+
+    add(tuple(1.0 for _ in component_ids))
+    add(tuple(
+        1.0 if index % 2 == 0 else -1.0
+        for index in range(len(component_ids))
+    ))
+
+    connected_pairs = {
+        tuple(sorted((
+            connection.from_endpoint.component,
+            connection.to_endpoint.component,
+        )))
+        for connection in design.connections
+        if connection.from_endpoint.component
+        != connection.to_endpoint.component
+        and connection.from_endpoint.component in index_by_component
+        and connection.to_endpoint.component in index_by_component
+    }
+    if not connected_pairs:
+        connected_pairs = set(itertools.combinations(component_ids, 2))
+
+    for first, second in sorted(connected_pairs):
+        same = [0.0] * len(component_ids)
+        same[index_by_component[first]] = 1.0
+        same[index_by_component[second]] = 1.0
+        add(tuple(same))
+
+        opposed = list(same)
+        opposed[index_by_component[second]] = -1.0
+        add(tuple(opposed))
+    return tuple(patterns)
 
 
 def _symmetry_frame(
@@ -817,13 +891,7 @@ def optimize_design_poses(
         # must move apart together without temporarily breaking a linker),
         # and make the result independent of which component happens to sort
         # first.  Coordinate polling below is only the local polish stage.
-        joint_patterns = (
-            tuple(1.0 for _ in component_ids),
-            tuple(
-                1.0 if index % 2 == 0 else -1.0
-                for index in range(len(component_ids))
-            ),
-        )
+        joint_patterns = _joint_component_patterns(design, component_ids)
         for variable in variables:
             base_delta = (
                 rotation_delta

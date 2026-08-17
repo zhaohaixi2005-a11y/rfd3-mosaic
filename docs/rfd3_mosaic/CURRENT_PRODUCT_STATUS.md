@@ -323,6 +323,13 @@ audit passes.
   constrained to that chord. Explicit stabilizer/coset
   components still fail closed because they require stabilizer-aware local
   frames.
+- Continuous refinement now derives atomic two-component block directions
+  from the declared polymer-connection graph. This allows two connected
+  supplied seeds to cross a coordinate-wise feasibility barrier without
+  moving unrelated seeds, while retaining complete-assembly hard checks and
+  frozen strict replay. An end-to-end regression proves that independently
+  supplied seed files produce the same executable topology after an arbitrary
+  rigid input-frame change (within the source PDB coordinate precision).
 - Cross-seam fixed components now retain the selectors actually materialized
   in the ASU and resolve each supplied-seed member through its own relative
   native group action. A runtime prevalidation regression covers the real
@@ -432,6 +439,12 @@ gate are now complete.
   and rotation for several interfaces. Explicit stabilizer-frame placement
   and systematic calibration of radius/axial/azimuth/tilt/twist schedules
   across T/O/I remain open.
+- The exact timestep-level cylindrical-coordinate projector now exists in the
+  RFD3 constraint runtime and independently composes radius, azimuth and axial
+  locks with symmetry/fixed-XYZ lifecycle projection. Public YAML lowering,
+  token-feature transport and result audit for `kind: cylindrical` are not
+  yet connected, so the capability remains fail-closed rather than being
+  mislabeled as user-executable.
 - General vertex/edge/face combinations, several mixed-multiplicity interface
   types and unknown-pose stabilizer-frame optimization. The first static,
   pre-positioned T C2--C3 incidence is CPU closed.

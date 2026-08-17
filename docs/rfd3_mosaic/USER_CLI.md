@@ -367,6 +367,13 @@ already meaningful assembly. `preserve_input` rejects seeds from unrelated
 source files. `solve` requires at least two supplied interfaces; it moves each
 complete interface as a rigid hyperedge, never its participants independently.
 
+During `solve`, Mosaic polls complete-seed poses both individually and in
+connection-graph blocks. Two user-connected seeds may therefore translate or
+rotate together (same or opposite direction) without temporarily breaking a
+linker or interface hard contract; an unrelated seed is not dragged along.
+Every accepted block move is recompiled on the complete expanded assembly and
+is written back as an exact replayable pose.
+
 The current executable full-orbit contract requires:
 
 - at least two user-supplied `geometry: preserve_exact` seeds;

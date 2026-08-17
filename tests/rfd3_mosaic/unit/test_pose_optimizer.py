@@ -32,7 +32,7 @@ def _atom_line(
 def _write_structure(path: Path) -> None:
     lines: list[str] = []
     serial = 1
-    for chain, x_offset in (("A", 5.0), ("B", 20.0)):
+    for chain, x_offset in (("A", 5.0), ("B", 20.0), ("C", 35.0)):
         for residue in range(1, 3):
             for atom_name, delta in (
                 ("N", -0.5),
@@ -222,6 +222,93 @@ class ContinuousPoseOptimizerTestCase(unittest.TestCase):
 
         self.assertTrue(result.final_evaluation.feasible)
         self.assertEqual(result.accepted_update_count, 0)
+
+    def test_connected_seed_pair_can_cross_coordinate_barrier(self) -> None:
+        payload = self.design.model_dump(mode="json")
+        payload["components"]["gamma"] = {
+            "selectors": ["C1-2"],
+            "geometry": "rigid",
+        }
+        payload["connections"] = [
+            {
+                "id": "alpha_to_beta",
+                "from": "alpha.C",
+                "to": "beta.N",
+                "length": 20,
+            }
+        ]
+        design = UserDesignSpec.model_validate(payload)
+        initial_radii: dict[str, float] = {}
+
+        def evaluate(candidate: UserDesignSpec) -> PoseEvaluation:
+            radii = {
+                component_id: pose.radius.minimum
+                for component_id, pose in (
+                    candidate.sampling.initial_poses or {}
+                ).items()
+            }
+            if not initial_radii:
+                initial_radii.update(radii)
+            delta = tuple(
+                round(radii[component_id] - initial_radii[component_id], 6)
+                for component_id in ("alpha", "beta", "gamma")
+            )
+            exact = delta == (4.0, -4.0, 0.0)
+            initial = delta == (0.0, 0.0, 0.0)
+            penalty = 0.0 if exact else (10.0 if initial else 20.0)
+            hard_clashes = 0 if exact else 1
+            return PoseEvaluation(
+                score=(
+                    float(not exact),
+                    float(hard_clashes),
+                    0.0,
+                    0.0,
+                    float(hard_clashes),
+                    0.0,
+                    0.0,
+                    penalty,
+                    10.0,
+                    -2.0,
+                ),
+                feasible=exact,
+                hard_clashes=hard_clashes,
+                failed_required_interfaces=(),
+                infeasible_links=(),
+                blocked_linker_corridors=(),
+                required_objective_failures=0,
+                linker_contour_excess=0.0,
+                maximum_linker_endpoint_distance=10.0,
+                minimum_linker_corridor_clearance=3.0,
+                minimum_linker_axis_clearance=3.0,
+                maximum_terminal_tangent_angle_deg=30.0,
+                minimum_inter_group_distance=2.0,
+                objective_penalty=penalty,
+            )
+
+        with patch(
+            "rfd3_mosaic.pose_optimizer.evaluate_design_pose",
+            side_effect=evaluate,
+        ):
+            result = optimize_design_poses(
+                design,
+                levels=1,
+                maximum_translation=6.0,
+                maximum_rotation_deg=15.0,
+                translation_step=4.0,
+                rotation_step_deg=5.0,
+            )
+
+        self.assertTrue(result.converged)
+        accepted = [
+            item for item in result.trajectory
+            if item["component"] == "__joint__"
+        ]
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["pattern"], [1.0, -1.0, 0.0])
+        self.assertEqual(
+            result.metadata()["method"],
+            "deterministic_connection_block_pattern_search_v2",
+        )
 
     def test_flexible_linker_chord_obstruction_is_a_soft_routing_signal(
         self,

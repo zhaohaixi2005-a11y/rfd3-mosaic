@@ -13,6 +13,9 @@ from typing import Callable, Literal
 
 import torch
 
+from rfd3.inference.symmetry.cylindrical_projector import (
+    CylindricalCoordinateProjector,
+)
 from rfd3.inference.symmetry.joint_projector import UnifiedJointProjector
 
 
@@ -54,6 +57,7 @@ class MosaicConstraintRuntime:
     projector: UnifiedJointProjector
     fixed_target: torch.Tensor
     fixed_mask: torch.Tensor
+    cylindrical_projector: CylindricalCoordinateProjector | None = None
     proposal_source: ProposalSource = "denoiser"
     proposal_interval: int = 1
     proposal_hook: ProposalHook | None = None
@@ -147,13 +151,23 @@ class MosaicConstraintRuntime:
             raise ValueError(
                 f"{label} contains NaN or Inf coordinates"
             )
-        return self.projector.project(
+        projected = self.projector.project(
             coordinates,
             constraint_target=self.fixed_target,
             constraint_mask=self.fixed_mask,
             restore=True,
             label=label,
         )
+        if self.cylindrical_projector is not None:
+            projected = self.cylindrical_projector.project(projected)
+            # Cylindrical selectors are required to expand symmetrically.
+            # Validate again because this second hard projection occurs after
+            # the unified symmetry/fixed-XYZ projection.
+            self.projector.validate_closure(
+                projected,
+                f"{label} after cylindrical projection",
+            )
+        return projected
 
     def synchronize_initial_conditioning(self) -> None:
         """Publish the initial exact target through the runtime boundary."""
@@ -322,6 +336,16 @@ class MosaicConstraintRuntime:
                 "runtime fixed target: maximum error "
                 f"{self.final_fixed_target_maximum_error:.8f} A"
             )
+        cylindrical_error = (
+            self.cylindrical_projector.maximum_error(finalized)
+            if self.cylindrical_projector is not None
+            else 0.0
+        )
+        if cylindrical_error > 1.0e-5:
+            raise RuntimeError(
+                "Final cylindrical hard-constraint projection exceeded "
+                f"its exact tolerance: {cylindrical_error:.8f}"
+            )
         self._state = "finalized"
         return finalized
 
@@ -338,6 +362,9 @@ class MosaicConstraintRuntime:
             "final_fixed_target_rmsd": self.final_fixed_target_rmsd,
             "final_fixed_target_maximum_error": (
                 self.final_fixed_target_maximum_error
+            ),
+            "cylindrical_projector_active": (
+                self.cylindrical_projector is not None
             ),
         }
 
