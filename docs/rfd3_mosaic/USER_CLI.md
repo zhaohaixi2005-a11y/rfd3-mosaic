@@ -343,6 +343,15 @@ candidate must pass standalone hash replay, native RFD3 adapter construction
 and runtime feature prevalidation. The `resolution_manifest.json` records the
 component multiplicities and exact coset mapping.
 
+The identical ordinary contract supports a pre-positioned O/C2--C4 interface
+with `use: {exact: 24}`. Mosaic derives `12 x C2` and `6 x C4`, compacts fixed
+fragments belonging to the same generated polymer path into one input chain,
+and strictly prevalidates the resulting 48-chain RFD3 design. An I/C2--C5
+request is recognized and its `30 x C2`, `12 x C5`, 60-interface incidence is
+reported, but the current explicit AtomWorks route cannot encode its 120
+physical chains. Such a request fails closed and requires the future
+mixed-orbit local-neighbourhood execution path.
+
 This input must already place the two oligomers in their meaningful relative
 interface pose. Independently supplied C2 and C3 files whose relative pose is
 unknown remain fail-closed because their SE(3) optimization must preserve two

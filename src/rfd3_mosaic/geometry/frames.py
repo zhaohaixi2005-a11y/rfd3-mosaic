@@ -71,11 +71,14 @@ def reference_interface_pca_frame(
         toward_partner = partner.mean(axis=0) - origin
         projection = float(np.dot(z_axis, toward_partner))
         if abs(projection) <= degeneracy_tolerance:
-            raise ValueError(
-                "Partner centroid lies in the interface plane; normal sign "
-                "is ambiguous"
-            )
-        if projection < 0.0:
+            # A perfectly symmetric oligomeric port can place the aggregate
+            # partner centroid in its PCA plane even though the complete
+            # reference interface is valid.  The normal sign then carries no
+            # partner-facing information, so use the same deterministic gauge
+            # as a port without a partner.  The full reference transform still
+            # preserves the supplied interface geometry exactly.
+            z_axis = _canonical_vector_sign(z_axis)
+        elif projection < 0.0:
             z_axis *= -1.0
     else:
         z_axis = _canonical_vector_sign(z_axis)

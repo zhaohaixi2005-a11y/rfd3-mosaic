@@ -1116,7 +1116,7 @@ def _compile_atoms(
         for fragment_id, fragment_spec in spec.fragments.items()
     }
     polymer_paths = _continuous_fragment_paths(scaffold_graph)
-    entity_ids = {
+    source_entity_ids = {
         fragment_id: str(index + 1)
         for index, fragment_id in enumerate(spec.fragments)
     }
@@ -1128,36 +1128,47 @@ def _compile_atoms(
     # allocation for small assemblies and prioritize required ASU endpoints
     # only when the namespace would otherwise spill.
     fragment_order = list(instances.fragments)
-    if len(fragment_order) > 52:
-        compact_required: set[str] = set()
-        for link in scaffold_graph.links.values():
-            if link.copy_index != 0:
-                continue
-            compact_required.update(
-                (
-                    link.from_fragment_instance_id,
-                    link.to_fragment_instance_id,
-                )
-            )
-        if len(compact_required) > 52:
+    compact_polymer_paths = len(fragment_order) > 52
+    if compact_polymer_paths:
+        if len(polymer_paths) > 52:
             raise NotImplementedError(
-                "The native ASU contig requires more than 52 fixed "
-                "fragments, exceeding AtomWorks' one-character chain "
-                "identifier namespace"
+                "The preexpanded assembly contains "
+                f"{len(polymer_paths)} physical polymer chains, exceeding "
+                "AtomWorks' 52 one-character chain identifier namespace; "
+                "use a local-neighbourhood backend instead of materializing "
+                "every physical component"
             )
-        fragment_order = [
-            fragment_id
-            for fragment_id in fragment_order
-            if fragment_id in compact_required
-        ] + [
-            fragment_id
-            for fragment_id in fragment_order
-            if fragment_id not in compact_required
-        ]
-    chain_id_by_fragment = {
-        fragment_id: _chain_id(index)
-        for index, fragment_id in enumerate(fragment_order)
-    }
+        chain_id_by_fragment = {
+            fragment_id: _chain_id(path_index)
+            for path_index, path in enumerate(polymer_paths)
+            for fragment_id in path
+        }
+        entity_id_by_fragment = {
+            fragment_id: str(path_index + 1)
+            for path_index, path in enumerate(polymer_paths)
+            for fragment_id in path
+        }
+    else:
+        # Preserve the historical small-assembly representation byte for
+        # byte: one source fragment per input chain and source entity.
+        chain_id_by_fragment = {
+            fragment_id: _chain_id(index)
+            for index, fragment_id in enumerate(fragment_order)
+        }
+        entity_id_by_fragment = {
+            fragment.id: source_entity_ids[fragment.source_id]
+            for fragment in instances.fragments.values()
+        }
+
+    first_label_seq_id_by_fragment: dict[str, int] = {}
+    for path in polymer_paths:
+        next_label_seq_id = 1
+        for fragment_id in path:
+            first_label_seq_id_by_fragment[fragment_id] = next_label_seq_id
+            source_id = instances.fragments[fragment_id].source_id
+            next_label_seq_id += len({
+                atom.residue_id for atom in source_atoms[source_id]
+            })
 
     compiled_atoms: list[_CompiledAtom] = []
     fragment_ranges: dict[str, dict[str, Any]] = {}
@@ -1170,19 +1181,27 @@ def _compile_atoms(
         )
         transformed = apply_transform(coordinates, fragment.transform)
         chain_id = chain_id_by_fragment[fragment.id]
+        entity_id = entity_id_by_fragment[fragment.id]
+        first_label_seq_id = (
+            first_label_seq_id_by_fragment[fragment.id]
+            if compact_polymer_paths
+            else 1
+        )
         residue_labels: dict[tuple[str, int, str], int] = {}
         fragment_atom_start = len(compiled_atoms)
         fragment_residue_indices: list[int] = []
         for atom, coordinate in zip(atoms, transformed, strict=True):
             if atom.residue_id not in residue_labels:
-                residue_labels[atom.residue_id] = len(residue_labels) + 1
+                residue_labels[atom.residue_id] = (
+                    first_label_seq_id + len(residue_labels)
+                )
                 fragment_residue_indices.append(global_residue_index)
                 global_residue_index += 1
             compiled_atoms.append(
                 _CompiledAtom(
                     atom_index=len(compiled_atoms),
                     chain_id=chain_id,
-                    entity_id=entity_ids[fragment.source_id],
+                    entity_id=entity_id,
                     label_seq_id=residue_labels[atom.residue_id],
                     coordinate=tuple(float(value) for value in coordinate),
                     source_atom=atom,
@@ -1198,7 +1217,7 @@ def _compile_atoms(
             )
         fragment_ranges[fragment.id] = {
             "chain_id": chain_id,
-            "entity_id": entity_ids[fragment.source_id],
+            "entity_id": entity_id,
             "compiled_atom_indices": list(
                 range(fragment_atom_start, len(compiled_atoms))
             ),

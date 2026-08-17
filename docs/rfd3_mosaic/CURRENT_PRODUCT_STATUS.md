@@ -36,6 +36,15 @@ unknown-pose placement, dynamic mixed-orbit motion, several independent
 mixed-valency interfaces and GPU/scientific validation are not implied by the
 CPU closeout.
 
+The same contract now strictly replays for an octahedral C2--C4 interface:
+12 C2 components, 6 C4 components and 24 supplied-interface instances.  Its
+48 continuous protein chains are encoded path-wise rather than wasting one
+AtomWorks chain ID per fixed fragment.  Icosahedral C2--C5 incidence is also
+fully enumerated (30 C2, 12 C5 and 60 interfaces), but its 120 physical chains
+exceed the installed explicit parser's capacity.  I therefore remains
+fail-closed pending the mixed-orbit local-neighbourhood runtime; it is not a
+completed RFD3 execution claim.
+
 ### Packing guidance CPU closeout (GPU evidence pending)
 
 Generated-interface guidance now uses observed `capture -> expand -> polish`
@@ -58,8 +67,8 @@ The latest compatibility-preserving pass closes three CPU execution gaps:
 - ordinary diameter/cavity ranges now drive pose ranking and are checked
   again on the final RFD3 structure.
 
-These changes retain all existing C3/D3/T, static quotient, fixed/mobile and
-packing paths. The Python 3.12 CPU gate now passes 798 tests.
+These changes retain all existing C3/D3/T/O, static quotient, fixed/mobile and
+packing paths. The Python 3.12 CPU gate now passes 800 tests.
 The three-user-seed T resolver now accepts user-authoritative finite-group
 relations on polymer connections. The reference intent freezes `T:g01` and
 `T:g03`, produces one topology rather than eight equivalent generator

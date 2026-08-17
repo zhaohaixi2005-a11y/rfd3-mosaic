@@ -5,6 +5,30 @@ Last updated: 2026-08-17
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
 
+## 2026-08-17 octahedral mixed-stabilizer CPU extension
+
+The static supplied-oligomer incidence path now generalizes from T/C2--C3 to
+O/C2--C4.  The standalone compiler reuses one mmCIF/AtomWorks chain identifier
+for all fixed fragments on one proven continuous polymer path, with
+deterministic path-order `label_seq_id` ranges.  Small assemblies retain their
+historical one-fragment-per-chain representation.
+
+The O regression proves `12 x C2 + 6 x C4`, 24 physical instances of the one
+user-supplied interface, zero invented interfaces, strict standalone replay,
+native RFD3 construction and finite AtomWorks runtime features.  This removes
+an artificial fragment-count failure: the structure has 48 physical polymer
+chains and therefore fits the installed parser's 52 one-character IDs.
+
+The same exact stabilizer/coset and incidence construction is implemented for
+I/C2--C5 (`30 x C2 + 12 x C5`, 60 physical interfaces), but explicit runtime
+materialization contains 120 polymer chains.  It now fails early with that
+physical count and directs execution to the local-neighbourhood backend.  It
+is not reported as executable I support until that backend can carry the
+mixed component layout through RFD3.
+
+The complete CPU regression gate after this extension is
+`800 tests in 123.087s, OK` on `mightymorphin` with CUDA hidden.
+
 ## 2026-08-17 mixed-stabilizer component incidence CPU closeout
 
 The ordinary resolver now closes the first executable mixed-multiplicity cage

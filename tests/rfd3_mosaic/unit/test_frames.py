@@ -49,6 +49,33 @@ class InterfaceFrameTestCase(unittest.TestCase):
 
         self.assertGreater(np.dot(frame[:3, 2], [0.0, 0.0, 1.0]), 0.0)
 
+    def test_in_plane_partner_uses_deterministic_normal_gauge(self) -> None:
+        planar = np.array(
+            [
+                [-4.0, -1.0, 0.0],
+                [-2.0, 2.0, 0.0],
+                [0.0, -1.5, 0.0],
+                [3.0, 1.0, 0.0],
+                [5.0, -0.5, 0.0],
+            ]
+        )
+        partner = planar + np.array([10.0, 0.0, 0.0])
+
+        forward = reference_interface_pca_frame(
+            planar,
+            partner_coordinates=partner,
+        )
+        reverse = reference_interface_pca_frame(
+            planar[::-1],
+            partner_coordinates=partner[::-1],
+        )
+
+        np.testing.assert_allclose(forward, reverse, atol=1e-7)
+        self.assertGreaterEqual(
+            forward[np.argmax(np.abs(forward[:3, 2])), 2],
+            0.0,
+        )
+
     def test_collinear_coordinates_are_rejected(self) -> None:
         coordinates = np.array(
             [

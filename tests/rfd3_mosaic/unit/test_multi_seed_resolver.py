@@ -91,20 +91,29 @@ def _write_two_seed_structure(
     path.write_text("".join(lines) + "END\n", encoding="utf-8")
 
 
-def _write_t_c2_c3_interface_seed(path: Path) -> None:
+def _write_polyhedral_c2_cn_interface_seed(
+    path: Path,
+    *,
+    symmetry: str,
+    right_valency: int,
+) -> None:
+    right_id = f"c{right_valency}"
     plan = next(
         item
         for item in enumerate_binary_interface_incidence_plans(
-            symmetry="T",
+            symmetry=symmetry,
             interface_id="natural_interface",
             left_participant="c2",
-            right_participant="c3",
+            right_participant=right_id,
         )
-        if (item.left.valency, item.right.valency) == (2, 3)
+        if (item.left.valency, item.right.valency) == (2, right_valency)
     )
-    registry = build_transform_registry(finite_symmetry_spec("T"))
+    registry = build_transform_registry(finite_symmetry_spec(symmetry))
     lines: list[str] = []
     serial = 1
+    right_chains = tuple(
+        chr(ord("C") + index) for index in range(right_valency)
+    )
     for chains, stabilizer_ids, interface_offset in (
         (
             ("A", "B"),
@@ -112,16 +121,16 @@ def _write_t_c2_c3_interface_seed(path: Path) -> None:
             np.asarray((0.0, 0.0, 0.0)),
         ),
         (
-            ("C", "D", "E"),
+            right_chains,
             plan.right.action.stabilizer_transform_ids,
-            np.asarray((0.0, 4.0, 0.0)),
+            np.asarray((0.0, 3.5, 2.0)),
         ),
     ):
         for chain, transform_id in zip(chains, stabilizer_ids, strict=True):
             transform = registry.transform(transform_id)
             for residue in range(1, 7):
                 base = np.asarray(
-                    (60.0 + 0.3 * residue, 25.0, 1.4 * residue),
+                    (160.0 + 0.3 * residue, 65.0, 1.4 * residue),
                     dtype=np.float64,
                 ) + interface_offset
                 for atom_name, offset in (
@@ -146,6 +155,14 @@ def _write_t_c2_c3_interface_seed(path: Path) -> None:
                     )
                     serial += 1
     path.write_text("".join(lines) + "END\n", encoding="utf-8")
+
+
+def _write_t_c2_c3_interface_seed(path: Path) -> None:
+    _write_polyhedral_c2_cn_interface_seed(
+        path,
+        symmetry="T",
+        right_valency=3,
+    )
 
 
 class MultiSeedSimpleResolverTestCase(unittest.TestCase):
@@ -768,6 +785,89 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
             ["natural_interface"],
         )
         self.assertEqual(selected["invented_interface_count"], 0)
+
+    def test_o_strictly_replays_and_i_fails_at_runtime_chain_capacity(
+        self,
+    ) -> None:
+        cases = (
+            ("O", 4, 24, 12, 6),
+            ("I", 5, 60, 30, 12),
+        )
+        for symmetry, right_valency, interfaces, c2_count, right_count in cases:
+            with self.subTest(symmetry=symmetry):
+                source = self.root / f"{symmetry.lower()}_c2_c{right_valency}.pdb"
+                _write_polyhedral_c2_cn_interface_seed(
+                    source,
+                    symmetry=symmetry,
+                    right_valency=right_valency,
+                )
+                right_id = f"c{right_valency}"
+                right_chains = tuple(
+                    chr(ord("C") + index)
+                    for index in range(right_valency)
+                )
+                right_selector = ",".join(
+                    f"{chain}1-2,{chain}5-6"
+                    for chain in right_chains
+                )
+                intent = SimpleCageIntentSpec.model_validate({
+                    "name": f"ordinary-{symmetry.lower()}-c2-{right_id}",
+                    "input": source,
+                    "goal": {
+                        "architecture": "cage",
+                        "composition": "auto",
+                        "symmetry": [symmetry],
+                    },
+                    "interface_seeds": {
+                        "natural_interface": {
+                            "participants": ["c2", right_id],
+                            "selectors": {
+                                "c2": "A1-2,A5-6,B1-2,B5-6",
+                                right_id: right_selector,
+                            },
+                            "use": {"exact": interfaces},
+                            "geometry": "preserve_exact",
+                        }
+                    },
+                    "generation": {
+                        "length": {"minimum": 2, "maximum": 2}
+                    },
+                })
+
+                report = resolve_simple_intent(
+                    intent,
+                    self.root / f"{symmetry.lower()}-mixed-resolution",
+                    symmetry_ids=(symmetry,),
+                    timesteps=50,
+                    top_count=1,
+                )
+
+                selected = report["ranking"][0]
+                self.assertEqual(selected["physical_interface_count"], interfaces)
+                self.assertEqual(
+                    selected["component_orbit_multiplicities"],
+                    {
+                        "component__c2": c2_count,
+                        f"component__{right_id}": right_count,
+                    },
+                )
+                self.assertEqual(selected["invented_interface_count"], 0)
+                if symmetry == "O":
+                    self.assertEqual(
+                        report["selected_count"], 1, report["ranking"]
+                    )
+                    self.assertTrue(selected["replay_validated"])
+                    self.assertTrue(selected["rfd3_adapter_prevalidated"])
+                else:
+                    self.assertEqual(report["selected_count"], 0)
+                    self.assertIn(
+                        "120 physical polymer chains",
+                        selected["error"],
+                    )
+                    self.assertIn(
+                        "local-neighbourhood backend",
+                        selected["error"],
+                    )
 
     def test_two_seed_candidates_use_the_standard_expert_graph(self) -> None:
         candidates = enumerate_simple_design_candidates(
