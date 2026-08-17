@@ -12,6 +12,19 @@ cluster canaries and are not inferred from local CPU success.
 
 ## Current implementation checkpoint
 
+### Packing guidance CPU closeout (GPU evidence pending)
+
+Generated-interface guidance now uses observed `capture -> expand -> polish`
+phases rather than timestep alone, protects the worst declared interface in a
+multi-interface transaction, fails impossible generated-patch capacity before
+sampling, and emits final heavy-atom residue-pair density, depth, fragmentation,
+void and hydrophobic-composition proxies. The runtime/audit data contract is
+schema v8. Detailed semantics and evidence boundaries are recorded in
+`docs/rfd3_mosaic/PACKING_GUIDANCE.md`.
+
+This closes the non-GPU implementation slice, not the scientific validation
+gate. Stable broad interfaces still require repeated frozen 50-step CUDA runs.
+
 The latest compatibility-preserving pass closes three CPU execution gaps:
 
 - linker ranges are restored to exact symmetry-safe lengths before strict
@@ -22,7 +35,7 @@ The latest compatibility-preserving pass closes three CPU execution gaps:
   again on the final RFD3 structure.
 
 These changes retain all existing C3/D3/T, static quotient, fixed/mobile and
-packing paths. The repository-local Python 3.12 gate now passes 787 tests.
+packing paths. The repository-local Python 3.12 gate now passes 794 tests.
 The three-user-seed T resolver produces eight compiler-accepted hypotheses,
 selects one strict-replay candidate, and independently validates that frozen
 YAML as 10,416 atoms, 1,752 residues and 24 physical polymer chains with

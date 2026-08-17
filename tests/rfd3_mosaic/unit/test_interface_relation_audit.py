@@ -397,6 +397,15 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         )
 
         self.assertTrue(report["passed"])
+        self.assertTrue(
+            report["summary"]["output_packing_quality_satisfied"]
+        )
+        self.assertGreaterEqual(
+            report["summary"][
+                "minimum_reciprocal_contact_residue_pairs"
+            ],
+            1,
+        )
         for edge in report["interfaces"]:
             self.assertEqual(edge["minimum_contact_residues_per_side"], 1)
             self.assertEqual(
@@ -405,6 +414,13 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             )
             self.assertTrue(edge["contact_residue_coverage_satisfied"])
             self.assertTrue(edge["contact_continuity_satisfied"])
+            self.assertGreaterEqual(
+                edge["reciprocal_contact_residue_pair_count"],
+                1,
+            )
+            self.assertGreaterEqual(edge["reciprocal_contact_density"], 1.0)
+            self.assertGreater(edge["heavy_atom_burial_proxy"], 0.0)
+            self.assertTrue(edge["output_packing_quality_satisfied"])
 
     def test_output_contact_auto_continuity_respects_generated_runs(
         self,
@@ -453,6 +469,9 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             self.assertEqual(edge["available_contiguous_residues_left"], 2)
             self.assertEqual(edge["available_contiguous_residues_right"], 2)
             self.assertTrue(edge["contact_continuity_satisfied"])
+            self.assertEqual(edge["contact_island_count_left"], 8)
+            self.assertEqual(edge["contact_island_count_right"], 8)
+            self.assertTrue(edge["output_packing_quality_satisfied"])
 
     def test_output_contact_explicit_continuity_is_not_relaxed(self) -> None:
         residue_numbers = tuple(

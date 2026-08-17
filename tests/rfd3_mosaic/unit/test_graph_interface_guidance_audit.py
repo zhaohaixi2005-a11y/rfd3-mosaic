@@ -53,11 +53,23 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
             json.dumps(
                 {
                     "graph_interface_guidance_diagnostics": {
-                        "schema_version": 7,
+                        "schema_version": 8,
                         "runtime_active": True,
                         "edge_count": 1,
                         "edge_ids": [edge_id],
                         "source_interface_ids": ["edge"],
+                        "capacity_preflight": [
+                            {
+                                "edge_id": "edge@0",
+                                "source_interface_id": "edge",
+                                "requested_residues_per_side": 3,
+                                "requested_contiguous_residues_per_side": 2,
+                                "available_residues_left": 8,
+                                "available_residues_right": 8,
+                                "available_contiguous_residues_left": 8,
+                                "available_contiguous_residues_right": 8,
+                            }
+                        ],
                         "applied_steps": 1,
                         "final_polish_steps": 1,
                         "final_proxy_targets_satisfied": True,
@@ -97,6 +109,9 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
                                     }
                                 },
                                 "window_weight": 1.0,
+                                "adaptive_phase": "expand",
+                                "time_scheduled_target_ca_distance": 9.0,
+                                "scheduled_target_ca_distance": 9.0,
                                 "energy": 2.0,
                                 "attraction": 2.0,
                                 "coverage": 0.5,
@@ -140,7 +155,7 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         self.assertEqual(report["summary"]["applied_steps"], 1)
         self.assertEqual(
             report["summary"]["diagnostics_schema_version"],
-            7,
+            8,
         )
         self.assertEqual(
             report["summary"]["final_packing_metrics"]["orientation"],
@@ -158,6 +173,52 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         )
         self.assertTrue(
             report["summary"]["patch_identity_contract_valid"]
+        )
+        self.assertTrue(
+            report["summary"]["adaptive_phase_contract_valid"]
+        )
+        self.assertTrue(
+            report["summary"]["capacity_preflight_contract_valid"]
+        )
+        self.assertEqual(
+            report["summary"]["adaptive_phase_counts"]["expand"],
+            1,
+        )
+
+    def test_v8_rejects_missing_adaptive_phase_evidence(self) -> None:
+        self._write_result()
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        payload["graph_interface_guidance_diagnostics"]["steps"][0].pop(
+            "adaptive_phase"
+        )
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["summary"]["adaptive_phase_contract_valid"]
+        )
+
+    def test_v8_rejects_missing_capacity_preflight(self) -> None:
+        self._write_result()
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        payload["graph_interface_guidance_diagnostics"].pop(
+            "capacity_preflight"
+        )
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["summary"]["capacity_preflight_contract_valid"]
         )
 
     def test_v7_rejects_patch_hopping_after_lock(self) -> None:

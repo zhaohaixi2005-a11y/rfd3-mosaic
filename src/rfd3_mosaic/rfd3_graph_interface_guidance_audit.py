@@ -102,6 +102,56 @@ def audit_graph_interface_guidance(
         )
     )
     applied = [step for step in steps if bool(step.get("applied"))]
+    adaptive_phase_contract = bool(
+        diagnostics_schema_version < 8
+        or (
+            applied
+            and all(
+                step.get("adaptive_phase")
+                in {"capture", "expand", "polish"}
+                and _finite(step.get("scheduled_target_ca_distance"))
+                and _finite(step.get("time_scheduled_target_ca_distance"))
+                for step in applied
+            )
+        )
+    )
+    capacity_preflight = diagnostics.get("capacity_preflight", [])
+    capacity_preflight_contract = bool(
+        diagnostics_schema_version < 8
+        or (
+            isinstance(capacity_preflight, list)
+            and len(capacity_preflight) == len(expected_ids)
+            and {
+                str(record.get("edge_id"))
+                for record in capacity_preflight
+                if isinstance(record, dict)
+            }
+            == set(expected_ids)
+            and all(
+                int(record.get("available_residues_left", 0))
+                >= int(record.get("requested_residues_per_side", 1))
+                and int(record.get("available_residues_right", 0))
+                >= int(record.get("requested_residues_per_side", 1))
+                and int(
+                    record.get("available_contiguous_residues_left", 0)
+                )
+                >= int(
+                    record.get(
+                        "requested_contiguous_residues_per_side", 1
+                    )
+                )
+                and int(
+                    record.get("available_contiguous_residues_right", 0)
+                )
+                >= int(
+                    record.get(
+                        "requested_contiguous_residues_per_side", 1
+                    )
+                )
+                for record in capacity_preflight
+            )
+        )
+    )
     finite_applied_steps = []
     packing_evidence_steps = []
     for step in applied:
@@ -284,6 +334,8 @@ def audit_graph_interface_guidance(
         and identifier_contract
         and execution_contract
         and patch_identity_contract
+        and adaptive_phase_contract
+        and capacity_preflight_contract
         and final_proxy_targets_satisfied
     )
     final_step = applied[-1] if applied else {}
@@ -346,6 +398,16 @@ def audit_graph_interface_guidance(
             "runtime_edge_count": len(observed_ids),
             "identifier_contract_valid": identifier_contract,
             "patch_identity_contract_valid": patch_identity_contract,
+            "adaptive_phase_contract_valid": adaptive_phase_contract,
+            "capacity_preflight_contract_valid": (
+                capacity_preflight_contract
+            ),
+            "adaptive_phase_counts": {
+                phase: sum(
+                    step.get("adaptive_phase") == phase for step in applied
+                )
+                for phase in ("capture", "expand", "polish")
+            },
             "locked_patch_steps": len(locked_steps),
             "trajectory_steps": len(steps),
             "applied_steps": len(applied),

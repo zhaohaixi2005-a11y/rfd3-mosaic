@@ -10,7 +10,7 @@ unrelated protomers through an all-to-all compactness force.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Any, Callable
 
@@ -71,6 +71,11 @@ class GraphInterfaceGuidanceConfig:
     maximum_shape_loss: float = 0.08
     maximum_backbone_loss: float = 0.02
     maximum_patch_exclusivity_loss: float = 0.05
+    # A good interface may not pay for a materially worse one.  These small
+    # tolerances absorb floating-point and projection noise while preserving
+    # the worst declared source interface during a joint move.
+    maximum_source_regression_fraction: float = 0.02
+    maximum_source_regression_absolute: float = 2.0e-3
 
     def __post_init__(self) -> None:
         if (
@@ -156,6 +161,14 @@ class GraphInterfaceGuidanceConfig:
         ):
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} cannot be negative")
+        if self.maximum_source_regression_fraction < 0.0:
+            raise ValueError(
+                "maximum_source_regression_fraction cannot be negative"
+            )
+        if self.maximum_source_regression_absolute < 0.0:
+            raise ValueError(
+                "maximum_source_regression_absolute cannot be negative"
+            )
 
 
 @dataclass(frozen=True)
@@ -195,6 +208,7 @@ class GraphInterfaceTopology:
     # generated--fixed junctions.  A locally rigid interface patch must not
     # tear away from the rest of its generated chain.
     junction_ca_pairs: torch.Tensor | None = None
+    capacity_preflight: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -604,13 +618,17 @@ def build_graph_interface_topology(
         if junction_pairs
         else torch.empty((0, 2), dtype=torch.long, device=device)
     )
-    return GraphInterfaceTopology(
+    topology = GraphInterfaceTopology(
         edges=tuple(edges),
         generated_atom_mask=generated_atom_mask,
         guided_ca_mask=guided_ca_mask,
         safety_ca_mask=safety_ca_mask,
         safety_exclusions=safety_exclusions,
         junction_ca_pairs=junction_ca_pairs,
+    )
+    return replace(
+        topology,
+        capacity_preflight=graph_interface_capacity_preflight(topology),
     )
 
 
@@ -1008,6 +1026,140 @@ def _automatic_interface_targets(
     return coverage, continuity
 
 
+def graph_interface_capacity_preflight(
+    topology: GraphInterfaceTopology,
+) -> tuple[dict[str, Any], ...]:
+    """Prove immutable generated-patch capacity before diffusion starts.
+
+    Coordinates are intentionally absent from this check: diffusion may
+    change them.  Token count, sequence-contiguous capacity and competing
+    interface ownership cannot change, so impossible explicit targets and
+    patch-exclusivity over-subscription can be rejected without a GPU run.
+    """
+
+    records: list[dict[str, Any]] = []
+    pools: list[tuple[str, set[int], int]] = []
+    for edge in topology.edges:
+        left_available = int(edge.left_generated_token_ids.numel())
+        right_available = int(edge.right_generated_token_ids.numel())
+        automatic_coverage, automatic_continuity = (
+            _automatic_interface_targets(left_available, right_available)
+        )
+        requested_coverage = (
+            edge.requested_residues_per_side
+            if edge.requested_residues_per_side > 0
+            else (
+                min(
+                    left_available,
+                    right_available,
+                    max(
+                        2,
+                        int(
+                            math.ceil(
+                                math.sqrt(edge.requested_contact_count)
+                            )
+                        ),
+                    ),
+                )
+                if edge.requested_contact_count > 0
+                else automatic_coverage
+            )
+        )
+        left_contiguous = _maximum_contiguous_available(
+            edge.left_generated_token_ids
+        )
+        right_contiguous = _maximum_contiguous_available(
+            edge.right_generated_token_ids
+        )
+        requested_contiguous = (
+            edge.requested_contiguous_residues_per_side
+            if edge.requested_contiguous_residues_per_side > 0
+            else min(
+                automatic_continuity,
+                left_contiguous,
+                right_contiguous,
+            )
+        )
+        if requested_coverage > min(left_available, right_available):
+            raise ValueError(
+                f"Designed interface {edge.edge_id!r} requests "
+                f"{requested_coverage} generated residues per side but "
+                f"only {left_available}/{right_available} exist"
+            )
+        if requested_contiguous > min(left_contiguous, right_contiguous):
+            raise ValueError(
+                f"Designed interface {edge.edge_id!r} requires a contiguous "
+                f"{requested_contiguous}-residue patch but immutable token "
+                f"capacities are {left_contiguous}/{right_contiguous}"
+            )
+        if edge.requested_contact_count > left_available * right_available:
+            raise ValueError(
+                f"Designed interface {edge.edge_id!r} requests "
+                f"{edge.requested_contact_count} contacts but only "
+                f"{left_available * right_available} generated residue "
+                "pairs exist"
+            )
+        records.append(
+            {
+                "edge_id": edge.edge_id,
+                "source_interface_id": edge.source_interface_id,
+                "requested_residues_per_side": requested_coverage,
+                "requested_contiguous_residues_per_side": (
+                    requested_contiguous
+                ),
+                "available_residues_left": left_available,
+                "available_residues_right": right_available,
+                "available_contiguous_residues_left": left_contiguous,
+                "available_contiguous_residues_right": right_contiguous,
+            }
+        )
+        pools.extend(
+            (
+                (
+                    f"{edge.edge_id}:left",
+                    set(
+                        int(value)
+                        for value in edge.left_generated_token_ids.tolist()
+                    ),
+                    requested_coverage,
+                ),
+                (
+                    f"{edge.edge_id}:right",
+                    set(
+                        int(value)
+                        for value in edge.right_generated_token_ids.tolist()
+                    ),
+                    requested_coverage,
+                ),
+            )
+        )
+
+    # Connected overlap components are the exact resource pools within which
+    # distinct physical interfaces compete for generated residues.
+    remaining = list(range(len(pools)))
+    while remaining:
+        component = {remaining.pop(0)}
+        union = set(pools[next(iter(component))][1])
+        changed = True
+        while changed:
+            changed = False
+            for index in tuple(remaining):
+                if union.intersection(pools[index][1]):
+                    remaining.remove(index)
+                    component.add(index)
+                    union.update(pools[index][1])
+                    changed = True
+        demand = sum(pools[index][2] for index in component)
+        if demand > len(union):
+            participants = sorted(pools[index][0] for index in component)
+            raise ValueError(
+                "Generated interface patches are over-subscribed: "
+                f"participants={participants} require {demand} exclusive "
+                f"residues but their shared pool contains {len(union)}"
+            )
+    return tuple(records)
+
+
 def _assigned_patch(
     edge: GraphInterfaceEdge,
     distance_matrix: torch.Tensor,
@@ -1095,6 +1247,26 @@ def _resolve_edge_patch(
         _maximum_contiguous_available(edge.left_generated_token_ids),
         _maximum_contiguous_available(edge.right_generated_token_ids),
     )
+    if edge.requested_residues_per_side > min(
+        left_available,
+        right_available,
+    ):
+        raise ValueError(
+            f"Designed interface {edge.edge_id!r} requests "
+            f"{edge.requested_residues_per_side} residues per side but only "
+            f"{left_available}/{right_available} generated residues are "
+            "available"
+        )
+    # A disconnected current chain can still become contiguous through the
+    # denoiser, so retain its explicit deficit in the energy.  Total residue
+    # capacity, unlike current geometry, is immutable and safe to fail here.
+    if edge.requested_contact_count > left_available * right_available:
+        raise ValueError(
+            f"Designed interface {edge.edge_id!r} requests "
+            f"{edge.requested_contact_count} residue contacts but its "
+            f"generated sides provide at most "
+            f"{left_available * right_available} pairs"
+        )
     if edge.requested_residues_per_side > 0:
         requested_residues = edge.requested_residues_per_side
     elif edge.requested_contact_count > 0:
@@ -1928,6 +2100,101 @@ def scheduled_interface_ca_distance(
     )
 
 
+def adaptive_graph_interface_phase(
+    energy: GraphInterfaceEnergy,
+    config: GraphInterfaceGuidanceConfig,
+) -> str:
+    """Choose capture, expansion or polish from observed interface quality.
+
+    Time remains a coarse annealing envelope, but is no longer authoritative:
+    a distant patch stays in capture, a narrow patch stays in expansion, and
+    only a reciprocal patch meeting its residue-scale contract enters polish.
+    """
+
+    if bool(
+        torch.any(
+            energy.mean_selected_distances
+            > config.target_ca_distance + 2.0
+        ).item()
+    ):
+        return "capture"
+    coverage_satisfied = bool(
+        torch.all(
+            energy.covered_left_residues
+            >= energy.target_residues_per_side
+        ).item()
+        and torch.all(
+            energy.covered_right_residues
+            >= energy.target_residues_per_side
+        ).item()
+    )
+    continuity_satisfied = bool(
+        torch.all(
+            energy.contiguous_left_residues
+            >= energy.target_contiguous_residues_per_side
+        ).item()
+        and torch.all(
+            energy.contiguous_right_residues
+            >= energy.target_contiguous_residues_per_side
+        ).item()
+    )
+    if not (coverage_satisfied and continuity_satisfied):
+        return "expand"
+    return "polish"
+
+
+def _phase_guidance_config(
+    config: GraphInterfaceGuidanceConfig,
+    phase: str,
+) -> GraphInterfaceGuidanceConfig:
+    """Resolve internal objective weights for the observed packing phase."""
+
+    if phase == "capture":
+        return replace(
+            config,
+            coverage_weight=0.75 * config.coverage_weight,
+            continuity_weight=0.60 * config.continuity_weight,
+            orientation_weight=0.50 * config.orientation_weight,
+            shape_weight=0.50 * config.shape_weight,
+        )
+    if phase == "expand":
+        return replace(
+            config,
+            weight=0.85 * config.weight,
+            coverage_weight=1.25 * config.coverage_weight,
+            continuity_weight=1.35 * config.continuity_weight,
+            shape_weight=0.80 * config.shape_weight,
+        )
+    if phase == "polish":
+        return replace(
+            config,
+            weight=0.60 * config.weight,
+            continuity_weight=1.15 * config.continuity_weight,
+            orientation_weight=1.50 * config.orientation_weight,
+            shape_weight=1.50 * config.shape_weight,
+            maximum_token_step=0.50 * config.maximum_token_step,
+            maximum_patch_rotation_degrees=(
+                0.50 * config.maximum_patch_rotation_degrees
+            ),
+        )
+    raise ValueError(f"Unknown graph-interface phase {phase!r}")
+
+
+def _phase_target_ca_distance(
+    phase: str,
+    scheduled_target: float,
+    config: GraphInterfaceGuidanceConfig,
+) -> float:
+    if phase == "capture":
+        return max(scheduled_target, config.target_ca_distance + 2.0)
+    if phase == "expand":
+        return min(
+            max(scheduled_target, config.target_ca_distance),
+            config.target_ca_distance + 2.0,
+        )
+    return config.target_ca_distance
+
+
 def graph_interface_quality_satisfied(
     energy: GraphInterfaceEnergy,
     *,
@@ -2063,6 +2330,23 @@ def graph_interface_proposal_acceptable(
         before.minimum_global_safety_distance.reshape(1),
         after.minimum_global_safety_distance.reshape(1),
     ):
+        return False
+    if before.per_source_total.shape != after.per_source_total.shape:
+        return False
+    before_sources = before.per_source_total.detach()
+    after_sources = after.per_source_total.detach()
+    worst_before = float(before_sources.max().cpu().item())
+    worst_after = float(after_sources.max().cpu().item())
+    allowed_regression = max(
+        config.maximum_source_regression_absolute,
+        abs(worst_before) * config.maximum_source_regression_fraction,
+    )
+    if (
+        worst_after
+        > worst_before + config.maximum_source_regression_absolute
+    ):
+        return False
+    if bool(torch.any(after_sources - before_sources > allowed_regression)):
         return False
     before_junction = float(before.junction.detach().cpu().item())
     after_junction = float(after.junction.detach().cpu().item())
@@ -2473,13 +2757,27 @@ def apply_graph_interface_guidance(
         )
         if patch_state is not None:
             patch_state.assignments = patch_assignments
+    with torch.no_grad():
+        phase_probe = graph_interface_energy(
+            coordinates,
+            topology,
+            config,
+            patch_assignments=patch_assignments,
+        )
+    adaptive_phase = adaptive_graph_interface_phase(phase_probe, config)
+    effective_config = _phase_guidance_config(config, adaptive_phase)
+    scheduled_target = _phase_target_ca_distance(
+        adaptive_phase,
+        scheduled_target,
+        config,
+    )
     patch_capture_satisfied = False
     with torch.enable_grad():
         proposal = coordinates.detach().clone().requires_grad_(True)
         energy = graph_interface_energy(
             proposal,
             topology,
-            config,
+            effective_config,
             target_ca_distance_override=scheduled_target,
             patch_assignments=patch_assignments,
         )
@@ -2496,7 +2794,7 @@ def apply_graph_interface_guidance(
                 lock_energy = graph_interface_energy(
                     proposal.detach(),
                     topology,
-                    config,
+                    effective_config,
                     patch_assignments=patch_assignments,
                 )
             patch_capture_satisfied = (
@@ -2567,7 +2865,8 @@ def apply_graph_interface_guidance(
             default=0.0,
         )
         desired_step = (
-            config.maximum_token_step * config.unsatisfied_step_fraction
+            effective_config.maximum_token_step
+            * effective_config.unsatisfied_step_fraction
         )
         if 1e-8 < maximum_raw_step < desired_step:
             gradient_boost = desired_step / maximum_raw_step
@@ -2577,7 +2876,7 @@ def apply_graph_interface_guidance(
             gradient,
             features,
             topology,
-            config,
+            effective_config,
             window=window,
             gradient_boost=gradient_boost,
             target_ca_distance_override=scheduled_target,
@@ -2599,7 +2898,7 @@ def apply_graph_interface_guidance(
             keepdim=True,
         )
         local_step = local_step * torch.clamp(
-            config.maximum_token_step
+            effective_config.maximum_token_step
             / local_norm.max().clamp_min(1e-8),
             max=1.0,
         )
@@ -2607,9 +2906,9 @@ def apply_graph_interface_guidance(
         rigid_displacement = rigid_displacements.get(token_index)
         if rigid_displacement is not None:
             step = (
-                config.patch_rigid_weight
+                effective_config.patch_rigid_weight
                 * rigid_displacement.unsqueeze(0)
-                + (1.0 - config.patch_rigid_weight) * local_step
+                + (1.0 - effective_config.patch_rigid_weight) * local_step
             )
         # Rigid displacements were already clipped once with one shared
         # patch-wide scale.  A second per-token clip here would destroy that
@@ -2631,22 +2930,22 @@ def apply_graph_interface_guidance(
     accepted_scale = 0.0
     accepted_energy = energy
     accepted = coordinates
-    for line_search_index in range(config.line_search_steps):
-        scale = config.line_search_contraction**line_search_index
+    for line_search_index in range(effective_config.line_search_steps):
+        scale = effective_config.line_search_contraction**line_search_index
         candidate = coordinates + scale * displacement
         if projector is not None:
             candidate = projector(candidate)
         candidate_energy = graph_interface_energy(
             candidate,
             topology,
-            config,
+            effective_config,
             target_ca_distance_override=scheduled_target,
             patch_assignments=patch_assignments,
         )
         if graph_interface_proposal_acceptable(
             energy,
             candidate_energy,
-            config,
+            effective_config,
         ):
             accepted_scale = scale
             accepted_energy = candidate_energy
@@ -2663,6 +2962,10 @@ def apply_graph_interface_guidance(
         "proposal_accepted": accepted_scale > 0.0,
         "line_search_scale": accepted_scale,
         "window_weight": window,
+        "adaptive_phase": adaptive_phase,
+        "time_scheduled_target_ca_distance": (
+            scheduled_interface_ca_distance(progress, config)
+        ),
         "scheduled_target_ca_distance": scheduled_target,
         "patch_locked": bool(patch_state and patch_state.locked),
         "patch_lock_reason": (

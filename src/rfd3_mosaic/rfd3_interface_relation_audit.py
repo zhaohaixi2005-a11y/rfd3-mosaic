@@ -561,6 +561,161 @@ def _longest_contiguous_residue_run(
     return maximum
 
 
+def _contiguous_residue_island_count(
+    residues: set[tuple[str, int]],
+) -> int:
+    """Count sequence-contiguous contact islands without joining chains."""
+
+    islands = 0
+    by_chain: dict[str, list[int]] = {}
+    for chain, residue in residues:
+        by_chain.setdefault(chain, []).append(residue)
+    for numbers in by_chain.values():
+        previous: int | None = None
+        for residue in sorted(set(numbers)):
+            if previous is None or residue != previous + 1:
+                islands += 1
+            previous = residue
+    return islands
+
+
+def _heavy_atom_packing_metrics(
+    left_atoms: list[Any],
+    right_atoms: list[Any],
+    distances: np.ndarray,
+    *,
+    cutoff: float,
+) -> dict[str, Any]:
+    """Measure reciprocal residue packing in the written all-atom result.
+
+    These descriptors deliberately keep the word ``proxy`` where no solvent
+    surface calculation is performed.  They are nevertheless stronger than
+    a raw atom-pair count: both residue sides must participate, sequence
+    islands remain visible, and a single deep point contact cannot masquerade
+    as one broad uniformly packed patch.
+    """
+
+    contact_rows, contact_columns = np.nonzero(distances < cutoff)
+    left_keys = [
+        (atom.chain_id, atom.residue_number) for atom in left_atoms
+    ]
+    right_keys = [
+        (atom.chain_id, atom.residue_number) for atom in right_atoms
+    ]
+    residue_pairs = {
+        (left_keys[left_index], right_keys[right_index])
+        for left_index, right_index in zip(
+            contact_rows.tolist(),
+            contact_columns.tolist(),
+            strict=True,
+        )
+    }
+    left_contact_residues = {pair[0] for pair in residue_pairs}
+    right_contact_residues = {pair[1] for pair in residue_pairs}
+    hydrophobic_names = {
+        "ALA",
+        "VAL",
+        "ILE",
+        "LEU",
+        "MET",
+        "PHE",
+        "TRP",
+        "TYR",
+        "PRO",
+    }
+    residue_names = {
+        (atom.chain_id, atom.residue_number): atom.residue_name.upper()
+        for atom in (*left_atoms, *right_atoms)
+    }
+    available_residues = set(residue_names)
+    contact_residues = left_contact_residues | right_contact_residues
+    hydrophobic_available = {
+        key
+        for key in available_residues
+        if residue_names[key] in hydrophobic_names
+    }
+    hydrophobic_contacting = hydrophobic_available & contact_residues
+
+    def residue_nearest_depths(
+        atom_keys: list[tuple[str, int]],
+        nearest: np.ndarray,
+        contacting: set[tuple[str, int]],
+    ) -> list[float]:
+        minima: dict[tuple[str, int], float] = {}
+        for key, distance in zip(atom_keys, nearest.tolist(), strict=True):
+            if key in contacting:
+                minima[key] = min(minima.get(key, float("inf")), distance)
+        return [cutoff - minima[key] for key in sorted(minima)]
+
+    depths = residue_nearest_depths(
+        left_keys,
+        distances.min(axis=1),
+        left_contact_residues,
+    ) + residue_nearest_depths(
+        right_keys,
+        distances.min(axis=0),
+        right_contact_residues,
+    )
+    depth_mean = float(np.mean(depths)) if depths else 0.0
+    depth_std = float(np.std(depths)) if depths else 0.0
+    residue_pair_count = len(residue_pairs)
+    reciprocal_density = residue_pair_count / max(
+        len(left_contact_residues),
+        len(right_contact_residues),
+        1,
+    )
+    burial_proxy = float(
+        np.clip((cutoff - distances) / max(cutoff - 2.0, 1.0), 0.0, 1.0)
+        .sum()
+    )
+
+    # A loose residue-pair grid exposes holes inside the already selected
+    # contact patch.  This is a porosity descriptor, not a SASA calculation.
+    loose_pairs: set[
+        tuple[tuple[str, int], tuple[str, int]]
+    ] = set()
+    loose_rows, loose_columns = np.nonzero(distances < cutoff + 1.5)
+    for left_index, right_index in zip(
+        loose_rows.tolist(),
+        loose_columns.tolist(),
+        strict=True,
+    ):
+        left_key = left_keys[left_index]
+        right_key = right_keys[right_index]
+        if (
+            left_key in left_contact_residues
+            and right_key in right_contact_residues
+        ):
+            loose_pairs.add((left_key, right_key))
+    possible_patch_pairs = max(
+        len(left_contact_residues) * len(right_contact_residues),
+        1,
+    )
+    return {
+        "reciprocal_contact_residue_pair_count": residue_pair_count,
+        "reciprocal_contact_density": float(reciprocal_density),
+        "heavy_atom_burial_proxy": burial_proxy,
+        "contact_depth_mean": depth_mean,
+        "contact_depth_standard_deviation": depth_std,
+        "contact_island_count_left": _contiguous_residue_island_count(
+            left_contact_residues
+        ),
+        "contact_island_count_right": _contiguous_residue_island_count(
+            right_contact_residues
+        ),
+        "local_contact_void_fraction_proxy": float(
+            1.0 - len(loose_pairs) / possible_patch_pairs
+        ),
+        "hydrophobic_contact_residue_fraction_proxy": float(
+            len(hydrophobic_contacting) / max(len(contact_residues), 1)
+        ),
+        "unpaired_hydrophobic_residue_fraction_proxy": float(
+            len(hydrophobic_available - contact_residues)
+            / max(len(available_residues), 1)
+        ),
+    }
+
+
 def _automatic_interface_targets(
     left_available: int,
     right_available: int,
@@ -1091,6 +1246,48 @@ def audit_interface_relations(
                     left_contiguous >= minimum_contiguous
                     and right_contiguous >= minimum_contiguous
                 )
+                packing_metrics = (
+                    _heavy_atom_packing_metrics(
+                        left_evaluation_atoms,
+                        right_evaluation_atoms,
+                        distances,
+                        cutoff=cutoff,
+                    )
+                    if (
+                        distances is not None
+                        and left_evaluation_atoms is not None
+                        and right_evaluation_atoms is not None
+                    )
+                    else {
+                        "reciprocal_contact_residue_pair_count": 0,
+                        "reciprocal_contact_density": 0.0,
+                        "heavy_atom_burial_proxy": 0.0,
+                        "contact_depth_mean": 0.0,
+                        "contact_depth_standard_deviation": 0.0,
+                        "contact_island_count_left": 0,
+                        "contact_island_count_right": 0,
+                        "local_contact_void_fraction_proxy": 1.0,
+                        "hydrophobic_contact_residue_fraction_proxy": 0.0,
+                        "unpaired_hydrophobic_residue_fraction_proxy": 0.0,
+                    }
+                )
+                minimum_residue_pairs = minimum_coverage
+                maximum_contact_islands = max(
+                    1,
+                    minimum_coverage - minimum_contiguous + 1,
+                )
+                maximum_depth_standard_deviation = max(2.0, 0.45 * cutoff)
+                packing_quality_satisfied = bool(
+                    packing_metrics[
+                        "reciprocal_contact_residue_pair_count"
+                    ]
+                    >= minimum_residue_pairs
+                    and packing_metrics["reciprocal_contact_density"] >= 1.0
+                    and packing_metrics[
+                        "contact_depth_standard_deviation"
+                    ]
+                    <= maximum_depth_standard_deviation
+                )
                 report.update(
                     {
                         "interface_quality_mode": str(
@@ -1118,9 +1315,28 @@ def audit_interface_relations(
                             right_contiguous
                         ),
                         "contact_continuity_satisfied": continuity_satisfied,
+                        **packing_metrics,
+                        "minimum_reciprocal_contact_residue_pairs": (
+                            minimum_residue_pairs
+                        ),
+                        "maximum_contact_islands_per_side": (
+                            maximum_contact_islands
+                        ),
+                        "maximum_contact_depth_standard_deviation": (
+                            maximum_depth_standard_deviation
+                        ),
+                        "output_packing_quality_satisfied": (
+                            packing_quality_satisfied
+                        ),
                     }
                 )
-                checks.extend((coverage_satisfied, continuity_satisfied))
+                checks.extend(
+                    (
+                        coverage_satisfied,
+                        continuity_satisfied,
+                        packing_quality_satisfied,
+                    )
+                )
             report["satisfied"] = bool(
                 completeness >= min_atom_completeness
                 and checks
@@ -1200,6 +1416,12 @@ def audit_interface_relations(
                 {member["source_interface_id"] for member in members}
             ),
         })
+    output_packing_reports = [
+        report
+        for report in edge_reports
+        if report.get("satisfaction_stage") == "output"
+        and "output_packing_quality_satisfied" in report
+    ]
     return {
         "audit": "rfd3_mosaic.assembly_interface_relations",
         "schema_version": 1,
@@ -1225,6 +1447,46 @@ def audit_interface_relations(
                 len(required_reports) - len(failed_required)
             ),
             "failed_required_edge_instances": failed_required,
+            "output_packing_edge_count": len(output_packing_reports),
+            "output_packing_quality_satisfied": bool(
+                output_packing_reports
+                and all(
+                    report["output_packing_quality_satisfied"]
+                    for report in output_packing_reports
+                )
+            ),
+            "minimum_reciprocal_contact_residue_pairs": (
+                min(
+                    report["reciprocal_contact_residue_pair_count"]
+                    for report in output_packing_reports
+                )
+                if output_packing_reports
+                else None
+            ),
+            "minimum_reciprocal_contact_density": (
+                min(
+                    report["reciprocal_contact_density"]
+                    for report in output_packing_reports
+                )
+                if output_packing_reports
+                else None
+            ),
+            "maximum_contact_depth_standard_deviation": (
+                max(
+                    report["contact_depth_standard_deviation"]
+                    for report in output_packing_reports
+                )
+                if output_packing_reports
+                else None
+            ),
+            "maximum_local_contact_void_fraction_proxy": (
+                max(
+                    report["local_contact_void_fraction_proxy"]
+                    for report in output_packing_reports
+                )
+                if output_packing_reports
+                else None
+            ),
         },
         "interface_hyperedges": hyperedge_reports,
         "interfaces": edge_reports,

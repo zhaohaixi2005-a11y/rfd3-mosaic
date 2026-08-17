@@ -2377,7 +2377,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 final_graph_interface_energy
             )
             result["graph_interface_guidance_diagnostics"] = {
-                "schema_version": 7,
+                "schema_version": 8,
                 "runtime_active": True,
                 "edge_count": len(graph_interface_topology.edges),
                 "edge_ids": [
@@ -2387,6 +2387,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     edge.source_interface_id
                     for edge in graph_interface_topology.edges
                 ],
+                "capacity_preflight": list(
+                    graph_interface_topology.capacity_preflight
+                ),
                 "config": vars(graph_interface_guidance_config),
                 "steps": graph_interface_diagnostics,
                 "applied_steps": sum(

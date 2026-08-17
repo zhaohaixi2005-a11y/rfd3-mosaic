@@ -3499,8 +3499,29 @@ coordinates together; the constraint runtime validates, projects and commits
 them atomically. Rejection, proposal-only execution and proposal exceptions
 restore both motif pose and patch-selection state.
 
-Evidence level: **CPU implementation awaiting LRZ tests**. Required next
-evidence is the focused constraint-runtime/motif-mobility tests, the complete
-unit suite, and one frozen V100/P100 50-step canary with non-zero bounded
-rotation, lower final packing energy, exact motif and symmetry recovery,
-continuous chains and no new CA clashes.
+Evidence level: **CPU implementation and integration tests passed**. The
+packing, constraint-runtime and motif-mobility focused tests and the complete
+794-test suite pass in the temporary Python 3.12 development environment. The
+remaining promotion evidence is one frozen V100/P100 50-step canary with
+non-zero bounded rotation, lower final packing energy, exact motif and
+symmetry recovery, continuous chains and no new CA clashes.
+
+### Adaptive multi-interface packing and output evidence (2026-08-17)
+
+The generated-interface controller now selects capture, expansion and polish
+from observed reciprocal-patch quality instead of advancing solely by
+diffusion time. Joint proposals must lower total packing energy while
+preserving both the worst source-interface objective and a bounded per-source
+regression. The same contract is used by packing-coupled motif mobility.
+
+An immutable capacity preflight rejects explicit coverage/contact requests
+that exceed generated token capacity and rejects overlapping physical
+interfaces that cannot receive exclusive residue patches. Geometry that can
+still change under diffusion is not incorrectly rejected.
+
+Final interface audit now measures reciprocal heavy-atom residue pairs,
+contact density, depth uniformity, contact islands, burial, local void and
+hydrophobic-composition proxies on the written structure. Guidance audit
+schema v8 requires capacity and adaptive-phase provenance. The complete CPU
+suite passes 794 tests on the temporary development server. GPU packing
+quality remains the independent promotion gate.

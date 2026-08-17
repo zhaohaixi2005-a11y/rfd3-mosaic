@@ -31,6 +31,7 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceTopology,
     apply_graph_interface_guidance,
     graph_interface_energy,
+    graph_interface_proposal_acceptable,
 )
 
 
@@ -1490,6 +1491,11 @@ class OrbitRigidMotifController:
             and float(candidate_graph.total.detach().cpu().item())
             < float(baseline_graph.total.detach().cpu().item()) - 1.0e-10
         )
+        packing_contract_safe = graph_interface_proposal_acceptable(
+            baseline_graph,
+            candidate_graph,
+            interface_config,
+        )
 
         def minimum_not_worse(
             initial: torch.Tensor,
@@ -1538,6 +1544,7 @@ class OrbitRigidMotifController:
             transaction_has_change
             and packing_improved
             and combined_improved
+            and packing_contract_safe
             and edge_safe
             and global_safe
             and junction_safe
@@ -1554,6 +1561,7 @@ class OrbitRigidMotifController:
                 packing_step.get("proposal_accepted", False)
             ),
             "packing_improved": packing_improved,
+            "packing_contract_safe": packing_contract_safe,
             "combined_improved": combined_improved,
             "edge_safe": edge_safe,
             "global_safe": global_safe,

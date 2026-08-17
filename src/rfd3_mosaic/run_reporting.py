@@ -651,6 +651,20 @@ def format_status_text(status: dict[str, Any]) -> str:
                     f"shape={metrics.get('shape', 'NA')} "
                     f"min_edge={metrics.get('minimum_edge_distance', 'NA')}"
                 )
+        if audit["name"] == "assembly_interface_relation_audit.json":
+            metrics = audit.get("summary") or {}
+            if metrics.get("output_packing_edge_count", 0):
+                lines.append(
+                    "         output packing "
+                    f"residue_pairs="
+                    f"{metrics.get('minimum_reciprocal_contact_residue_pairs', 'NA')} "
+                    f"density="
+                    f"{metrics.get('minimum_reciprocal_contact_density', 'NA')} "
+                    f"depth_sd="
+                    f"{metrics.get('maximum_contact_depth_standard_deviation', 'NA')} "
+                    f"void_proxy="
+                    f"{metrics.get('maximum_local_contact_void_fraction_proxy', 'NA')}"
+                )
         if audit["name"] == "scaffold_validity_audit.json":
             shape_contract = audit.get("assembly_shape_contract") or {}
             if shape_contract.get("declared"):

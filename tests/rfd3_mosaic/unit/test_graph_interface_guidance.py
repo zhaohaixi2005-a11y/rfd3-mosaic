@@ -8,11 +8,13 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceGuidanceConfig,
     GraphInterfacePatchState,
     GraphInterfaceTopology,
+    adaptive_graph_interface_phase,
     apply_graph_interface_guidance,
     build_graph_interface_topology,
     graph_interface_quality_satisfied,
     guidance_window_weight,
     graph_interface_energy,
+    graph_interface_capacity_preflight,
     graph_interface_proposal_acceptable,
     scheduled_interface_ca_distance,
 )
@@ -986,6 +988,75 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
             float(balanced_energy.interface_balance),
         )
 
+    def test_joint_acceptance_cannot_sacrifice_one_source_interface(
+        self,
+    ) -> None:
+        def mask(index: int) -> torch.Tensor:
+            value = torch.zeros(4, dtype=torch.bool)
+            value[index] = True
+            return value
+
+        def edge(source_id: str, left: int, right: int) -> GraphInterfaceEdge:
+            return GraphInterfaceEdge(
+                edge_id=f"{source_id}@0",
+                source_interface_id=source_id,
+                left_generated_ca_mask=mask(left),
+                right_generated_ca_mask=mask(right),
+                left_generated_token_ids=torch.tensor([left]),
+                right_generated_token_ids=torch.tensor([right]),
+                requested_contact_count=1,
+                requested_residues_per_side=0,
+                requested_contiguous_residues_per_side=0,
+                automatic_quality=False,
+                contact_cutoff=5.5,
+                distance_target=None,
+                distance_tolerance=None,
+            )
+
+        topology = GraphInterfaceTopology(
+            edges=(edge("alpha", 0, 1), edge("beta", 2, 3)),
+            generated_atom_mask=torch.ones(4, dtype=torch.bool),
+        )
+        before_coordinates = torch.tensor(
+            [[
+                [0.0, 0.0, 0.0],
+                [20.0, 0.0, 0.0],
+                [0.0, 10.0, 0.0],
+                [8.0, 10.0, 0.0],
+            ]]
+        )
+        after_coordinates = torch.tensor(
+            [[
+                [0.0, 0.0, 0.0],
+                [12.0, 0.0, 0.0],
+                [0.0, 10.0, 0.0],
+                [13.0, 10.0, 0.0],
+            ]]
+        )
+        config = GraphInterfaceGuidanceConfig(
+            coverage_weight=0.0,
+            continuity_weight=0.0,
+            orientation_weight=0.0,
+            shape_weight=0.0,
+            backbone_weight=0.0,
+            interface_balance_weight=0.0,
+            patch_exclusivity_weight=0.0,
+            clash_weight=0.0,
+            distance_weight=0.0,
+            pairs_per_edge=1,
+        )
+        before = graph_interface_energy(
+            before_coordinates, topology, config
+        )
+        after = graph_interface_energy(
+            after_coordinates, topology, config
+        )
+
+        self.assertLess(float(after.total), float(before.total))
+        self.assertFalse(
+            graph_interface_proposal_acceptable(before, after, config)
+        )
+
     def test_coarse_to_fine_capture_contracts_without_user_targets(
         self,
     ) -> None:
@@ -1035,6 +1106,113 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
             float(final_direct.total),
             float(final_scheduled.total),
             places=7,
+        )
+
+    def test_adaptive_phase_follows_observed_patch_quality(self) -> None:
+        topology = self._three_by_three_topology()
+        config = GraphInterfaceGuidanceConfig()
+        far = torch.tensor(
+            [[
+                [0.0, 0.0, 0.0],
+                [0.0, 3.8, 0.0],
+                [0.0, 7.6, 0.0],
+                [14.0, 0.0, 0.0],
+                [14.0, 3.8, 0.0],
+                [14.0, 7.6, 0.0],
+            ]]
+        )
+        narrow = far.clone()
+        narrow[0, 3:, 0] = 8.5
+        packed = far.clone()
+        packed[0, 3:, 0] = 6.0
+
+        self.assertEqual(
+            adaptive_graph_interface_phase(
+                graph_interface_energy(far, topology, config),
+                config,
+            ),
+            "capture",
+        )
+        self.assertEqual(
+            adaptive_graph_interface_phase(
+                graph_interface_energy(narrow, topology, config),
+                config,
+            ),
+            "expand",
+        )
+        self.assertEqual(
+            adaptive_graph_interface_phase(
+                graph_interface_energy(packed, topology, config),
+                config,
+            ),
+            "polish",
+        )
+
+    def test_explicit_patch_capacity_fails_before_sampling(self) -> None:
+        topology = self._three_by_three_topology()
+        topology = replace(
+            topology,
+            edges=(
+                replace(
+                    topology.edges[0],
+                    requested_residues_per_side=4,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "only 3/3"):
+            graph_interface_energy(
+                torch.zeros((1, 6, 3)),
+                topology,
+                GraphInterfaceGuidanceConfig(),
+            )
+
+    def test_capacity_preflight_rejects_overlapping_patch_demand(self) -> None:
+        base = self._three_by_three_topology().edges[0]
+        topology = GraphInterfaceTopology(
+            edges=(
+                replace(
+                    base,
+                    edge_id="alpha@0",
+                    source_interface_id="alpha",
+                    requested_residues_per_side=2,
+                ),
+                replace(
+                    base,
+                    edge_id="beta@0",
+                    source_interface_id="beta",
+                    requested_residues_per_side=2,
+                ),
+            ),
+            generated_atom_mask=torch.ones(6, dtype=torch.bool),
+        )
+        with self.assertRaisesRegex(ValueError, "over-subscribed"):
+            graph_interface_capacity_preflight(topology)
+
+    def test_far_mobile_pose_is_capture_not_capacity_failure(self) -> None:
+        topology = self._three_by_three_topology()
+        records = graph_interface_capacity_preflight(topology)
+        self.assertEqual(len(records), 1)
+
+        # Capacity preflight deliberately has no coordinate input.  A poor
+        # relative pose is therefore recoverable scientific search space,
+        # not a reason to reject an otherwise movable interface.
+        coordinates = torch.tensor(
+            [[
+                [0.0, 0.0, 0.0],
+                [0.0, 3.8, 0.0],
+                [0.0, 7.6, 0.0],
+                [80.0, 0.0, 0.0],
+                [80.0, 3.8, 0.0],
+                [80.0, 7.6, 0.0],
+            ]]
+        )
+        config = GraphInterfaceGuidanceConfig()
+        self.assertEqual(
+            adaptive_graph_interface_phase(
+                graph_interface_energy(coordinates, topology, config),
+                config,
+            ),
+            "capture",
         )
 
     def test_patch_rigid_step_preserves_local_backbone_and_decreases_energy(
