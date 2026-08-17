@@ -655,9 +655,19 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
             )
     if report["motif_atom_count"] <= 0:
         failures.append("RFD3 did not recognize any motif atoms")
-    if report["fixed_coordinate_atom_count"] <= 0:
+    declared_cylindrical_count = int(
+        report.get("declared_cylindrical_constraint_count", 0)
+    )
+    if (
+        report["fixed_coordinate_atom_count"] <= 0
+        and declared_cylindrical_count <= 0
+    ):
         failures.append("RFD3 did not recognize any fixed motif coordinates")
-    if report["fixed_coordinate_atom_count"] != report["motif_atom_count"]:
+    if (
+        declared_cylindrical_count <= 0
+        and report["fixed_coordinate_atom_count"]
+        != report["motif_atom_count"]
+    ):
         failures.append(
             "not every motif atom has fixed coordinates "
             f"({report['fixed_coordinate_atom_count']}/"
@@ -681,7 +691,14 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
     requires_grouped_mosaic_input = compiler.startswith(
         "rfd3_mosaic."
     )
-    if requires_grouped_mosaic_input and declared_group_count <= 0:
+    fixed_coordinate_atom_count = int(
+        report.get("fixed_coordinate_atom_count", 0)
+    )
+    if (
+        requires_grouped_mosaic_input
+        and fixed_coordinate_atom_count > 0
+        and declared_group_count <= 0
+    ):
         failures.append(
             "Mosaic adapter input must declare motif constraint groups"
         )
@@ -699,7 +716,11 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
             failures.append(
                 "motif constraint groups do not cover every fixed atom"
             )
-    if declared_group_count or requires_grouped_mosaic_input:
+    if (
+        declared_group_count
+        or declared_cylindrical_count
+        or requires_grouped_mosaic_input
+    ):
         transform_audit = report.get(
             "symmetry_transform_matrix_audit"
         )
@@ -719,7 +740,10 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
                 )
             failures.append(message)
         target_audit = report.get("fixed_target_symmetry_audit")
-        if not target_audit or not target_audit.get("passed"):
+        if (
+            fixed_coordinate_atom_count > 0
+            and (not target_audit or not target_audit.get("passed"))
+        ):
             failures.append(
                 "fixed motif targets are incompatible with the runtime "
                 "symmetry projector"
@@ -728,7 +752,11 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
         "declared_motif_constraint_orbit_count",
         0,
     )
-    if requires_grouped_mosaic_input and declared_orbit_count <= 0:
+    if (
+        requires_grouped_mosaic_input
+        and fixed_coordinate_atom_count > 0
+        and declared_orbit_count <= 0
+    ):
         failures.append(
             "Mosaic adapter input must declare motif constraint orbits"
         )
@@ -738,6 +766,17 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
         failures.append(
             "not every declared motif constraint orbit was resolved"
         )
+    if declared_cylindrical_count:
+        if report.get(
+            "resolved_cylindrical_constraint_count"
+        ) != declared_cylindrical_count:
+            failures.append(
+                "not every declared cylindrical constraint was resolved"
+            )
+        if int(report.get("cylindrical_constrained_atom_count", 0)) <= 0:
+            failures.append("cylindrical constraints resolved no atoms")
+        if int(report.get("cylindrical_constrained_dof_count", 0)) <= 0:
+            failures.append("cylindrical constraints resolved no DOFs")
     return failures
 
 
@@ -798,6 +837,7 @@ def prevalidate_rfd3_input(
     compiler = str(extra.get("compiler") or "")
     constraint_groups = extra.get("motif_constraint_groups") or []
     constraint_orbits = extra.get("motif_constraint_orbits") or []
+    cylindrical_constraints = extra.get("cylindrical_constraints") or []
     runtime_symmetry_features = AddSymmetryFeats().forward(
         {
             "atom_array": atom_array,
@@ -870,6 +910,22 @@ def prevalidate_rfd3_input(
         if orbit_master_indices is not None
         else 0
     )
+    cylindrical_keep_mask = runtime_symmetry_features.get(
+        "cylindrical_keep_mask"
+    )
+    cylindrical_constraint_ids = tuple(
+        runtime_symmetry_features.get("cylindrical_constraint_ids", ())
+    )
+    cylindrical_constrained_atom_count = (
+        int(cylindrical_keep_mask.any(dim=1).sum().item())
+        if cylindrical_keep_mask is not None
+        else 0
+    )
+    cylindrical_constrained_dof_count = (
+        int(cylindrical_keep_mask.sum().item())
+        if cylindrical_keep_mask is not None
+        else 0
+    )
     report: dict[str, Any] = {
         "schema_version": 2,
         "status": "pending",
@@ -909,6 +965,21 @@ def prevalidate_rfd3_input(
         ),
         "fixed_sequence_atom_count": int(
             atom_array.is_motif_atom_with_fixed_seq.astype(bool).sum()
+        ),
+        "declared_cylindrical_constraint_count": len(
+            cylindrical_constraints
+        ),
+        "resolved_cylindrical_constraint_count": len(
+            cylindrical_constraint_ids
+        ),
+        "cylindrical_constraint_ids": list(
+            cylindrical_constraint_ids
+        ),
+        "cylindrical_constrained_atom_count": (
+            cylindrical_constrained_atom_count
+        ),
+        "cylindrical_constrained_dof_count": (
+            cylindrical_constrained_dof_count
         ),
         "declared_motif_constraint_group_count": len(constraint_groups),
         "resolved_motif_constraint_group_count": (

@@ -30,10 +30,13 @@ class CapabilityLedgerTestCase(unittest.TestCase):
         for item in manifest["capabilities"]:
             self.assertTrue(set(item["dependencies"]).issubset(identifiers))
 
-    def test_cylindrical_projector_is_not_overclaimed(self) -> None:
+    def test_cylindrical_projector_has_cpu_closed_loop_evidence(self) -> None:
         record = capability_by_id("cylindrical_projector")
 
-        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertEqual(
+            record.maturity,
+            CapabilityMaturity.CPU_VALIDATED,
+        )
 
     def test_functional_geometry_is_not_overclaimed(self) -> None:
         schema = capability_by_id("functional_geometry_schema")
@@ -115,7 +118,7 @@ class CapabilityLedgerTestCase(unittest.TestCase):
         observed = {item.id: item.maturity for item in requirements}
         self.assertEqual(
             observed["cylindrical_projector"],
-            CapabilityMaturity.SCHEMA_ONLY,
+            CapabilityMaturity.CPU_VALIDATED,
         )
         self.assertEqual(
             observed["static_pose_sampling"],

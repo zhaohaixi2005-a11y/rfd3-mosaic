@@ -38,6 +38,7 @@ class AuditRequirement(str, Enum):
     ASSEMBLY_INTERFACE_RELATIONS = "assembly_interface_relations"
     GRAPH_INTERFACE_GUIDANCE = "graph_interface_guidance"
     BOUNDED_COMPONENT_MOBILITY = "bounded_component_mobility"
+    CYLINDRICAL_COORDINATES = "cylindrical_coordinates"
 
 
 @dataclass(frozen=True)
@@ -365,7 +366,21 @@ def lower_experiment_topology(
             encoding="utf-8",
         )
         load_assembly_config(specification_path)
-        audit_requirements = [AuditRequirement.EXACT_CONSTRAINT_ORBIT]
+        audit_requirements = []
+        if any(
+            operator.operator == "fixed_xyz"
+            for operator in lowered.constraint_plan.operators
+        ):
+            audit_requirements.append(
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT
+            )
+        if any(
+            operator.operator == "cylindrical"
+            for operator in lowered.constraint_plan.operators
+        ):
+            audit_requirements.append(
+                AuditRequirement.CYLINDRICAL_COORDINATES
+            )
         # Semantic audits must follow the lowered Assembly IR, not only the
         # fields written explicitly in the public YAML.  Simple terminal
         # designs acquire an output-stage symmetry-neighbour interface during
@@ -424,6 +439,7 @@ def lower_experiment_topology(
                 "sampling_plan": lowered.sampling_plan.model_dump(
                     mode="json"
                 ),
+                **lowered.runtime_constraint_metadata,
             },
         )
     raise ValueError(f"Unsupported topology kind {kind!r}")

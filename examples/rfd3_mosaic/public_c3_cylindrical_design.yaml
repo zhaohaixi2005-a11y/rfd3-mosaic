@@ -1,0 +1,34 @@
+schema_version: 1
+name: example-public-c3-cylindrical
+
+# This is a repository-relative, directly validatable example. The selected
+# CA atoms retain their radius and axial coordinate about the C3 axis while
+# their azimuth and all undeclared atom coordinates remain diffusion DOFs.
+input: inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 35
+
+constraints:
+  - kind: cylindrical
+    selector: A12-20
+    atoms: ca
+    axis: symmetry
+    keep: [radius, axial]
+
+sampling:
+  timesteps: 50
+  seed: 960
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"

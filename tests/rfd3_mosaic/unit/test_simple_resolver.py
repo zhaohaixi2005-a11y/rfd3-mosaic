@@ -688,6 +688,113 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_run_simple_intent_resolves_then_dispatches_strict_replay(
+        self,
+    ) -> None:
+        intent_path = self.root / "one_command_intent.yaml"
+        payload = self._intent().model_dump(mode="json", exclude_none=True)
+        payload["output"] = {
+            "root": str(self.root / "runs"),
+            "campaign": "one-command-test",
+        }
+        intent_path.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+        resolution_directory = self.root / "one-command-resolution"
+        selected = resolution_directory / "selected" / "rank_0001.yaml"
+        selected.parent.mkdir(parents=True)
+        selected.write_text("schema_version: 1\n", encoding="utf-8")
+        result = {
+            "recommended_design": str(selected),
+            "manifest_path": str(
+                resolution_directory / "resolution_manifest.json"
+            ),
+        }
+        stdout = StringIO()
+
+        with patch(
+            "rfd3_mosaic.cli.resolve_simple_intent",
+            return_value=result,
+        ) as resolver, patch(
+            "rfd3_mosaic.cli._dispatch_replayed_design"
+        ) as dispatch, redirect_stdout(stdout):
+            main(
+                [
+                    "run",
+                    str(intent_path),
+                    "--resolution-dir",
+                    str(resolution_directory),
+                    "--resolve-pose-samples",
+                    "1",
+                    "--resolve-timesteps",
+                    "50",
+                    "--profile",
+                    "v100",
+                    "--run-root",
+                    str(self.root / "portable-runs"),
+                    "--campaign",
+                    "portable-campaign",
+                    "--dry-run",
+                ]
+            )
+
+        resolver.assert_called_once()
+        self.assertEqual(resolver.call_args.args[1], resolution_directory)
+        self.assertEqual(resolver.call_args.kwargs["pose_samples"], 1)
+        self.assertEqual(resolver.call_args.kwargs["timesteps"], 50)
+        self.assertEqual(resolver.call_args.kwargs["top_count"], 1)
+        dispatch.assert_called_once_with(
+            command="run",
+            design_path=selected.resolve(),
+            profile="v100",
+            output_directory=None,
+            run_root=self.root / "portable-runs",
+            campaign="portable-campaign",
+            dry_run=True,
+        )
+        self.assertIn("ordinary one-command execution", stdout.getvalue())
+
+    def test_run_simple_intent_fails_closed_without_replay_candidate(
+        self,
+    ) -> None:
+        intent_path = self.root / "unresolved_one_command_intent.yaml"
+        payload = self._intent().model_dump(mode="json", exclude_none=True)
+        payload["output"] = {
+            "root": str(self.root / "runs"),
+            "campaign": "one-command-test",
+        }
+        intent_path.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+        resolution_directory = self.root / "unresolved-resolution"
+        manifest = resolution_directory / "resolution_manifest.json"
+        stderr = StringIO()
+
+        with patch(
+            "rfd3_mosaic.cli.resolve_simple_intent",
+            return_value={
+                "recommended_design": None,
+                "manifest_path": str(manifest),
+            },
+        ), patch(
+            "rfd3_mosaic.cli._dispatch_replayed_design"
+        ) as dispatch, redirect_stderr(stderr), self.assertRaises(SystemExit):
+            main(
+                [
+                    "run",
+                    str(intent_path),
+                    "--resolution-dir",
+                    str(resolution_directory),
+                    "--dry-run",
+                ]
+            )
+
+        dispatch.assert_not_called()
+        self.assertIn("No strictly replayable design", stderr.getvalue())
+        self.assertIn(str(manifest), stderr.getvalue())
+
     def test_resolve_cli_rejects_already_standard_public_design(self) -> None:
         design_path = self.root / "standard_design.yaml"
         design_path.write_text(

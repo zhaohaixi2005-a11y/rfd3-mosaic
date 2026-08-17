@@ -1316,7 +1316,7 @@ class DesignCompilerTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cyclic orbit offsets"):
             lower_user_design(design)
 
-    def test_lowering_rejects_unimplemented_cylindrical_backend(self) -> None:
+    def test_lowering_emits_runtime_cylindrical_atom_contract(self) -> None:
         declared = self._design(
             generation=[
                 {
@@ -1335,8 +1335,25 @@ class DesignCompilerTestCase(unittest.TestCase):
             ],
         )
 
-        with self.assertRaisesRegex(ValueError, "cylindrical"):
-            lower_user_design(declared)
+        lowered = lower_user_design(declared)
+
+        self.assertEqual(
+            lowered.specification.fragments["motif_001"].fixed_atoms,
+            "none",
+        )
+        runtime = lowered.runtime_constraint_metadata[
+            "cylindrical_constraints"
+        ]
+        self.assertEqual(len(runtime), 1)
+        self.assertEqual(runtime[0]["keep"], ["radius"])
+        self.assertEqual(runtime[0]["axis"], [0.0, 0.0, 1.0])
+        self.assertEqual(
+            {
+                atom["atom_name"]
+                for atom in runtime[0]["members"][0]["source_atoms"]
+            },
+            {"CA"},
+        )
 
     def test_lowering_rejects_implicit_endpoint_fixing(self) -> None:
         declared = self._design(

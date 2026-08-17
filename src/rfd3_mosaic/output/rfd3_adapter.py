@@ -192,6 +192,127 @@ def _fragment_selector(
     return f"{chain_id}{residue_numbers[0]}-{residue_numbers[-1]}"
 
 
+def _runtime_cylindrical_constraints(
+    declarations: list[dict[str, Any]],
+    *,
+    selected_fragment_instance_ids: tuple[str, ...],
+    instances,
+    mapping: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Translate source-atom identities into native RFD3 runtime keys."""
+
+    if not declarations:
+        return []
+    selected_instances = [
+        instances.fragments[instance_id]
+        for instance_id in dict.fromkeys(selected_fragment_instance_ids)
+    ]
+    runtime: list[dict[str, Any]] = []
+    for declaration in declarations:
+        if declaration.get("orbit_scope") != "complete_symmetry_orbit":
+            raise NotImplementedError(
+                "RFD3 cylindrical projection requires a complete symmetry "
+                "orbit selector"
+            )
+        requested_by_fragment: dict[
+            str,
+            set[tuple[str, int, str, str]],
+        ] = {}
+        for member in declaration.get("members", ()):
+            fragment_id = str(member["fragment_id"])
+            requested = requested_by_fragment.setdefault(fragment_id, set())
+            for atom in member.get("source_atoms", ()):
+                requested.add(
+                    (
+                        str(atom["chain_id"]),
+                        int(atom["residue_number"]),
+                        str(atom.get("insertion_code") or ""),
+                        str(atom["atom_name"]),
+                    )
+                )
+        if not requested_by_fragment:
+            raise ValueError(
+                f"Cylindrical constraint {declaration.get('constraint_id')!r} "
+                "contains no source atoms"
+            )
+
+        atom_keys: set[tuple[str, str]] = set()
+        matched_source_atoms: dict[
+            str,
+            set[tuple[str, int, str, str]],
+        ] = {key: set() for key in requested_by_fragment}
+        matched_fragments: set[str] = set()
+        for fragment in selected_instances:
+            source_id = str(fragment.source_id)
+            requested = requested_by_fragment.get(source_id)
+            if requested is None:
+                continue
+            matched_fragments.add(source_id)
+            records = [
+                record
+                for record in mapping["atom_mappings"]
+                if record["instance"]["fragment_instance_id"]
+                == fragment.id
+            ]
+            for record in records:
+                source = record["source"]
+                source_key = (
+                    str(source["chain_id"]),
+                    int(source["residue_number"]),
+                    str(source.get("insertion_code") or ""),
+                    str(source["atom_name"]),
+                )
+                if source_key not in requested:
+                    continue
+                compiled = record["compiled"]
+                atom_keys.add(
+                    (
+                        f"{compiled['chain_id']}"
+                        f"{int(compiled['label_seq_id'])}",
+                        str(compiled["atom_name"]),
+                    )
+                )
+                matched_source_atoms[source_id].add(source_key)
+
+        missing_fragments = sorted(
+            set(requested_by_fragment) - matched_fragments
+        )
+        if missing_fragments:
+            raise ValueError(
+                f"Cylindrical constraint {declaration.get('constraint_id')!r} "
+                "references fragments absent from the native ASU path: "
+                + ", ".join(missing_fragments)
+            )
+        missing_atoms = {
+            fragment_id: sorted(
+                requested_by_fragment[fragment_id]
+                - matched_source_atoms[fragment_id]
+            )
+            for fragment_id in requested_by_fragment
+            if requested_by_fragment[fragment_id]
+            != matched_source_atoms[fragment_id]
+        }
+        if missing_atoms:
+            raise ValueError(
+                f"Cylindrical constraint {declaration.get('constraint_id')!r} "
+                f"lost source atoms during native mapping: {missing_atoms}"
+            )
+        if not atom_keys:
+            raise ValueError(
+                f"Cylindrical constraint {declaration.get('constraint_id')!r} "
+                "matched no runtime atoms"
+            )
+        runtime.append(
+            {
+                "constraint_id": str(declaration["constraint_id"]),
+                "keep": list(declaration["keep"]),
+                "axis": [float(value) for value in declaration["axis"]],
+                "atom_keys": [list(key) for key in sorted(atom_keys)],
+            }
+        )
+    return runtime
+
+
 def _ordered_fragment_paths(links) -> tuple[tuple[str, ...], ...]:
     """Partition selected scaffold links into deterministic open paths."""
 
@@ -382,6 +503,10 @@ def _rfd3_atom_selection(fixed_atoms: str | list[str] | None) -> str:
         "backbone": "BKBN",
         "bkbn": "BKBN",
         "tip": "TIP",
+        # Compiler-owned sentinel for an indexed input fragment whose
+        # coordinates remain diffused.  The explicit empty value overrides
+        # RFD3's historical default that fixes every input atom.
+        "none": "",
     }
     return aliases.get(fixed_atoms.lower(), fixed_atoms)
 
@@ -2469,6 +2594,16 @@ def compile_assembly_rfd3_input(
             ],
         }
 
+    caller_extra = dict(extra_metadata or {})
+    declared_cylindrical_constraints = list(
+        caller_extra.pop("cylindrical_constraints", ()) or ()
+    )
+    if declared_cylindrical_constraints and preexpanded_stabilizer_asu:
+        raise NotImplementedError(
+            "Cylindrical projection for a compact stabilizer/quotient ASU "
+            "requires quotient-aware token correspondence and remains "
+            "fail-closed"
+        )
     fixed_atoms: dict[str, str] = {}
     if terminal_path is not None:
         fragment = instances.fragments[
@@ -2477,20 +2612,8 @@ def compile_assembly_rfd3_input(
         fixed_atoms[terminal_path.selector] = _rfd3_atom_selection(
             spec.fragments[fragment.source_id].fixed_atoms
         )
-        (
-            motif_constraint_groups,
-            motif_constraint_orbits,
-        ) = _runtime_fixed_motif_constraints(
-            instances=instances,
-            mapping=mapping,
-            anchor_fragment_instance_ids=(
-                terminal_path.anchor_fragment_instance_id
-            ),
-            transform_set=transform_set,
-            runtime_transform_order=registry_transform_order,
-            transform_to_runtime_representative=(
-                transform_to_runtime_representative
-            ),
+        path_fragment_instance_ids = (
+            terminal_path.anchor_fragment_instance_id,
         )
     else:
         for segment in segments:
@@ -2503,6 +2626,13 @@ def compile_assembly_rfd3_input(
                 fixed_atoms[selector] = _rfd3_atom_selection(
                     spec.fragments[fragment.source_id].fixed_atoms
                 )
+        path_fragment_instance_ids = tuple(
+            dict.fromkeys(
+                fragment_id
+                for segment in segments
+                for fragment_id in segment.fragment_instance_ids
+            )
+        )
         use_interface_constraint_groups = (
             spec.constraint_group_strategy == "interface_edges"
             or (
@@ -2527,7 +2657,9 @@ def compile_assembly_rfd3_input(
                 ),
                 registry_transform_order=registry_transform_order,
             )
-        elif use_interface_constraint_groups:
+        elif use_interface_constraint_groups and not (
+            declared_cylindrical_constraints
+        ):
             motif_constraint_groups = _runtime_interface_constraint_groups(
                 instances,
                 mapping,
@@ -2550,26 +2682,53 @@ def compile_assembly_rfd3_input(
                 ),
             )
         else:
-            path_fragment_ids = tuple(
-                dict.fromkeys(
-                    fragment_id
-                    for segment in segments
-                    for fragment_id in segment.fragment_instance_ids
-                )
-            )
-            (
-                motif_constraint_groups,
-                motif_constraint_orbits,
-            ) = _runtime_fixed_motif_constraints(
-                instances=instances,
-                mapping=mapping,
-                anchor_fragment_instance_ids=path_fragment_ids,
-                transform_set=transform_set,
-                runtime_transform_order=registry_transform_order,
-                transform_to_runtime_representative=(
-                    transform_to_runtime_representative
-                ),
-            )
+            motif_constraint_groups = []
+            motif_constraint_orbits = []
+
+    fixed_path_fragment_instance_ids = tuple(
+        fragment_id
+        for fragment_id in path_fragment_instance_ids
+        if str(
+            spec.fragments[
+                instances.fragments[fragment_id].source_id
+            ].fixed_atoms
+        ).lower()
+        != "none"
+    )
+    if (
+        not preexpanded_stabilizer_asu
+        and (
+            terminal_path is not None
+            or not use_interface_constraint_groups
+            or declared_cylindrical_constraints
+        )
+        and fixed_path_fragment_instance_ids
+    ):
+        (
+            motif_constraint_groups,
+            motif_constraint_orbits,
+        ) = _runtime_fixed_motif_constraints(
+            instances=instances,
+            mapping=mapping,
+            anchor_fragment_instance_ids=(
+                fixed_path_fragment_instance_ids
+            ),
+            transform_set=transform_set,
+            runtime_transform_order=registry_transform_order,
+            transform_to_runtime_representative=(
+                transform_to_runtime_representative
+            ),
+        )
+    elif not fixed_path_fragment_instance_ids:
+        motif_constraint_groups = []
+        motif_constraint_orbits = []
+
+    runtime_cylindrical_constraints = _runtime_cylindrical_constraints(
+        declared_cylindrical_constraints,
+        selected_fragment_instance_ids=path_fragment_instance_ids,
+        instances=instances,
+        mapping=mapping,
+    )
     legacy_link = compiled_links[0] if len(compiled_links) == 1 else None
     selected_orbit_ids = (
         {terminal_path.orbit_id}
@@ -2784,6 +2943,7 @@ def compile_assembly_rfd3_input(
         ),
         "motif_constraint_groups": motif_constraint_groups,
         "motif_constraint_orbits": motif_constraint_orbits,
+        "cylindrical_constraints": runtime_cylindrical_constraints,
         "assembly_interface_relations": (
             _runtime_interface_relation_audit_plan(
                 instances=instances,
@@ -2802,14 +2962,14 @@ def compile_assembly_rfd3_input(
                 instances
             ).to_dict()
         )
-    if extra_metadata:
-        protected = set(adapter_extra) & set(extra_metadata)
+    if caller_extra:
+        protected = set(adapter_extra) & set(caller_extra)
         if protected:
             raise ValueError(
                 "extra_metadata cannot overwrite compiler-owned fields: "
                 f"{sorted(protected)}"
             )
-        adapter_extra.update(extra_metadata)
+        adapter_extra.update(caller_extra)
 
     payload = {
         example_id: {

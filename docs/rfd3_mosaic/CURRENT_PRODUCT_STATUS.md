@@ -12,6 +12,32 @@ cluster canaries and are not inferred from local CPU success.
 
 ## Current implementation checkpoint
 
+### Ordinary-user execution spine: CPU closed
+
+A short `kind: simple_cage_intent` can now enter `render`, `run` or `submit`
+directly. Mosaic still performs the complete multi-seed resolver and strict
+replay first, persists its manifest, and then executes only the selected
+standard public YAML through the shared compiler/runtime path. This is a
+product-flow simplification, not an automatic relaxation of scientific gates.
+If strict replay yields no candidate, execution stops before any submission.
+
+Cross-machine use no longer requires editing the scientific YAML:
+`--run-root`, `--campaign` and an absolute custom `--profile` select local
+storage and execution resources. A real two-interface C3 intent completed
+resolution, strict replay, native RFD3 preflight and dry-run script rendering
+on the temporary workstation. The same selected design remains portable to
+the AI cluster.
+
+### Public cylindrical constraint: first CPU slice closed
+
+Complete Cn/Dn orbits can preserve selected per-atom radius, azimuth and/or
+axial coordinates without converting the selected atoms into Cartesian-fixed
+motifs. The public declaration is carried through compiler-owned atom keys,
+runtime features, the timestep projector, final diagnostics and a required
+cylindrical audit. The directly runnable repository C3 example passes public
+validation and native RFD3 feature construction. Polyhedral axes, compact
+stabilizer ASUs and CUDA validation remain fail-closed/open gates.
+
 ### Mixed-multiplicity finite-group components: first CPU slice closed
 
 Ordinary mode can now execute one complete, pre-positioned
@@ -439,12 +465,13 @@ gate are now complete.
   and rotation for several interfaces. Explicit stabilizer-frame placement
   and systematic calibration of radius/axial/azimuth/tilt/twist schedules
   across T/O/I remain open.
-- The exact timestep-level cylindrical-coordinate projector now exists in the
-  RFD3 constraint runtime and independently composes radius, azimuth and axial
-  locks with symmetry/fixed-XYZ lifecycle projection. Public YAML lowering,
-  token-feature transport and result audit for `kind: cylindrical` are not
-  yet connected, so the capability remains fail-closed rather than being
-  mislabeled as user-executable.
+- Public `kind: cylindrical` now has one CPU-closed Cn/Dn path: YAML lowering
+  retains indexed input atoms without falsely Cartesian-fixing them, the
+  adapter freezes exact runtime atom keys, RFD3 resolves complete-orbit
+  radius/azimuth/axial masks, and the shared lifecycle projects and audits
+  them through finalization. Compact stabilizer/quotient ASUs and T/O/I remain
+  explicitly fail-closed until their axis/coset semantics are implemented;
+  GPU execution evidence is still pending.
 - General vertex/edge/face combinations, several mixed-multiplicity interface
   types and unknown-pose stabilizer-frame optimization. The first static,
   pre-positioned T C2--C3 incidence is CPU closed.

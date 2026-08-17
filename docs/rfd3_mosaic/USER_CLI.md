@@ -250,6 +250,35 @@ rfd3-mosaic run \
   resolved_ring/selected/rank_0001_candidate_000000.yaml
 ```
 
+For ordinary use the same strict workflow is also available as one command:
+
+```bash
+rfd3-mosaic run ring_intent/simple_design.yaml \
+  --resolve-timesteps 50 --profile v100 --dry-run
+```
+
+Mosaic writes the complete resolver manifest below
+`output.root/.rfd3-mosaic/resolutions/`, requires one strictly replayed
+candidate, and only then re-enters the normal public-design `run` path.
+Remove `--dry-run` to submit. Use `--resolution-dir PATH` when the resolver
+artifacts should live elsewhere. If no candidate survives strict replay, the
+command stops before rendering or submission and points to the manifest;
+expert users can then run `resolve` with explicit search controls.
+
+The YAML can remain portable across machines. Override only the site-specific
+run location when needed:
+
+```bash
+rfd3-mosaic run simple_design.yaml \
+  --run-root /scratch/$USER/rfd3-mosaic-runs \
+  --campaign cage-screen --profile v100 --dry-run
+```
+
+`--run-root` changes the internal experiment envelope, provenance and run
+index destination; `--output-dir` is different and controls only where the
+rendered submission files are written. The resolved public YAML remains an
+unaltered scientific record of the selected candidate.
+
 `resolve` never silently executes rank 1. It retains both polymer-chain
 directions and both adjacent-copy directions (deduplicated for C2), compiles
 and ranks every candidate, reloads the written public YAML, and requires the
@@ -631,13 +660,15 @@ generic candidates and rejects incompatible group orders. This is only the
 discrete first filter: the report keeps polymer-unit ownership, connection
 order, neighbour relations and continuous pose explicitly unresolved.
 
-This ordinary intent path supports `inspect`, `plan`, `validate` and
-`resolve`. The intent itself always refuses `run`; users run one explicitly
-chosen standard YAML emitted by `resolve`. Full-orbit unknown-pose
-initialization exists for Cn/Dn/T/O/I. The reference three-seed T intent now
-passes strict replay and native RFD3 prevalidation; Dn/O/I remain
-family-specific CPU/GPU gates. Stabilizer-aware unknown-pose placement, automatic composition
-equivalence and native variadic sampler tensors remain blocked. Public
+This ordinary intent path supports `inspect`, `plan`, `validate`, `resolve`
+and one-command `render`/`run`. One-command execution does not bypass
+selection: it persists the resolution, requires exactly the resolver's top
+strictly replayed public YAML, and dispatches that YAML through the shared
+execution path. Full-orbit unknown-pose initialization exists for Cn/Dn/T/O/I.
+The reference three-seed T intent now passes strict replay and native RFD3
+prevalidation; Dn/O/I remain family-specific CPU/GPU gates. Stabilizer-aware
+unknown-pose placement, automatic composition equivalence and native variadic
+sampler tensors remain blocked. Public
 multi-participant supplied hyperedges already lower through a connected
 binary compatibility tree while retaining one interface identity, usage and
 audit group.
@@ -846,7 +877,9 @@ freedom. The canonical operators currently represented are:
 
 - `fixed_xyz`: preserve the selected atoms as a rigid geometry component;
 - `cylindrical`: preserve selected radius, azimuth and/or axial coordinates
-  about the declared symmetry axis;
+  about the declared Cn/Dn principal symmetry axis. The unselected
+  coordinates remain diffusion degrees of freedom; this is not an alias for
+  Cartesian fixing or rigid-component mobility;
 - `bounded_mobile`: allow selected rigid-pose degrees of freedom only inside
   explicit bounds.
 
@@ -1002,11 +1035,31 @@ rfd3-mosaic submit design.yaml
 
 The separate legacy-style top-level `bounded_mobile` operator is not the
 component-pose control above and remains unavailable to the executable public
-backend. `cylindrical`, partial-atom fixed XYZ, unconstrained endpoints, or
-fixed regions detached from every generated region also fail with a direct
+backend. `cylindrical` is executable for complete Cn/Dn orbits attached to a
+generated region; compact stabilizer/quotient ASUs and T/O/I cylindrical axes
+remain fail-closed. Partial-atom fixed XYZ, unconstrained endpoints, or fixed
+regions detached from every generated region also fail with a direct
 backend/lowering error. These cases are not silently converted to historical
-adapter behavior. The stable central/interface compatibility commands below
-remain available during migration.
+adapter behavior. Every cylindrical run requires
+`cylindrical_coordinate_audit.json` in addition to the universal scaffold
+audit.
+
+A repository-owned, directly validatable example is available at
+`examples/rfd3_mosaic/public_c3_cylindrical_design.yaml`. It deliberately
+omits `output` so validation and planning do not inherit a machine-specific
+run root:
+
+```bash
+python -m rfd3_mosaic.cli validate \
+  examples/rfd3_mosaic/public_c3_cylindrical_design.yaml
+python -m rfd3_mosaic.cli plan \
+  examples/rfd3_mosaic/public_c3_cylindrical_design.yaml
+```
+
+To submit it, copy the file and add the normal site-specific `output.root`
+and select the desired `resources.profile`. Cn/Dn uses the declared principal
+symmetry axis; the compiler rejects polyhedral and compact quotient cases
+instead of silently applying the wrong coordinate system.
 
 Every submitted design with a bounded-mobile component automatically requires
 three complementary checks. The constraint audit jointly superposes all fixed

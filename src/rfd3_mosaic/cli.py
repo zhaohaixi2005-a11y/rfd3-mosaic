@@ -51,6 +51,7 @@ from rfd3_mosaic.schema import (
     SimpleCageIntentSpec,
     UserDesignSpec,
     UserDesignTask,
+    UserOutputSpec,
     load_simple_cage_intent,
     load_user_design,
 )
@@ -281,6 +282,38 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("config", type=Path)
     render.add_argument("--profile")
     render.add_argument("--output-dir", type=Path)
+    render.add_argument(
+        "--run-root",
+        type=Path,
+        help="Override output.root for this machine without editing YAML.",
+    )
+    render.add_argument(
+        "--campaign",
+        help="Override output.campaign (public/simple designs only).",
+    )
+    render.add_argument(
+        "--resolution-dir",
+        type=Path,
+        help=(
+            "Persistent resolver output for a simple cage intent. When "
+            "omitted it is created below the intent output root."
+        ),
+    )
+    render.add_argument(
+        "--resolve-pose-samples",
+        type=int,
+        default=None,
+        help=(
+            "Optional global pose-start count for one-command simple-intent "
+            "resolution; omission uses the diversity preference."
+        ),
+    )
+    render.add_argument(
+        "--resolve-timesteps",
+        type=int,
+        default=200,
+        help="RFD3 steps frozen into the automatically selected design.",
+    )
 
     for command, help_text in (
         (
@@ -296,6 +329,38 @@ def _parser() -> argparse.ArgumentParser:
         submit.add_argument("config", type=Path)
         submit.add_argument("--profile")
         submit.add_argument("--output-dir", type=Path)
+        submit.add_argument(
+            "--run-root",
+            type=Path,
+            help="Override output.root for this machine without editing YAML.",
+        )
+        submit.add_argument(
+            "--campaign",
+            help="Override output.campaign (public/simple designs only).",
+        )
+        submit.add_argument(
+            "--resolution-dir",
+            type=Path,
+            help=(
+                "Persistent resolver output for a simple cage intent. "
+                "When omitted it is created below the intent output root."
+            ),
+        )
+        submit.add_argument(
+            "--resolve-pose-samples",
+            type=int,
+            default=None,
+            help=(
+                "Optional global pose-start count for one-command simple-"
+                "intent resolution; omission uses the diversity preference."
+            ),
+        )
+        submit.add_argument(
+            "--resolve-timesteps",
+            type=int,
+            default=200,
+            help="RFD3 steps frozen into the automatically selected design.",
+        )
         submit.add_argument(
             "--dry-run",
             action="store_true",
@@ -644,6 +709,58 @@ def _load_simple_intent_if_present(
     if payload.get("kind") != "simple_cage_intent":
         return None
     return load_simple_cage_intent(source)
+
+
+def _automatic_resolution_directory(
+    intent: SimpleCageIntentSpec,
+) -> Path:
+    """Choose a persistent ordinary-intent resolution directory.
+
+    Resolution is part of the scientific provenance, not a disposable
+    temporary conversion.  Keeping it below the configured run root makes a
+    one-command ordinary-user launch replayable after the scheduler job has
+    finished.
+    """
+
+    if intent.output is None:
+        raise ValueError(
+            "One-command execution of a simple cage intent requires "
+            "output.root; alternatively run 'resolve' explicitly and then "
+            "run the selected public design YAML"
+        )
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return (
+        intent.output.root
+        / ".rfd3-mosaic"
+        / "resolutions"
+        / f"{intent.name}-{timestamp}"
+    )
+
+
+def _dispatch_replayed_design(
+    *,
+    command: str,
+    design_path: Path,
+    profile: str | None,
+    output_directory: Path | None,
+    run_root: Path | None,
+    campaign: str | None,
+    dry_run: bool,
+) -> None:
+    """Continue through the normal public-design CLI after strict replay."""
+
+    nested = [command, str(design_path)]
+    if profile is not None:
+        nested.extend(("--profile", profile))
+    if output_directory is not None:
+        nested.extend(("--output-dir", str(output_directory)))
+    if run_root is not None:
+        nested.extend(("--run-root", str(run_root)))
+    if campaign is not None:
+        nested.extend(("--campaign", campaign))
+    if dry_run and command in {"run", "submit"}:
+        nested.append("--dry-run")
+    main(nested)
 
 
 def _simple_intent_analysis(
@@ -1654,6 +1771,69 @@ def main(argv: Sequence[str] | None = None) -> None:
         except (FileNotFoundError, OSError, TypeError, ValueError) as error:
             parser.error(str(error))
     if simple_intent is not None:
+        if arguments.command in {"render", "run", "submit"}:
+            try:
+                resolution_directory = (
+                    arguments.resolution_dir.expanduser().resolve()
+                    if arguments.resolution_dir is not None
+                    else _automatic_resolution_directory(simple_intent)
+                )
+                result = resolve_simple_intent(
+                    simple_intent,
+                    resolution_directory,
+                    source_path=arguments.config,
+                    symmetry_ids=None,
+                    pose_samples=arguments.resolve_pose_samples,
+                    seed_start=0,
+                    timesteps=arguments.resolve_timesteps,
+                    top_count=1,
+                    max_candidates=4096,
+                    optimize_poses=True,
+                    pose_optimize_top=4,
+                    pose_optimization_levels=3,
+                    pose_maximum_translation=12.0,
+                    pose_maximum_rotation_deg=25.0,
+                    progress=lambda message: print(
+                        f"[resolve] {message}",
+                        file=sys.stderr,
+                        flush=True,
+                    ),
+                )
+                recommended = result.get("recommended_design")
+                if not recommended:
+                    raise ValueError(
+                        "No strictly replayable design was found; inspect "
+                        f"{result['manifest_path']} or run 'resolve' with "
+                        "expert search controls"
+                    )
+                selected_design = Path(str(recommended)).resolve()
+                if not selected_design.is_file():
+                    raise ValueError(
+                        "Resolver recommendation does not exist: "
+                        f"{selected_design}"
+                    )
+            except (
+                NotImplementedError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ) as error:
+                parser.error(str(error))
+            print("RFD3-Mosaic ordinary one-command execution")
+            print(f"resolution: {resolution_directory}")
+            print(f"selected:   {selected_design}")
+            print(f"manifest:   {result['manifest_path']}")
+            _dispatch_replayed_design(
+                command=arguments.command,
+                design_path=selected_design,
+                profile=arguments.profile,
+                output_directory=arguments.output_dir,
+                run_root=arguments.run_root,
+                campaign=arguments.campaign,
+                dry_run=getattr(arguments, "dry_run", False),
+            )
+            return
         if arguments.command == "resolve":
             try:
                 result = resolve_simple_intent(
@@ -1922,6 +2102,38 @@ def main(argv: Sequence[str] | None = None) -> None:
             except (TypeError, ValueError) as error:
                 parser.error(str(error))
             return
+        run_root_override = getattr(arguments, "run_root", None)
+        campaign_override = getattr(arguments, "campaign", None)
+        if run_root_override is not None or campaign_override is not None:
+            existing_output = public_design.output
+            output_root = (
+                run_root_override.expanduser().resolve()
+                if run_root_override is not None
+                else existing_output.root
+                if existing_output is not None
+                else None
+            )
+            if output_root is None:
+                parser.error(
+                    "--campaign without --run-root requires output.root in "
+                    "the public design"
+                )
+            output_campaign = (
+                campaign_override
+                or (
+                    existing_output.campaign
+                    if existing_output is not None
+                    else "rfd3-mosaic"
+                )
+            )
+            public_design = public_design.model_copy(
+                update={
+                    "output": UserOutputSpec(
+                        root=output_root,
+                        campaign=output_campaign,
+                    )
+                }
+            )
         try:
             config_path = _write_public_experiment(
                 public_design,

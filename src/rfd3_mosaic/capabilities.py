@@ -337,13 +337,21 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
     CapabilityRecord(
         id="cylindrical_projector",
         title="Rigid cylindrical orbit projector",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=True,
         summary=(
-            "Constrain selected orbit-pose radius, azimuth or axial "
-            "coordinates during diffusion."
+            "Constrain selected per-atom radius, azimuth or axial "
+            "coordinates during exact Cn/Dn diffusion."
         ),
         dependencies=("public_fixed_xyz",),
+        evidence=(
+            "Public YAML lowering emits exact runtime atom keys without "
+            "mislabeling cylindrical atoms as Cartesian-fixed motifs",
+            "RFD3 input prevalidation resolves complete Cn/Dn atom orbits "
+            "and finite cylindrical masks",
+            "The shared constraint lifecycle projects cylindrical DOFs at "
+            "initialization, model prediction, guidance and finalization",
+        ),
     ),
     CapabilityRecord(
         id="bounded_orbit_mobility",

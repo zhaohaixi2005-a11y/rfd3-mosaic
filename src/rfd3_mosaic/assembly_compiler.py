@@ -133,6 +133,16 @@ def compile_audit_requirements(
                     input_arguments=(("--compiled-input", str(input_path)),),
                 )
             )
+        elif requirement == AuditRequirement.CYLINDRICAL_COORDINATES:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_cylindrical_audit",
+                    report_name="cylindrical_coordinate_audit.json",
+                    input_arguments=(
+                        ("--compiled-input", str(input_path)),
+                    ),
+                )
+            )
         else:
             raise ValueError(
                 f"Unsupported audit requirement {requirement!r}"

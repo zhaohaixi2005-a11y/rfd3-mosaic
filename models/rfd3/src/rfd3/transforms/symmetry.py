@@ -79,6 +79,11 @@ class AddSymmetryFeats(Transform):
             .get("extra", {})
             .get("assembly_interface_relations")
         )
+        runtime_cylindrical_constraints = (
+            data.get("specification", {})
+            .get("extra", {})
+            .get("cylindrical_constraints")
+        )
         if runtime_groups:
             membership = (
                 self.make_motif_constraint_group_membership(
@@ -133,7 +138,146 @@ class AddSymmetryFeats(Transform):
                     guidance_relations,
                 )
             )
+        if runtime_cylindrical_constraints:
+            data["feats"].update(
+                self.make_cylindrical_constraint_features(
+                    atom_array,
+                    runtime_cylindrical_constraints,
+                )
+            )
         return data
+
+    @staticmethod
+    def make_cylindrical_constraint_features(
+        atom_array,
+        constraints,
+    ) -> dict[str, object]:
+        """Bind exact compiler atom keys to cylindrical-coordinate DOFs."""
+
+        categories = set(atom_array.get_annotation_categories())
+        required = {"src_component", "atom_name", "sym_transform_id"}
+        missing = required - categories
+        if missing:
+            raise ValueError(
+                "Cylindrical runtime constraints require AtomArray "
+                f"annotations {sorted(missing)}"
+            )
+        source_components = np.asarray(
+            atom_array.get_annotation("src_component")
+        ).astype(str)
+        atom_names = np.asarray(
+            atom_array.get_annotation("atom_name")
+        ).astype(str)
+        transform_ids = np.asarray(
+            atom_array.get_annotation("sym_transform_id"),
+            dtype=np.int64,
+        )
+        physical_transform_ids = tuple(
+            sorted(
+                int(value)
+                for value in np.unique(transform_ids)
+                if int(value) >= 0
+            )
+        )
+        if not physical_transform_ids:
+            raise ValueError(
+                "Cylindrical constraints require a finite symmetry orbit"
+            )
+
+        dof_index = {"radius": 0, "azimuth": 1, "axial": 2}
+        keep_mask = np.zeros((len(atom_array), 3), dtype=bool)
+        resolved_axis: np.ndarray | None = None
+        constraint_ids: list[str] = []
+        for constraint in constraints:
+            constraint_id = str(constraint["constraint_id"])
+            constraint_ids.append(constraint_id)
+            axis = np.asarray(constraint["axis"], dtype=np.float64)
+            if axis.shape != (3,) or not np.isfinite(axis).all():
+                raise ValueError(
+                    f"Cylindrical constraint {constraint_id!r} has an "
+                    "invalid symmetry axis"
+                )
+            norm = float(np.linalg.norm(axis))
+            if norm <= 1.0e-8:
+                raise ValueError(
+                    f"Cylindrical constraint {constraint_id!r} has a "
+                    "zero symmetry axis"
+                )
+            axis /= norm
+            if resolved_axis is None:
+                resolved_axis = axis
+            elif not (
+                np.allclose(axis, resolved_axis, atol=1.0e-7)
+                or np.allclose(axis, -resolved_axis, atol=1.0e-7)
+            ):
+                raise ValueError(
+                    "One runtime cannot combine different cylindrical axes"
+                )
+
+            atom_keys = {
+                (str(source_component), str(atom_name))
+                for source_component, atom_name in constraint["atom_keys"]
+            }
+            if not atom_keys:
+                raise ValueError(
+                    f"Cylindrical constraint {constraint_id!r} has no atoms"
+                )
+            atom_mask = np.fromiter(
+                (
+                    (source_component, atom_name) in atom_keys
+                    for source_component, atom_name in zip(
+                        source_components,
+                        atom_names,
+                        strict=True,
+                    )
+                ),
+                dtype=bool,
+                count=len(atom_array),
+            )
+            if not np.any(atom_mask):
+                raise ValueError(
+                    f"Cylindrical constraint {constraint_id!r} matched no "
+                    "runtime atoms"
+                )
+            for atom_key in sorted(atom_keys):
+                key_mask = (
+                    (source_components == atom_key[0])
+                    & (atom_names == atom_key[1])
+                )
+                observed = tuple(
+                    sorted(
+                        int(value)
+                        for value in np.unique(transform_ids[key_mask])
+                        if int(value) >= 0
+                    )
+                )
+                if observed != physical_transform_ids:
+                    raise ValueError(
+                        f"Cylindrical atom key {atom_key!r} does not span "
+                        "the complete runtime symmetry orbit"
+                    )
+            for dof in constraint["keep"]:
+                if str(dof) not in dof_index:
+                    raise ValueError(
+                        f"Cylindrical constraint {constraint_id!r} has "
+                        f"unknown DOF {dof!r}"
+                    )
+                column = dof_index[str(dof)]
+                if np.any(keep_mask[atom_mask, column]):
+                    raise ValueError(
+                        "Cylindrical runtime constraints overlap on atom/DOF"
+                    )
+                keep_mask[atom_mask, column] = True
+
+        assert resolved_axis is not None
+        return {
+            "cylindrical_keep_mask": torch.from_numpy(keep_mask),
+            "cylindrical_axis": torch.tensor(
+                resolved_axis,
+                dtype=torch.float32,
+            ),
+            "cylindrical_constraint_ids": tuple(constraint_ids),
+        }
 
     @staticmethod
     def make_symmetry_orbit_slots(

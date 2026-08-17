@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
@@ -97,6 +97,9 @@ class LoweredUserDesign:
     sampling_plan: SamplingPlan
     bound_constraints: BoundConstraintPlan
     interface_usage: tuple[InterfaceUsageResolution, ...] = ()
+    runtime_constraint_metadata: dict[str, object] = field(
+        default_factory=dict
+    )
 
 
 def _resolve_interface_usage(
@@ -499,6 +502,17 @@ def _one_segment(selector: str, *, label: str) -> SelectorSegment:
     return segments[0]
 
 
+def _segment_contains(
+    outer: SelectorSegment,
+    inner: SelectorSegment,
+) -> bool:
+    return (
+        outer.chain_id == inner.chain_id
+        and outer.residue_start <= inner.residue_start
+        and outer.residue_end >= inner.residue_end
+    )
+
+
 def _symmetry_payload(design: UserDesignSpec) -> dict[str, object]:
     request = design.symmetry
     if isinstance(request, str):
@@ -852,11 +866,12 @@ def _initialization_center(
 
 
 def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
-    """Lower the currently executable fixed-XYZ public subset.
+    """Lower public hard-coordinate constraints to the shared Assembly IR.
 
-    This first backend binding is intentionally narrow.  It refuses
-    cylindrical/mobile operators and any unconstrained generated endpoint
-    rather than inheriting the adapter's historical implicit ``ALL`` fixing.
+    Cartesian fixed motifs and per-atom cylindrical coordinates are distinct
+    runtime contracts.  The latter retain selected radius/azimuth/axial
+    coordinates while allowing every unselected degree of freedom to diffuse;
+    they are never approximated by a rigid-component mobility declaration.
     """
 
     if not design.generation and not design.connections:
@@ -889,9 +904,12 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             )
     plan = compile_constraint_plan(design)
     sampling_plan = compile_sampling_plan(design)
-    plan.require_backend_support({"fixed_xyz"})
+    plan.require_backend_support({"fixed_xyz", "cylindrical"})
     for operator in plan.operators:
-        if operator.atoms != AtomScope.ALL:
+        if (
+            operator.operator == "fixed_xyz"
+            and operator.atoms != AtomScope.ALL
+        ):
             raise ValueError(
                 "The first fixed_xyz backend requires atoms=all"
             )
@@ -902,6 +920,14 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         if isinstance(design.symmetry, str)
         else design.symmetry.id
     )
+    if any(
+        operator.operator == "cylindrical"
+        for operator in plan.operators
+    ) and symmetry_id[0] not in {"C", "D"}:
+        raise NotImplementedError(
+            "Public cylindrical projection currently requires a Cn or Dn "
+            "symmetry with one invariant principal axis"
+        )
     declared_registry = transform_registry_for_design(design)
     named_relations = [
         (f"interface {interface.id!r}", interface.copy_relation.transform)
@@ -997,6 +1023,12 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         for operator in bound.operators
         if operator.plan.operator == "fixed_xyz"
     )
+    cylindrical_operators = tuple(
+        operator
+        for operator in bound.operators
+        if operator.plan.operator == "cylindrical"
+    )
+    structural_operators = fixed_operators + cylindrical_operators
     fixed_atom_ids = frozenset().union(
         *(operator.atom_ids for operator in fixed_operators)
     )
@@ -1008,16 +1040,36 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         )
         for segment in ordered_segments
     }
-    missing_fixed = [
-        segment.public_expression
-        for segment in ordered_segments
-        if not generation_atom_ids[segment].issubset(fixed_atom_ids)
-    ]
-    if missing_fixed:
+    operator_by_segment: dict[
+        SelectorSegment,
+        BoundConstraintOperator,
+    ] = {}
+    for segment in ordered_segments:
+        covering = [
+            operator
+            for operator in structural_operators
+            if (
+                generation_atom_ids[segment].issubset(operator.atom_ids)
+                if operator.plan.operator == "fixed_xyz"
+                else any(
+                    _segment_contains(declared_segment, segment)
+                    for declared_segment in operator.segments
+                )
+            )
+        ]
+        if len(covering) != 1:
+            raise ValueError(
+                "Every generated-region endpoint requires explicit "
+                "fixed_xyz or cylindrical coverage by exactly one "
+                "declaration; "
+                f"{segment.public_expression!r} has {len(covering)}"
+            )
+        operator_by_segment[segment] = covering[0]
+
+    if not structural_operators:
         raise ValueError(
-            "Current native adapter requires explicit fixed_xyz constraints "
-            "for every generated-region endpoint; missing "
-            + ", ".join(missing_fixed)
+            "Current native adapter requires explicit fixed_xyz or "
+            "cylindrical constraints for every generated-region endpoint"
         )
     used_atom_ids = frozenset().union(*generation_atom_ids.values())
     unused_fixed_atom_ids = fixed_atom_ids - used_atom_ids
@@ -1025,6 +1077,15 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         raise NotImplementedError(
             "Fixed selections not attached to generated regions are not yet "
             f"supported: {len(unused_fixed_atom_ids)} extra atoms"
+        )
+    unused_cylindrical_atom_ids = frozenset().union(
+        *(operator.atom_ids for operator in cylindrical_operators)
+    ) - used_atom_ids
+    if unused_cylindrical_atom_ids:
+        raise NotImplementedError(
+            "Cylindrical selections not attached to generated regions are "
+            "not yet supported: "
+            f"{len(unused_cylindrical_atom_ids)} extra atoms"
         )
 
     segment_ids = {
@@ -1037,24 +1098,21 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             "selection": segment.assembly_expression,
             "entity_type": "protein",
             "role": "functional_motif",
-            "fixed_atoms": "all",
+            # ``none`` is a compiler-owned adapter sentinel.  It keeps the
+            # indexed input residue in the contig while assigning an empty
+            # Cartesian fixed mask; cylindrical reference coordinates travel
+            # through a separate runtime feature contract below.
+            "fixed_atoms": (
+                "all"
+                if operator_by_segment[segment].plan.operator == "fixed_xyz"
+                else "none"
+            ),
         }
         for segment, fragment_id in segment_ids.items()
     }
     component_by_segment: dict[SelectorSegment, str] = {}
     for segment in ordered_segments:
-        covering = [
-            operator
-            for operator in fixed_operators
-            if generation_atom_ids[segment].issubset(operator.atom_ids)
-        ]
-        if len(covering) != 1:
-            raise ValueError(
-                "Each generated-region endpoint must be covered by exactly "
-                "one fixed_xyz declaration; "
-                f"{segment.public_expression!r} has {len(covering)}"
-            )
-        operator = covering[0].plan
+        operator = operator_by_segment[segment].plan
         component_by_segment[segment] = (
             operator.coupling_group or operator.id
         )
@@ -1548,12 +1606,60 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         }
     )
     interface_usage = _resolve_interface_usage(design, specification)
+    symmetry_payload = _symmetry_payload(design)
+    cylindrical_constraints: list[dict[str, object]] = []
+    for operator in cylindrical_operators:
+        members: list[dict[str, object]] = []
+        for segment, fragment_id in segment_ids.items():
+            if operator_by_segment[segment] is not operator:
+                continue
+            selected_atoms = sorted(
+                operator.atom_ids.intersection(
+                    generation_atom_ids[segment]
+                )
+            )
+            if not selected_atoms:
+                raise ValueError(
+                    f"Cylindrical constraint {operator.plan.id!r} matched "
+                    f"no atoms in fragment {fragment_id!r}"
+                )
+            members.append(
+                {
+                    "fragment_id": fragment_id,
+                    "source_atoms": [
+                        {
+                            "chain_id": atom.chain_id,
+                            "residue_number": atom.residue_number,
+                            "insertion_code": atom.insertion_code,
+                            "atom_name": atom.atom_name,
+                        }
+                        for atom in selected_atoms
+                    ],
+                }
+            )
+        if not members:
+            raise ValueError(
+                f"Cylindrical constraint {operator.plan.id!r} is not "
+                "attached to a materialized input fragment"
+            )
+        cylindrical_constraints.append(
+            {
+                "constraint_id": operator.plan.id,
+                "orbit_scope": operator.plan.orbit_scope.value,
+                "keep": list(operator.plan.controlled_dofs),
+                "axis": list(symmetry_payload["axis"]),
+                "members": members,
+            }
+        )
     return LoweredUserDesign(
         specification=specification,
         constraint_plan=plan,
         sampling_plan=sampling_plan,
         bound_constraints=bound,
         interface_usage=interface_usage,
+        runtime_constraint_metadata={
+            "cylindrical_constraints": cylindrical_constraints,
+        },
     )
 
 

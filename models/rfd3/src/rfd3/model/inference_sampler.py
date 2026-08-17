@@ -46,6 +46,9 @@ from rfd3.inference.symmetry.constraint_runtime import (
     ConstraintProposalResult,
     MosaicConstraintRuntime,
 )
+from rfd3.inference.symmetry.cylindrical_projector import (
+    CylindricalCoordinateProjector,
+)
 from rfd3.model.cfg_utils import strip_X
 
 from foundry.common import exists
@@ -1063,6 +1066,58 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             ),
         )
 
+    def _cylindrical_projector(
+        self,
+        f: dict[str, Any],
+        reference: torch.Tensor,
+    ) -> CylindricalCoordinateProjector | None:
+        keep_mask = f.get("cylindrical_keep_mask")
+        if keep_mask is None:
+            return None
+        if self.allow_realignment:
+            raise ValueError(
+                "Cylindrical hard projection requires "
+                "inference_sampler.allow_realignment=False so its declared "
+                "symmetry axis remains in the runtime coordinate frame"
+            )
+        transforms = self._symmetry_features(f)["sym_transform"]
+        translations = [
+            torch.as_tensor(
+                transform[1],
+                dtype=reference.dtype,
+                device=reference.device,
+            )
+            for _, transform in sorted(
+                transforms.items(),
+                key=lambda item: int(item[0]),
+            )
+        ]
+        if not translations:
+            raise ValueError(
+                "Cylindrical hard projection requires runtime symmetry "
+                "transforms"
+            )
+        # For a finite affine group the barycentre of the orbit of the
+        # origin is a group-fixed point.  Its component along the axis is a
+        # harmless gauge: cylindrical radius, azimuth and the reconstructed
+        # axial coordinate are invariant to shifting the chosen centre along
+        # that axis line.
+        center = torch.stack(translations, dim=0).mean(dim=0)
+        return CylindricalCoordinateProjector(
+            reference=reference,
+            keep_mask=torch.as_tensor(
+                keep_mask,
+                dtype=torch.bool,
+                device=reference.device,
+            ),
+            axis=torch.as_tensor(
+                f["cylindrical_axis"],
+                dtype=reference.dtype,
+                device=reference.device,
+            ),
+            center=center,
+        )
+
     def _assert_symmetry_orbit_closed(
         self,
         X_L: torch.Tensor,
@@ -1847,6 +1902,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 projector=self._joint_projector(f),
                 fixed_target=fixed_target,
                 fixed_mask=is_motif_atom_with_fixed_coord,
+                cylindrical_projector=self._cylindrical_projector(
+                    f,
+                    fixed_target,
+                ),
                 proposal_source=self.motif_mobility_proposal_source,
                 proposal_interval=int(
                     self.motif_mobility_update_interval

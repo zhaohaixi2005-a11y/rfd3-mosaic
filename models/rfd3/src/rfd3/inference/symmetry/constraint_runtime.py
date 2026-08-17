@@ -71,6 +71,10 @@ class MosaicConstraintRuntime:
         default=None,
         init=False,
     )
+    final_cylindrical_maximum_error: float | None = field(
+        default=None,
+        init=False,
+    )
     _phase_counts: dict[str, int] = field(
         default_factory=lambda: {
             "initialize": 0,
@@ -341,6 +345,7 @@ class MosaicConstraintRuntime:
             if self.cylindrical_projector is not None
             else 0.0
         )
+        self.final_cylindrical_maximum_error = float(cylindrical_error)
         if cylindrical_error > 1.0e-5:
             raise RuntimeError(
                 "Final cylindrical hard-constraint projection exceeded "
@@ -365,6 +370,9 @@ class MosaicConstraintRuntime:
             ),
             "cylindrical_projector_active": (
                 self.cylindrical_projector is not None
+            ),
+            "final_cylindrical_maximum_error": (
+                self.final_cylindrical_maximum_error
             ),
         }
 

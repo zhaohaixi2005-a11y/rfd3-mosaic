@@ -5,6 +5,32 @@ Last updated: 2026-08-17
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
 
+## 2026-08-17 public cylindrical runtime and ordinary one-command spine
+
+The public `kind: cylindrical` operator now completes one honest Cn/Dn CPU
+path: YAML lowering, exact source-atom identity mapping, AtomWorks/RFD3 runtime
+features, timestep projector composition, final diagnostics and the required
+`cylindrical_coordinate_audit.json`. A repository-owned C3 example passes
+public `validate` and `plan` with 795 atoms, 132 residues, three chains and
+finite RFD3 features. Compact quotient/stabilizer ASUs and T/O/I cylindrical
+axes remain explicitly rejected; GPU evidence remains pending.
+
+Ordinary supplied-interface intents no longer require a shell sequence of
+`resolve -> find rank 1 -> run`. `render`, `run` and `submit` now resolve the
+intent, persist the complete manifest, require a strictly replayed selected
+public YAML, and dispatch that YAML through the existing public execution
+path. No candidate means no render or submission. `--run-root` and
+`--campaign` provide machine-local output overrides without editing or
+mutating the selected scientific YAML.
+
+Real CPU evidence on the temporary workstation used the existing two-seed C3
+intent: 16 candidates, eight accepted, one strictly replayed selection,
+finite native RFD3 preflight, portable profile resolution and successful
+Slurm-script rendering with submission deliberately skipped. The complete
+pre-change integration gate passed `809 tests in 182.671s, OK`; the final gate
+including the one-command additions passed `811 tests in 182.064s, OK` on
+`mightymorphin` with CUDA hidden.
+
 ## 2026-08-17 compact icosahedral mixed-stabilizer CPU closure
 
 The pre-positioned I/C2--C5 supplied-interface path now completes strict CPU
@@ -403,13 +429,15 @@ and snapshot-synchronous multi-orbit proposals with atomic joint acceptance
 or rollback.  Validated GPU examples include jobs `5733341`, `5733680`,
 `5733718`, `5733719`, `5733788` and `5733972` across C3 and D3.
 
-The executable public declaration is currently
-`fixed_xyz.pose.mode: bounded_mobile`.  Standalone `kind: bounded_mobile` and
-`kind: cylindrical` declarations still stop at schema/plan because the first
-public backend lowering path only admits `fixed_xyz`.  Internal `tilt_only`
-metadata also exists but is rejected by the runtime controller and is not a
-public `FixedComponentPoseSpec` option.  Explicit azimuth-, twist-, tilt- and
-radial-plus-rotation-only subspaces therefore remain unimplemented.  Dynamic
+The executable public declarations now include
+`fixed_xyz.pose.mode: bounded_mobile` and per-atom `kind: cylindrical` for Cn
+and Dn. Cylindrical atoms remain indexed reference motif atoms but are not
+misrepresented as Cartesian-fixed; exact atom keys, complete-orbit feature
+masks, lifecycle projection, prevalidation and a result audit are compiled as
+one contract. Compact stabilizer/quotient cylindrical execution and T/O/I are
+still rejected. Standalone `kind: bounded_mobile` remains schema-only.
+Internal `tilt_only` metadata also exists but is rejected by the runtime
+controller and is not a public `FixedComponentPoseSpec` option. Dynamic
 mobility currently requires one design per process, low-memory/chunked pair
 conditioning, exact orbit-average state and coupled symmetry noise.  The
 local-neighbourhood execution backend rejects dynamic mobility.  Cn and Dn
