@@ -79,8 +79,32 @@ class InterfaceEdgeInstance(StrictModel):
     satisfaction_stage: Literal["input", "output"] = "input"
     target_geometry: TargetGeometrySpec
     orbit_id: Identifier | None = None
+    transform_set_id: Identifier | None = None
+    action_transform_id: str | None = None
+    action_copy_index: int | None = Field(default=None, ge=0)
+    left_orbit_id: Identifier | None = None
+    right_orbit_id: Identifier | None = None
+    left_transform_index: int | None = Field(default=None, ge=0)
+    right_transform_index: int | None = Field(default=None, ge=0)
     source_copy_index: int = Field(ge=0)
     target_copy_index: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_edge_action(self) -> "InterfaceEdgeInstance":
+        action_fields = (
+            self.orbit_id,
+            self.transform_set_id,
+            self.action_transform_id,
+            self.action_copy_index,
+        )
+        if any(value is None for value in action_fields) and any(
+            value is not None for value in action_fields
+        ):
+            raise ValueError(
+                "Interface edge orbit_id, transform_set_id and "
+                "action_transform_id must be declared together"
+            )
+        return self
 
 
 class ConstraintOrbitInstance(StrictModel):

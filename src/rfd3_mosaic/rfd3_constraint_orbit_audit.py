@@ -137,7 +137,39 @@ def _constraint_components(
     historical behavior: every fixed selector belongs to one joint component.
     """
 
-    orbits = (example.get("extra") or {}).get(
+    extra = example.get("extra") or {}
+    preexpanded_layout = extra.get("preexpanded_chain_layout")
+    if isinstance(preexpanded_layout, list):
+        source_chains = sorted(
+            {key[0] for key in source_lookup},
+            key=_chain_sort_key,
+        )
+        if len(source_chains) != len(preexpanded_layout):
+            raise ValueError(
+                "Preexpanded source-chain count does not match the declared "
+                f"layout: {len(source_chains)} != {len(preexpanded_layout)}"
+            )
+        chains_by_orbit: dict[str, set[str]] = {}
+        for chain_id, record in zip(
+            source_chains,
+            preexpanded_layout,
+            strict=True,
+        ):
+            orbit_id = str(record.get("orbit_id") or "mixed_orbit")
+            chains_by_orbit.setdefault(orbit_id, set()).add(chain_id)
+        return [
+            (
+                orbit_id,
+                sorted(
+                    key for key in source_lookup if key[0] in chain_ids
+                ),
+                "fixed",
+                None,
+            )
+            for orbit_id, chain_ids in sorted(chains_by_orbit.items())
+        ]
+
+    orbits = extra.get(
         "motif_constraint_orbits"
     )
     if not isinstance(orbits, list) or not orbits:
@@ -263,6 +295,7 @@ def _mapped_output_coordinate(
     output_lookup: dict[tuple[str, int, str], np.ndarray],
     ordered_output_chains: list[str],
     asu_chain_count: int,
+    preexpanded: bool = False,
 ) -> np.ndarray | None:
     source_chain, source_residue, atom_name = source_key
     destination = index_map.get(f"{source_chain}{source_residue}")
@@ -273,6 +306,10 @@ def _mapped_output_coordinate(
         master_position = ordered_output_chains.index(master_chain)
     except ValueError:
         return None
+    if preexpanded:
+        return output_lookup.get(
+            (master_chain, output_residue, atom_name)
+        )
     asu_chain_index = master_position % asu_chain_count
     output_index = action_index * asu_chain_count + asu_chain_index
     if not 0 <= output_index < len(ordered_output_chains):
@@ -298,6 +335,7 @@ def _component_runtime_copies(
     asu_chain_count: int,
     registry_order: list[str],
     registry_matrices: dict[str, Any],
+    preexpanded: bool = False,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[int], list[int]]:
     """Materialize expected/observed atoms for every physical group.
 
@@ -317,6 +355,29 @@ def _component_runtime_copies(
     matched_per_copy: list[int] = []
     expected_per_copy: list[int] = []
     component_key_set = set(atom_keys)
+
+    if preexpanded:
+        expected = []
+        observed = []
+        for key in atom_keys:
+            expected.append(source_lookup[key])
+            coordinate = _mapped_output_coordinate(
+                source_key=key,
+                action_index=0,
+                index_map=index_map,
+                output_lookup=output_lookup,
+                ordered_output_chains=ordered_output_chains,
+                asu_chain_count=asu_chain_count,
+                preexpanded=True,
+            )
+            if coordinate is not None:
+                observed.append(coordinate)
+        return (
+            [np.asarray(expected, dtype=float)],
+            [np.asarray(observed, dtype=float)],
+            [len(observed)],
+            [len(expected)],
+        )
 
     if not declared_groups:
         declared_groups = [
@@ -530,9 +591,28 @@ def audit_constraint_orbit(
     matrices = example.get("extra", {}).get("registry_transform_matrices")
     order = example.get("extra", {}).get("registry_transform_order")
     multiplicity = int(example["extra"]["symmetry_multiplicity"])
+    preexpanded_layout = extra.get("preexpanded_chain_layout")
+    preexpanded = isinstance(preexpanded_layout, list)
     if not isinstance(matrices, dict) or not isinstance(order, list):
         raise ValueError("Compiled input lacks the validated transform registry")
-    if (
+    if preexpanded:
+        if (
+            len(order) != multiplicity
+            or not ordered_output_chains
+            or len(preexpanded_layout) != len(ordered_output_chains)
+        ):
+            raise ValueError(
+                "Preexpanded output/layout or transform registry is "
+                "incomplete: "
+                f"multiplicity={multiplicity}, "
+                f"chains={ordered_output_chains}, order={order}, "
+                f"layout_count={len(preexpanded_layout)}"
+            )
+        asu_chain_count = sum(
+            bool(record.get("is_asu", False))
+            for record in preexpanded_layout
+        )
+    elif (
         len(order) != multiplicity
         or not ordered_output_chains
         or len(ordered_output_chains) % multiplicity != 0
@@ -574,6 +654,7 @@ def audit_constraint_orbit(
             asu_chain_count=asu_chain_count,
             registry_order=[str(value) for value in order],
             registry_matrices=matrices,
+            preexpanded=preexpanded,
         )
 
         matched = sum(matched_per_copy)

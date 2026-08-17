@@ -1,0 +1,64 @@
+schema_version: 1
+kind: simple_cage_intent
+name: ordinary-two-seed-user-connected-c3-t50-s951
+
+# Two complete supplied interface seeds. Their internal contact geometry is
+# authoritative, but their mutual file-frame pose is deliberately discarded.
+input: ../examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+seed_layout: solve
+
+goal:
+  architecture: ring
+  composition: auto
+  symmetry: [C3]
+  subunits: {minimum: 6, maximum: 6}
+
+interface_seeds:
+  interface_alpha:
+    participants: [A, B]
+    selectors:
+      A: A/186-189/*
+      B: B/238-240/*
+    use: {exact: 3}
+    geometry: preserve_exact
+
+  interface_beta:
+    participants: [A, B]
+    selectors:
+      A: A/191-192/*
+      B: B/234-235/*
+    use: {exact: 3}
+    geometry: preserve_exact
+
+# User-authoritative covalent combinations. Mosaic may solve their poses and
+# choose the C3 seam, but may not replace these connections with another
+# participant pairing.
+polymer_connections:
+  - id: alpha_to_beta_unit
+    from: interface_alpha.A
+    to: interface_beta.B
+  - id: beta_to_alpha_unit
+    from: interface_beta.A
+    to: interface_alpha.B
+
+generation:
+  length: {minimum: 10, maximum: 30}
+
+inspection:
+  contact_cutoff: 4.5
+  minimum_atom_contacts: 4
+  minimum_contact_residues_per_side: 2
+
+preferences:
+  diversity: medium
+  component_motion: locked
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: ordinary-two-seed-user-connected-c3-canary-8_12

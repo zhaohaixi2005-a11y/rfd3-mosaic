@@ -13,6 +13,84 @@ from rfd3_mosaic.structure import read_structure_atoms
 from rfd3_mosaic.validation.scaffold_validity import audit_scaffold_geometry
 
 
+def _declared_assembly_shape(input_path: Path) -> dict | None:
+    """Read the compiler-owned final-size contract, if one was declared."""
+
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or len(payload) != 1:
+        raise ValueError(
+            "RFD3 input must contain exactly one example for shape audit"
+        )
+    example = next(iter(payload.values()))
+    shape = (example.get("extra") or {}).get("assembly_shape")
+    if shape is None:
+        return None
+    if not isinstance(shape, dict):
+        raise ValueError("Compiled assembly_shape must be a mapping")
+    return shape
+
+
+def _evaluate_assembly_shape_contract(
+    summary: dict,
+    shape: dict | None,
+) -> dict:
+    """Compare final CA morphology to the ordinary user's size intent."""
+
+    if shape is None:
+        return {
+            "declared": False,
+            "passed": True,
+            "checks": [],
+        }
+    observed_outer = summary.get("assembly_spherical_outer_diameter")
+    if observed_outer is None:
+        observed_outer = summary.get("assembly_outer_radial_diameter")
+    observed_cavity = summary.get("assembly_spherical_inner_diameter")
+    if observed_cavity is None:
+        observed_cavity = summary.get("assembly_central_pore_diameter")
+    checks = []
+    for field, observed in (
+        ("diameter_angstrom", observed_outer),
+        ("cavity_diameter_angstrom", observed_cavity),
+    ):
+        requested = shape.get(field)
+        if requested is None:
+            continue
+        if not isinstance(requested, dict):
+            raise ValueError(f"assembly_shape.{field} must be a mapping")
+        minimum = float(requested["minimum"])
+        maximum = float(requested["maximum"])
+        finite_observed = (
+            isinstance(observed, (int, float))
+            and np.isfinite(float(observed))
+        )
+        passed = bool(
+            finite_observed
+            and minimum <= float(observed) <= maximum
+        )
+        checks.append(
+            {
+                "field": field,
+                "requested_minimum": minimum,
+                "requested_maximum": maximum,
+                "observed": (
+                    float(observed) if finite_observed else None
+                ),
+                "passed": passed,
+            }
+        )
+    if not checks:
+        raise ValueError("Compiled assembly_shape contains no size bounds")
+    return {
+        "declared": True,
+        "passed": all(check["passed"] for check in checks),
+        "checks": checks,
+        "measurement": (
+            "final_output_ca_morphology_about_declared_symmetry_center"
+        ),
+    }
+
+
 def _effective_chain_rg_limit(
     *,
     explicit_limit: float | None,
@@ -45,7 +123,7 @@ def _effective_chain_rg_limit(
 
 def _load_declared_symmetry_transforms(
     input_path: Path,
-) -> tuple[tuple[object, ...], int]:
+) -> tuple[tuple[object, ...], int, tuple[dict, ...] | None]:
     """Load the adapter's prevalidated runtime-ordered transform registry."""
 
     import numpy as np
@@ -72,7 +150,15 @@ def _load_declared_symmetry_transforms(
         raise ValueError(
             "Declared transform count does not match symmetry multiplicity"
         )
-    return transforms, multiplicity
+    raw_layout = extra.get("preexpanded_chain_layout")
+    if raw_layout is not None and not isinstance(raw_layout, list):
+        raise ValueError("preexpanded_chain_layout must be a list")
+    chain_layout = (
+        tuple(dict(record) for record in raw_layout)
+        if raw_layout is not None
+        else None
+    )
+    return transforms, multiplicity, chain_layout
 
 
 def _fixed_geometry_chain_rg_floor(input_path: Path) -> float:
@@ -148,9 +234,14 @@ def main() -> None:
     arguments = parser.parse_args()
 
     expected_transforms = None
+    expected_chain_layout = None
     fixed_geometry_chain_rg_floor = 0.0
     if arguments.rfd3_input is not None:
-        expected_transforms, declared_multiplicity = (
+        (
+            expected_transforms,
+            declared_multiplicity,
+            expected_chain_layout,
+        ) = (
             _load_declared_symmetry_transforms(
                 arguments.rfd3_input.resolve()
             )
@@ -190,6 +281,7 @@ def main() -> None:
             arguments.expected_symmetry_multiplicity
         ),
         expected_symmetry_transforms=expected_transforms,
+        expected_symmetry_chain_layout=expected_chain_layout,
         max_chain_distance_matrix_rmsd=(
             arguments.max_chain_distance_matrix_rmsd
         ),
@@ -197,6 +289,19 @@ def main() -> None:
             arguments.max_chain_distance_matrix_error
         ),
     )
+    shape_contract = _evaluate_assembly_shape_contract(
+        report["summary"],
+        (
+            _declared_assembly_shape(arguments.rfd3_input.resolve())
+            if arguments.rfd3_input is not None
+            else None
+        ),
+    )
+    report["assembly_shape_contract"] = shape_contract
+    report["summary"]["passed_assembly_shape"] = shape_contract[
+        "passed"
+    ]
+    report["passed"] = bool(report["passed"] and shape_contract["passed"])
     report["inputs"] = {
         "result_json": str(result_json),
         "result_structure": str(structure),

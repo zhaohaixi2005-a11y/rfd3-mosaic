@@ -268,7 +268,6 @@ def build_mapping_registry(
         )
 
     for instance_id, edge in instances.interfaces.items():
-        left_record = records[edge.left_port_instance_id]
         records[instance_id] = InstanceProvenance(
             instance_id=instance_id,
             kind=InstanceKind.INTERFACE_EDGE,
@@ -278,9 +277,16 @@ def build_mapping_registry(
                 edge.right_port_instance_id,
             ),
             orbit_id=edge.orbit_id,
-            transform_set_id=left_record.transform_set_id,
-            copy_index=edge.source_copy_index,
-            transform_id=left_record.transform_id,
+            transform_set_id=edge.transform_set_id,
+            copy_index=(
+                edge.action_copy_index
+                if edge.action_copy_index is not None
+                else edge.source_copy_index
+            ),
+            transform_id=(
+                edge.action_transform_id
+                or records[edge.left_port_instance_id].transform_id
+            ),
         )
 
     return MappingRegistry(records=records)

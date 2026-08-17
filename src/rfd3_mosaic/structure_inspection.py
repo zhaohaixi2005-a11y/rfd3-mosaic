@@ -19,6 +19,10 @@ _ASSEMBLY_SELECTOR = re.compile(
     r"(?:-(?P<end>-?[0-9]+))?/(?P<atoms>\*|all|backbone|CA)$",
     re.IGNORECASE,
 )
+_COMPACT_SELECTOR = re.compile(
+    r"^(?P<chain>[^0-9,/\s]+)(?P<start>-?[0-9]+)"
+    r"(?:-(?P<end>-?[0-9]+))?$"
+)
 _BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O"})
 
 
@@ -154,6 +158,7 @@ def _resolve_selector_atoms(
     expression: str,
     *,
     expected_chain: str,
+    allow_multiple_chains: bool = False,
 ) -> tuple[AtomRecord, ...]:
     selected: dict[
         tuple[str, int, str, str, str],
@@ -161,13 +166,17 @@ def _resolve_selector_atoms(
     ] = {}
     for term in expression.split(","):
         match = _ASSEMBLY_SELECTOR.fullmatch(term.strip())
+        compact = False
+        if match is None:
+            match = _COMPACT_SELECTOR.fullmatch(term.strip())
+            compact = match is not None
         if match is None:
             raise ValueError(
                 f"Invalid ordinary interface selector {term!r}; expected "
-                "CHAIN/start-end/*"
+                "CHAIN/start-end/* or CHAINstart-end"
             )
         chain_id = match.group("chain")
-        if chain_id != expected_chain:
+        if not allow_multiple_chains and chain_id != expected_chain:
             raise ValueError(
                 f"Selector {term!r} belongs to chain {chain_id!r}, not "
                 f"declared chain {expected_chain!r}"
@@ -176,7 +185,7 @@ def _resolve_selector_atoms(
         end = int(match.group("end") or start)
         if start > end:
             raise ValueError(f"Selector {term!r} has a reversed range")
-        atom_scope = match.group("atoms").lower()
+        atom_scope = "all" if compact else match.group("atoms").lower()
         for atom in atoms:
             if atom.chain_id != chain_id:
                 continue
@@ -493,6 +502,7 @@ def inspect_declared_interface_seed(
     left_selector: str,
     right_selector: str,
     contact_cutoff: float = 4.5,
+    allow_multiple_chains: bool = False,
 ) -> InterfaceCandidate:
     """Bind and measure one user-declared interface seed selection."""
 
@@ -504,6 +514,7 @@ def inspect_declared_interface_seed(
             atoms,
             left_selector,
             expected_chain=left_chain,
+            allow_multiple_chains=allow_multiple_chains,
         )
         if _is_heavy(atom)
     )
@@ -513,6 +524,7 @@ def inspect_declared_interface_seed(
             atoms,
             right_selector,
             expected_chain=right_chain,
+            allow_multiple_chains=allow_multiple_chains,
         )
         if _is_heavy(atom)
     )
@@ -574,6 +586,7 @@ def inspect_declared_interface_relation(
                 left_selector=selectors[left_chain],
                 right_selector=selectors[right_chain],
                 contact_cutoff=contact_cutoff,
+                allow_multiple_chains=True,
             )
             pair_evidence.append(evidence)
             if (

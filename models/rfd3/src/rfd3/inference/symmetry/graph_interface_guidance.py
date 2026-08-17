@@ -283,6 +283,7 @@ class GraphInterfacePatchState:
 
     assignments: dict[str, GraphInterfacePatchAssignment]
     locked: bool = False
+    lock_reason: str | None = None
 
 
 def _as_bool_feature(
@@ -547,16 +548,32 @@ def build_graph_interface_topology(
         same_chain_tokens
         & (torch.abs(token_positions[:, None] - token_positions[None, :]) == 1)
     )
-    token_adjacency |= peptide_neighbours
-    safety_exclusions |= token_adjacency[
-        guided_tokens[:, None], safety_tokens[None, :]
-    ]
-
+    # ``residue_index`` is not guaranteed to remain consecutive across a
+    # compiled fixed/generated boundary.  In particular, public contigs can
+    # preserve source residue numbering on the fixed fragment while generated
+    # tokens use a different numbering interval.  The atom array is still in
+    # polymer order, so consecutive CA tokens belonging to the same chain are
+    # also covalent neighbours.  Without this fallback a mobile motif can pull
+    # away from its generated scaffold while reporting zero junction loss.
     ca_atom_indices = torch.nonzero(
         is_ca & ~is_virtual,
         as_tuple=False,
     ).flatten()
     ca_tokens = atom_to_token[ca_atom_indices]
+    ordered_ca_tokens = torch.unique_consecutive(ca_tokens)
+    if ordered_ca_tokens.numel() > 1:
+        left_tokens = ordered_ca_tokens[:-1]
+        right_tokens = ordered_ca_tokens[1:]
+        same_ordered_chain = asym_id[left_tokens] == asym_id[right_tokens]
+        left_tokens = left_tokens[same_ordered_chain]
+        right_tokens = right_tokens[same_ordered_chain]
+        peptide_neighbours[left_tokens, right_tokens] = True
+        peptide_neighbours[right_tokens, left_tokens] = True
+    token_adjacency |= peptide_neighbours
+    safety_exclusions |= token_adjacency[
+        guided_tokens[:, None], safety_tokens[None, :]
+    ]
+
     guided_token_flags = torch.zeros(
         token_count,
         dtype=torch.bool,
@@ -1972,6 +1989,38 @@ def graph_interface_quality_satisfied(
     )
 
 
+def graph_interface_patch_capture_satisfied(
+    energy: GraphInterfaceEnergy,
+) -> bool:
+    """Return whether a reciprocal patch is ready for identity locking.
+
+    A timestep alone cannot establish patch identity: before contact forms,
+    the denoiser may move the physically relevant sequence window.  Lock only
+    after the selected window meets the final residue-coverage and continuity
+    contracts on both sides.  Orientation and shape remain optimization
+    targets after capture and are intentionally not prerequisites here.
+    """
+
+    return bool(
+        torch.all(
+            energy.covered_left_residues
+            >= energy.target_residues_per_side
+        ).item()
+        and torch.all(
+            energy.covered_right_residues
+            >= energy.target_residues_per_side
+        ).item()
+        and torch.all(
+            energy.contiguous_left_residues
+            >= energy.target_contiguous_residues_per_side
+        ).item()
+        and torch.all(
+            energy.contiguous_right_residues
+            >= energy.target_contiguous_residues_per_side
+        ).item()
+    )
+
+
 def graph_interface_proposal_acceptable(
     before: GraphInterfaceEnergy,
     after: GraphInterfaceEnergy,
@@ -2424,6 +2473,7 @@ def apply_graph_interface_guidance(
         )
         if patch_state is not None:
             patch_state.assignments = patch_assignments
+    patch_capture_satisfied = False
     with torch.enable_grad():
         proposal = coordinates.detach().clone().requires_grad_(True)
         energy = graph_interface_energy(
@@ -2433,6 +2483,28 @@ def apply_graph_interface_guidance(
             target_ca_distance_override=scheduled_target,
             patch_assignments=patch_assignments,
         )
+        if (
+            patch_state is not None
+            and not patch_state.locked
+            and progress >= config.patch_lock_fraction
+        ):
+            # Judge capture using the final packing radius rather than the
+            # wider coarse-capture target that drives this timestep.  A
+            # distant early window must not become permanent simply because
+            # diffusion passed a time threshold.
+            with torch.no_grad():
+                lock_energy = graph_interface_energy(
+                    proposal.detach(),
+                    topology,
+                    config,
+                    patch_assignments=patch_assignments,
+                )
+            patch_capture_satisfied = (
+                graph_interface_patch_capture_satisfied(lock_energy)
+            )
+            if patch_capture_satisfied:
+                patch_state.locked = True
+                patch_state.lock_reason = "quality_capture"
         gradient = torch.autograd.grad(energy.total, proposal)[0]
     if not torch.isfinite(gradient).all():
         raise ValueError("Interface guidance produced a non-finite gradient")
@@ -2593,6 +2665,10 @@ def apply_graph_interface_guidance(
         "window_weight": window,
         "scheduled_target_ca_distance": scheduled_target,
         "patch_locked": bool(patch_state and patch_state.locked),
+        "patch_lock_reason": (
+            patch_state.lock_reason if patch_state is not None else None
+        ),
+        "patch_capture_satisfied": patch_capture_satisfied,
         "patch_assignments": {
             edge_id: {
                 "left_token_ids": list(assignment.left_token_ids),
@@ -2700,8 +2776,10 @@ __all__ = [
     "build_graph_interface_topology",
     "graph_interface_energy",
     "graph_interface_energy_diagnostics",
+    "graph_interface_patch_capture_satisfied",
     "graph_interface_proposal_acceptable",
     "graph_interface_quality_satisfied",
     "guidance_window_weight",
+    "resolve_graph_interface_patch_assignments",
     "scheduled_interface_ca_distance",
 ]

@@ -47,16 +47,16 @@ class CapabilityLedgerTestCase(unittest.TestCase):
 
         self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
 
-    def test_multi_chain_interface_seed_cage_is_not_overclaimed(self) -> None:
+    def test_multi_chain_interface_seed_cage_has_cpu_evidence(self) -> None:
         record = capability_by_id("multi_chain_interface_seed_cage")
 
-        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
-        self.assertFalse(record.public_interface)
+        self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
+        self.assertTrue(record.public_interface)
 
-    def test_multi_seed_path_cover_is_not_overclaimed(self) -> None:
+    def test_multi_seed_path_cover_has_cpu_evidence(self) -> None:
         record = capability_by_id("multi_seed_polymer_path_cover")
 
-        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
         self.assertFalse(record.public_interface)
 
     def test_prepositioned_multi_seed_resolver_is_not_overclaimed(
@@ -66,19 +66,19 @@ class CapabilityLedgerTestCase(unittest.TestCase):
             "ordinary_prepositioned_multi_seed_cn"
         )
 
-        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
         self.assertTrue(record.public_interface)
 
     def test_ordinary_input_inspection_is_not_overclaimed(self) -> None:
         record = capability_by_id("ordinary_input_inspection")
 
-        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
         self.assertTrue(record.public_interface)
 
     def test_ordinary_ring_resolver_is_not_overclaimed(self) -> None:
         record = capability_by_id("ordinary_binary_ring_resolution")
 
-        self.assertEqual(record.maturity, CapabilityMaturity.SCHEMA_ONLY)
+        self.assertEqual(record.maturity, CapabilityMaturity.CPU_VALIDATED)
         self.assertTrue(record.public_interface)
 
     def test_capabilities_cli_emits_machine_readable_json(self) -> None:
@@ -221,8 +221,29 @@ class CapabilityLedgerTestCase(unittest.TestCase):
                 "public_fixed_xyz",
                 "bounded_orbit_mobility",
                 "graph_interface_guidance",
+                "joint_packing_mobility",
             },
         )
+
+    def test_assembly_shape_declares_final_audit_capability(self) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "shape-contract",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "assembly_shape": {
+                    "diameter_angstrom": {
+                        "minimum": 60.0,
+                        "maximum": 80.0,
+                    }
+                },
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(observed, {"assembly_shape_contract"})
 
     def test_component_initial_poses_require_static_pose_sampling(self) -> None:
         design = UserDesignSpec.model_validate(

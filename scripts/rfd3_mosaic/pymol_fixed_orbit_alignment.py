@@ -1,14 +1,16 @@
-"""PyMOL helper for reproducing the fixed-constraint orbit audit alignment.
+"""PyMOL helpers for visually aligning Mosaic reference and design CIFs.
 
-Load the run's ``presymmetrized_input.cif`` as ``ref`` and its result
-structure as ``design``, then run::
+Drag ``presymmetrized_input.cif`` and one result ``*model_0.cif`` into PyMOL,
+then run::
 
     run scripts/rfd3_mosaic/pymol_fixed_orbit_alignment.py
-    mosaic_align_fixed ref, design, /absolute/path/to/run
+    mosaic_align
 
-The command creates ``design_fixed_aligned`` and leaves ``design`` unchanged.
-It uses the compiled residue map and declared symmetry registry instead of
-asking PyMOL to infer a 2N-fragment-to-N-chain correspondence from sequence.
+The routine command needs only those two loaded structures.  It locates shared
+motif fragments by sequence and selects the symmetry-copy correspondence with
+one consistent three-dimensional transform.  It creates ``mosaic_aligned``
+and leaves both input objects unchanged.  ``mosaic_align_fixed`` remains
+available when a provenance-exact audit alignment is specifically required.
 """
 
 from __future__ import annotations
@@ -228,6 +230,7 @@ def _fixed_alignment_coordinates(
     asu_chain_count: int,
     registry_order: list[str],
     registry_matrices: dict,
+    preexpanded: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build provenance-exact fixed atom pairs across all ASU chains.
 
@@ -243,6 +246,39 @@ def _fixed_alignment_coordinates(
         raise ValueError("Result JSON contains no fixed-residue index mapping")
     expected: list[np.ndarray] = []
     observed: list[np.ndarray] = []
+
+    # Mixed stabilizer/coset designs are materialized before RFD3.  Their
+    # reference chains already occupy the declared physical group frames, so
+    # applying a registry transform here a second time is incorrect.  The
+    # result metadata gives a direct residue mapping for every fixed source
+    # atom and is the complete authority for this layout.
+    if preexpanded:
+        for key in sorted(source_lookup):
+            source_chain, source_residue, atom_name = key
+            destination = index_map.get(f"{source_chain}{source_residue}")
+            if destination is None:
+                raise ValueError(
+                    "Result JSON does not map preexpanded fixed residue "
+                    f"{source_chain}{source_residue}"
+                )
+            output_chain, output_residue = _parse_component(str(destination))
+            output_key = (output_chain, output_residue, atom_name)
+            try:
+                output_coordinate = output_lookup[output_key]
+            except KeyError as error:
+                raise ValueError(
+                    "Output object is missing mapped preexpanded fixed atom "
+                    f"{output_key!r}"
+                ) from error
+            expected.append(source_lookup[key])
+            observed.append(output_coordinate)
+        if not expected:
+            raise ValueError(
+                "No preexpanded globally fixed atoms were available for "
+                "alignment"
+            )
+        return np.asarray(expected, dtype=float), np.asarray(observed, dtype=float)
+
     orbits = extra.get("motif_constraint_orbits")
     groups = extra.get("motif_constraint_groups")
     fixed_orbits = [
@@ -251,9 +287,15 @@ def _fixed_alignment_coordinates(
         if isinstance(orbit, dict)
         and orbit.get("mobility_mode", "fixed") == "fixed"
     ]
+    alignment_orbits = fixed_orbits or [
+        orbit
+        for orbit in orbits or []
+        if isinstance(orbit, dict)
+        and orbit.get("mobility_mode") == "orbit_rigid"
+    ]
 
-    if fixed_orbits and isinstance(groups, list) and groups:
-        for orbit in fixed_orbits:
+    if alignment_orbits and isinstance(groups, list) and groups:
+        for orbit in alignment_orbits:
             orbit_id = str(orbit.get("constraint_orbit_id", ""))
             residue_ids = {
                 _parse_component(str(value))
@@ -393,6 +435,59 @@ def _normalized_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
+def _structure_residues(object_name: str) -> dict[str, list[dict]]:
+    """Return ordered heavy-atom residues from one loaded PyMOL object."""
+
+    chains: dict[str, list[dict]] = {}
+    residue_lookup: dict[tuple[str, str], dict] = {}
+    for atom in cmd.get_model(object_name).atom:
+        if not _is_heavy(atom):
+            continue
+        chain = str(atom.chain)
+        residue_id = str(atom.resi)
+        identity = (chain, residue_id)
+        residue = residue_lookup.get(identity)
+        if residue is None:
+            residue = {
+                "chain": chain,
+                "resi": residue_id,
+                "resn": str(atom.resn).upper(),
+                "atoms": {},
+            }
+            residue_lookup[identity] = residue
+            chains.setdefault(chain, []).append(residue)
+        atom_name = str(atom.name).upper()
+        residue["atoms"].setdefault(
+            atom_name,
+            np.asarray(atom.coord, dtype=float),
+        )
+    return chains
+
+
+def _sequence_coverage(
+    source: dict[str, list[dict]],
+    target: dict[str, list[dict]],
+) -> float:
+    """Fraction of source residues in chains found intact inside target."""
+
+    target_sequences = [
+        tuple(residue["resn"] for residue in residues)
+        for residues in target.values()
+    ]
+    covered = 0
+    total = 0
+    for residues in source.values():
+        sequence = tuple(residue["resn"] for residue in residues)
+        total += len(sequence)
+        if sequence and any(
+            sequence == candidate[start : start + len(sequence)]
+            for candidate in target_sequences
+            for start in range(len(candidate) - len(sequence) + 1)
+        ):
+            covered += len(sequence)
+    return covered / total if total else 0.0
+
+
 def _infer_loaded_objects(
     reference: str,
     design: str,
@@ -400,7 +495,8 @@ def _infer_loaded_objects(
     objects = [
         name
         for name in cmd.get_names("objects", enabled_only=0)
-        if not name.endswith("_aligned")
+        if not name.lower().endswith("_aligned")
+        and name.lower() not in {"mosaic_aligned", "design_fixed_aligned"}
     ]
     if reference and design:
         return reference, design
@@ -409,12 +505,6 @@ def _infer_loaded_objects(
             "Provide both reference and design, or omit both for automatic "
             "detection"
         )
-    if len(objects) != 2:
-        raise ValueError(
-            "Automatic mosaic_align requires exactly two loaded raw "
-            f"objects; found {objects}. Pass reference and design explicitly."
-        )
-
     reference_candidates = [
         name
         for name in objects
@@ -432,17 +522,297 @@ def _infer_loaded_objects(
         if reference_candidates[0] != design_candidates[0]:
             return reference_candidates[0], design_candidates[0]
 
-    chain_counts = {
-        name: len(cmd.get_chains(name))
-        for name in objects
-    }
-    ordered = sorted(objects, key=lambda name: chain_counts[name])
-    if chain_counts[ordered[0]] == chain_counts[ordered[1]]:
+    if len(objects) != 2:
         raise ValueError(
-            "Cannot infer reference/design from equally sized objects. "
+            "Automatic mosaic_align could not choose one reference and one "
+            f"design from loaded raw objects {objects}. Either delete old "
+            "raw objects or run `mosaic_align reference, design`."
+        )
+
+    first, second = objects
+    first_residues = _structure_residues(first)
+    second_residues = _structure_residues(second)
+    first_coverage = _sequence_coverage(first_residues, second_residues)
+    second_coverage = _sequence_coverage(second_residues, first_residues)
+    if first_coverage > second_coverage + 0.05:
+        return first, second
+    if second_coverage > first_coverage + 0.05:
+        return second, first
+
+    residue_counts = {
+        first: sum(map(len, first_residues.values())),
+        second: sum(map(len, second_residues.values())),
+    }
+    ordered = sorted(objects, key=lambda name: residue_counts[name])
+    if residue_counts[ordered[0]] == residue_counts[ordered[1]]:
+        raise ValueError(
+            "Cannot infer reference/design from the two CIF structures. "
             "Use: mosaic_align reference_object, design_object"
         )
-    return ordered[1], ordered[0]
+    return ordered[0], ordered[1]
+
+
+def _matched_fragment_coordinates(
+    reference_residues: list[dict],
+    design_residues: list[dict],
+) -> tuple[np.ndarray, np.ndarray]:
+    reference_coordinates: list[np.ndarray] = []
+    design_coordinates: list[np.ndarray] = []
+    for reference_residue, design_residue in zip(
+        reference_residues,
+        design_residues,
+        strict=True,
+    ):
+        common_atoms = sorted(
+            set(reference_residue["atoms"]).intersection(
+                design_residue["atoms"]
+            )
+        )
+        for atom_name in common_atoms:
+            reference_coordinates.append(
+                reference_residue["atoms"][atom_name]
+            )
+            design_coordinates.append(design_residue["atoms"][atom_name])
+    return (
+        np.asarray(reference_coordinates, dtype=float),
+        np.asarray(design_coordinates, dtype=float),
+    )
+
+
+def _structure_match_candidates(
+    reference: str,
+    design: str,
+    *,
+    internal_rmsd_limit: float = 2.0,
+) -> tuple[list[list[dict]], int]:
+    """Find sequence-identical reference fragments in the design object."""
+
+    reference_chains = _structure_residues(reference)
+    design_chains = _structure_residues(design)
+    candidates_by_fragment: list[list[dict]] = []
+    reference_residue_count = 0
+    for reference_chain, reference_residues in reference_chains.items():
+        reference_sequence = tuple(
+            residue["resn"] for residue in reference_residues
+        )
+        reference_residue_count += len(reference_sequence)
+        fragment_candidates: list[dict] = []
+        for design_chain, design_residues in design_chains.items():
+            design_sequence = tuple(
+                residue["resn"] for residue in design_residues
+            )
+            for start in range(
+                len(design_sequence) - len(reference_sequence) + 1
+            ):
+                if (
+                    design_sequence[start : start + len(reference_sequence)]
+                    != reference_sequence
+                ):
+                    continue
+                matched_design = design_residues[
+                    start : start + len(reference_sequence)
+                ]
+                expected, observed = _matched_fragment_coordinates(
+                    reference_residues,
+                    matched_design,
+                )
+                if len(expected) < 3:
+                    continue
+                rotation, translation, internal_rmsd = _kabsch(
+                    observed,
+                    expected,
+                )
+                if internal_rmsd > internal_rmsd_limit:
+                    continue
+                fragment_candidates.append(
+                    {
+                        "reference_chain": reference_chain,
+                        "design_chain": design_chain,
+                        "design_start": start,
+                        "residue_count": len(reference_sequence),
+                        "expected": expected,
+                        "observed": observed,
+                        "rotation": rotation,
+                        "translation": translation,
+                        "internal_rmsd": internal_rmsd,
+                    }
+                )
+        if not fragment_candidates:
+            sequence_text = "-".join(reference_sequence)
+            raise ValueError(
+                "The design CIF contains no geometry-compatible copy of "
+                f"reference chain {reference_chain!r} ({sequence_text}). "
+                "Confirm that the two loaded CIFs belong to the same design."
+            )
+        candidates_by_fragment.append(fragment_candidates)
+    if not candidates_by_fragment:
+        raise ValueError("The reference CIF contains no heavy-atom residues")
+    return candidates_by_fragment, reference_residue_count
+
+
+def _transformed_rmsd(
+    candidate: dict,
+    rotation: np.ndarray,
+    translation: np.ndarray,
+) -> float:
+    delta = candidate["observed"] @ rotation + translation
+    delta -= candidate["expected"]
+    return float(np.sqrt(np.mean(np.sum(delta * delta, axis=-1))))
+
+
+def _select_structural_correspondence(
+    candidates_by_fragment: list[list[dict]],
+    *,
+    inlier_rmsd: float = 1.5,
+) -> tuple[list[dict], np.ndarray, np.ndarray, float]:
+    """Choose the largest set of fragments sharing one rigid transform."""
+
+    proposals = [
+        candidate
+        for fragment_candidates in candidates_by_fragment
+        for candidate in fragment_candidates
+    ]
+    best_selection: list[dict] | None = None
+    best_key: tuple | None = None
+    rotation: np.ndarray | None = None
+    translation: np.ndarray | None = None
+    for proposal in proposals:
+        selection = [
+            min(
+                fragment_candidates,
+                key=lambda candidate: _transformed_rmsd(
+                    candidate,
+                    proposal["rotation"],
+                    proposal["translation"],
+                ),
+            )
+            for fragment_candidates in candidates_by_fragment
+        ]
+        residuals = [
+            _transformed_rmsd(
+                candidate,
+                proposal["rotation"],
+                proposal["translation"],
+            )
+            for candidate in selection
+        ]
+        inlier_atoms = sum(
+            len(candidate["observed"])
+            for candidate, residual in zip(selection, residuals, strict=True)
+            if residual <= inlier_rmsd
+        )
+        robust_error = sum(
+            len(candidate["observed"])
+            * min(residual, inlier_rmsd * 2.0) ** 2
+            for candidate, residual in zip(selection, residuals, strict=True)
+        )
+        key = (-inlier_atoms, robust_error, proposal["internal_rmsd"])
+        if best_key is None or key < best_key:
+            best_key = key
+            best_selection = selection
+            rotation = proposal["rotation"]
+            translation = proposal["translation"]
+
+    assert best_selection is not None
+    assert rotation is not None
+    assert translation is not None
+    for _ in range(3):
+        selected = [
+            min(
+                fragment_candidates,
+                key=lambda candidate: _transformed_rmsd(
+                    candidate,
+                    rotation,
+                    translation,
+                ),
+            )
+            for fragment_candidates in candidates_by_fragment
+        ]
+        inliers = [
+            candidate
+            for candidate in selected
+            if _transformed_rmsd(candidate, rotation, translation)
+            <= inlier_rmsd
+        ]
+        if not inliers:
+            break
+        expected = np.concatenate(
+            [candidate["expected"] for candidate in inliers]
+        )
+        observed = np.concatenate(
+            [candidate["observed"] for candidate in inliers]
+        )
+        rotation, translation, _ = _kabsch(observed, expected)
+        best_selection = selected
+
+    inliers = [
+        candidate
+        for candidate in best_selection
+        if _transformed_rmsd(candidate, rotation, translation) <= inlier_rmsd
+    ]
+    if not inliers:
+        raise ValueError(
+            "The two CIFs share motif sequences but no consistent rigid "
+            "three-dimensional correspondence"
+        )
+    expected = np.concatenate(
+        [candidate["expected"] for candidate in inliers]
+    )
+    observed = np.concatenate(
+        [candidate["observed"] for candidate in inliers]
+    )
+    rotation, translation, rmsd = _kabsch(observed, expected)
+    return inliers, rotation, translation, rmsd
+
+
+def mosaic_align_cifs(
+    reference: str,
+    design: str,
+    output_object: str = "mosaic_aligned",
+    replace: str = "1",
+) -> None:
+    """Align two loaded CIFs without requiring external run metadata."""
+
+    objects = set(cmd.get_names("objects", enabled_only=0))
+    for required in (reference, design):
+        if required not in objects:
+            raise ValueError(f"PyMOL object {required!r} is not loaded")
+    replace_existing = str(replace).lower() not in {
+        "0", "false", "no", "off",
+    }
+    if output_object in objects:
+        if not replace_existing:
+            raise ValueError(
+                f"Output object {output_object!r} already exists; pass "
+                "replace=1 or delete it before rerunning"
+            )
+        if output_object in {reference, design}:
+            raise ValueError(
+                "The aligned output object cannot overwrite either input"
+            )
+        cmd.delete(output_object)
+
+    candidates, reference_residue_count = _structure_match_candidates(
+        reference,
+        design,
+    )
+    inliers, rotation, translation, rmsd = (
+        _select_structural_correspondence(candidates)
+    )
+    matched_residues = sum(
+        candidate["residue_count"] for candidate in inliers
+    )
+    matched_atoms = sum(len(candidate["observed"]) for candidate in inliers)
+
+    cmd.create(output_object, design)
+    coordinates = np.asarray(cmd.get_coords(output_object), dtype=float)
+    cmd.load_coords(coordinates @ rotation + translation, output_object)
+    print(
+        f"mosaic_align: RMSD={rmsd:.6f} A "
+        f"({matched_atoms} shared heavy atoms; "
+        f"{matched_residues}/{reference_residue_count} reference residues); "
+        f"created {output_object!r} from the two CIFs only"
+    )
 
 
 def _find_run_for_design(design: str, search_root: Path) -> Path:
@@ -451,9 +821,15 @@ def _find_run_for_design(design: str, search_root: Path) -> Path:
             f"Mosaic alignment search root does not exist: {search_root}"
         )
     design_key = _normalized_name(design)
+    # PyMOL appends _0001, _0002, ... when an object name collides.  That
+    # suffix is not part of the result filename.
+    design_keys = {
+        design_key,
+        re.sub(r"_[0-9]{4}$", "", design_key),
+    }
     candidates = []
     for path in search_root.rglob("*model_0.json"):
-        if _normalized_name(path.stem) != design_key:
+        if _normalized_name(path.stem) not in design_keys:
             continue
         try:
             _find_run_files(path.parent)
@@ -504,14 +880,20 @@ def _fixed_source_residues(example: dict) -> set[tuple[str, int]]:
         if isinstance(orbit, dict)
         and orbit.get("mobility_mode", "fixed") == "fixed"
     ]
-    if not fixed_components:
+    alignment_components = fixed_components or [
+        orbit
+        for orbit in orbits
+        if isinstance(orbit, dict)
+        and orbit.get("mobility_mode") == "orbit_rigid"
+    ]
+    if not alignment_components:
         raise ValueError(
-            "This run has no globally fixed orbit; independently mobile "
-            "components require component-specific visualization"
+            "This run has neither a globally fixed orbit nor an internally "
+            "rigid mobile orbit available for provenance alignment"
         )
     declared = {
         _parse_component(str(component))
-        for orbit in fixed_components
+        for orbit in alignment_components
         for component in orbit.get("source_components", [])
     }
     return residues.intersection(declared) if declared else residues
@@ -544,6 +926,7 @@ def mosaic_align_fixed(
     design: str = "design",
     run_dir: str = ".",
     output_object: str = "design_fixed_aligned",
+    replace: str = "1",
 ) -> None:
     """Align one output to its complete fixed orbit using run provenance."""
 
@@ -551,11 +934,21 @@ def mosaic_align_fixed(
     for required in (reference, design):
         if required not in objects:
             raise ValueError(f"PyMOL object {required!r} is not loaded")
+    replace_existing = str(replace).lower() not in {
+        "0", "false", "no", "off",
+    }
     if output_object in objects:
-        raise ValueError(
-            f"Output object {output_object!r} already exists; rename or "
-            "delete it explicitly before rerunning"
-        )
+        if not replace_existing:
+            raise ValueError(
+                f"Output object {output_object!r} already exists; pass "
+                "replace=1 or delete it explicitly before rerunning"
+            )
+        if output_object in {reference, design}:
+            raise ValueError(
+                "The aligned output object cannot overwrite the reference "
+                "or raw design object"
+            )
+        cmd.delete(output_object)
 
     compiled_path, result_path = _find_run_files(
         Path(run_dir).expanduser().resolve()
@@ -586,19 +979,33 @@ def mosaic_align_fixed(
     order = extra.get("registry_transform_order")
     matrices = extra.get("registry_transform_matrices")
     multiplicity = int(extra.get("symmetry_multiplicity", 0))
+    preexpanded_layout = extra.get("preexpanded_chain_layout")
+    preexpanded = isinstance(preexpanded_layout, list)
     if not isinstance(order, list) or not isinstance(matrices, dict):
         raise ValueError("Compiled input lacks the symmetry registry")
-    if (
-        len(order) != multiplicity
-        or not output_chains
-        or len(output_chains) % multiplicity != 0
-    ):
+    if len(order) != multiplicity or not output_chains:
         raise ValueError(
             "Symmetry multiplicity mismatch: "
             f"transforms={len(order)}, output_chains={len(output_chains)}, "
             f"declared={multiplicity}"
         )
-    asu_chain_count = len(output_chains) // multiplicity
+    if preexpanded:
+        if len(preexpanded_layout) != len(output_chains):
+            raise ValueError(
+                "Preexpanded chain layout does not match the loaded design: "
+                f"layout={len(preexpanded_layout)}, "
+                f"output_chains={len(output_chains)}"
+            )
+        asu_chain_count = int(extra.get("asu_chain_count", 1))
+    else:
+        if len(output_chains) % multiplicity != 0:
+            raise ValueError(
+                "Output chain count is incompatible with the declared "
+                "symmetry action: "
+                f"output_chains={len(output_chains)}, "
+                f"multiplicity={multiplicity}"
+            )
+        asu_chain_count = len(output_chains) // multiplicity
     expected, observed = _fixed_alignment_coordinates(
         example=example,
         result=result,
@@ -608,15 +1015,29 @@ def mosaic_align_fixed(
         asu_chain_count=asu_chain_count,
         registry_order=[str(value) for value in order],
         registry_matrices=matrices,
+        preexpanded=preexpanded,
     )
     rotation, translation, rmsd = _kabsch(observed, expected)
+
+    orbits = extra.get("motif_constraint_orbits") or []
+    has_global_fixed_orbit = any(
+        isinstance(orbit, dict)
+        and orbit.get("mobility_mode", "fixed") == "fixed"
+        for orbit in orbits
+    )
+    alignment_basis = (
+        "globally fixed orbit"
+        if has_global_fixed_orbit
+        else "rigid mobile orbit (pose change retained as residual)"
+    )
 
     cmd.create(output_object, design)
     coordinates = np.asarray(cmd.get_coords(output_object), dtype=float)
     cmd.load_coords(coordinates @ rotation + translation, output_object)
     print(
         f"mosaic_align_fixed: RMSD={rmsd:.6f} A "
-        f"({len(observed)} fixed heavy atoms); created {output_object!r}"
+        f"({len(observed)} constrained heavy atoms; {alignment_basis}); "
+        f"created {output_object!r}"
     )
 
 
@@ -624,6 +1045,7 @@ def mosaic_load_run(
     run_dir: str,
     prefix: str = "mosaic",
     style: str = "1",
+    replace: str = "1",
 ) -> None:
     """Load, provenance-align and optionally style one complete Mosaic run."""
 
@@ -643,10 +1065,16 @@ def mosaic_load_run(
         )
     )
     if collisions:
-        raise ValueError(
-            "Refusing to overwrite existing PyMOL objects: "
-            + ", ".join(collisions)
-        )
+        replace_existing = str(replace).lower() not in {
+            "0", "false", "no", "off",
+        }
+        if not replace_existing:
+            raise ValueError(
+                "Refusing to overwrite existing PyMOL objects: "
+                + ", ".join(collisions)
+            )
+        for object_name in collisions:
+            cmd.delete(object_name)
 
     cmd.load(str(reference_path), reference_object)
     cmd.load(str(design_path), design_object)
@@ -684,32 +1112,64 @@ def mosaic_align(
     output_object: str = "mosaic_aligned",
     search_root: str = "/home/haixi/Documents/template",
 ) -> None:
-    """Align two already loaded objects using their Mosaic run metadata.
+    """Align two already loaded Mosaic CIFs.
 
-    With exactly two raw objects loaded, ``mosaic_align`` needs no arguments.
+    With exactly two raw CIF objects loaded, ``mosaic_align`` needs no
+    arguments and no external run metadata.
     Explicit fallback::
 
         mosaic_align ref, design, /absolute/path/to/run
     """
 
-    reference_object, design_object = _infer_loaded_objects(
-        str(reference).strip(),
-        str(design).strip(),
-    )
-    run_path = (
-        Path(run_dir).expanduser().resolve()
-        if str(run_dir).strip()
-        else _find_run_for_design(
-            design_object,
-            Path(search_root).expanduser().resolve(),
+    reference_value = str(reference).strip()
+    design_value = str(design).strip()
+    run_value = str(run_dir).strip()
+
+    # Make the routine path-only command do what users naturally expect:
+    # load the complete run and align it.  This also guarantees that the
+    # required compiled metadata accompanies the two structures.
+    path_candidate = Path(reference_value).expanduser()
+    if (
+        reference_value
+        and not design_value
+        and not run_value
+        and path_candidate.is_dir()
+    ):
+        mosaic_load_run(str(path_candidate.resolve()), prefix="mosaic")
+        return
+    if (
+        reference_value
+        and not design_value
+        and not run_value
+        and ("/" in reference_value or reference_value.startswith("~"))
+    ):
+        raise FileNotFoundError(
+            "The Mosaic run directory is not accessible on the machine "
+            f"running PyMOL: {path_candidate}. If this is an AI-cluster "
+            "(/dss/...) path, drag its presymmetrized_input.cif and result "
+            "CIF into PyMOL instead, then run mosaic_align with no arguments."
         )
+
+    reference_object, design_object = _infer_loaded_objects(
+        reference_value,
+        design_value,
     )
-    mosaic_align_fixed(
-        reference_object,
-        design_object,
-        str(run_path),
-        output_object,
-    )
+    if run_value:
+        run_path = Path(run_dir).expanduser().resolve()
+        mosaic_align_fixed(
+            reference_object,
+            design_object,
+            str(run_path),
+            output_object,
+        )
+        alignment_source = f"provenance from {run_path}"
+    else:
+        mosaic_align_cifs(
+            reference_object,
+            design_object,
+            output_object,
+        )
+        alignment_source = "the two loaded CIFs"
     cmd.hide("everything", reference_object)
     cmd.hide("everything", output_object)
     cmd.show("cartoon", reference_object)
@@ -719,13 +1179,14 @@ def mosaic_align(
     cmd.set("cartoon_transparency", 0.6, reference_object)
     cmd.disable(design_object)
     cmd.zoom(f"{reference_object} or {output_object}")
-    print(f"mosaic_align run: {run_path}")
+    print(f"mosaic_align source: {alignment_source}")
 
 
 cmd.extend("mosaic_align_fixed", mosaic_align_fixed)
 cmd.extend("mosaic_load_run", mosaic_load_run)
+cmd.extend("mosaic_align_cifs", mosaic_align_cifs)
 cmd.extend("mosaic_align", mosaic_align)
 print(
-    "Mosaic fixed-orbit alignment loaded: drag exactly two run structures "
+    "Mosaic alignment loaded: drag the reference and design CIFs into PyMOL "
     "and type mosaic_align"
 )

@@ -42,6 +42,7 @@ def _instances(
     cross_pair=True,
     omit_last_unit=False,
     multi_fragment_sides=False,
+    internal_side_links=False,
 ):
     fragments = {
         fragment_id: SimpleNamespace(id=fragment_id)
@@ -93,6 +94,26 @@ def _instances(
         }
     if omit_last_unit:
         links.pop("unit_3")
+    if internal_side_links:
+        if not multi_fragment_sides:
+            raise ValueError(
+                "internal_side_links require multi_fragment_sides"
+            )
+        for copy_index in range(1, 4):
+            links[f"left_internal_{copy_index}"] = _link(
+                f"left_internal_{copy_index}",
+                f"A{copy_index}",
+                f"C{copy_index}",
+                copy_index - 1,
+                copy_index - 1,
+            )
+            links[f"right_internal_{copy_index}"] = _link(
+                f"right_internal_{copy_index}",
+                f"B{copy_index}",
+                f"D{copy_index}",
+                copy_index - 1,
+                copy_index - 1,
+            )
 
     return SimpleNamespace(
         fragments=fragments,
@@ -178,6 +199,20 @@ class InterleavedInterfaceSeedTopologyTestCase(unittest.TestCase):
             report.interface_pairs[0].right_fragment_instance_ids,
             ("B1", "D1", "F1", "G1"),
         )
+        self.assertEqual(report.violations, ())
+
+    def test_ordered_links_within_one_multi_fragment_side_are_valid(
+        self,
+    ) -> None:
+        report = analyze_interleaved_interface_seed_topology(
+            _instances(
+                multi_fragment_sides=True,
+                internal_side_links=True,
+            )
+        )
+
+        self.assertEqual(report.status, "valid_interface_unit_graph")
+        self.assertEqual(len(report.polymer_units), 3)
         self.assertEqual(report.violations, ())
 
     def test_same_pair_scaffold_links_are_not_cross_pair_units(self) -> None:

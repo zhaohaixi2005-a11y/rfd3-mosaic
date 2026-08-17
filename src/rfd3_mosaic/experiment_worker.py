@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from rfd3_mosaic.assembly_compiler import compile_experiment_assembly
+from rfd3_mosaic.design_preferences import ResolvedDesignPreferences
 from rfd3_mosaic.provenance.software import (
     collect_runtime_provenance,
     verify_file_identities,
@@ -101,6 +102,23 @@ def _graph_interface_guidance_runtime(rfd3_input: Path) -> bool:
         == "geometric_constraints"
         for relation in relations
     )
+
+
+def _graph_interface_guidance_overrides(
+    rfd3_input: Path,
+) -> tuple[str, ...]:
+    """Read compiler-resolved safe preset values from the frozen input."""
+
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    preferences = (example.get("extra") or {}).get(
+        "resolved_design_preferences"
+    )
+    if not preferences:
+        return ()
+    return ResolvedDesignPreferences.model_validate(
+        preferences
+    ).hydra_overrides()
 
 
 def _record_worker_state(
@@ -342,6 +360,10 @@ def execute(
         "dump_trajectories=False",
         "prevalidate_inputs=True",
     ]
+    if interface_guidance_enabled:
+        inference_command.extend(
+            _graph_interface_guidance_overrides(rfd3_input)
+        )
     _run(inference_command)
 
     result_json = find_result_json(run_dir)

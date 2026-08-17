@@ -168,6 +168,14 @@ def _fragment_selector(
             f"Fragment {fragment_instance_id!r} spans multiple output chains"
         )
     chain_id = next(iter(compiled_chains))
+    if len(chain_id) != 1:
+        raise NotImplementedError(
+            "The installed AtomWorks contig parser accepts only one-letter "
+            f"chain identifiers, but fragment {fragment_instance_id!r} was "
+            f"assigned {chain_id!r}. Reduce the number of materialized "
+            "source fragments or use a local-neighbourhood backend that does "
+            "not preexpand every physical component"
+        )
     residue_numbers = sorted(
         {
             int(record["compiled"]["label_seq_id"])
@@ -247,6 +255,7 @@ def _preflight_native_transform_registry(
     """Reject incomplete, duplicated, improper, or non-closed finite sets."""
 
     registry = build_transform_registry(transform_set)
+
     if registry.order != expected_multiplicity:
         raise ValueError(
             f"Transform registry {registry.group_name} contains "
@@ -322,10 +331,12 @@ def _runtime_interface_constraint_groups(
     transform_set,
     runtime_transform_order=None,
     transform_to_runtime_representative=None,
+    preexpanded_mixed_orbits: bool = False,
 ) -> list[dict[str, Any]]:
     """Describe complete cross-chain groups in post-symmetry RFD3 terms."""
 
     selector_by_source_id: dict[str, str] = {}
+    selector_by_fragment_instance_id: dict[str, str] = {}
     canonical_transform_by_source_id: dict[str, str] = {}
     for link in links:
         for fragment_instance_id in (
@@ -334,6 +345,13 @@ def _runtime_interface_constraint_groups(
         ):
             fragment = instances.fragments[fragment_instance_id]
             selector = _fragment_selector(mapping, fragment_instance_id)
+            selector_by_fragment_instance_id[fragment_instance_id] = selector
+            if preexpanded_mixed_orbits:
+                # Every physical quotient copy is already a separate input
+                # chain.  Repeated source_fragment ids therefore correctly
+                # map to different selectors and must not be collapsed into
+                # one canonical-ASU selector.
+                continue
             previous = selector_by_source_id.get(fragment.source_id)
             if previous is not None and previous != selector:
                 raise ValueError(
@@ -347,7 +365,40 @@ def _runtime_interface_constraint_groups(
 
     registry = build_transform_registry(transform_set)
 
+    def correspondence_components(fragment) -> list[str]:
+        if not preexpanded_mixed_orbits:
+            return _selector_source_components(
+                selector_by_source_id[fragment.source_id]
+            )
+        masters = [
+            candidate
+            for candidate in instances.fragments.values()
+            if candidate.source_id == fragment.source_id
+            and candidate.orbit_id == fragment.orbit_id
+            and candidate.copy_index == 0
+        ]
+        if len(masters) != 1:
+            raise ValueError(
+                "Mixed-orbit atom correspondence requires exactly one "
+                f"copy-zero fragment for {fragment.source_id!r} in "
+                f"{fragment.orbit_id!r}; observed {len(masters)}"
+            )
+        return _selector_source_components(
+            _fragment_selector(mapping, masters[0].id)
+        )
+
     def runtime_transform_id(fragment) -> int:
+        if preexpanded_mixed_orbits:
+            try:
+                return tuple(runtime_transform_order).index(
+                    fragment.transform_id
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Physical fragment {fragment.id!r} uses transform "
+                    f"{fragment.transform_id!r} outside the mixed runtime "
+                    "registry"
+                ) from error
         canonical_transform_id = canonical_transform_by_source_id[
             fragment.source_id
         ]
@@ -380,23 +431,44 @@ def _runtime_interface_constraint_groups(
             port = instances.ports[port_instance_id]
             for fragment_instance_id in port.fragment_instance_ids:
                 fragment = instances.fragments[fragment_instance_id]
-                try:
-                    source_component = selector_by_source_id[
-                        fragment.source_id
-                    ]
-                except KeyError as error:
-                    raise NotImplementedError(
-                        "Runtime motif groups require every interface "
-                        "fragment source to be present in the canonical ASU "
-                        "scaffold link"
-                    ) from error
+                if preexpanded_mixed_orbits:
+                    try:
+                        source_component = (
+                            selector_by_fragment_instance_id[
+                                fragment_instance_id
+                            ]
+                        )
+                    except KeyError as error:
+                        raise NotImplementedError(
+                            "Every mixed-orbit interface fragment must be "
+                            "materialized by one physical scaffold path"
+                        ) from error
+                else:
+                    try:
+                        source_component = selector_by_source_id[
+                            fragment.source_id
+                        ]
+                    except KeyError as error:
+                        raise NotImplementedError(
+                            "Runtime motif groups require every interface "
+                            "fragment source to be present in the canonical "
+                            "ASU scaffold link"
+                        ) from error
+                actual_components = _selector_source_components(
+                    source_component
+                )
+                stable_components = correspondence_components(fragment)
+                if len(actual_components) != len(stable_components):
+                    raise ValueError(
+                        f"Physical and canonical selectors for fragment "
+                        f"{fragment.id!r} have different residue counts"
+                    )
                 members.append(
                     {
                         "role": role,
                         "source_fragment_id": fragment.source_id,
-                        "src_components": _selector_source_components(
-                            source_component
-                        ),
+                        "src_components": actual_components,
+                        "correspondence_components": stable_components,
                         "sym_transform_id": runtime_transform_id(fragment),
                     }
                 )
@@ -411,6 +483,13 @@ def _runtime_interface_constraint_groups(
                 "source_interface_id": edge.source_id,
                 "hyperedge_id": edge.hyperedge_id or edge.source_id,
                 "orbit_id": edge.orbit_id,
+                "transform_set_id": edge.transform_set_id,
+                "action_copy_index": edge.action_copy_index,
+                "action_transform_id": edge.action_transform_id,
+                "left_orbit_id": edge.left_orbit_id,
+                "right_orbit_id": edge.right_orbit_id,
+                "left_transform_index": edge.left_transform_index,
+                "right_transform_index": edge.right_transform_index,
                 "source_copy_index": edge.source_copy_index,
                 "target_copy_index": edge.target_copy_index,
                 "members": members,
@@ -451,10 +530,30 @@ def _runtime_interface_constraint_orbits(
         source_interface_id,
         symmetry_orbit_id,
     ), orbit_groups in grouped.items():
+        cross_orbit = any(
+            group.get("left_orbit_id")
+            != group.get("right_orbit_id")
+            for group in orbit_groups
+        )
+        if cross_orbit and not all(
+            group.get("left_orbit_id")
+            != group.get("right_orbit_id")
+            and group.get("action_copy_index") is not None
+            and group.get("action_transform_id") is not None
+            for group in orbit_groups
+        ):
+            raise ValueError(
+                f"Mixed-orbit interface {source_interface_id!r} has "
+                "incomplete edge-action provenance"
+            )
         masters = [
             group
             for group in orbit_groups
-            if int(group["source_copy_index"]) == 0
+            if int(
+                group.get("action_copy_index")
+                if group.get("action_copy_index") is not None
+                else group["source_copy_index"]
+            ) == 0
         ]
         if len(masters) != 1:
             raise ValueError(
@@ -484,7 +583,11 @@ def _runtime_interface_constraint_orbits(
         group_registry_transform_ids = []
         ordered_groups = sorted(
             orbit_groups,
-            key=lambda item: int(item["source_copy_index"]),
+            key=lambda item: int(
+                item.get("action_copy_index")
+                if item.get("action_copy_index") is not None
+                else item["source_copy_index"]
+            ),
         )
         constraint_orbit_id = (
             f"{source_interface_id}__{symmetry_orbit_id}"
@@ -496,39 +599,76 @@ def _runtime_interface_constraint_orbits(
                     "All groups in a motif constraint orbit must contain "
                     "the same member identities"
                 )
-            matching_actions: dict[int, str] = {}
-            for action_id in registry.transform_ids:
-                if all(
-                    representative_map[
-                        registry.compose_ids(
-                            action_id,
-                            selected_order[master_transform_id],
-                        )
-                    ]
-                    == selected_order[target_members[member_key]]
-                    for member_key, master_transform_id
-                    in master_members.items()
+            if cross_orbit:
+                action_id = str(group["action_transform_id"])
+                action_index = int(group["action_copy_index"])
+                if action_index >= len(registry.transform_ids) or (
+                    registry.transform_ids[action_index] != action_id
                 ):
-                    representative_id = representative_map[action_id]
-                    matching_actions[
-                        selected_order.index(representative_id)
-                    ] = representative_id
-            if len(matching_actions) != 1:
-                raise ValueError(
-                    f"Constraint group {group['group_id']!r} has "
-                    f"{len(matching_actions)} compatible group actions; "
-                    "expected exactly one"
+                    raise ValueError(
+                        f"Constraint group {group['group_id']!r} edge "
+                        "action index does not match the transform registry"
+                    )
+            else:
+                matching_actions: dict[int, str] = {}
+                for action_id in registry.transform_ids:
+                    if all(
+                        representative_map[
+                            registry.compose_ids(
+                                action_id,
+                                selected_order[master_transform_id],
+                            )
+                        ]
+                        == selected_order[target_members[member_key]]
+                        for member_key, master_transform_id
+                        in master_members.items()
+                    ):
+                        representative_id = representative_map[action_id]
+                        matching_actions[
+                            selected_order.index(representative_id)
+                        ] = representative_id
+                if len(matching_actions) != 1:
+                    raise ValueError(
+                        f"Constraint group {group['group_id']!r} has "
+                        f"{len(matching_actions)} compatible group actions; "
+                        "expected exactly one"
+                    )
+                action_index, action_id = next(
+                    iter(matching_actions.items())
                 )
-            action_index, action_id = next(iter(matching_actions.items()))
             group["constraint_orbit_id"] = constraint_orbit_id
             group["orbit_transform_id"] = action_index
             group["orbit_registry_transform_id"] = action_id
             group_transform_ids.append(action_index)
             group_registry_transform_ids.append(action_id)
 
-        mobility = instances.constraint_orbits[
-            symmetry_orbit_id
-        ].mobility
+        if cross_orbit:
+            component_orbit_ids = {
+                str(group[side])
+                for group in orbit_groups
+                for side in ("left_orbit_id", "right_orbit_id")
+            }
+            component_mobilities = [
+                instances.constraint_orbits[orbit_id].mobility
+                for orbit_id in sorted(component_orbit_ids)
+            ]
+            mobility_payloads = {
+                json.dumps(
+                    mobility.model_dump(mode="json"),
+                    sort_keys=True,
+                )
+                for mobility in component_mobilities
+            }
+            if len(mobility_payloads) != 1:
+                raise NotImplementedError(
+                    "A mixed-orbit interface requires identical component "
+                    "mobility contracts before joint runtime control"
+                )
+            mobility = component_mobilities[0]
+        else:
+            mobility = instances.constraint_orbits[
+                symmetry_orbit_id
+            ].mobility
         bounds = mobility.bounds
         # Preserve legacy sampler overrides when the assembly does not own a
         # schedule explicitly.  New native inputs can move this policy into
@@ -792,6 +932,7 @@ def _runtime_interface_relation_audit_plan(
     *,
     instances,
     mapping: dict[str, Any],
+    preexpanded_mixed_orbits: bool = False,
 ) -> list[dict[str, Any]]:
     """Freeze topology-neutral interface relations for result auditing.
 
@@ -807,20 +948,26 @@ def _runtime_interface_relation_audit_plan(
         selectors: list[str] = []
         for fragment_instance_id in port.fragment_instance_ids:
             fragment = instances.fragments[fragment_instance_id]
-            masters = [
-                candidate
-                for candidate in instances.fragments.values()
-                if candidate.source_id == fragment.source_id
-                and candidate.orbit_id == fragment.orbit_id
-                and candidate.copy_index == 0
-            ]
-            if len(masters) != 1:
-                raise ValueError(
-                    "Interface relation audit requires exactly one "
-                    "copy-zero fragment for source "
-                    f"{fragment.source_id!r}; observed {len(masters)}"
+            if preexpanded_mixed_orbits:
+                selector = _fragment_selector(
+                    mapping,
+                    fragment_instance_id,
                 )
-            selector = _fragment_selector(mapping, masters[0].id)
+            else:
+                masters = [
+                    candidate
+                    for candidate in instances.fragments.values()
+                    if candidate.source_id == fragment.source_id
+                    and candidate.orbit_id == fragment.orbit_id
+                    and candidate.copy_index == 0
+                ]
+                if len(masters) != 1:
+                    raise ValueError(
+                        "Interface relation audit requires exactly one "
+                        "copy-zero fragment for source "
+                        f"{fragment.source_id!r}; observed {len(masters)}"
+                    )
+                selector = _fragment_selector(mapping, masters[0].id)
             if selector not in selectors:
                 selectors.append(selector)
         if not selectors:
@@ -838,6 +985,12 @@ def _runtime_interface_relation_audit_plan(
             "satisfaction_stage": edge.satisfaction_stage,
             "source_copy_index": edge.source_copy_index,
             "target_copy_index": edge.target_copy_index,
+            "action_copy_index": edge.action_copy_index,
+            "action_transform_id": edge.action_transform_id,
+            "left_orbit_id": edge.left_orbit_id,
+            "right_orbit_id": edge.right_orbit_id,
+            "left_transform_index": edge.left_transform_index,
+            "right_transform_index": edge.right_transform_index,
             "left_source_components": source_components(
                 edge.left_port_instance_id
             ),
@@ -947,13 +1100,12 @@ def _materialized_linker_contour_preflight(
         }
     manifest = _load_json(manifest_path)
     try:
-        link_reports = manifest["validation"][
-            "scaffold_link_geometry"
-        ]["links"]
+        geometry = manifest["validation"]["scaffold_link_geometry"]
     except (KeyError, TypeError) as error:
         raise ValueError(
             "Standalone manifest is missing scaffold-link geometry"
         ) from error
+    link_reports = geometry.get("links", [])
     matching = [
         report
         for report in link_reports
@@ -995,6 +1147,58 @@ def _materialized_linker_contour_preflight(
     }
 
 
+def _minimum_materialized_linker_length(
+    manifest_path: Path,
+    *,
+    source_link_id: str,
+) -> int:
+    """Return the worst-case contour requirement over a link orbit.
+
+    The public design declares a linker *range*, whereas native RFD3 needs
+    one exact contig length.  Choosing the range midpoint without considering
+    every symmetry-expanded link instance can make an otherwise feasible
+    candidate fail only when it reaches the adapter.  Bind the exact length
+    to the largest endpoint-contour requirement in the standalone manifest.
+    """
+
+    manifest = _load_json(manifest_path)
+    try:
+        geometry = manifest["validation"]["scaffold_link_geometry"]
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            "Standalone manifest is missing scaffold-link geometry"
+        ) from error
+    source_bindings = geometry.get("source_link_bindings", {})
+    if source_link_id in source_bindings:
+        binding = source_bindings[source_link_id]
+        try:
+            return int(
+                binding[
+                    "required_minimum_over_physical_instances"
+                ]
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                "Standalone source-link binding contains no valid contour "
+                f"requirement for {source_link_id!r}"
+            ) from error
+    # Backward-compatible fallback for retained manifests produced before
+    # source-level orbit bindings became explicit.
+    link_reports = geometry.get("links", [])
+    requirements = [
+        int(report["minimum_required_residues_at_3_8A"])
+        for report in link_reports
+        if report.get("source_link_id") == source_link_id
+        and not bool(report.get("chain_break", False))
+    ]
+    if not requirements:
+        raise ValueError(
+            "Standalone manifest contains no geometry for scaffold link "
+            f"{source_link_id!r}"
+        )
+    return max(requirements)
+
+
 def _compile_asu_scaffold_segments(
     links,
     *,
@@ -1010,6 +1214,67 @@ def _compile_asu_scaffold_segments(
     single protein chain has at most one N-side and one C-side neighbour.
     """
 
+    automatic_lengths: dict[str, tuple[int, str]] = {}
+    if linker_length is None:
+        grouped_links: dict[str, list[Any]] = {}
+        for link in links:
+            if link.chain_break:
+                continue
+            tie_group = getattr(link, "tie_group", None)
+            key = (
+                f"tie:{tie_group}"
+                if tie_group is not None
+                else f"link:{link.source_id}"
+            )
+            grouped_links.setdefault(key, []).append(link)
+        for group in grouped_links.values():
+            common_minimum = max(link.minimum_length for link in group)
+            common_maximum = min(link.maximum_length for link in group)
+            if common_minimum > common_maximum:
+                raise ValueError(
+                    "Scaffold-link tie group has no common configured "
+                    f"length: {[link.source_id for link in group]}"
+                )
+            common_midpoint = (common_minimum + common_maximum) // 2
+            required = max(
+                _minimum_materialized_linker_length(
+                    manifest_path,
+                    source_link_id=link.source_id,
+                )
+                for link in group
+            )
+            selected = max(common_midpoint, required)
+            if selected > common_maximum:
+                raise ValueError(
+                    "No linker length in the common configured range "
+                    f"[{common_minimum}, {common_maximum}] can span every "
+                    "symmetry instance of scaffold links "
+                    f"{[link.source_id for link in group]}; required "
+                    f"length={selected}"
+                )
+            # A historical single link may carry a tie-group label even
+            # though there is nothing to tie.  Preserve its legacy policy
+            # name; use tie-group policies only when several source links
+            # actually share one exact length.
+            tied = (
+                getattr(group[0], "tie_group", None) is not None
+                and len({link.source_id for link in group}) > 1
+            )
+            for link in group:
+                policy = (
+                    "user_exact"
+                    if link.minimum_length == link.maximum_length == selected
+                    else "tie_group_common_midpoint"
+                    if tied and selected == common_midpoint
+                    else "tie_group_contour_sufficient"
+                    if tied
+                    else "configured_range_midpoint"
+                    if selected
+                    == (link.minimum_length + link.maximum_length) // 2
+                    else "configured_range_contour_sufficient"
+                )
+                automatic_lengths[link.source_id] = (selected, policy)
+
     def materialize(link) -> _MaterializedScaffoldLink:
         if link.chain_break:
             if linker_length is not None:
@@ -1021,10 +1286,9 @@ def _compile_asu_scaffold_segments(
             linker_policy = "not_applicable"
         else:
             if linker_length is None:
-                materialized_length = (
-                    link.minimum_length + link.maximum_length
-                ) // 2
-                linker_policy = "configured_range_midpoint"
+                materialized_length, linker_policy = automatic_lengths[
+                    link.source_id
+                ]
             else:
                 if isinstance(linker_length, bool) or not isinstance(
                     linker_length,
@@ -1038,6 +1302,14 @@ def _compile_asu_scaffold_segments(
                 <= materialized_length
                 <= link.maximum_length
             ):
+                if linker_length is None:
+                    raise ValueError(
+                        "No linker length in the configured range "
+                        f"[{link.minimum_length}, {link.maximum_length}] "
+                        f"can span every symmetry instance of "
+                        f"{link.source_id!r}; required length="
+                        f"{materialized_length}"
+                    )
                 raise ValueError(
                     "linker_length must fall inside the configured range "
                     f"[{link.minimum_length}, {link.maximum_length}] for "
@@ -1225,6 +1497,292 @@ def _compile_asu_scaffold_segments(
     )
 
 
+def _preexpanded_stabilizer_path_layout(
+    *,
+    finite_action,
+    segments: tuple[_ASUScaffoldSegment, ...],
+    registry_transform_order: list[str],
+    identity_transform_id: str,
+) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+    """Bind already materialized G/G scaffold paths to stabilizer frames.
+
+    A complete supplied oligomer may have one physical quotient copy while
+    containing one generated polymer path for every stabilizer participant.
+    RFD3 must not expand that oligomer again.  Instead, each existing chain is
+    annotated as one transform of a single preexpanded entity.
+    """
+
+    declared = dict(finite_action.stabilizer_path_transform_ids)
+    if not declared:
+        raise ValueError(
+            "A one-copy stabilized ASU requires frozen scaffold-path to "
+            "stabilizer-transform assignments"
+        )
+    selected = set(registry_transform_order)
+    unknown = set(declared.values()) - selected
+    if unknown:
+        raise ValueError(
+            "Stabilized ASU path assignments reference transforms outside "
+            f"the runtime stabilizer order: {sorted(unknown)}"
+        )
+
+    segment_transform_ids: list[str] = []
+    consumed_path_ids: set[str] = set()
+    layout: list[dict[str, Any]] = []
+
+    def declared_path_id(runtime_path_id: str) -> str | None:
+        """Resolve a compiler link ID back to its public connection ID.
+
+        Public assembly connections are lowered into generated segments named
+        ``connection__<public id>``.  The finite-action contract intentionally
+        stores the stable public ID, while scaffold instances expose the
+        lowered segment ID.  Accept exactly those two representations here;
+        do not use a fuzzy suffix match that could bind the wrong path.
+        """
+
+        if runtime_path_id in declared:
+            return runtime_path_id
+        prefix = "connection__"
+        if runtime_path_id.startswith(prefix):
+            public_path_id = runtime_path_id[len(prefix):]
+            if public_path_id in declared:
+                return public_path_id
+        return None
+
+    for segment in segments:
+        if len(segment.contig_chains) != 1:
+            raise NotImplementedError(
+                "The first preexpanded stabilized-ASU backend requires "
+                "one continuous output chain per stabilizer path"
+            )
+        runtime_path_ids = {
+            entry.link.source_id for entry in segment.links
+        }
+        resolved_path_ids = {
+            runtime_path_id: declared_path_id(runtime_path_id)
+            for runtime_path_id in runtime_path_ids
+        }
+        missing = sorted(
+            runtime_path_id
+            for runtime_path_id, public_path_id
+            in resolved_path_ids.items()
+            if public_path_id is None
+        )
+        if missing:
+            raise ValueError(
+                "Stabilized ASU scaffold paths are missing transform "
+                f"assignments: {missing}"
+            )
+        public_path_ids = {
+            public_path_id
+            for public_path_id in resolved_path_ids.values()
+            if public_path_id is not None
+        }
+        transform_ids = {
+            declared[path_id] for path_id in public_path_ids
+        }
+        if len(transform_ids) != 1:
+            raise ValueError(
+                "Every continuous stabilized-ASU path must remain inside "
+                "one stabilizer transform"
+            )
+        transform_id = next(iter(transform_ids))
+        transform_index = registry_transform_order.index(transform_id)
+        segment_transform_ids.append(transform_id)
+        consumed_path_ids.update(public_path_ids)
+        layout.append(
+            {
+                "entity_id": 0,
+                "transform_index": transform_index,
+                "transform_id": transform_id,
+                "orbit_id": segment.links[0].link.orbit_id,
+                "is_asu": transform_id == identity_transform_id,
+            }
+        )
+
+    unused = sorted(set(declared) - consumed_path_ids)
+    if unused:
+        raise ValueError(
+            "Stabilizer path assignments do not correspond to generated "
+            f"scaffold paths: {unused}"
+        )
+    if len(layout) != len(registry_transform_order) or {
+        record["transform_id"] for record in layout
+    } != selected:
+        raise ValueError(
+            "A preexpanded G/G ASU requires exactly one continuous chain "
+            "for every stabilizer transform"
+        )
+    return layout, tuple(segment_transform_ids)
+
+
+def _runtime_preexpanded_stabilizer_constraints(
+    *,
+    instances,
+    mapping: dict[str, Any],
+    segments: tuple[_ASUScaffoldSegment, ...],
+    segment_transform_ids: tuple[str, ...],
+    registry_transform_order: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create exact fixed-motif groups for one internally stabilized ASU."""
+
+    if len(segments) != len(segment_transform_ids):
+        raise ValueError("Stabilized ASU segment/transform counts disagree")
+    identity_transform_id = registry_transform_order[0]
+    try:
+        canonical_index = segment_transform_ids.index(identity_transform_id)
+    except ValueError as error:
+        raise ValueError(
+            "Stabilized ASU paths omit the identity-transform master"
+        ) from error
+    canonical = segments[canonical_index]
+    if not canonical.fragment_instance_ids:
+        raise ValueError("Stabilized ASU master path contains no fixed motif")
+
+    canonical_fragments = [
+        instances.fragments[fragment_id]
+        for fragment_id in canonical.fragment_instance_ids
+    ]
+    canonical_components = [
+        _selector_source_components(
+            _fragment_selector(mapping, fragment.id)
+        )
+        for fragment in canonical_fragments
+    ]
+    orbit_ids = {
+        entry.link.orbit_id
+        for segment in segments
+        for entry in segment.links
+    }
+    if len(orbit_ids) != 1 or None in orbit_ids:
+        raise ValueError(
+            "A stabilized ASU must belong to one declared symmetry orbit"
+        )
+    orbit_id = next(iter(orbit_ids))
+    component_ids = {
+        instances.motion_groups[
+            instances.fragments[fragment_id].motion_group_instance_id
+        ].source_id
+        for segment in segments
+        for fragment_id in segment.fragment_instance_ids
+    }
+    if len(component_ids) != 1:
+        raise ValueError(
+            "A preexpanded stabilized ASU must remain one joint-rigid "
+            "component"
+        )
+    component_id = next(iter(component_ids))
+
+    groups: list[dict[str, Any]] = []
+    for segment, transform_id in zip(
+        segments,
+        segment_transform_ids,
+        strict=True,
+    ):
+        if len(segment.fragment_instance_ids) != len(canonical_fragments):
+            raise ValueError(
+                "Stabilizer-related paths contain different fixed-fragment "
+                "counts"
+            )
+        transform_index = registry_transform_order.index(transform_id)
+        members = []
+        for slot, (fragment_id, canonical_fragment) in enumerate(
+            zip(
+                segment.fragment_instance_ids,
+                canonical_fragments,
+                strict=True,
+            )
+        ):
+            fragment = instances.fragments[fragment_id]
+            actual_components = _selector_source_components(
+                _fragment_selector(mapping, fragment.id)
+            )
+            correspondence_components = canonical_components[slot]
+            if len(actual_components) != len(correspondence_components):
+                raise ValueError(
+                    "Stabilizer-related fixed fragments have different "
+                    "residue counts"
+                )
+            members.append(
+                {
+                    "role": "motif",
+                    "source_fragment_id": canonical_fragment.source_id,
+                    "src_components": actual_components,
+                    "correspondence_components": (
+                        correspondence_components
+                    ),
+                    "sym_transform_id": transform_index,
+                }
+            )
+        groups.append(
+            {
+                "group_id": f"fixed@{orbit_id}[{transform_index}]",
+                "constraint_kind": "fixed_motif",
+                "geometry_lock": "joint_rigid",
+                "coupling_group_id": component_id,
+                "constraint_orbit_id": orbit_id,
+                "orbit_id": orbit_id,
+                "members": members,
+            }
+        )
+
+    compiled_orbit = instances.constraint_orbits[orbit_id]
+    mobility = compiled_orbit.component_mobility.get(
+        component_id,
+        compiled_orbit.mobility,
+    )
+    bounds = mobility.bounds
+    schedule = mobility.effective_schedule
+    ordered_group_ids = [
+        f"fixed@{orbit_id}[{index}]"
+        for index in range(len(registry_transform_order))
+    ]
+    group_by_id = {group["group_id"]: group for group in groups}
+    groups = [group_by_id[group_id] for group_id in ordered_group_ids]
+    orbit = {
+        "constraint_orbit_id": orbit_id,
+        "symmetry_orbit_id": orbit_id,
+        "coupling_group_id": component_id,
+        "geometry_lock": "joint_rigid",
+        "source_fragment_ids": [
+            fragment.source_id for fragment in canonical_fragments
+        ],
+        "source_components": [
+            component
+            for components in canonical_components
+            for component in components
+        ],
+        "master_group_id": ordered_group_ids[0],
+        "group_ids": ordered_group_ids,
+        "group_transform_ids": list(range(len(ordered_group_ids))),
+        "group_registry_transform_ids": list(registry_transform_order),
+        "mobility_mode": mobility.mode.value,
+        "mobility_subspace": (
+            mobility.effective_subspace.value
+            if mobility.effective_subspace is not None
+            else None
+        ),
+        "mobility_proposal": (
+            mobility.effective_proposal.value
+            if mobility.effective_proposal is not None
+            else None
+        ),
+        "mobility_objectives": list(mobility.objectives),
+        "mobility_schedule": (
+            schedule.model_dump(mode="json")
+            if schedule is not None
+            else None
+        ),
+        "max_translation": (
+            bounds.max_translation if bounds is not None else None
+        ),
+        "max_rotation_deg": (
+            bounds.max_rotation_deg if bounds is not None else None
+        ),
+    }
+    return groups, [orbit]
+
+
 def compile_assembly_rfd3_input(
     config_path: str | Path,
     output_directory: str | Path,
@@ -1289,15 +1847,60 @@ def compile_assembly_rfd3_input(
     )
     mapping = _load_json(standalone.mapping_path)
 
+    generated_orbit_ids = {
+        segment.orbit_id
+        for segment in instances.generated_segments.values()
+        if segment.orbit_id is not None
+    }
+    generated_orbit_ids.update(
+        link.orbit_id
+        for link in instances.scaffold_links.values()
+        if link.orbit_id is not None
+    )
+    generated_action_payloads = {
+        json.dumps(
+            (
+                spec.symmetry.orbits[orbit_id].finite_action.model_dump(
+                    mode="json"
+                )
+                if spec.symmetry.orbits[orbit_id].finite_action is not None
+                else None
+            ),
+            sort_keys=True,
+        )
+        for orbit_id in generated_orbit_ids
+    }
+    preexpanded_mixed_orbits = len(generated_action_payloads) > 1
+    generated_stabilized_actions = [
+        spec.symmetry.orbits[orbit_id].finite_action
+        for orbit_id in generated_orbit_ids
+        if spec.symmetry.orbits[orbit_id].finite_action is not None
+        and spec.symmetry.orbits[
+            orbit_id
+        ].finite_action.stabilizer_path_transform_ids
+    ]
+    preexpanded_stabilizer_asu = bool(generated_stabilized_actions)
+    if preexpanded_stabilizer_asu and (
+        len(generated_orbit_ids) != 1
+        or len(generated_stabilized_actions) != 1
+    ):
+        raise NotImplementedError(
+            "A preexpanded stabilized ASU currently requires exactly one "
+            "generated component orbit"
+        )
+    preexpanded_runtime_layout = (
+        preexpanded_mixed_orbits or preexpanded_stabilizer_asu
+    )
+
     link_by_id = {
         link.id: link
         for link in instances.scaffold_links.values()
-        if link.copy_index == 0
+        if preexpanded_runtime_layout or link.copy_index == 0
     }
     for segment in instances.generated_segments.values():
         if (
             isinstance(segment, ScaffoldLinkInstance)
-            and segment.copy_index == 0
+            and (preexpanded_runtime_layout or segment.copy_index == 0)
         ):
             link_by_id.setdefault(segment.id, segment)
     orbit_links = list(link_by_id.values())
@@ -1305,8 +1908,14 @@ def compile_assembly_rfd3_input(
         segment
         for segment in instances.generated_segments.values()
         if isinstance(segment, TerminalExtensionInstance)
-        and segment.copy_index == 0
+        and (preexpanded_runtime_layout or segment.copy_index == 0)
     ]
+    if preexpanded_runtime_layout and terminal_extensions:
+        raise NotImplementedError(
+            "Preexpanded symmetry execution currently requires explicit "
+            "scaffold-link paths; terminal-extension paths are not yet "
+            "materialized"
+        )
     if orbit_links and terminal_extensions:
         raise NotImplementedError(
             "A single native ASU path cannot yet mix scaffold links and "
@@ -1373,16 +1982,20 @@ def compile_assembly_rfd3_input(
         for orbit in active_orbits.values()
         if orbit.finite_action is not None
     }
-    if len(finite_action_payloads) > 1:
+    if len(finite_action_payloads) > 1 and not preexpanded_mixed_orbits:
         raise NotImplementedError(
-            "One native RFD3 task cannot combine different finite quotient "
-            "actions; split the design into compatible orbit backends"
+            "Different finite quotient actions require the compiler-owned "
+            "preexpanded mixed-entity backend"
         )
     has_full_orbit = any(
         orbit.finite_action is None for orbit in active_orbits.values()
     )
     has_quotient_orbit = bool(finite_action_payloads)
-    if has_full_orbit and has_quotient_orbit:
+    if (
+        has_full_orbit
+        and has_quotient_orbit
+        and not preexpanded_mixed_orbits
+    ):
         raise NotImplementedError(
             "One native RFD3 task cannot mix full-group and quotient-group "
             "physical copy sets"
@@ -1393,16 +2006,25 @@ def compile_assembly_rfd3_input(
             for orbit in active_orbits.values()
             if orbit.finite_action is not None
         )
-        if has_quotient_orbit
+        if has_quotient_orbit and not preexpanded_mixed_orbits
         else None
     )
     registry_transform_order = (
-        list(finite_action.coset_representative_ids)
+        full_registry_transform_order
+        if preexpanded_mixed_orbits
+        else list(finite_action.stabilizer_transform_ids)
+        if preexpanded_stabilizer_asu and finite_action is not None
+        else list(finite_action.coset_representative_ids)
         if finite_action is not None
         else full_registry_transform_order
     )
     transform_to_runtime_representative = (
-        dict(finite_action.transform_to_coset_representative)
+        {
+            transform_id: transform_id
+            for transform_id in full_registry_transform_order
+        }
+        if preexpanded_runtime_layout
+        else dict(finite_action.transform_to_coset_representative)
         if finite_action is not None
         else {
             transform_id: transform_id
@@ -1417,14 +2039,20 @@ def compile_assembly_rfd3_input(
         compiled_order = tuple(
             instances.constraint_orbits[orbit_id].transform_ids
         )
-        if compiled_order != tuple(registry_transform_order):
+        if preexpanded_runtime_layout:
+            if not set(compiled_order).issubset(registry_transform_order):
+                raise ValueError(
+                    f"Compiled mixed-orbit frames for {orbit_id!r} are not "
+                    "a subset of the full runtime transform registry"
+                )
+        elif compiled_order != tuple(registry_transform_order):
             raise ValueError(
                 f"Compiled physical copies for orbit {orbit_id!r} do not "
                 "match the RFD3 runtime transform order: "
                 f"{compiled_order} != {tuple(registry_transform_order)}"
             )
     symmetry_multiplicity = len(registry_transform_order)
-    if symmetry_multiplicity < 2:
+    if symmetry_multiplicity < 2 and not preexpanded_stabilizer_asu:
         raise NotImplementedError(
             "RFD3 quotient execution requires at least two physical copies"
         )
@@ -1463,6 +2091,90 @@ def compile_assembly_rfd3_input(
         asu_chain_count = sum(
             len(segment.contig_chains) for segment in segments
         )
+    preexpanded_chain_layout: list[dict[str, Any]] | None = None
+    stabilized_segment_transform_ids: tuple[str, ...] | None = None
+    if preexpanded_stabilizer_asu:
+        if finite_action is None:
+            raise ValueError(
+                "Preexpanded stabilized ASU lost its finite action"
+            )
+        (
+            preexpanded_chain_layout,
+            stabilized_segment_transform_ids,
+        ) = _preexpanded_stabilizer_path_layout(
+            finite_action=finite_action,
+            segments=segments,
+            registry_transform_order=registry_transform_order,
+            identity_transform_id=native_registry.identity_id,
+        )
+    elif preexpanded_mixed_orbits:
+        entity_ids: dict[tuple[tuple[str, ...], int], int] = {}
+        preexpanded_chain_layout = []
+        entity_transform_indices: dict[int, set[int]] = {}
+        entity_asu_counts: dict[int, int] = {}
+        for segment in segments:
+            segment_orbit_ids = {
+                entry.link.orbit_id for entry in segment.links
+            }
+            if len(segment_orbit_ids) != 1 or None in segment_orbit_ids:
+                raise ValueError(
+                    "A preexpanded mixed-entity scaffold path must belong "
+                    "to exactly one component orbit"
+                )
+            orbit_id = next(iter(segment_orbit_ids))
+            orbit = instances.constraint_orbits[orbit_id]
+            copy_indices = {entry.link.copy_index for entry in segment.links}
+            if len(copy_indices) != 1:
+                raise NotImplementedError(
+                    "A preexpanded mixed-entity protein path cannot change "
+                    "component-orbit copy inside one covalent chain"
+                )
+            copy_index = next(iter(copy_indices))
+            transform_id = orbit.transform_ids[copy_index]
+            transform_index = full_registry_transform_order.index(
+                transform_id
+            )
+            source_path_key = tuple(
+                entry.link.source_id for entry in segment.links
+            )
+            for chain_offset, _ in enumerate(segment.contig_chains):
+                entity_key = (source_path_key, chain_offset)
+                entity_id = entity_ids.setdefault(
+                    entity_key,
+                    len(entity_ids),
+                )
+                observed = entity_transform_indices.setdefault(
+                    entity_id,
+                    set(),
+                )
+                if transform_index in observed:
+                    raise ValueError(
+                        "Preexpanded mixed-entity layout contains duplicate "
+                        f"transform {transform_id!r} for entity {entity_id}"
+                    )
+                observed.add(transform_index)
+                chain_is_asu = transform_id == native_registry.identity_id
+                if chain_is_asu:
+                    entity_asu_counts[entity_id] = (
+                        entity_asu_counts.get(entity_id, 0) + 1
+                    )
+                preexpanded_chain_layout.append({
+                    "entity_id": entity_id,
+                    "transform_index": transform_index,
+                    "transform_id": transform_id,
+                    "orbit_id": orbit_id,
+                    "is_asu": chain_is_asu,
+                })
+        invalid_asu = {
+            entity_id: entity_asu_counts.get(entity_id, 0)
+            for entity_id in entity_transform_indices
+            if entity_asu_counts.get(entity_id, 0) != 1
+        }
+        if invalid_asu:
+            raise ValueError(
+                "Each preexpanded mixed symmetry entity requires exactly "
+                f"one identity-transform chain: {invalid_asu}"
+            )
     materialized_links = tuple(
         entry
         for segment in segments
@@ -1559,7 +2271,24 @@ def compile_assembly_rfd3_input(
                 and bool(instances.interfaces)
             )
         )
-        if use_interface_constraint_groups:
+        if preexpanded_stabilizer_asu:
+            if stabilized_segment_transform_ids is None:
+                raise ValueError(
+                    "Preexpanded stabilized ASU lost its path transforms"
+                )
+            (
+                motif_constraint_groups,
+                motif_constraint_orbits,
+            ) = _runtime_preexpanded_stabilizer_constraints(
+                instances=instances,
+                mapping=mapping,
+                segments=segments,
+                segment_transform_ids=(
+                    stabilized_segment_transform_ids
+                ),
+                registry_transform_order=registry_transform_order,
+            )
+        elif use_interface_constraint_groups:
             motif_constraint_groups = _runtime_interface_constraint_groups(
                 instances,
                 mapping,
@@ -1569,6 +2298,7 @@ def compile_assembly_rfd3_input(
                 transform_to_runtime_representative=(
                     transform_to_runtime_representative
                 ),
+                preexpanded_mixed_orbits=preexpanded_runtime_layout,
             )
             motif_constraint_orbits = _runtime_interface_constraint_orbits(
                 motif_constraint_groups,
@@ -1648,12 +2378,16 @@ def compile_assembly_rfd3_input(
         }
     ):
         symmetry["use_declared_frames"] = True
-        if finite_action is not None:
+        if finite_action is not None and not preexpanded_stabilizer_asu:
             symmetry["declared_action_is_quotient"] = True
         symmetry["declared_transform_order"] = registry_transform_order
         symmetry["declared_transform_matrices"] = (
             registry_transform_matrices
         )
+        if preexpanded_chain_layout is not None:
+            symmetry["declared_preexpanded_chain_layout"] = (
+                preexpanded_chain_layout
+            )
     adapter_extra = {
         "compiler": "rfd3_mosaic.static_adapter",
         "native_compiler_path": "assembly_ir_to_rfd3_features",
@@ -1742,10 +2476,15 @@ def compile_assembly_rfd3_input(
         "symmetry_multiplicity": symmetry_multiplicity,
         "full_symmetry_multiplicity": full_symmetry_multiplicity,
         "symmetry_action_kind": (
-            "stabilizer_quotient"
+            "mixed_stabilizer_quotients"
+            if preexpanded_mixed_orbits
+            else "preexpanded_stabilized_asu"
+            if preexpanded_stabilizer_asu
+            else "stabilizer_quotient"
             if finite_action is not None
             else "regular_full_group"
         ),
+        "preexpanded_chain_layout": preexpanded_chain_layout,
         "finite_orbit_action": (
             finite_action.model_dump(mode="json")
             if finite_action is not None
@@ -1773,11 +2512,15 @@ def compile_assembly_rfd3_input(
         "full_registry_transform_matrices": (
             full_registry_transform_matrices
         ),
-        "mosaic_transform_order": list(
-            dict.fromkeys(
-                group.transform_id
-                for group in instances.motion_groups.values()
-                if group.orbit_id in selected_orbit_ids
+        "mosaic_transform_order": (
+            list(registry_transform_order)
+            if preexpanded_stabilizer_asu
+            else list(
+                dict.fromkeys(
+                    group.transform_id
+                    for group in instances.motion_groups.values()
+                    if group.orbit_id in selected_orbit_ids
+                )
             )
         ),
         "motif_constraint_groups": motif_constraint_groups,
@@ -1786,6 +2529,7 @@ def compile_assembly_rfd3_input(
             _runtime_interface_relation_audit_plan(
                 instances=instances,
                 mapping=mapping,
+                preexpanded_mixed_orbits=preexpanded_runtime_layout,
             )
             if instances.interfaces
             else []
@@ -1818,7 +2562,7 @@ def compile_assembly_rfd3_input(
             "extra": adapter_extra,
         }
     }
-    if finite_action is not None:
+    if finite_action is not None or preexpanded_mixed_orbits:
         # RFD3 otherwise centers fixed-motif inputs on their fixed-atom COM.
         # A complete group orbit has its COM at the group origin, whereas a
         # stabilizer quotient generally does not.  Applying that translation

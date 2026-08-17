@@ -22,6 +22,7 @@ from rfd3_mosaic.provenance.software import (
 from rfd3_mosaic.provenance.source_snapshot import create_source_snapshot
 from rfd3_mosaic.constraint_plan import compile_constraint_plan
 from rfd3_mosaic.schema import load_user_design
+from rfd3_mosaic.design_preferences import resolved_preferences_payload
 
 
 SCHEMA_VERSION = 1
@@ -465,6 +466,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
                 interface.model_dump(mode="json")
                 for interface in declared.interfaces
             ],
+            "resolved_preferences": resolved_preferences_payload(declared),
         }
 
     compatibility = payload["provenance"]["foundry_compatibility"]

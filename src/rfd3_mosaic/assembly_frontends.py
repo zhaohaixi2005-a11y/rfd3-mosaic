@@ -19,6 +19,7 @@ import yaml
 
 from rfd3_mosaic.compile import load_assembly_config
 from rfd3_mosaic.design_compiler import lower_user_design
+from rfd3_mosaic.design_preferences import resolved_preferences_payload
 from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.schema import (
     AssemblySpecification,
@@ -409,6 +410,14 @@ def lower_experiment_topology(
                     else None
                 ),
                 "fixed_arrangement": design.fixed_arrangement.value,
+                "assembly_shape": (
+                    design.assembly_shape.model_dump(mode="json")
+                    if design.assembly_shape is not None
+                    else None
+                ),
+                "resolved_design_preferences": (
+                    resolved_preferences_payload(design)
+                ),
                 "constraint_plan": lowered.constraint_plan.model_dump(
                     mode="json"
                 ),

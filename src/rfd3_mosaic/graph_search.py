@@ -23,6 +23,9 @@ from rfd3_mosaic.design_compiler import (
     lower_user_design,
     transform_registry_for_design,
 )
+from rfd3_mosaic.feasibility_restoration import (
+    bind_feasible_linker_lengths,
+)
 from rfd3_mosaic.output import compile_standalone
 from rfd3_mosaic.schema import (
     CopyRelationSpec,
@@ -239,6 +242,9 @@ def _summary(
         objectives.get("required_failure_count", 0)
     )
     hard_clashes = int(clashes["total_hard_clashes"])
+    minimum_inter_group_distance = clashes.get(
+        "minimum_inter_group_distance"
+    )
     accepted = bool(
         hard_clashes == 0
         and not failed_interfaces
@@ -253,8 +259,14 @@ def _summary(
         "pose_sample_index": pose_sample_index,
         "directory": str(directory.resolve()),
         "hard_clashes": hard_clashes,
-        "minimum_inter_group_distance": float(
-            clashes["minimum_inter_group_distance"]
+        # A single joint-rigid component has no inter-group atom pairs.  The
+        # standalone clash report correctly represents that as ``None``;
+        # preserve the absence instead of attempting ``float(None)`` and
+        # rejecting an otherwise executable cooperative interface seed.
+        "minimum_inter_group_distance": (
+            float(minimum_inter_group_distance)
+            if minimum_inter_group_distance is not None
+            else None
         ),
         "failed_required_interfaces": failed_interfaces,
         # These are design objectives for the sampler, not static compiler
@@ -302,6 +314,9 @@ def _ranking_key(item: dict[str, Any]) -> tuple[Any, ...]:
         )
     maximum_span = item.get("maximum_linker_endpoint_distance")
     mean_interface_distance = item.get("mean_interface_centroid_distance")
+    minimum_inter_group_distance = item.get(
+        "minimum_inter_group_distance"
+    )
     return (
         not bool(item["accepted"]),
         len(item["failed_required_interfaces"]),
@@ -317,7 +332,11 @@ def _ranking_key(item: dict[str, Any]) -> tuple[Any, ...]:
             if mean_interface_distance is None
             else float(mean_interface_distance)
         ),
-        -float(item["minimum_inter_group_distance"]),
+        (
+            -float(minimum_inter_group_distance)
+            if minimum_inter_group_distance is not None
+            else float("-inf")
+        ),
         item["candidate_id"],
     )
 
@@ -365,17 +384,22 @@ def _strict_replay_candidate(
 
     replayed = load_user_design(design_path)
     replay_topology: dict[str, Any] | None = None
-    require_multi_seed_adapter = False
+    require_rfd3_adapter = False
     metadata = expected_metadata or {}
     resolution_frontend = metadata.get("resolution_frontend")
-    if resolution_frontend in {
+    topology_validated_frontends = {
         "prepositioned_multi_binary_cn_experimental",
         "independent_multi_binary_cn_global_pose_v1",
         "prepositioned_multi_interface_hyperedge_v1",
         "independent_multi_interface_global_pose_v1",
         "prepositioned_multi_interface_finite_group_v1",
         "independent_multi_interface_finite_group_global_pose_v1",
-    }:
+    }
+    adapter_validated_frontends = {
+        *topology_validated_frontends,
+        "single_supplied_hyperedge_explicit_paths_v1",
+    }
+    if resolution_frontend in topology_validated_frontends:
         lowered = lower_user_design(replayed)
         topology = analyze_interleaved_interface_seed_topology(
             expand_symmetry_instances(lowered.specification)
@@ -408,7 +432,9 @@ def _strict_replay_candidate(
                 f"{expected_unit_count})"
             )
         replay_topology = topology.to_dict()
-        require_multi_seed_adapter = True
+    require_rfd3_adapter = (
+        resolution_frontend in adapter_validated_frontends
+    )
 
     replay_directory.mkdir(parents=True, exist_ok=False)
     assembly_path = replay_directory / "assembly.yaml"
@@ -427,7 +453,7 @@ def _strict_replay_candidate(
             "initialized assembly"
         )
     adapter_result: dict[str, Any] | None = None
-    if require_multi_seed_adapter:
+    if require_rfd3_adapter:
         # Standalone replay proves the initialized assembly, but executable
         # candidates must also traverse the native RFD3 adapter.  This catches
         # invalid ASU paths (for example a cross-copy seam bound as a motif
@@ -445,15 +471,36 @@ def _strict_replay_candidate(
         adapter_structure_sha256 = _sha256(adapter.structure_path)
         if adapter_structure_sha256 != expected_sha256:
             raise ValueError(
-                "Frozen multi-seed RFD3 adapter changed the ranked "
+                "Frozen supplied-interface RFD3 adapter changed the ranked "
                 "initialized assembly"
             )
+        # Adapter emission alone proves serialization, not that AtomWorks can
+        # build the runtime atom/features representation.  Keep selection and
+        # the public ``validate`` command on the same fail-closed boundary so
+        # a candidate can never be advertised under ``selected/`` and then
+        # fail only when the user validates or submits that exact YAML.
+        from rfd3_mosaic.rfd3_prevalidate import prevalidate_rfd3_input
+
+        prevalidation_path = (
+            replay_directory / "rfd3_adapter_prevalidation.json"
+        )
+        prevalidation = prevalidate_rfd3_input(
+            adapter.input_path,
+            example_id=adapter.example_id,
+            report_path=prevalidation_path,
+        )
         adapter_result = {
             "rfd3_adapter_validated": True,
+            "rfd3_adapter_prevalidated": True,
             "rfd3_adapter_input": str(adapter.input_path.resolve()),
             "rfd3_adapter_input_sha256": _sha256(adapter.input_path),
             "rfd3_adapter_structure_sha256": adapter_structure_sha256,
             "rfd3_adapter_contig": adapter.contig,
+            "rfd3_adapter_prevalidation": str(
+                prevalidation_path.resolve()
+            ),
+            "rfd3_runtime_atom_count": int(prevalidation["atom_count"]),
+            "rfd3_runtime_chain_count": int(prevalidation["chain_count"]),
         }
 
     result = {
@@ -512,7 +559,6 @@ def rank_design_candidates(
     summaries: list[dict[str, Any]] = []
     designs: dict[str, UserDesignSpec] = {}
     for candidate_id, design, metadata in materialized:
-        designs[candidate_id] = design
         candidate_directory = candidates_root / candidate_id
         candidate_directory.mkdir(exist_ok=False)
         symmetry_id = transform_registry_for_design(design).group_name
@@ -528,8 +574,36 @@ def rank_design_candidates(
             manifest = json.loads(
                 artifacts.manifest_path.read_text(encoding="utf-8")
             )
+            restoration = bind_feasible_linker_lengths(design, manifest)
+            designs[candidate_id] = restoration.design
+            ranked_artifacts = artifacts
+            ranked_manifest = manifest
+            if restoration.changed:
+                # The restored public YAML is the executable candidate.  Its
+                # compiler output, rather than the provisional ranged input,
+                # must be the sole source for ranking and strict-replay hash
+                # comparison.  This prevents a legal range-to-exact linker
+                # decision from appearing as unexplained replay drift.
+                restored_assembly_path = (
+                    candidate_directory / "restored_assembly.yaml"
+                )
+                _write_assembly_design(
+                    restoration.design,
+                    restored_assembly_path,
+                )
+                ranked_artifacts = compile_standalone(
+                    restored_assembly_path,
+                    candidate_directory / "compiled_restored",
+                    base_directory=restoration.design.input.parent,
+                    strict_validation=False,
+                )
+                ranked_manifest = json.loads(
+                    ranked_artifacts.manifest_path.read_text(
+                        encoding="utf-8"
+                    )
+                )
             summary = _summary(
-                manifest,
+                ranked_manifest,
                 candidate_id=candidate_id,
                 symmetry_id=symmetry_id,
                 assignment=dict(
@@ -541,6 +615,12 @@ def rank_design_candidates(
                 directory=candidate_directory,
             )
             summary.update(metadata)
+            summary["feasibility_restoration"] = (
+                restoration.metadata()
+            )
+            summary["ranked_structure"] = str(
+                ranked_artifacts.structure_path.resolve()
+            )
             # Architecture frontends may attach deterministic, explanatory
             # preflight failures that are not visible to the coordinate-only
             # standalone compiler.  Such candidates remain in the manifest
@@ -590,9 +670,7 @@ def rank_design_candidates(
             replay = _strict_replay_candidate(
                 frozen_path,
                 candidate_directory / "replay",
-                expected_structure=(
-                    candidate_directory / "compiled/presymmetrized_input.cif"
-                ),
+                expected_structure=Path(candidate["ranked_structure"]),
                 expected_metadata=candidate,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as error:
@@ -722,7 +800,6 @@ def search_graph_design(
                     sample_index=pose_sample_index,
                     seed_start=seed_start,
                 )
-                designs[candidate_id] = candidate_design
                 candidate_directory = candidates_root / candidate_id
                 candidate_directory.mkdir(exist_ok=False)
                 try:
@@ -737,17 +814,50 @@ def search_graph_design(
                     manifest = json.loads(
                         artifacts.manifest_path.read_text(encoding="utf-8")
                     )
-                    summaries.append(
-                        _summary(
-                            manifest,
-                            candidate_id=candidate_id,
-                            symmetry_id=symmetry_id,
-                            assignment=assignment,
-                            pose_sample_index=pose_sample_index,
-                            directory=candidate_directory,
-                        )
+                    restoration = bind_feasible_linker_lengths(
+                        candidate_design,
+                        manifest,
                     )
-                except (OSError, TypeError, ValueError) as error:
+                    designs[candidate_id] = restoration.design
+                    ranked_artifacts = artifacts
+                    ranked_manifest = manifest
+                    if restoration.changed:
+                        restored_assembly_path = (
+                            candidate_directory / "restored_assembly.yaml"
+                        )
+                        _write_assembly_design(
+                            restoration.design,
+                            restored_assembly_path,
+                        )
+                        ranked_artifacts = compile_standalone(
+                            restored_assembly_path,
+                            candidate_directory / "compiled_restored",
+                            base_directory=(
+                                restoration.design.input.parent
+                            ),
+                            strict_validation=False,
+                        )
+                        ranked_manifest = json.loads(
+                            ranked_artifacts.manifest_path.read_text(
+                                encoding="utf-8"
+                            )
+                        )
+                    summary = _summary(
+                        ranked_manifest,
+                        candidate_id=candidate_id,
+                        symmetry_id=symmetry_id,
+                        assignment=assignment,
+                        pose_sample_index=pose_sample_index,
+                        directory=candidate_directory,
+                    )
+                    summary["feasibility_restoration"] = (
+                        restoration.metadata()
+                    )
+                    summary["ranked_structure"] = str(
+                        ranked_artifacts.structure_path.resolve()
+                    )
+                    summaries.append(summary)
+                except (OSError, RuntimeError, TypeError, ValueError) as error:
                     summaries.append(
                         {
                             "candidate_id": candidate_id,
@@ -787,11 +897,9 @@ def search_graph_design(
             replay = _strict_replay_candidate(
                 frozen_path,
                 candidate_directory / "replay",
-                expected_structure=(
-                    candidate_directory / "compiled/presymmetrized_input.cif"
-                ),
+                expected_structure=Path(candidate["ranked_structure"]),
             )
-        except (OSError, TypeError, ValueError) as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             candidate["replay_validated"] = False
             candidate["replay_error"] = f"{type(error).__name__}: {error}"
             replay_failure_count += 1

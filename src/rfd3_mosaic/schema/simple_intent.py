@@ -8,6 +8,7 @@ from pydantic import AliasChoices, Field, model_validator
 
 from rfd3_mosaic.schema.design import (
     RequestedLength,
+    UserDesignPreferences,
     UserInterfaceUsageSpec,
     UserOutputSpec,
     UserResourceSpec,
@@ -96,6 +97,42 @@ class SimpleGenerationIntentSpec(StrictModel):
     length: RequestedLength
 
 
+class SimplePolymerEndpointSpec(StrictModel):
+    """One supplied interface participant used as a polymer-path node."""
+
+    interface: Identifier
+    participant: Annotated[str, Field(min_length=1)]
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_compact_endpoint(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        interface_id, separator, participant = value.rpartition(".")
+        if not separator or not interface_id or not participant:
+            raise ValueError(
+                "Compact polymer endpoints must use interface.participant"
+            )
+        return {
+            "interface": interface_id,
+            "participant": participant,
+        }
+
+
+class SimplePolymerConnectionSpec(StrictModel):
+    """A user-authoritative C-to-N connection between supplied seeds."""
+
+    id: Identifier | None = None
+    from_endpoint: SimplePolymerEndpointSpec = Field(
+        validation_alias=AliasChoices("from", "from_endpoint"),
+        serialization_alias="from",
+    )
+    to_endpoint: SimplePolymerEndpointSpec = Field(
+        validation_alias=AliasChoices("to", "to_endpoint"),
+        serialization_alias="to",
+    )
+
+
 class SimpleInspectionSpec(StrictModel):
     """Frozen input-analysis parameters used to create this intent."""
 
@@ -111,9 +148,14 @@ class SimpleCageIntentSpec(StrictModel):
     kind: Literal["simple_cage_intent"] = "simple_cage_intent"
     name: Identifier
     input: Path
+    seed_layout: Literal["auto", "preserve_input", "solve"] = "auto"
     goal: SimpleCageGoalSpec = Field(default_factory=SimpleCageGoalSpec)
     interface_seeds: dict[Identifier, SimpleInterfaceSeedSpec]
+    polymer_connections: tuple[SimplePolymerConnectionSpec, ...] = ()
     generation: SimpleGenerationIntentSpec
+    preferences: UserDesignPreferences = Field(
+        default_factory=UserDesignPreferences
+    )
     inspection: SimpleInspectionSpec = Field(
         default_factory=SimpleInspectionSpec
     )
@@ -156,6 +198,11 @@ class SimpleCageIntentSpec(StrictModel):
             raise ValueError(
                 "simple cage intent requires at least one interface seed"
             )
+        if self.seed_layout == "solve" and len(self.interface_seeds) < 2:
+            raise ValueError(
+                "seed_layout=solve requires at least two supplied interface "
+                "seeds whose relative pose can be optimized"
+            )
         missing_sources = [
             seed_id
             for seed_id, seed in self.interface_seeds.items()
@@ -166,6 +213,69 @@ class SimpleCageIntentSpec(StrictModel):
                 "interface seeds require either their own source/structure "
                 "or one top-level input: " + ", ".join(missing_sources)
             )
+        connection_ids = [
+            connection.id
+            for connection in self.polymer_connections
+            if connection.id is not None
+        ]
+        if len(connection_ids) != len(set(connection_ids)):
+            raise ValueError("polymer connection IDs must be unique")
+        outgoing: set[tuple[str, str]] = set()
+        incoming: set[tuple[str, str]] = set()
+        used: set[tuple[str, str]] = set()
+        for connection in self.polymer_connections:
+            source = connection.from_endpoint
+            target = connection.to_endpoint
+            for endpoint in (source, target):
+                seed = self.interface_seeds.get(endpoint.interface)
+                if seed is None:
+                    raise ValueError(
+                        "polymer connection references unknown interface "
+                        f"{endpoint.interface!r}"
+                    )
+                if endpoint.participant not in seed.participants:
+                    raise ValueError(
+                        "polymer connection references unknown participant "
+                        f"{endpoint.interface}.{endpoint.participant}"
+                    )
+            source_key = (source.interface, source.participant)
+            target_key = (target.interface, target.participant)
+            if source.interface == target.interface:
+                raise ValueError(
+                    "polymer connections cannot join participants of the "
+                    "same supplied interface seed"
+                )
+            if source_key in outgoing:
+                raise ValueError(
+                    "a supplied participant can have at most one outgoing "
+                    f"polymer connection: {source.interface}."
+                    f"{source.participant}"
+                )
+            if target_key in incoming:
+                raise ValueError(
+                    "a supplied participant can have at most one incoming "
+                    f"polymer connection: {target.interface}."
+                    f"{target.participant}"
+                )
+            outgoing.add(source_key)
+            incoming.add(target_key)
+            used.update((source_key, target_key))
+        if self.polymer_connections:
+            expected = {
+                (interface_id, participant)
+                for interface_id, seed in self.interface_seeds.items()
+                for participant in seed.participants
+            }
+            missing = sorted(expected - used)
+            if missing:
+                rendered = ", ".join(
+                    f"{interface_id}.{participant}"
+                    for interface_id, participant in missing
+                )
+                raise ValueError(
+                    "user-declared polymer connections must assign every "
+                    f"supplied interface participant; missing: {rendered}"
+                )
         return self
 
 
@@ -221,5 +331,7 @@ __all__ = [
     "SimpleInspectionSpec",
     "SimpleIntegerRange",
     "SimpleInterfaceSeedSpec",
+    "SimplePolymerConnectionSpec",
+    "SimplePolymerEndpointSpec",
     "load_simple_cage_intent",
 ]

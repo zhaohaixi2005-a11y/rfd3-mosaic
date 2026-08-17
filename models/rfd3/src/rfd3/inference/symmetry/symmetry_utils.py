@@ -28,6 +28,7 @@ from rfd3.inference.symmetry.contigs import (
     get_unsym_motif_mask,
 )
 from rfd3.inference.symmetry.frames import (
+    decompose_symmetry_frame,
     get_symmetry_frames_from_atom_array,
     get_symmetry_frames_from_symmetry_id,
     get_symmetry_multiplicity_from_id,
@@ -107,6 +108,14 @@ class SymmetryConfig(BaseModel):
         description=(
             "Compiler-validated homogeneous 4x4 symmetry transforms keyed "
             "by declared transform identifier."
+        ),
+    )
+    declared_preexpanded_chain_layout: Optional[list[dict]] = Field(
+        None,
+        description=(
+            "Compiler-owned layout for an already expanded mixed-entity "
+            "assembly. One record per input chain declares transform_index, "
+            "entity_id and is_asu; coordinates are not expanded again."
         ),
     )
 
@@ -239,6 +248,153 @@ def make_symmetric_atom_array(
         asu_atom_array = add_2d_entity_annotations(asu_atom_array)
 
     frames = _resolve_symmetry_frames(sym_conf, src_atom_array)
+
+    preexpanded_layout = sym_conf.declared_preexpanded_chain_layout
+    if preexpanded_layout is not None:
+        if not sym_conf.use_declared_frames:
+            raise ValueError(
+                "declared_preexpanded_chain_layout requires "
+                "use_declared_frames=true"
+            )
+        # Preserve compiler/contig chain order.  Lexicographic sorting would
+        # place AA before B and silently corrupt layouts above 26 chains.
+        chain_ids = list(
+            dict.fromkeys(np.asarray(asu_atom_array.chain_id).tolist())
+        )
+        if len(preexpanded_layout) != len(chain_ids):
+            raise ValueError(
+                "Preexpanded chain layout length does not match parsed "
+                f"input chains: {len(preexpanded_layout)} != "
+                f"{len(chain_ids)}"
+            )
+        asu_atom_array = add_sym_annotations(asu_atom_array, sym_conf)
+        transform_ids = np.full(asu_atom_array.shape[0], -1, dtype=np.int32)
+        entity_ids = np.full(asu_atom_array.shape[0], -1, dtype=np.int32)
+        is_asu = np.zeros(asu_atom_array.shape[0], dtype=np.bool_)
+        # Biotite annotations are scalar arrays.  RFD3 therefore stores a
+        # 3-vector in the structured scalar dtype returned by
+        # ``decompose_symmetry_frame()``.  Using an ordinary ``(N, 3)`` array
+        # here looks natural but is incompatible with the native fixed-motif
+        # annotation path, which later replaces selected values with that
+        # packed dtype.
+        reference_origin, reference_x_axis, reference_y_axis = (
+            decompose_symmetry_frame(frames[0])
+        )
+        origins = np.full(asu_atom_array.shape[0], reference_origin)
+        x_axes = np.full(asu_atom_array.shape[0], reference_x_axis)
+        y_axes = np.full(asu_atom_array.shape[0], reference_y_axis)
+        entity_asu_counts: dict[int, int] = {}
+        for chain_id, record in zip(
+            chain_ids,
+            preexpanded_layout,
+            strict=True,
+        ):
+            transform_index = int(record["transform_index"])
+            entity_id = int(record["entity_id"])
+            chain_is_asu = bool(record.get("is_asu", False))
+            if not 0 <= transform_index < len(frames):
+                raise ValueError(
+                    "Preexpanded chain layout transform_index is outside "
+                    f"the declared frame set: {transform_index}"
+                )
+            if entity_id < 0:
+                raise ValueError(
+                    "Preexpanded chain layout entity_id must be nonnegative"
+                )
+            mask = asu_atom_array.chain_id == chain_id
+            origin, x_axis, y_axis = decompose_symmetry_frame(
+                frames[transform_index]
+            )
+            transform_ids[mask] = transform_index
+            entity_ids[mask] = entity_id
+            is_asu[mask] = chain_is_asu
+            origins[mask] = origin
+            x_axes[mask] = x_axis
+            y_axes[mask] = y_axis
+            if chain_is_asu:
+                entity_asu_counts[entity_id] = (
+                    entity_asu_counts.get(entity_id, 0) + 1
+                )
+        observed_entities = set(int(value) for value in np.unique(entity_ids))
+        invalid_asu = {
+            entity_id: entity_asu_counts.get(entity_id, 0)
+            for entity_id in observed_entities
+            if entity_asu_counts.get(entity_id, 0) != 1
+        }
+        if invalid_asu:
+            raise ValueError(
+                "Each preexpanded symmetry entity requires exactly one ASU "
+                f"chain: {invalid_asu}"
+            )
+        asu_atom_array.set_annotation("sym_transform_id", transform_ids)
+        asu_atom_array.set_annotation("sym_entity_id", entity_ids)
+        asu_atom_array.set_annotation("is_sym_asu", is_asu)
+        asu_atom_array.set_annotation("sym_transform_Ori", origins)
+        asu_atom_array.set_annotation("sym_transform_X", x_axes)
+        asu_atom_array.set_annotation("sym_transform_Y", y_axes)
+        # Preexpanded chains were materialized independently by the compiler,
+        # so their parser-level ``src_component`` labels are chain-specific.
+        # Establish exact copy correspondence from local residue order and
+        # atom identity instead of pretending those labels are shared.
+        residue_ids = np.asarray(asu_atom_array.res_id)
+        atom_names = np.asarray(asu_atom_array.atom_name)
+        orbit_slots = np.full(asu_atom_array.shape[0], -1, dtype=np.int64)
+        for entity_id in sorted(observed_entities):
+            entity_mask = entity_ids == entity_id
+            reference_keys = None
+            for transform_index in sorted(
+                int(value) for value in np.unique(transform_ids[entity_mask])
+            ):
+                indices = np.flatnonzero(
+                    entity_mask & (transform_ids == transform_index)
+                )
+                local_residue_order = {
+                    residue_id: index
+                    for index, residue_id in enumerate(
+                        dict.fromkeys(residue_ids[indices].tolist())
+                    )
+                }
+                keys = tuple(
+                    (
+                        local_residue_order[residue_ids[index]],
+                        str(atom_names[index]),
+                    )
+                    for index in indices
+                )
+                if len(keys) != len(set(keys)):
+                    raise ValueError(
+                        "Preexpanded symmetry chain contains duplicate "
+                        f"local atom keys: entity={entity_id}, "
+                        f"transform={transform_index}"
+                    )
+                ordered_keys = tuple(sorted(keys))
+                if reference_keys is None:
+                    reference_keys = ordered_keys
+                elif ordered_keys != reference_keys:
+                    raise ValueError(
+                        "Preexpanded symmetry copies do not have identical "
+                        f"local residue/atom keys: entity={entity_id}, "
+                        f"transform={transform_index}"
+                    )
+                slot_by_key = {
+                    key: slot for slot, key in enumerate(ordered_keys)
+                }
+                orbit_slots[indices] = np.asarray(
+                    [slot_by_key[key] for key in keys],
+                    dtype=np.int64,
+                )
+        if np.any(orbit_slots < 0):
+            raise ValueError(
+                "Preexpanded symmetry orbit-slot construction left "
+                "unassigned atoms"
+            )
+        asu_atom_array.set_annotation(
+            "mosaic_preexpanded_orbit_slot",
+            orbit_slots,
+        )
+        asu_atom_array = fix_3D_sym_motif_annotations(asu_atom_array)
+        asu_atom_array = add_src_sym_component_annotations(asu_atom_array)
+        return _del_util_annotations(asu_atom_array)
 
     if not sym_conf.is_symmetric_motif:
         # At this point, asym case would have been caught by the check_symmetry_config function.

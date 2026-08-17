@@ -5,6 +5,12 @@ input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
 symmetry: C3
 task: create_symmetric_interface
 fixed_arrangement: locked
+preferences:
+  packing: balanced
+  interface_area: large
+  cavity: auto
+  diversity: medium
+  component_motion: locked
 
 # Control arm for the unified interface-design contract. The compiler may
 # establish one deterministic non-overlapping initial orbit if the ASU input

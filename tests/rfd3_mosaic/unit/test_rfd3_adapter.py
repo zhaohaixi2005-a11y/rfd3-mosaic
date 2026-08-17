@@ -5,8 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import yaml
 
+from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.output import compile_rfd3_input, compile_standalone
 from rfd3_mosaic.output.rfd3_adapter import (
     _compile_asu_scaffold_segments,
@@ -21,6 +23,10 @@ from rfd3_mosaic.schema.specs import (
 from rfd3_mosaic.topology.stabilizer_cosets import (
     stabilizer_coset_hypotheses,
 )
+from rfd3_mosaic.topology.component_incidence import (
+    enumerate_binary_interface_incidence_plans,
+)
+from rfd3_mosaic.topology.symmetry_connectivity import finite_symmetry_spec
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -61,6 +67,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
         *,
         minimum_length: int = 5,
         maximum_length: int = 5,
+        tie_group: str | None = None,
     ) -> SimpleNamespace:
         return SimpleNamespace(
             id=link_id,
@@ -70,6 +77,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
             chain_break=False,
             minimum_length=minimum_length,
             maximum_length=maximum_length,
+            tie_group=tie_group,
             copy_index=0,
             target_copy_index=0,
             orbit_id="motif_orbit",
@@ -103,6 +111,11 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
                 "_materialized_linker_contour_preflight",
                 side_effect=self._contour_report,
             ),
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter."
+                "_minimum_materialized_linker_length",
+                return_value=0,
+            ),
         ):
             return _compile_asu_scaffold_segments(
                 links,
@@ -110,6 +123,116 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
                 manifest_path=Path("unused-manifest.json"),
                 linker_length=None,
             )
+
+    def test_automatic_length_covers_worst_symmetry_instance(self) -> None:
+        link = self._link(
+            "link_ab",
+            "fragment_a",
+            "fragment_b",
+            minimum_length=5,
+            maximum_length=10,
+        )
+        selectors = {
+            "fragment_a": "A1-2",
+            "fragment_b": "B1-2",
+        }
+        with (
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter._fragment_selector",
+                side_effect=lambda _mapping, fragment_id: selectors[
+                    fragment_id
+                ],
+            ),
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter."
+                "_minimum_materialized_linker_length",
+                return_value=9,
+            ),
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter."
+                "_materialized_linker_contour_preflight",
+                side_effect=self._contour_report,
+            ),
+        ):
+            segments = _compile_asu_scaffold_segments(
+                (link,),
+                mapping={},
+                manifest_path=Path("unused-manifest.json"),
+                linker_length=None,
+            )
+
+        entry = segments[0].links[0]
+        self.assertEqual(entry.materialized_linker_length, 9)
+        self.assertEqual(
+            entry.linker_length_policy,
+            "configured_range_contour_sufficient",
+        )
+
+    def test_tied_links_materialize_one_common_length(self) -> None:
+        links = (
+            self._link(
+                "link_ab",
+                "fragment_a",
+                "fragment_b",
+                minimum_length=5,
+                maximum_length=12,
+                tie_group="unit_length",
+            ),
+            self._link(
+                "link_cd",
+                "fragment_c",
+                "fragment_d",
+                minimum_length=7,
+                maximum_length=10,
+                tie_group="unit_length",
+            ),
+        )
+        selectors = {
+            "fragment_a": "A1-2",
+            "fragment_b": "B1-2",
+            "fragment_c": "C1-2",
+            "fragment_d": "D1-2",
+        }
+        requirements = {"link_ab": 8, "link_cd": 9}
+        with (
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter._fragment_selector",
+                side_effect=lambda _mapping, fragment_id: selectors[
+                    fragment_id
+                ],
+            ),
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter."
+                "_minimum_materialized_linker_length",
+                side_effect=lambda _path, *, source_link_id: requirements[
+                    source_link_id
+                ],
+            ),
+            patch(
+                "rfd3_mosaic.output.rfd3_adapter."
+                "_materialized_linker_contour_preflight",
+                side_effect=self._contour_report,
+            ),
+        ):
+            segments = _compile_asu_scaffold_segments(
+                links,
+                mapping={},
+                manifest_path=Path("unused-manifest.json"),
+                linker_length=None,
+            )
+
+        lengths = {
+            link.materialized_linker_length
+            for segment in segments
+            for link in segment.links
+        }
+        policies = {
+            link.linker_length_policy
+            for segment in segments
+            for link in segment.links
+        }
+        self.assertEqual(lengths, {9})
+        self.assertEqual(policies, {"tie_group_contour_sufficient"})
 
     def test_ordered_path_materializes_intermediate_seed_once(self) -> None:
         segments = self._compile(
@@ -472,6 +595,234 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(report["expected_multiplicity"], 2)
         self.assertEqual(report["full_symmetry_multiplicity"], 4)
         self.assertEqual(report["symmetry_transform_ids"], [0, 1])
+
+    def test_compiles_mixed_t_c2_c3_component_orbits_for_rfd3(
+        self,
+    ) -> None:
+        plan = next(
+            item
+            for item in enumerate_binary_interface_incidence_plans(
+                symmetry="T",
+                interface_id="natural_interface",
+                left_participant="c2_component",
+                right_participant="c3_component",
+            )
+            if (item.left.valency, item.right.valency) == (2, 3)
+        )
+        registry = build_transform_registry(finite_symmetry_spec("T"))
+        source = self.output_directory / "mixed_t_c2_c3.pdb"
+        lines = []
+        serial = 1
+
+        def emit_component(chains, stabilizer_ids, center):
+            nonlocal serial
+            for chain, transform_id in zip(
+                chains,
+                stabilizer_ids,
+                strict=True,
+            ):
+                matrix = registry.transform(transform_id)
+                for residue in range(1, 7):
+                    base_ca = np.asarray(
+                        (
+                            center[0] + 0.25 * residue,
+                            center[1] + 0.15 * residue,
+                            center[2] + 1.45 * residue,
+                        )
+                    )
+                    for atom_name, offset, element in (
+                        ("N", (-0.55, 0.05, -0.45), "N"),
+                        ("CA", (0.0, 0.0, 0.0), "C"),
+                        ("C", (0.55, -0.05, 0.45), "C"),
+                        ("O", (0.80, -0.10, 0.75), "O"),
+                    ):
+                        coordinate = base_ca + np.asarray(offset)
+                        coordinate = (
+                            coordinate @ matrix[:3, :3].T
+                            + matrix[:3, 3]
+                        )
+                        lines.append(
+                            f"ATOM  {serial:5d} {atom_name:>4s} ALA "
+                            f"{chain:1s}{residue:4d}    "
+                            f"{coordinate[0]:8.3f}{coordinate[1]:8.3f}"
+                            f"{coordinate[2]:8.3f}{1.0:6.2f}{20.0:6.2f}"
+                            f"          {element:>2s}\n"
+                        )
+                        serial += 1
+
+        emit_component(
+            ("A", "B"),
+            plan.left.action.stabilizer_transform_ids,
+            (22.0, 7.0, 3.0),
+        )
+        emit_component(
+            ("C", "D", "E"),
+            plan.right.action.stabilizer_transform_ids,
+            (4.0, 36.0, 11.0),
+        )
+        lines.append("END\n")
+        source.write_text("".join(lines), encoding="utf-8")
+
+        def action_payload(participant):
+            action = participant.action
+            return {
+                "coset_representative_ids": list(
+                    action.coset_representative_ids
+                ),
+                "stabilizer_transform_ids": list(
+                    action.stabilizer_transform_ids
+                ),
+                "transform_to_coset_representative": dict(
+                    action.transform_to_coset_representative
+                ),
+            }
+
+        fragments = {}
+        groups = {"c2_component": {"members": [], "mode": "fixed"},
+                  "c3_component": {"members": [], "mode": "fixed"}}
+        links = {}
+        component_fragments = {"c2_component": [], "c3_component": []}
+        for component_id, chains in (
+            ("c2_component", ("A", "B")),
+            ("c3_component", ("C", "D", "E")),
+        ):
+            for chain in chains:
+                chain_fragments = []
+                for label, selection in (
+                    ("n", f"{chain}/1-2/*"),
+                    ("c", f"{chain}/5-6/*"),
+                ):
+                    fragment_id = f"{component_id}_{chain}_{label}"
+                    fragments[fragment_id] = {
+                        "source": str(source),
+                        "selection": selection,
+                        "entity_type": "protein",
+                        "role": "interface_motif",
+                        "fixed_atoms": "all",
+                    }
+                    groups[component_id]["members"].append(fragment_id)
+                    component_fragments[component_id].append(fragment_id)
+                    chain_fragments.append(fragment_id)
+                links[f"path_{chain}"] = {
+                    "from_endpoint": {
+                        "fragment": chain_fragments[0],
+                        "terminus": "C",
+                    },
+                    "to_endpoint": {
+                        "fragment": chain_fragments[1],
+                        "terminus": "N",
+                    },
+                    "length": {"minimum": 2, "maximum": 2},
+                    "chain_break": False,
+                    "copy_relation": {"orbit_offset": 0},
+                }
+
+        config = self.output_directory / "mixed-t-c2-c3.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "mode": "constraint_assembly",
+                        "constraint_group_strategy": "interface_edges",
+                        "fragments": fragments,
+                        "motion_groups": groups,
+                        "ports": {
+                            "c2_port": {
+                                "group": "c2_component",
+                                "fragments": component_fragments[
+                                    "c2_component"
+                                ],
+                                "atoms": "heavy",
+                                "frame": {
+                                    "method": "reference_interface_pca"
+                                },
+                            },
+                            "c3_port": {
+                                "group": "c3_component",
+                                "fragments": component_fragments[
+                                    "c3_component"
+                                ],
+                                "atoms": "heavy",
+                                "frame": {
+                                    "method": "reference_interface_pca"
+                                },
+                            },
+                        },
+                        "symmetry": {
+                            "transform_sets": {
+                                "cage": {
+                                    "type": "tetrahedral",
+                                    "order": 12,
+                                }
+                            },
+                            "orbits": {
+                                "c2_orbit": {
+                                    "transform_set": "cage",
+                                    "master_groups": ["c2_component"],
+                                    "finite_action": action_payload(plan.left),
+                                },
+                                "c3_orbit": {
+                                    "transform_set": "cage",
+                                    "master_groups": ["c3_component"],
+                                    "finite_action": action_payload(plan.right),
+                                },
+                            },
+                        },
+                        "interfaces": {
+                            "natural_interface": {
+                                "left_port": "c2_port",
+                                "right_port": "c3_port",
+                                "copy_relation": {"orbit_offset": 0},
+                                "required": True,
+                                "target_geometry": {
+                                    "mode": "reference_transform",
+                                    "from_reference_seed": True,
+                                    "translation_tolerance": 2.0,
+                                    "rotation_tolerance_deg": 10.0,
+                                },
+                            }
+                        },
+                        "scaffold_links": links,
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "mixed-t-c2-c3-output",
+            example_id="mixed-t-c2-c3",
+        )
+        emitted = json.loads(outputs.input_path.read_text())[
+            "mixed-t-c2-c3"
+        ]
+        extra = emitted["extra"]
+        self.assertEqual(extra["symmetry_action_kind"], "mixed_stabilizer_quotients")
+        self.assertEqual(len(extra["preexpanded_chain_layout"]), 24)
+        self.assertEqual(len(extra["motif_constraint_groups"]), 12)
+        self.assertEqual(len(extra["assembly_interface_relations"]), 12)
+        self.assertEqual(emitted["ori_token"], [0.0, 0.0, 0.0])
+        report = prevalidate_rfd3_input(outputs.input_path)
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["chain_count"], 24)
+        self.assertEqual(report["expected_multiplicity"], 12)
+        matrix_audit = report["symmetry_transform_matrix_audit"]
+        self.assertEqual(
+            matrix_audit["coverage_contract"],
+            "declared_registry_subset",
+        )
+        self.assertEqual(
+            matrix_audit["runtime_transform_count"],
+            len(
+                {
+                    int(record["transform_index"])
+                    for record in extra["preexpanded_chain_layout"]
+                }
+            ),
+        )
 
     def test_compiles_tetrahedral_terminal_design_with_declared_frames(
         self,

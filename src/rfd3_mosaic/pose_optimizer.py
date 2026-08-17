@@ -29,6 +29,7 @@ from rfd3_mosaic.design_compiler import (
     lower_user_design,
     parse_public_selector,
 )
+from rfd3_mosaic.design_preferences import compile_design_preferences
 from rfd3_mosaic.output import compile_standalone
 from rfd3_mosaic.schema import (
     NumericRange,
@@ -36,6 +37,7 @@ from rfd3_mosaic.schema import (
     UserFixedOrientationSpec,
     UserInitialPoseSpec,
 )
+from rfd3_mosaic.simple_architecture import symmetry_group_action_count
 from rfd3_mosaic.structure import read_structure_atoms
 
 
@@ -65,7 +67,7 @@ class PoseEvaluation:
     minimum_linker_corridor_clearance: float | None
     minimum_linker_axis_clearance: float | None
     maximum_terminal_tangent_angle_deg: float | None
-    minimum_inter_group_distance: float
+    minimum_inter_group_distance: float | None
     objective_penalty: float
 
     def to_dict(self) -> dict[str, Any]:
@@ -279,33 +281,56 @@ def initialize_global_seed_layout(
 ) -> UserDesignSpec:
     """Place canonical independent seeds without using their file frames.
 
-    This deterministic low-discrepancy family spans ring radius, within-ASU
-    azimuth, axial staggering and orientation.  Every state is subsequently
-    evaluated on the complete symmetry-expanded assembly and refined by
+    For Cn/Dn this deterministic low-discrepancy family spans ring radius,
+    within-ASU azimuth, axial staggering and orientation.  Full-orbit T/O/I
+    components use a spherical low-discrepancy family so the initializer does
+    not privilege one polyhedral axis.  Every state is subsequently evaluated
+    on the complete symmetry-expanded assembly and refined by
     :func:`optimize_design_poses`; it is never advertised as a final pose by
-    itself.
+    itself.  Components with an explicit stabilizer/coset action remain a
+    separate, fail-closed placement problem.
     """
 
     if sample_count < 1:
         raise ValueError("global seed layout sample_count must be positive")
     if not 0 <= sample_index < sample_count:
         raise ValueError("global seed layout sample_index is out of range")
-    if not isinstance(design.symmetry, str) or not design.symmetry.startswith(
-        "C"
-    ):
+    if not isinstance(design.symmetry, str):
         raise NotImplementedError(
-            "The first global seed-layout initializer supports Cn; Dn/T/O/I "
-            "require stabilizer-aware placement"
+            "Global seed-layout initialization requires a named finite "
+            "symmetry"
         )
-    try:
-        order = int(design.symmetry[1:])
-    except ValueError as error:
-        raise ValueError(
-            f"Invalid cyclic symmetry {design.symmetry!r}"
-        ) from error
+    cyclic_or_dihedral = design.symmetry.startswith(("C", "D"))
+    polyhedral = design.symmetry in {"T", "O", "I"}
+    if not cyclic_or_dihedral and not polyhedral:
+        raise NotImplementedError(
+            "Global seed-layout initialization supports Cn/Dn/T/O/I"
+        )
+    if cyclic_or_dihedral:
+        try:
+            cyclic_order = int(design.symmetry[1:])
+        except ValueError as error:
+            raise ValueError(
+                f"Invalid cyclic/dihedral symmetry {design.symmetry!r}"
+            ) from error
+    else:
+        cyclic_order = 0
+    group_order = symmetry_group_action_count(design.symmetry)
+    is_dihedral = design.symmetry.startswith("D")
     component_ids = tuple(sorted(design.components))
     if not component_ids:
         raise ValueError("Global seed layout requires assembly components")
+    stabilizer_components = tuple(
+        component_id
+        for component_id in component_ids
+        if design.components[component_id].finite_orbit_action is not None
+    )
+    if stabilizer_components:
+        raise NotImplementedError(
+            "Global placement of components with explicit stabilizer/coset "
+            "actions requires stabilizer-aware local frames; unsupported "
+            f"components: {list(stabilizer_components)}"
+        )
 
     atoms = read_structure_atoms(
         design.input,
@@ -346,7 +371,7 @@ def initialize_global_seed_layout(
             np.linalg.norm(coordinates - center, axis=1).max()
         )
 
-    physical_slots = order * len(component_ids)
+    physical_slots = group_order * len(component_ids)
     if diameter_range is not None:
         lower, upper = diameter_range
         if lower <= 0.0 or upper < lower:
@@ -354,21 +379,66 @@ def initialize_global_seed_layout(
         base_radius = (lower + upper) / 4.0
     else:
         target_chord = 2.0 * max(component_extents.values()) + 8.0
-        base_radius = target_chord / (
-            2.0 * math.sin(math.pi / max(physical_slots, 2))
-        )
+        if polyhedral:
+            # Equal-area angular spacing for N points on a sphere is roughly
+            # sqrt(4*pi/N).  Convert that angle to a chord length rather than
+            # pretending a polyhedral orbit is one planar ring.
+            angular_spacing = math.sqrt(
+                4.0 * math.pi / max(physical_slots, 2)
+            )
+            base_radius = target_chord / (
+                2.0 * math.sin(min(math.pi, angular_spacing) / 2.0)
+            )
+        else:
+            base_radius = target_chord / (
+                2.0 * math.sin(math.pi / max(physical_slots, 2))
+            )
         base_radius = min(120.0, max(12.0, base_radius))
+        base_radius *= compile_design_preferences(
+            design
+        ).initial_radius_scale
 
     golden = 0.6180339887498949
     radius_fraction = ((sample_index * golden) % 1.0) - 0.5
     radius = base_radius * (1.0 + 0.4 * radius_fraction)
-    asu_angle = 360.0 / order
+    asu_angle = (
+        360.0 / cyclic_order if cyclic_or_dihedral else 360.0
+    )
     slot_angle = asu_angle / len(component_ids)
     phase = (((sample_index + 1) * golden) % 1.0 - 0.5) * slot_angle
     tilt_levels = (-24.0, -12.0, 0.0, 12.0, 24.0)
     initial_poses: dict[str, UserInitialPoseSpec] = {}
     for component_index, component_id in enumerate(component_ids):
-        azimuth = component_index * slot_angle + phase
+        if polyhedral:
+            # A Fibonacci-sphere direction with sample-dependent scrambling.
+            # The half-slot offset avoids all named symmetry axes, which
+            # would otherwise collapse a nominal full orbit onto a stabilizer
+            # orbit before the compiler can evaluate it.
+            direction_index = (
+                sample_index * len(component_ids) + component_index
+            )
+            z_fraction = (
+                ((direction_index + 0.5) * golden) % 1.0
+            )
+            z_fraction = min(0.95, max(0.05, z_fraction))
+            unit_z = 2.0 * z_fraction - 1.0
+            azimuth = (
+                360.0 * (((direction_index + 1) * golden) % 1.0)
+            )
+            total_radius = radius
+            radial_radius = total_radius * math.sqrt(
+                max(0.0, 1.0 - unit_z * unit_z)
+            )
+            axial = total_radius * unit_z
+        else:
+            azimuth = component_index * slot_angle + phase
+            radial_radius = radius
+            axial_scale = min(
+                8.0, component_extents[component_id] * 0.35
+            )
+            axial = (
+                ((sample_index + component_index) % 3) - 1
+            ) * axial_scale
         angle = math.radians(azimuth)
         radial_direction = (math.cos(angle), math.sin(angle), 0.0)
         tilt = tilt_levels[
@@ -377,10 +447,20 @@ def initialize_global_seed_layout(
         roll = (
             ((sample_index * 137 + component_index * 71) % 360) - 180
         )
-        axial_scale = min(8.0, component_extents[component_id] * 0.35)
-        axial = (((sample_index + component_index) % 3) - 1) * axial_scale
+        if is_dihedral and abs(axial) <= 1e-8:
+            # A point in the dihedral equatorial plane may lie on a C2
+            # stabilizer and collapse the reflected coset onto the cyclic
+            # coset.  A deterministic non-zero layer offset gives the full
+            # Dn action distinct starting copies; the optimizer may later
+            # refine it while the compiler checks clashes and group closure.
+            axial = axial_scale * (
+                0.5 if (sample_index + component_index) % 2 == 0 else -0.5
+            )
         initial_poses[component_id] = UserInitialPoseSpec(
-            radius=NumericRange(minimum=radius, maximum=radius),
+            radius=NumericRange(
+                minimum=radial_radius,
+                maximum=radial_radius,
+            ),
             axial_offset=NumericRange(minimum=axial, maximum=axial),
             radial_direction=radial_direction,
             orientation=UserFixedOrientationSpec(
@@ -502,15 +582,31 @@ def _evaluation_from_manifest(manifest: dict[str, Any]) -> PoseEvaluation:
         if value is not None
     ]
     maximum_tangent_angle = max(tangent_angles) if tangent_angles else None
-    minimum_distance = float(clashes["minimum_inter_group_distance"])
+    raw_minimum_distance = clashes.get("minimum_inter_group_distance")
+    minimum_distance = (
+        float(raw_minimum_distance)
+        if raw_minimum_distance is not None
+        else None
+    )
     objective_penalty = float(
         objectives.get("total_weighted_penalty", 0.0)
     )
+    # A scaffold linker is generated as a flexible polymer.  Its endpoint
+    # chord is therefore a useful routing heuristic, but it is not the path
+    # the generated backbone is required to follow.  Treating every fixed
+    # atom near that straight chord as a hard impossibility rejects viable
+    # long linkers that have ample contour length to route around the seed.
+    #
+    # Keep ``blocked_corridors`` in the lexicographic soft ranking so pose
+    # search still prefers clear, direct routes.  Hard feasibility remains
+    # fail-closed for actual fixed-group clashes, required interface failure,
+    # insufficient linker contour length, and required output objectives.
+    # The generated structure is subsequently checked by the authoritative
+    # chain-continuity and atom-clash result audits.
     hard_failure_count = (
         hard_clashes
         + len(failed_interfaces)
         + len(infeasible_links)
-        + len(blocked_corridors)
         + required_failures
     )
     feasible = hard_failure_count == 0
@@ -522,10 +618,12 @@ def _evaluation_from_manifest(manifest: dict[str, Any]) -> PoseEvaluation:
         float(hard_failure_count),
         float(len(failed_interfaces)),
         float(len(infeasible_links)),
-        float(len(blocked_corridors)),
         float(hard_clashes),
-        contour_excess,
         float(required_failures),
+        # Straight-chord obstruction is a routing preference, not proof that
+        # a flexible linker is geometrically impossible.
+        float(len(blocked_corridors)),
+        contour_excess,
         objective_penalty,
         float("inf")
         if maximum_tangent_angle is None
@@ -537,7 +635,11 @@ def _evaluation_from_manifest(manifest: dict[str, Any]) -> PoseEvaluation:
         if minimum_axis_clearance is None
         else -minimum_axis_clearance,
         float("inf") if maximum_endpoint is None else maximum_endpoint,
-        -minimum_distance,
+        (
+            -minimum_distance
+            if minimum_distance is not None
+            else float("-inf")
+        ),
     )
     return PoseEvaluation(
         score=score,
@@ -968,18 +1070,12 @@ def optimize_candidate_subset(
                 "attempted": False,
                 "reason": reason,
             }
-            if reason == "outside_initial_geometry_shortlist":
-                updated_metadata["preflight_failures"] = [
-                    *(
-                        str(value)
-                        for value in metadata.get("preflight_failures", ())
-                    ),
-                    (
-                        "candidate was not in the deterministic CPU pose "
-                        "optimization shortlist and is therefore not "
-                        "eligible for automatic selection"
-                    ),
-                ]
+            # The optimization shortlist is a compute/quality preference,
+            # not a scientific hard constraint.  A candidate outside it may
+            # already satisfy every fully expanded compiler contract and can
+            # still provide a strict-replay fallback when a better-ranked
+            # optimized state fails later adapter checks.  Only genuine
+            # topology/ownership preflight failures remain disqualifying.
             output.append((candidate_id, design, updated_metadata))
             continue
         result = optimize_design_poses(
@@ -1007,7 +1103,7 @@ def optimize_candidate_subset(
                     "failed_required_interfaces="
                     f"{len(final.failed_required_interfaces)}, "
                     f"infeasible_links={len(final.infeasible_links)}, "
-                    "blocked_linker_corridors="
+                    "straight_chord_obstructions(ranking_only)="
                     f"{len(final.blocked_linker_corridors)}, "
                     "required_objective_failures="
                     f"{final.required_objective_failures}"

@@ -599,6 +599,19 @@ class FiniteOrbitActionSpec(StrictModel):
         TransformIdentifier,
         TransformIdentifier,
     ]
+    stabilizer_path_transform_ids: dict[
+        Identifier,
+        TransformIdentifier,
+    ] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description=(
+            "Optional compiler-frozen assignment from generated scaffold "
+            "path IDs to transforms inside the component stabilizer. This "
+            "is used when a complete stabilized oligomer is already "
+            "materialized as one preexpanded RFD3 ASU."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_identifiers(self) -> "FiniteOrbitActionSpec":
@@ -615,6 +628,23 @@ class FiniteOrbitActionSpec(StrictModel):
             raise ValueError(
                 "Transform-to-coset map references unknown representatives: "
                 f"{sorted(unknown_values)}"
+            )
+        unknown_path_transforms = set(
+            self.stabilizer_path_transform_ids.values()
+        ) - set(stabilizer)
+        if unknown_path_transforms:
+            raise ValueError(
+                "Stabilizer path assignments reference transforms outside "
+                f"the declared stabilizer: {sorted(unknown_path_transforms)}"
+            )
+        if (
+            self.stabilizer_path_transform_ids
+            and len(representatives) != 1
+        ):
+            raise ValueError(
+                "Stabilizer path assignments currently require a single "
+                "physical quotient representative (a complete G/G "
+                "stabilized ASU)"
             )
         return self
 

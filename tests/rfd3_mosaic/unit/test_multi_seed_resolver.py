@@ -4,12 +4,25 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from rfd3_mosaic.schema import SimpleCageIntentSpec, UserDesignSpec
+import numpy as np
+
+from rfd3_mosaic.compile import expand_symmetry_instances
+from rfd3_mosaic.design_compiler import lower_user_design
+from rfd3_mosaic.geometry import build_transform_registry
+from rfd3_mosaic.schema import (
+    SimpleCageIntentSpec,
+    UserDesignSpec,
+    UserDesignTask,
+)
 from rfd3_mosaic.simple_architecture import symmetry_group_action_count
 from rfd3_mosaic.simple_resolver import (
     enumerate_simple_design_candidates,
     resolve_simple_intent,
 )
+from rfd3_mosaic.topology.component_incidence import (
+    enumerate_binary_interface_incidence_plans,
+)
+from rfd3_mosaic.topology.symmetry_connectivity import finite_symmetry_spec
 
 
 def _atom_line(
@@ -74,6 +87,55 @@ def _write_two_seed_structure(
                     )
                 )
                 serial += 1
+    path.write_text("".join(lines) + "END\n", encoding="utf-8")
+
+
+def _write_t_c2_c3_interface_seed(path: Path) -> None:
+    plan = next(
+        item
+        for item in enumerate_binary_interface_incidence_plans(
+            symmetry="T",
+            interface_id="natural_interface",
+            left_participant="c2",
+            right_participant="c3",
+        )
+        if (item.left.valency, item.right.valency) == (2, 3)
+    )
+    registry = build_transform_registry(finite_symmetry_spec("T"))
+    lines: list[str] = []
+    serial = 1
+    for chains, stabilizer_ids in (
+        (("A", "B"), plan.left.action.stabilizer_transform_ids),
+        (("C", "D", "E"), plan.right.action.stabilizer_transform_ids),
+    ):
+        for chain, transform_id in zip(chains, stabilizer_ids, strict=True):
+            transform = registry.transform(transform_id)
+            for residue in range(1, 7):
+                base = np.asarray(
+                    (18.0 + 0.3 * residue, 7.0, 1.4 * residue),
+                    dtype=np.float64,
+                )
+                for atom_name, offset in (
+                    ("N", (-0.45, 0.0, -0.35)),
+                    ("CA", (0.0, 0.0, 0.0)),
+                    ("C", (0.45, 0.0, 0.35)),
+                    ("O", (0.70, 0.0, 0.55)),
+                ):
+                    coordinate = base + np.asarray(offset)
+                    coordinate = (
+                        coordinate @ transform[:3, :3].T
+                        + transform[:3, 3]
+                    )
+                    lines.append(
+                        _atom_line(
+                            serial,
+                            atom_name,
+                            chain,
+                            residue,
+                            *coordinate,
+                        )
+                    )
+                    serial += 1
     path.write_text("".join(lines) + "END\n", encoding="utf-8")
 
 
@@ -153,6 +215,22 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
             seed_start=9400,
         )
 
+        self.assertTrue(first)
+        for candidate in first:
+            metadata = candidate.metadata()
+            self.assertEqual(
+                set(metadata["supplied_interface_ids"]),
+                {"interface_alpha", "interface_beta"},
+            )
+            self.assertEqual(metadata["invented_interface_count"], 0)
+            self.assertEqual(
+                {
+                    interface.hyperedge_id
+                    for interface in candidate.design.interfaces
+                },
+                {"interface_alpha", "interface_beta"},
+            )
+
         # 2 pure path covers x 2 chemical directions x 2 possible closing
         # seams x 2 C3 winding directions.
         self.assertEqual(len(first), 16)
@@ -169,6 +247,307 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
             len(first),
         )
 
+    def test_multi_seed_interfaces_preserve_multi_helix_participants(
+        self,
+    ) -> None:
+        payload = self._intent().model_dump(mode="json")
+        for seed in payload["interface_seeds"].values():
+            seed["selectors"] = {
+                participant: (
+                    f"{participant}/1-2/*,{participant}/3-4/*"
+                )
+                for participant in seed["participants"]
+            }
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("C3",),
+            seed_start=9400,
+        )
+
+        self.assertTrue(candidates)
+        candidate = candidates[0]
+        self.assertEqual(len(candidate.design.components), 2)
+        self.assertTrue(
+            all(
+                len(component.selectors) == 4
+                for component in candidate.design.components.values()
+            )
+        )
+        self.assertTrue(
+            all(
+                len(port.selectors) == 2
+                for port in candidate.design.ports.values()
+            )
+        )
+        # Four intra-participant helix links plus the two cross-seed links.
+        self.assertEqual(len(candidate.design.connections), 6)
+        self.assertEqual(
+            len({
+                interface.hyperedge_id
+                for interface in candidate.design.interfaces
+            }),
+            2,
+        )
+
+    def test_user_declared_polymer_paths_replace_topology_enumeration(
+        self,
+    ) -> None:
+        payload = self._intent().model_dump(mode="json")
+        payload["polymer_connections"] = [
+            {
+                "id": "unit_one",
+                "from": "interface_alpha.A",
+                "to": "interface_beta.D",
+            },
+            {
+                "id": "unit_two",
+                "from": "interface_beta.C",
+                "to": "interface_alpha.B",
+            },
+        ]
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("C3",),
+            seed_start=9400,
+        )
+
+        # The user fixes the two covalent paths.  Mosaic only assigns which
+        # one carries the C3 seam and its +/- winding; it must not enumerate
+        # alternative participant pairings or reverse the declared chains.
+        self.assertEqual(len(candidates), 4)
+        for candidate in candidates:
+            self.assertEqual(
+                candidate.resolution_frontend,
+                "user_declared_polymer_paths_v1",
+            )
+            self.assertEqual(
+                {
+                    (source, target)
+                    for source, target, _ in candidate.polymer_links
+                },
+                {
+                    (
+                        "interface_alpha:side_0",
+                        "interface_beta:side_1",
+                    ),
+                    (
+                        "interface_beta:side_0",
+                        "interface_alpha:side_1",
+                    ),
+                },
+            )
+            self.assertEqual(candidate.polymer_units_per_copy, 2)
+            self.assertTrue(candidate.topology_search_complete)
+
+    def test_user_declared_paths_must_assign_every_participant(self) -> None:
+        payload = self._intent().model_dump(mode="json")
+        payload["polymer_connections"] = [
+            {
+                "from": "interface_alpha.A",
+                "to": "interface_beta.D",
+            }
+        ]
+        with self.assertRaisesRegex(
+            ValueError,
+            "must assign every supplied interface participant",
+        ):
+            SimpleCageIntentSpec.model_validate(payload)
+
+    def test_three_user_supplied_interfaces_keep_declared_connections(
+        self,
+    ) -> None:
+        structure = self.root / "three_interface_seeds.pdb"
+        _write_two_seed_structure(structure, include_third_seed=True)
+        payload = self._intent(structure=structure).model_dump(mode="json")
+        payload["goal"]["subunits"] = {"minimum": 9, "maximum": 9}
+        payload["interface_seeds"]["interface_gamma"] = {
+            "participants": ["E", "F"],
+            "selectors": {"E": "E/1-4/*", "F": "F/1-4/*"},
+            "use": {"exact": 3},
+            "geometry": "preserve_exact",
+        }
+        payload["polymer_connections"] = [
+            {
+                "from": "interface_alpha.A",
+                "to": "interface_beta.D",
+            },
+            {
+                "from": "interface_beta.C",
+                "to": "interface_gamma.F",
+            },
+            {
+                "from": "interface_gamma.E",
+                "to": "interface_alpha.B",
+            },
+        ]
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("C3",),
+            seed_start=9510,
+        )
+
+        # Three possible C3 seam links x two winding directions. No path
+        # pairing or chemical-direction alternatives are invented.
+        self.assertEqual(len(candidates), 6)
+        expected_links = {
+            ("interface_alpha:side_0", "interface_beta:side_1"),
+            ("interface_beta:side_0", "interface_gamma:side_1"),
+            ("interface_gamma:side_0", "interface_alpha:side_1"),
+        }
+        for candidate in candidates:
+            self.assertEqual(
+                candidate.resolution_frontend,
+                "user_declared_polymer_paths_v1",
+            )
+            self.assertEqual(
+                {
+                    (source, target)
+                    for source, target, _ in candidate.polymer_links
+                },
+                expected_links,
+            )
+            self.assertEqual(candidate.polymer_units_per_copy, 3)
+            self.assertEqual(candidate.physical_polymer_unit_count, 9)
+            self.assertEqual(
+                set(candidate.supplied_interface_ids),
+                {
+                    "interface_alpha",
+                    "interface_beta",
+                    "interface_gamma",
+                },
+            )
+
+    def test_three_supplied_interfaces_form_two_three_face_t_units(
+        self,
+    ) -> None:
+        structure = self.root / "three_interface_seeds.pdb"
+        _write_two_seed_structure(structure, include_third_seed=True)
+        payload = self._intent(structure=structure).model_dump(mode="json")
+        payload["goal"] = {
+            "architecture": "cage",
+            "composition": "auto",
+            "symmetry": ["T"],
+            "subunits": {"minimum": 24, "maximum": 24},
+        }
+        for seed in payload["interface_seeds"].values():
+            seed["use"] = {"exact": 12}
+        payload["interface_seeds"]["interface_gamma"] = {
+            "participants": ["E", "F"],
+            "selectors": {"E": "E/1-4/*", "F": "F/1-4/*"},
+            "use": {"exact": 12},
+            "geometry": "preserve_exact",
+        }
+        # Two user-authoritative three-face protein units.  Mosaic may assign
+        # the independent T generators, but may not alter these paths or
+        # invent another non-covalent interface identity.
+        payload["polymer_connections"] = [
+            {"from": "interface_alpha.A", "to": "interface_beta.D"},
+            {"from": "interface_beta.D", "to": "interface_gamma.E"},
+            {"from": "interface_gamma.F", "to": "interface_beta.C"},
+            {"from": "interface_beta.C", "to": "interface_alpha.B"},
+        ]
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("T",),
+            seed_start=9530,
+        )
+
+        self.assertTrue(candidates)
+        for candidate in candidates:
+            self.assertEqual(candidate.symmetry, "T")
+            self.assertEqual(
+                candidate.resolution_frontend,
+                "user_declared_polymer_paths_v1",
+            )
+            self.assertEqual(candidate.polymer_units_per_copy, 2)
+            self.assertEqual(candidate.physical_polymer_unit_count, 24)
+            self.assertEqual(len(candidate.design.connections), 4)
+            self.assertEqual(
+                set(candidate.supplied_interface_ids),
+                {
+                    "interface_alpha",
+                    "interface_beta",
+                    "interface_gamma",
+                },
+            )
+            self.assertEqual(
+                candidate.metadata()["invented_interface_count"],
+                0,
+            )
+            self.assertEqual(
+                candidate.expanded_topology_status,
+                "valid_interface_unit_graph",
+            )
+
+    def test_one_supplied_t_interface_resolves_c2_c3_component_incidence(
+        self,
+    ) -> None:
+        source = self.root / "t_c2_c3_interface.pdb"
+        _write_t_c2_c3_interface_seed(source)
+        intent = SimpleCageIntentSpec.model_validate({
+            "name": "ordinary-t-c2-c3-interface",
+            "input": source,
+            "goal": {
+                "architecture": "cage",
+                "composition": "auto",
+                "symmetry": ["T"],
+            },
+            "interface_seeds": {
+                "natural_interface": {
+                    "participants": ["c2", "c3"],
+                    "selectors": {
+                        "c2": "A1-2,A5-6,B1-2,B5-6",
+                        "c3": "C1-2,C5-6,D1-2,D5-6,E1-2,E5-6",
+                    },
+                    "use": {"exact": 12},
+                    "geometry": "preserve_exact",
+                }
+            },
+            "generation": {"length": {"minimum": 2, "maximum": 2}},
+        })
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("T",),
+            timesteps=50,
+        )
+
+        self.assertGreaterEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(
+            candidate.resolution_frontend,
+            "supplied_oligomer_interface_incidence_v1",
+        )
+        self.assertEqual(
+            len(
+                candidate.design.components[
+                    "component__c2"
+                ].finite_orbit_action.coset_representative_ids
+            ),
+            6,
+        )
+        self.assertEqual(
+            len(
+                candidate.design.components[
+                    "component__c3"
+                ].finite_orbit_action.coset_representative_ids
+            ),
+            4,
+        )
+        instances = expand_symmetry_instances(
+            lower_user_design(candidate.design).specification
+        )
+        self.assertEqual(len(instances.interfaces), 12)
+        self.assertEqual(len(instances.motion_groups), 10)
+
     def test_two_seed_candidates_use_the_standard_expert_graph(self) -> None:
         candidates = enumerate_simple_design_candidates(
             self._intent(),
@@ -179,6 +558,10 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
             design = candidate.design
             self.assertIsInstance(design, UserDesignSpec)
             self.assertEqual(design.user_mode, "expert")
+            self.assertEqual(
+                design.task,
+                UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY,
+            )
             self.assertEqual(design.symmetry, "C3")
             self.assertEqual(len(design.components), 2)
             self.assertEqual(len(design.ports), 4)
@@ -201,6 +584,13 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
                 all(
                     component.geometry == "joint_rigid"
                     for component in design.components.values()
+                )
+            )
+            lowered = lower_user_design(design)
+            self.assertTrue(
+                all(
+                    edge.satisfaction_stage == "input"
+                    for edge in lowered.specification.interfaces.values()
                 )
             )
 
@@ -301,8 +691,9 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
             symmetry_ids=("C3",),
         )
 
-        # 8 rotation/reversal-unique path covers x two chemical directions x
-        # three closing seams x two C3 winding directions.
+        # Explicit C3 is a direct-design request: preserve the historical
+        # bounded two-face topology family rather than starting broad
+        # architecture discovery.
         self.assertEqual(len(candidates), 96)
         self.assertTrue(
             all(
@@ -316,6 +707,76 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
                 for candidate in candidates
             )
         )
+
+    def test_three_seeds_resolve_two_three_face_polymer_units(self) -> None:
+        structure = self.root / "three_interface_seeds.pdb"
+        _write_two_seed_structure(structure, include_third_seed=True)
+        payload = self._intent(structure=structure).model_dump(mode="json")
+        payload["goal"]["symmetry"] = "auto"
+        payload["interface_seeds"]["interface_gamma"] = {
+            "participants": ["E", "F"],
+            "selectors": {"E": "E/1-4/*", "F": "F/1-4/*"},
+            "use": "auto",
+            "geometry": "preserve_exact",
+        }
+        intent = SimpleCageIntentSpec.model_validate(payload)
+        relation_plan = ({
+            "label": "test_winding",
+            "relations": (1, 0, 0, 0),
+            "primary_index": 0,
+            "primary_relation": 1,
+        },)
+
+        with patch(
+            "rfd3_mosaic.simple_resolver._connection_relation_plans",
+            return_value=relation_plan,
+        ):
+            candidates = enumerate_simple_design_candidates(
+                intent,
+                symmetry_ids=("C3",),
+                max_candidates=256,
+            )
+
+        self.assertTrue(candidates)
+        multi_face_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.polymer_units_per_copy == 2
+        ]
+        self.assertTrue(multi_face_candidates)
+        for candidate in multi_face_candidates:
+            self.assertEqual(
+                candidate.resolution_frontend,
+                "multi_face_polymer_unit_v1",
+            )
+            self.assertEqual(candidate.polymer_units_per_copy, 2)
+            self.assertEqual(candidate.physical_polymer_unit_count, 6)
+            self.assertEqual(len(candidate.design.connections), 4)
+            self.assertTrue(
+                all(
+                    interface.relation.mode == "preserve_input"
+                    for interface in candidate.design.interfaces
+                )
+            )
+            self.assertTrue(
+                all(
+                    component.geometry == "joint_rigid"
+                    and component.pose.mode == "fixed"
+                    for component in candidate.design.components.values()
+                )
+            )
+            self.assertTrue(
+                all(
+                    connection.from_endpoint.component
+                    != connection.to_endpoint.component
+                    for connection in candidate.design.connections
+                )
+            )
+            self.assertEqual(
+                candidate.expanded_topology_status,
+                "valid_interface_unit_graph",
+            )
+            self.assertFalse(candidate.preflight_failures)
 
     def test_two_three_participant_seeds_lower_as_exact_hyperedges(
         self,
@@ -409,7 +870,7 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
         for candidate in candidates:
             self.assertEqual(len(candidate.design.components), 2)
             self.assertEqual(len(candidate.design.ports), 6)
-            self.assertEqual(len(candidate.design.interfaces), 4)
+            self.assertEqual(len(candidate.design.interfaces), 2)
             self.assertEqual(len(candidate.design.connections), 3)
             self.assertEqual(candidate.polymer_units_per_copy, 3)
             self.assertEqual(
@@ -434,6 +895,22 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
                     component.geometry == "joint_rigid"
                     for component in candidate.design.components.values()
                 )
+            )
+            self.assertTrue(
+                all(
+                    len(interface.between) == 3
+                    and len(interface.contact_pairs) == 2
+                    for interface in candidate.design.interfaces
+                )
+            )
+            lowered = lower_user_design(candidate.design)
+            self.assertEqual(len(lowered.specification.interfaces), 4)
+            self.assertEqual(
+                {
+                    edge.hyperedge_id
+                    for edge in lowered.specification.interfaces.values()
+                },
+                {"interface_alpha", "interface_beta"},
             )
 
     def test_requested_timesteps_are_frozen_into_every_candidate(self) -> None:
@@ -622,6 +1099,12 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
         self.assertEqual(len(selected), 2)
         self.assertTrue(
             all(item["rfd3_adapter_validated"] for item in selected)
+        )
+        self.assertTrue(
+            all(item["rfd3_adapter_prevalidated"] for item in selected)
+        )
+        self.assertTrue(
+            all(item["rfd3_runtime_atom_count"] > 0 for item in selected)
         )
         self.assertTrue(
             all(

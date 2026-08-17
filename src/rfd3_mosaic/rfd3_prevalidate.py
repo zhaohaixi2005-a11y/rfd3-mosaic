@@ -59,6 +59,7 @@ def _audit_runtime_transform_matrices(
     registry_matrices: dict[str, Any],
     declared_order: list[str],
     *,
+    allow_declared_subset: bool = False,
     max_rotation_error_degrees: float = 0.01,
     max_translation_error_angstrom: float = 1e-3,
     max_orthogonality_error: float = 1e-5,
@@ -79,10 +80,15 @@ def _audit_runtime_transform_matrices(
     }
     if not runtime:
         failures.append("runtime contains no symmetry transforms")
-    if len(runtime) != len(registry):
+    if not allow_declared_subset and len(runtime) != len(registry):
         failures.append(
             "runtime and registry transform counts differ: "
             f"{len(runtime)} != {len(registry)}"
+        )
+    if allow_declared_subset and len(runtime) > len(registry):
+        failures.append(
+            "runtime contains more transforms than the declared registry: "
+            f"{len(runtime)} > {len(registry)}"
         )
     if set(declared_order) != set(registry):
         failures.append(
@@ -254,10 +260,23 @@ def _audit_runtime_transform_matrices(
                 f"runtime transform {runtime_id} is {registry_id}, not "
                 f"declared {declared_mapping.get(runtime_id)}"
             )
-    if runtime_ids != list(range(len(runtime_ids))):
+    if not allow_declared_subset and runtime_ids != list(
+        range(len(runtime_ids))
+    ):
         failures.append(
             "runtime transform IDs must be contiguous and begin at zero"
         )
+    if allow_declared_subset:
+        invalid_runtime_ids = [
+            runtime_id
+            for runtime_id in runtime_ids
+            if not 0 <= runtime_id < len(declared_order)
+        ]
+        if invalid_runtime_ids:
+            failures.append(
+                "runtime transform IDs fall outside the declared registry: "
+                f"{invalid_runtime_ids}"
+            )
     if "0" in actual_mapping and declared_order:
         if actual_mapping["0"] != declared_order[0]:
             failures.append(
@@ -307,8 +326,18 @@ def _audit_runtime_transform_matrices(
         "passed": not failures,
         "runtime_source": "AddSymmetryFeats.forward",
         "registry_source": "extra.registry_transform_matrices",
+        "coverage_contract": (
+            "declared_registry_subset"
+            if allow_declared_subset
+            else "complete_declared_registry"
+        ),
         "runtime_transform_count": len(runtime),
         "registry_transform_count": len(registry),
+        "missing_registry_transform_ids": [
+            transform_id
+            for index, transform_id in enumerate(declared_order)
+            if index not in runtime
+        ],
         "runtime_to_registry": actual_mapping,
         "declared_runtime_to_registry": declared_mapping,
         "per_transform": per_transform,
@@ -540,26 +569,61 @@ def _expected_multiplicity(symmetry_id: str) -> int:
 def _validate_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     expected = report["expected_multiplicity"]
-    expected_asu_chains = report.get("expected_asu_chain_count", 1)
-    expected_chain_count = expected * expected_asu_chains
+    preexpanded_layout = report.get("preexpanded_chain_layout")
+    if isinstance(preexpanded_layout, list):
+        expected_chain_count = len(preexpanded_layout)
+    else:
+        expected_asu_chains = report.get("expected_asu_chain_count", 1)
+        expected_chain_count = expected * expected_asu_chains
     if report["chain_count"] != expected_chain_count:
         failures.append(
             f"expected {expected_chain_count} chains, observed "
             f"{report['chain_count']}"
         )
-    if report["symmetry_transform_ids"] != list(range(expected)):
-        failures.append(
-            "symmetry transform IDs do not cover every native copy"
+    expected_transform_ids = (
+        sorted(
+            {
+                int(record["transform_index"])
+                for record in preexpanded_layout
+            }
         )
-    residue_counts = list(report["residues_per_chain"].values())
-    residue_count_frequencies = Counter(residue_counts)
-    if not residue_counts or any(
-        frequency % expected != 0
-        for frequency in residue_count_frequencies.values()
-    ):
+        if isinstance(preexpanded_layout, list)
+        else list(range(expected))
+    )
+    if report["symmetry_transform_ids"] != expected_transform_ids:
         failures.append(
-            "chain residue counts do not repeat across every symmetry copy"
+            "symmetry transform IDs do not cover every declared physical "
+            "copy"
         )
+    if isinstance(preexpanded_layout, list):
+        chain_ids = report.get("chain_ids") or []
+        if len(chain_ids) == len(preexpanded_layout):
+            counts_by_entity: dict[int, set[int]] = {}
+            for chain_id, record in zip(
+                chain_ids,
+                preexpanded_layout,
+                strict=True,
+            ):
+                counts_by_entity.setdefault(
+                    int(record["entity_id"]),
+                    set(),
+                ).add(int(report["residues_per_chain"][chain_id]))
+            if any(len(counts) != 1 for counts in counts_by_entity.values()):
+                failures.append(
+                    "chain residue counts differ within a preexpanded "
+                    "symmetry entity"
+                )
+    else:
+        residue_counts = list(report["residues_per_chain"].values())
+        residue_count_frequencies = Counter(residue_counts)
+        if not residue_counts or any(
+            frequency % expected != 0
+            for frequency in residue_count_frequencies.values()
+        ):
+            failures.append(
+                "chain residue counts do not repeat across every symmetry "
+                "copy"
+            )
     if report["motif_atom_count"] <= 0:
         failures.append("RFD3 did not recognize any motif atoms")
     if report["fixed_coordinate_atom_count"] <= 0:
@@ -611,10 +675,20 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
             "symmetry_transform_matrix_audit"
         )
         if not transform_audit or not transform_audit.get("passed"):
-            failures.append(
+            message = (
                 "runtime symmetry matrices do not match the declared "
                 "Mosaic registry"
             )
+            audit_failures = (
+                transform_audit.get("failures", ())
+                if transform_audit
+                else ()
+            )
+            if audit_failures:
+                message += ": " + "; ".join(
+                    str(failure) for failure in audit_failures
+                )
+            failures.append(message)
         target_audit = report.get("fixed_target_symmetry_audit")
         if not target_audit or not target_audit.get("passed"):
             failures.append(
@@ -670,7 +744,12 @@ def prevalidate_rfd3_input(
     design = DesignInputSpecification.safe_init(**raw_spec)
     atom_array, metadata = design.build(return_metadata=True)
 
-    chain_ids = sorted(str(value) for value in np.unique(atom_array.chain_id))
+    # The adapter records preexpanded chain layouts in structure order.
+    # Preserve first occurrence rather than lexicographically sorting labels:
+    # with more than 26 chains, AA must follow Z rather than precede B.
+    chain_ids = list(
+        dict.fromkeys(str(value) for value in atom_array.chain_id)
+    )
     residues_per_chain: dict[str, int] = {}
     atoms_per_chain: dict[str, int] = {}
     for chain_id in chain_ids:
@@ -734,6 +813,9 @@ def prevalidate_rfd3_input(
         runtime_matrices,
         registry_matrices,
         declared_order,
+        allow_declared_subset=bool(
+            extra.get("preexpanded_chain_layout")
+        ),
     )
     if compiler.startswith("rfd3_mosaic."):
         fixed_target_audit = _audit_fixed_target_projection(
@@ -780,6 +862,9 @@ def prevalidate_rfd3_input(
         "symmetry_action_kind": extra.get(
             "symmetry_action_kind",
             "regular_full_group",
+        ),
+        "preexpanded_chain_layout": extra.get(
+            "preexpanded_chain_layout"
         ),
         "expected_asu_chain_count": int(extra.get("asu_chain_count", 1)),
         "atom_count": int(len(atom_array)),

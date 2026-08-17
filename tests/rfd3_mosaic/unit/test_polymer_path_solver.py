@@ -5,6 +5,7 @@ from rfd3_mosaic.topology.polymer_path_solver import (
     InterfaceHyperedgeSeed,
     enumerate_directed_polymer_path_covers,
     enumerate_polymer_hyperedge_covers,
+    enumerate_polymer_unit_path_covers,
 )
 
 
@@ -20,6 +21,82 @@ def _seeds(count: int):
 
 
 class DirectedPolymerPathCoverTestCase(unittest.TestCase):
+    def test_three_binary_interfaces_form_two_three_face_units(self) -> None:
+        seeds = tuple(
+            InterfaceHyperedgeSeed(
+                seed_id=f"interface_{index}",
+                side_ids=(
+                    f"interface_{index}:left",
+                    f"interface_{index}:right",
+                ),
+            )
+            for index in range(3)
+        )
+
+        hypotheses = enumerate_polymer_unit_path_covers(
+            seeds,
+            minimum_faces_per_unit=3,
+            maximum_faces_per_unit=3,
+        )
+
+        self.assertTrue(hypotheses)
+        expected_sides = {
+            side_id for seed in seeds for side_id in seed.side_ids
+        }
+        owner = {
+            side_id: seed.seed_id
+            for seed in seeds
+            for side_id in seed.side_ids
+        }
+        for hypothesis in hypotheses:
+            self.assertEqual(hypothesis.unit_count, 2)
+            self.assertEqual(len(hypothesis.ordered_paths), 2)
+            self.assertEqual(len(hypothesis.ordered_links), 4)
+            flattened = [
+                side_id
+                for path in hypothesis.ordered_paths
+                for side_id in path
+            ]
+            self.assertEqual(set(flattened), expected_sides)
+            self.assertEqual(len(flattened), len(set(flattened)))
+            for path in hypothesis.ordered_paths:
+                self.assertEqual(len(path), 3)
+                self.assertEqual(len({owner[side] for side in path}), 3)
+
+    def test_multi_face_path_cover_is_input_order_independent(self) -> None:
+        seeds = tuple(
+            InterfaceHyperedgeSeed(
+                seed_id=f"interface_{index}",
+                side_ids=(f"{index}:a", f"{index}:b"),
+            )
+            for index in range(4)
+        )
+
+        forward = enumerate_polymer_unit_path_covers(
+            seeds,
+            minimum_faces_per_unit=4,
+            maximum_faces_per_unit=4,
+        )
+        reverse = enumerate_polymer_unit_path_covers(
+            reversed(seeds),
+            minimum_faces_per_unit=4,
+            maximum_faces_per_unit=4,
+        )
+
+        self.assertEqual(forward, reverse)
+
+    def test_multi_face_path_cover_rejects_impossible_valency(self) -> None:
+        seeds = (
+            InterfaceHyperedgeSeed("alpha", ("a", "b", "c")),
+            InterfaceHyperedgeSeed("beta", ("d", "e")),
+        )
+        with self.assertRaisesRegex(ValueError, "No polymer-unit count"):
+            enumerate_polymer_unit_path_covers(
+                seeds,
+                minimum_faces_per_unit=3,
+                maximum_faces_per_unit=3,
+            )
+
     def test_two_three_participant_interfaces_have_complete_matchings(
         self,
     ) -> None:

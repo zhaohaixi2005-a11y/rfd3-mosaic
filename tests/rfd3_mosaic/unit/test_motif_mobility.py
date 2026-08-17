@@ -859,6 +859,70 @@ class MotifMobilityTestCase(unittest.TestCase):
                 torch.allclose(canonical, master, atol=1e-6)
             )
 
+    def test_joint_scaffold_acceptance_includes_additional_pose_energy(
+        self,
+    ) -> None:
+        (
+            _,
+            target,
+            _,
+            controller,
+            scaffold,
+            topology,
+            axis,
+            config,
+        ) = self._scaffold_guidance_case()
+        baseline = target[0].clone()
+
+        def packing_energy(candidate_target):
+            # Strongly prefer positive master-copy x translation.  A C3-wide
+            # center would cancel by symmetry, so use one corresponding
+            # master atom exactly as a real per-interface objective does.
+            return -100.0 * candidate_target[0, 0]
+
+        def scaffold_only_joint_energy(
+            candidate_target,
+            _scaffold_coordinates,
+            **_kwargs,
+        ):
+            # Any pose change is slightly worse under the scaffold-only
+            # objective.  The combined packing improvement must nevertheless
+            # be allowed to win the joint acceptance decision.
+            penalty = torch.mean(torch.square(candidate_target - baseline))
+            return penalty, {
+                "total": float(penalty.detach().cpu().item())
+            }
+
+        with patch.object(
+            controller,
+            "_joint_scaffold_energy",
+            side_effect=scaffold_only_joint_energy,
+        ):
+            observed = controller.update_orbits_from_scaffold(
+                scaffold,
+                progress=0.5,
+                topology=topology,
+                axis=axis,
+                principal_axes=(axis.direction,),
+                config=config,
+                apply_update=True,
+                pose_energy=packing_energy,
+            )
+
+        snapshot = controller.diagnostics()["trajectory"][-1]
+        self.assertTrue(snapshot["accepted"])
+        self.assertTrue(snapshot["applied"])
+        self.assertGreater(
+            snapshot["proposed_energy"]["total"],
+            snapshot["initial_energy"]["total"],
+        )
+        self.assertLess(
+            snapshot["additional_pose_energy"]["delta"],
+            0.0,
+        )
+        self.assertLess(snapshot["joint_energy_delta"], 0.0)
+        self.assertFalse(torch.allclose(observed[0], baseline))
+
     def test_controller_materializes_complete_d3_orbit(self) -> None:
         template = torch.tensor(
             [

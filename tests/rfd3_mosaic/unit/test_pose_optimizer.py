@@ -5,6 +5,9 @@ from unittest.mock import patch
 
 from rfd3_mosaic.pose_optimizer import (
     PoseEvaluation,
+    _evaluation_from_manifest,
+    initialize_global_seed_layout,
+    optimize_candidate_subset,
     optimize_design_poses,
 )
 from rfd3_mosaic.schema import UserDesignSpec
@@ -219,6 +222,203 @@ class ContinuousPoseOptimizerTestCase(unittest.TestCase):
 
         self.assertTrue(result.final_evaluation.feasible)
         self.assertEqual(result.accepted_update_count, 0)
+
+    def test_flexible_linker_chord_obstruction_is_a_soft_routing_signal(
+        self,
+    ) -> None:
+        manifest = {
+            "validation": {
+                "inter_group_clashes": {
+                    "total_hard_clashes": 0,
+                    "minimum_inter_group_distance": 6.4,
+                },
+                "interfaces": {
+                    "failed_required_edge_instances": [],
+                },
+                "scaffold_link_geometry": {
+                    "infeasible_link_instances": [],
+                    "links": [
+                        {
+                            "link_instance_id": "polymer_link@orbit[0]",
+                            "chain_break": False,
+                            "endpoint_distance": 90.0,
+                            "minimum_required_residues_at_3_8A": 24,
+                            "configured_maximum_length": 45,
+                            "minimum_interior_chord_fixed_atom_clearance": (
+                                1.0
+                            ),
+                            "minimum_endpoint_chord_axis_clearance": 0.5,
+                            "from_terminal_tangent_to_chord_angle_deg": 30.0,
+                            "to_terminal_tangent_to_chord_angle_deg": 40.0,
+                        }
+                    ],
+                },
+                "objectives": {
+                    "required_failure_count": 0,
+                    "total_weighted_penalty": 0.0,
+                },
+            }
+        }
+
+        evaluation = _evaluation_from_manifest(manifest)
+
+        self.assertTrue(evaluation.feasible)
+        self.assertEqual(
+            evaluation.blocked_linker_corridors,
+            ("polymer_link@orbit[0]",),
+        )
+        self.assertEqual(evaluation.infeasible_links, ())
+        self.assertEqual(evaluation.score[0], 0.0)
+        self.assertEqual(evaluation.score[6], 1.0)
+
+    def test_single_group_pose_accepts_absent_pair_distance(self) -> None:
+        evaluation = _evaluation_from_manifest(
+            {
+                "validation": {
+                    "inter_group_clashes": {
+                        "total_hard_clashes": 0,
+                        "minimum_inter_group_distance": None,
+                    },
+                    "interfaces": {
+                        "failed_required_edge_instances": [],
+                    },
+                    "scaffold_link_geometry": {
+                        "infeasible_link_instances": [],
+                        "links": [],
+                    },
+                    "objectives": {
+                        "required_failure_count": 0,
+                        "total_weighted_penalty": 0.0,
+                    },
+                }
+            }
+        )
+
+        self.assertTrue(evaluation.feasible)
+        self.assertIsNone(evaluation.minimum_inter_group_distance)
+
+    def test_insufficient_linker_contour_remains_a_hard_failure(self) -> None:
+        manifest = {
+            "validation": {
+                "inter_group_clashes": {
+                    "total_hard_clashes": 0,
+                    "minimum_inter_group_distance": 6.4,
+                },
+                "interfaces": {
+                    "failed_required_edge_instances": [],
+                },
+                "scaffold_link_geometry": {
+                    "infeasible_link_instances": [
+                        "polymer_link@orbit[0]"
+                    ],
+                    "links": [
+                        {
+                            "link_instance_id": "polymer_link@orbit[0]",
+                            "chain_break": False,
+                            "endpoint_distance": 190.0,
+                            "minimum_required_residues_at_3_8A": 50,
+                            "configured_maximum_length": 45,
+                            "minimum_interior_chord_fixed_atom_clearance": (
+                                3.0
+                            ),
+                        }
+                    ],
+                },
+                "objectives": {
+                    "required_failure_count": 0,
+                    "total_weighted_penalty": 0.0,
+                },
+            }
+        }
+
+        evaluation = _evaluation_from_manifest(manifest)
+
+        self.assertFalse(evaluation.feasible)
+        self.assertEqual(
+            evaluation.infeasible_links,
+            ("polymer_link@orbit[0]",),
+        )
+        self.assertEqual(evaluation.linker_contour_excess, 5.0)
+
+    def test_global_initializer_supports_dihedral_primary_axis(self) -> None:
+        dihedral = self.design.model_copy(update={"symmetry": "D3"})
+
+        initialized = initialize_global_seed_layout(
+            dihedral,
+            sample_index=2,
+            sample_count=8,
+        )
+
+        self.assertEqual(set(initialized.sampling.initial_poses), {
+            "alpha",
+            "beta",
+        })
+        self.assertEqual(initialized.symmetry, "D3")
+        self.assertNotEqual(
+            initialized.sampling.initial_poses["alpha"].radial_direction,
+            initialized.sampling.initial_poses["beta"].radial_direction,
+        )
+
+    def test_global_initializer_supports_full_polyhedral_orbits(self) -> None:
+        tetrahedral = self.design.model_copy(update={"symmetry": "T"})
+
+        initialized = initialize_global_seed_layout(
+            tetrahedral,
+            sample_index=3,
+            sample_count=8,
+        )
+
+        self.assertEqual(set(initialized.sampling.initial_poses), {
+            "alpha",
+            "beta",
+        })
+        poses = initialized.sampling.initial_poses
+        self.assertNotEqual(
+            poses["alpha"].radial_direction,
+            poses["beta"].radial_direction,
+        )
+        self.assertNotEqual(
+            poses["alpha"].axial_offset.minimum,
+            poses["beta"].axial_offset.minimum,
+        )
+        self.assertTrue(
+            all(pose.radius.minimum > 0.0 for pose in poses.values())
+        )
+
+    def test_optimization_shortlist_is_not_a_hard_rejection_filter(
+        self,
+    ) -> None:
+        initialized = initialize_global_seed_layout(
+            self.design,
+            sample_index=0,
+            sample_count=1,
+        )
+
+        def evaluate(design: UserDesignSpec) -> PoseEvaluation:
+            radius = design.sampling.initial_poses["alpha"].radius.minimum
+            return _evaluation(radius, radius)
+
+        with patch(
+            "rfd3_mosaic.pose_optimizer.evaluate_design_pose",
+            side_effect=evaluate,
+        ):
+            output = optimize_candidate_subset(
+                (
+                    ("candidate_a", initialized, {}),
+                    ("candidate_b", initialized, {}),
+                ),
+                top_count=1,
+                levels=1,
+                maximum_translation=4.0,
+                maximum_rotation_deg=10.0,
+            )
+
+        outside = output[1][2]
+        self.assertEqual(
+            outside["pose_optimization"]["reason"],
+            "outside_initial_geometry_shortlist",
+        )
+        self.assertNotIn("preflight_failures", outside)
 
 
 if __name__ == "__main__":

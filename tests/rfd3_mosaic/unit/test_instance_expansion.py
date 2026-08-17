@@ -11,6 +11,9 @@ from rfd3_mosaic.schema import InterfaceSeedSpec
 from rfd3_mosaic.topology.stabilizer_cosets import (
     stabilizer_coset_hypotheses,
 )
+from rfd3_mosaic.topology.component_incidence import (
+    enumerate_binary_interface_incidence_plans,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -278,6 +281,97 @@ class InstanceExpansionTestCase(unittest.TestCase):
             for source_copy_index in range(6)
         )
         self.assertEqual(observed_target_indices, expected_target_indices)
+
+    def test_t_c2_c3_component_orbits_expand_one_free_interface_orbit(
+        self,
+    ) -> None:
+        payload = load_interface_seed_config(LHD101_CONFIG).model_dump(
+            mode="python"
+        )
+        payload["symmetry"]["transform_sets"]["ring_c3"] = {
+            "type": "tetrahedral",
+            "order": 12,
+        }
+        plans = enumerate_binary_interface_incidence_plans(
+            symmetry="T",
+            interface_id="ring_interface",
+            left_participant="left",
+            right_participant="right",
+        )
+        plan = next(
+            item
+            for item in plans
+            if (item.left.valency, item.right.valency) == (2, 3)
+        )
+        def action_payload(participant_plan):
+            action = participant_plan.action
+            return {
+                "coset_representative_ids": (
+                    action.coset_representative_ids
+                ),
+                "stabilizer_transform_ids": (
+                    action.stabilizer_transform_ids
+                ),
+                "transform_to_coset_representative": dict(
+                    action.transform_to_coset_representative
+                ),
+            }
+        payload["motion_groups"] = {
+            "left_group": {"members": ["left"], "mode": "fixed"},
+            "right_group": {"members": ["right"], "mode": "fixed"},
+        }
+        payload["symmetry"]["orbits"] = {
+            "left_c2_orbit": {
+                "transform_set": "ring_c3",
+                "master_groups": ["left_group"],
+                "finite_action": action_payload(plan.left),
+            },
+            "right_c3_orbit": {
+                "transform_set": "ring_c3",
+                "master_groups": ["right_group"],
+                "finite_action": action_payload(plan.right),
+            },
+        }
+        payload["ports"]["left_port"]["group"] = "left_group"
+        payload["ports"]["right_port"]["group"] = "right_group"
+        payload["interfaces"]["ring_interface"]["copy_relation"] = {
+            "orbit_offset": 0,
+        }
+        payload["scaffold_links"] = {}
+        payload["generated_segments"] = {}
+        # The LHD101 fixture initializes its historical primary_seed group;
+        # this mixed-orbit test replaces the motion-group graph entirely.
+        payload["initialization"] = {}
+        spec = InterfaceSeedSpec.model_validate(payload)
+
+        instances = expand_symmetry_instances(spec)
+
+        self.assertEqual(len(instances.motion_groups), 10)
+        self.assertEqual(
+            len(instances.constraint_orbits["left_c2_orbit"].transform_ids),
+            6,
+        )
+        self.assertEqual(
+            len(instances.constraint_orbits["right_c3_orbit"].transform_ids),
+            4,
+        )
+        self.assertEqual(len(instances.interfaces), 12)
+        pairs = {
+            (
+                edge.left_port_instance_id,
+                edge.right_port_instance_id,
+            )
+            for edge in instances.interfaces.values()
+        }
+        self.assertEqual(len(pairs), 12)
+        self.assertEqual(
+            {edge.action_transform_id for edge in instances.interfaces.values()},
+            set(
+                dict(
+                    plan.left.action.transform_to_coset_representative
+                )
+            ),
+        )
 
 
 if __name__ == "__main__":

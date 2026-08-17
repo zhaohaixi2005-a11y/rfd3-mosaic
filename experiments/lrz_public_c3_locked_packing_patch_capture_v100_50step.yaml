@@ -1,0 +1,47 @@
+schema_version: 1
+name: public-c3-locked-packing-patch-capture-v100-t50-s948
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+task: create_symmetric_interface
+fixed_arrangement: locked
+preferences:
+  packing: balanced
+  interface_area: large
+  cavity: auto
+  diversity: medium
+  component_motion: locked
+
+# Regression canary for quality-triggered generated-patch capture.  The
+# complete supplied C3 motif arrangement remains immutable; only generated
+# terminal regions may form the new neighbour interface.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 35
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 35
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+
+sampling:
+  timesteps: 50
+  seed: 948
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-c3-packing-patch-capture-canary-8_12

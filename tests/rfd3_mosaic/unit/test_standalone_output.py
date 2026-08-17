@@ -7,7 +7,7 @@ import numpy as np
 import yaml
 
 from rfd3_mosaic.output import compile_standalone
-from rfd3_mosaic.output.standalone import _classify_symmetry_pair
+from rfd3_mosaic.output.standalone import _chain_id, _classify_symmetry_pair
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -34,6 +34,13 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self.assertEqual(self.outputs.atom_count, 1488)
         self.assertEqual(self.outputs.residue_count, 183)
         self.assertEqual(self.outputs.chain_count, 6)
+
+    def test_chain_allocator_exhausts_single_letter_ids_before_aa(self) -> None:
+        self.assertEqual(_chain_id(0), "A")
+        self.assertEqual(_chain_id(25), "Z")
+        self.assertEqual(_chain_id(26), "a")
+        self.assertEqual(_chain_id(51), "z")
+        self.assertEqual(_chain_id(52), "AA")
 
     def test_all_artifacts_are_written(self) -> None:
         self.assertTrue(self.outputs.structure_path.is_file())
@@ -165,7 +172,16 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self.assertTrue(
             report["all_continuous_links_within_maximum_contour"]
         )
+        self.assertTrue(
+            report["all_generated_link_constraints_materializable"]
+        )
         self.assertEqual(len(report["links"]), 3)
+        self.assertEqual(len(report["source_link_bindings"]), 1)
+        source_binding = next(iter(report["source_link_bindings"].values()))
+        self.assertEqual(len(source_binding["physical_instance_ids"]), 3)
+        self.assertTrue(
+            source_binding["automatic_materialization_feasible"]
+        )
         for link in report["links"]:
             self.assertEqual(link["from_anchor"], "C")
             self.assertEqual(link["to_anchor"], "N")

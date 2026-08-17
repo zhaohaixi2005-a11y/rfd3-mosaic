@@ -210,6 +210,113 @@ class SeedLibraryTestCase(unittest.TestCase):
                 )
             )
 
+    def test_independent_seed_participant_preserves_multiple_helices(
+        self,
+    ) -> None:
+        first = self.root / "alpha_multi_helix.pdb"
+        second = self.root / "beta_multi_helix.pdb"
+        _write_seed(first)
+        _write_seed(second)
+        payload = _intent(first, second).model_dump(mode="json")
+        for seed in payload["interface_seeds"].values():
+            seed["selectors"] = {
+                "A": "A/1-2/*,A/3-4/*",
+                "B": "B/1-2/*,B/3-4/*",
+            }
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        materialized = materialize_seed_library(
+            intent,
+            self.root / "multi-helix-library",
+        )
+
+        self.assertTrue(materialized.independent_frames)
+        for seed in materialized.intent.interface_seeds.values():
+            self.assertTrue(
+                all(
+                    len(selector.split(",")) == 2
+                    for selector in seed.selectors.values()
+                )
+            )
+        self.assertEqual(
+            len(read_structure_atoms(
+                materialized.structure_path,
+                mmcif_identifier_namespace="label",
+            )),
+            64,
+        )
+
+    def test_shared_file_can_explicitly_request_unknown_relative_pose(
+        self,
+    ) -> None:
+        shared = self.root / "shared.pdb"
+        _write_seed(shared)
+        payload = _intent(shared, shared).model_dump(mode="json")
+        payload["seed_layout"] = "solve"
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        materialized = materialize_seed_library(
+            intent,
+            self.root / "shared-solve",
+        )
+
+        self.assertTrue(materialized.independent_frames)
+        self.assertEqual(
+            materialized.manifest["relative_seed_pose"],
+            "solve",
+        )
+        self.assertNotEqual(materialized.structure_path, shared)
+        self.assertEqual(
+            len({
+                participant
+                for seed in materialized.intent.interface_seeds.values()
+                for participant in seed.participants
+            }),
+            4,
+        )
+
+    def test_shared_file_auto_preserves_relative_pose(self) -> None:
+        shared = self.root / "shared.pdb"
+        _write_seed(shared)
+
+        materialized = materialize_seed_library(
+            _intent(shared, shared),
+            self.root / "shared-auto",
+        )
+
+        self.assertFalse(materialized.independent_frames)
+        self.assertEqual(
+            materialized.manifest["relative_seed_pose"],
+            "preserved",
+        )
+
+    def test_preserve_input_rejects_separate_coordinate_frames(self) -> None:
+        first = self.root / "alpha.pdb"
+        second = self.root / "beta.pdb"
+        _write_seed(first)
+        _write_seed(second)
+        payload = _intent(first, second).model_dump(mode="json")
+        payload["seed_layout"] = "preserve_input"
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        with self.assertRaisesRegex(ValueError, "one shared input"):
+            materialize_seed_library(
+                intent,
+                self.root / "invalid-preserve",
+            )
+
+    def test_solve_layout_requires_a_relative_multi_seed_problem(self) -> None:
+        first = self.root / "alpha.pdb"
+        _write_seed(first)
+        payload = _intent(first, first).model_dump(mode="json")
+        payload["seed_layout"] = "solve"
+        payload["interface_seeds"] = {
+            "alpha": payload["interface_seeds"]["alpha"]
+        }
+
+        with self.assertRaisesRegex(ValueError, "at least two"):
+            SimpleCageIntentSpec.model_validate(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

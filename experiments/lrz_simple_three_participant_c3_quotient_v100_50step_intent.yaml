@@ -1,0 +1,55 @@
+schema_version: 1
+kind: simple_cage_intent
+name: ordinary-three-participant-c3-quotient-t50-s950
+
+# Real cooperative C3 interface extracted without coordinate changes from
+# PI25_design_backbone.pdb.  A/B/C together are one supplied physical face,
+# not three independently selectable binary interfaces.
+input: ../examples/rfd3_mosaic/inputs/PI25_C3_three_participant_interface_seed.pdb
+seed_layout: preserve_input
+
+goal:
+  architecture: cage
+  composition: auto
+  symmetry: [C3]
+  subunits:
+    minimum: 3
+    maximum: 3
+
+interface_seeds:
+  pi25_cooperative_c3_site:
+    participants: [A, B, C]
+    selectors:
+      # Each participant contributes its two natural contact patches.  Their
+      # source-chain order is authoritative and defines one generated path;
+      # Mosaic must not connect A to B, B to C or C to A covalently.
+      A: A/24-28/*,A/144-150/*
+      B: B/175-179/*,B/295-301/*
+      C: C/326-330/*,C/446-452/*
+    use: {exact: 1}
+    geometry: preserve_exact
+
+generation:
+  # Every source chain has exactly 115 omitted residues between its two fixed
+  # patches.  Three independent generated chains rebuild the three subunits.
+  length: 115
+
+inspection:
+  contact_cutoff: 4.5
+  minimum_atom_contacts: 4
+  minimum_contact_residues_per_side: 2
+
+preferences:
+  component_motion: locked
+  packing: balanced
+  diversity: medium
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "03:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: ordinary-three-participant-c3-quotient-canary-8_12

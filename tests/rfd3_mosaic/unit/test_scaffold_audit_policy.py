@@ -1,6 +1,9 @@
 import unittest
 
-from rfd3_mosaic.rfd3_scaffold_audit import _effective_chain_rg_limit
+from rfd3_mosaic.rfd3_scaffold_audit import (
+    _effective_chain_rg_limit,
+    _evaluate_assembly_shape_contract,
+)
 
 
 class ScaffoldAuditPolicyTestCase(unittest.TestCase):
@@ -39,6 +42,41 @@ class ScaffoldAuditPolicyTestCase(unittest.TestCase):
                         explicit_limit=None,
                         fixed_geometry_floor=value,
                     )
+
+    def test_final_shape_contract_checks_output_morphology(self) -> None:
+        summary = {
+            "assembly_spherical_outer_diameter": 72.0,
+            "assembly_spherical_inner_diameter": 24.0,
+            "assembly_outer_radial_diameter": None,
+            "assembly_central_pore_diameter": None,
+        }
+        shape = {
+            "diameter_angstrom": {"minimum": 70.0, "maximum": 80.0},
+            "cavity_diameter_angstrom": {
+                "minimum": 20.0,
+                "maximum": 30.0,
+            },
+        }
+
+        report = _evaluate_assembly_shape_contract(summary, shape)
+
+        self.assertTrue(report["declared"])
+        self.assertTrue(report["passed"])
+        self.assertEqual(len(report["checks"]), 2)
+
+    def test_missing_required_morphology_fails_closed(self) -> None:
+        report = _evaluate_assembly_shape_contract(
+            {},
+            {
+                "diameter_angstrom": {
+                    "minimum": 70.0,
+                    "maximum": 80.0,
+                }
+            },
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertIsNone(report["checks"][0]["observed"])
 
 
 if __name__ == "__main__":

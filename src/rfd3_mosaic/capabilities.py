@@ -74,7 +74,7 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
     CapabilityRecord(
         id="ordinary_input_inspection",
         title="Ordinary-user input inspection and cage intent",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=True,
         summary=(
             "Split residue-disconnected interface patches in one PDB/mmCIF, "
@@ -85,14 +85,14 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         ),
         dependencies=("public_fixed_xyz",),
         evidence=(
-            "deterministic contact-patch, component-incidence and intent "
-            "replay tests implemented locally; current LRZ suite pending",
+            "LRZ 772-test suite covers contact-patch, multi-fragment "
+            "participant, component-incidence and intent replay contracts",
         ),
     ),
     CapabilityRecord(
         id="ordinary_binary_ring_resolution",
         title="Ordinary binary-interface Cn ring resolution",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=True,
         summary=(
             "Resolve one binary preserve-exact supplied interface into all "
@@ -104,8 +104,8 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "public_assembly_graph",
         ),
         evidence=(
-            "deterministic resolver and fail-closed boundary tests added "
-            "locally; complete LRZ suite and GPU replay still pending",
+            "real two-seed C3 resolutions on 2026-08-12 froze and strictly "
+            "replayed standard public YAML candidates",
         ),
     ),
     CapabilityRecord(
@@ -129,9 +129,9 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
     ),
     CapabilityRecord(
         id="multi_chain_interface_seed_cage",
-        title="Single-input interleaved interface-seed cage assembly",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
-        public_interface=False,
+        title="Interleaved multi-interface-seed cage assembly",
+        maturity=CapabilityMaturity.CPU_VALIDATED,
+        public_interface=True,
         summary=(
             "Preserve any number of two-sided interface identities and "
             "compile protein units carrying arbitrary interface subsets "
@@ -145,11 +145,15 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "multi_orbit_joint_control",
             "graph_pose_search",
         ),
+        evidence=(
+            "three supplied C3 interface identities resolved to replayable "
+            "nine-chain public designs without inventing an interface",
+        ),
     ),
     CapabilityRecord(
         id="multi_seed_polymer_path_cover",
         title="Bounded multi-seed polymer path-cover enumeration",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=False,
         summary=(
             "Enumerate deterministic rotation/reversal-unique alternating "
@@ -160,14 +164,13 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         ),
         dependencies=("ordinary_input_inspection",),
         evidence=(
-            "bounded deterministic enumerator and invariant tests added "
-            "locally; complete LRZ suite pending",
+            "LRZ path-cover, incidence-graph and strict-replay regressions",
         ),
     ),
     CapabilityRecord(
         id="ordinary_prepositioned_multi_seed_cn",
         title="Pre-positioned multi-seed Cn ordinary resolution",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=True,
         summary=(
             "Bind several disjoint binary preserve-exact seeds from one "
@@ -182,14 +185,14 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "public_assembly_graph",
         ),
         evidence=(
-            "implementation and focused tests added locally; complete LRZ "
-            "suite and real multi-seed replay pending",
+            "two- and three-seed C3 resolution manifests accepted and froze "
+            "strictly replayable public designs on LRZ",
         ),
     ),
     CapabilityRecord(
         id="graph_pose_search",
         title="Assembly-graph neighbour and pose search",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=True,
         summary=(
             "Compare requested finite symmetry groups, enumerate interface "
@@ -197,11 +200,15 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "static assemblies and freeze replayable public candidates."
         ),
         dependencies=("public_assembly_graph", "static_pose_sampling"),
+        evidence=(
+            "complete-assembly Cn/Dn/T/O/I initializer, bounded joint pose "
+            "search and frozen replay regressions in the LRZ 772-test suite",
+        ),
     ),
     CapabilityRecord(
         id="graph_interface_guidance",
         title="Symmetry-coupled graph interface guidance",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=True,
         summary=(
             "Guide generated residues on compiler-declared symmetry "
@@ -210,6 +217,49 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "objectives while fixed motif orbits remain authoritative."
         ),
         dependencies=("public_fixed_xyz",),
+        evidence=(
+            "CPU sampler tests cover patch identity, coverage, continuity, "
+            "shape, orientation, clash rollback and final-output gating",
+            "new multi-seed GPU replicate matrix remains pending",
+        ),
+    ),
+    CapabilityRecord(
+        id="joint_packing_mobility",
+        title="Atomic packing-aware component mobility",
+        maturity=CapabilityMaturity.CPU_VALIDATED,
+        public_interface=True,
+        summary=(
+            "Propose generated interface patches and all bounded mobile "
+            "component-orbit SE(3) poses from one state, restore exact "
+            "symmetry and fixed targets, and commit or roll back the whole "
+            "packing transaction atomically."
+        ),
+        dependencies=(
+            "graph_interface_guidance",
+            "bounded_orbit_mobility",
+            "multi_orbit_joint_control",
+        ),
+        evidence=(
+            "LRZ sampler regressions cover radial-axial-rotation and free "
+            "bounded-SE(3) proposals, joint energy acceptance and rollback",
+            "locked/guided 50-step GPU replicate matrix is queued",
+        ),
+    ),
+    CapabilityRecord(
+        id="assembly_shape_contract",
+        title="Assembly diameter and cavity contract",
+        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        public_interface=True,
+        summary=(
+            "Use ordinary diameter/cavity ranges during full-assembly CPU "
+            "pose search and check the same contract against final RFD3 CA "
+            "morphology."
+        ),
+        dependencies=("graph_pose_search",),
+        evidence=(
+            "schema, objective lowering and final-audit regressions added; "
+            "complete LRZ suite pending",
+        ),
     ),
     CapabilityRecord(
         id="static_pose_sampling",
@@ -525,6 +575,10 @@ def required_capabilities_for_design(
         for generation in design.generation
     ):
         require("graph_interface_guidance")
+        if task_optimizes_fixed_components:
+            require("joint_packing_mobility")
+    if design.assembly_shape is not None:
+        require("assembly_shape_contract")
     if (
         design.sampling.initial_pose is not None
         or design.sampling.initial_poses

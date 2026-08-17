@@ -1219,6 +1219,130 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
         self.assertTrue(second["patch_locked"])
         self.assertEqual(second["patch_assignments"]["stable@0"], selected)
 
+    def test_uncaptured_patch_remains_adaptive_after_lock_fraction(self) -> None:
+        left_mask = torch.tensor([True] * 6 + [False] * 6)
+        right_mask = ~left_mask
+        topology = GraphInterfaceTopology(
+            edges=(
+                GraphInterfaceEdge(
+                    edge_id="adaptive@0",
+                    source_interface_id="adaptive",
+                    left_generated_ca_mask=left_mask,
+                    right_generated_ca_mask=right_mask,
+                    left_generated_token_ids=torch.arange(6),
+                    right_generated_token_ids=torch.arange(6, 12),
+                    requested_contact_count=3,
+                    requested_residues_per_side=3,
+                    requested_contiguous_residues_per_side=3,
+                    automatic_quality=False,
+                    contact_cutoff=4.5,
+                    distance_target=None,
+                    distance_tolerance=None,
+                ),
+            ),
+            generated_atom_mask=torch.ones(12, dtype=torch.bool),
+        )
+        features = {
+            "atom_to_token_map": torch.arange(12),
+            "asym_id": torch.tensor([0] * 6 + [1] * 6),
+            "residue_index": torch.tensor(list(range(6)) * 2),
+        }
+        initial = torch.tensor(
+            [[
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 100.0, 0.0],
+                [0.0, 101.0, 0.0],
+                [0.0, 102.0, 0.0],
+                [9.0, 0.0, 0.0],
+                [9.0, 1.0, 0.0],
+                [9.0, 2.0, 0.0],
+                [9.0, 200.0, 0.0],
+                [9.0, 201.0, 0.0],
+                [9.0, 202.0, 0.0],
+            ]]
+        )
+        config = GraphInterfaceGuidanceConfig(
+            orientation_weight=0.0,
+            shape_weight=0.0,
+            backbone_weight=0.0,
+            interface_balance_weight=0.0,
+            patch_exclusivity_weight=0.0,
+            clash_weight=0.0,
+            distance_weight=0.0,
+        )
+        state = GraphInterfacePatchState(assignments={})
+        _, first = apply_graph_interface_guidance(
+            initial,
+            features,
+            topology,
+            progress=0.75,
+            config=config,
+            patch_state=state,
+        )
+        self.assertFalse(state.locked)
+        self.assertEqual(
+            first["patch_assignments"]["adaptive@0"]["left_token_ids"],
+            [0, 1, 2],
+        )
+
+        moved = initial.clone()
+        moved[0, 6:9, 1] = torch.tensor([200.0, 201.0, 202.0])
+        moved[0, 9:12, 1] = torch.tensor([100.0, 101.0, 102.0])
+        _, second = apply_graph_interface_guidance(
+            moved,
+            features,
+            topology,
+            progress=0.75,
+            config=config,
+            patch_state=state,
+        )
+        self.assertFalse(state.locked)
+        self.assertEqual(
+            second["patch_assignments"]["adaptive@0"]["right_token_ids"],
+            [9, 10, 11],
+        )
+
+    def test_patch_locks_only_after_final_quality_capture(self) -> None:
+        topology = self._three_by_three_topology()
+        features = {
+            "atom_to_token_map": torch.arange(6),
+            "asym_id": torch.tensor([0, 0, 0, 1, 1, 1]),
+            "residue_index": torch.tensor([0, 1, 2, 0, 1, 2]),
+        }
+        coordinates = torch.tensor(
+            [[
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [6.0, 0.0, 0.0],
+                [6.0, 1.0, 0.0],
+                [6.0, 2.0, 0.0],
+            ]]
+        )
+        config = GraphInterfaceGuidanceConfig(
+            orientation_weight=0.0,
+            shape_weight=0.0,
+            backbone_weight=0.0,
+            interface_balance_weight=0.0,
+            patch_exclusivity_weight=0.0,
+            clash_weight=0.0,
+            distance_weight=0.0,
+        )
+        state = GraphInterfacePatchState(assignments={})
+        _, diagnostics = apply_graph_interface_guidance(
+            coordinates,
+            features,
+            topology,
+            progress=0.75,
+            config=config,
+            patch_state=state,
+        )
+        self.assertTrue(state.locked)
+        self.assertEqual(state.lock_reason, "quality_capture")
+        self.assertTrue(diagnostics["patch_capture_satisfied"])
+
     def test_patch_se3_rotates_all_atoms_without_deforming_patch(self) -> None:
         atom_to_token = torch.arange(6).repeat_interleave(3)
         ca_indices = torch.arange(6) * 3 + 1
@@ -1492,6 +1616,28 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
         self.assertGreater(
             float(stretched_energy.junction),
             float(regular_energy.junction),
+        )
+
+    def test_chain_order_protects_compiled_junctions_with_numbering_gaps(
+        self,
+    ) -> None:
+        features = self._features()
+        # Compiled fixed and generated contigs can retain disjoint source
+        # numbering even though their CA tokens are consecutive in one chain.
+        features["residue_index"] = torch.tensor(
+            [12, 101, 102, 12, 201, 202]
+        )
+        fixed = torch.tensor([True, False, False, True, False, False])
+
+        topology = build_graph_interface_topology(features, fixed)
+
+        self.assertIsNotNone(topology)
+        self.assertEqual(
+            {
+                tuple(pair)
+                for pair in topology.junction_ca_pairs.tolist()
+            },
+            {(0, 1), (1, 2), (3, 4), (4, 5)},
         )
 
     def test_physical_edges_cannot_reuse_the_same_generated_patch(

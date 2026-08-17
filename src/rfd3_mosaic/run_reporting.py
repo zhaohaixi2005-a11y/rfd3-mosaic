@@ -282,6 +282,9 @@ def _audit_record(path: Path) -> dict[str, Any]:
             "passed": bool(passed),
             "status": payload.get("status"),
             "summary": payload.get("summary"),
+            "assembly_shape_contract": payload.get(
+                "assembly_shape_contract"
+            ),
         }
     )
     return record
@@ -359,6 +362,12 @@ def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
                 context["compiled_input"] = str(source_path)
             symmetry = example.get("symmetry") or {}
             extra = example.get("extra") or {}
+            preferences = extra.get("resolved_design_preferences")
+            if isinstance(preferences, dict):
+                context["resolved_preferences"] = preferences
+            assembly_shape = extra.get("assembly_shape")
+            if isinstance(assembly_shape, dict):
+                context["assembly_shape"] = assembly_shape
             if isinstance(symmetry, dict):
                 context["symmetry"] = symmetry.get("id")
             relations = extra.get("assembly_interface_relations") or []
@@ -582,6 +591,31 @@ def format_status_text(status: dict[str, Any]) -> str:
         compiled_input = design.get("compiled_input")
         if compiled_input and compiled_input != design.get("structure_input"):
             lines.append(f"compiled:   {compiled_input}")
+        preferences = design.get("resolved_preferences") or {}
+        if preferences:
+            lines.append(
+                "preferences: "
+                f"packing={preferences.get('packing', 'unknown')} "
+                f"area={preferences.get('interface_area', 'unknown')} "
+                f"cavity={preferences.get('cavity', 'unknown')} "
+                f"diversity={preferences.get('diversity', 'unknown')} "
+                f"motion={preferences.get('component_motion', 'unknown')}"
+            )
+        assembly_shape = design.get("assembly_shape") or {}
+        if assembly_shape:
+            requested = []
+            for label, key in (
+                ("outer", "diameter_angstrom"),
+                ("cavity", "cavity_diameter_angstrom"),
+            ):
+                bounds = assembly_shape.get(key)
+                if isinstance(bounds, dict):
+                    requested.append(
+                        f"{label}={bounds.get('minimum')}.."
+                        f"{bounds.get('maximum')} A"
+                    )
+            if requested:
+                lines.append("shape:       " + ", ".join(requested))
         source_inputs = design.get("source_inputs") or []
         if len(source_inputs) > 1:
             for index, item in enumerate(source_inputs, start=1):
@@ -617,6 +651,17 @@ def format_status_text(status: dict[str, Any]) -> str:
                     f"shape={metrics.get('shape', 'NA')} "
                     f"min_edge={metrics.get('minimum_edge_distance', 'NA')}"
                 )
+        if audit["name"] == "scaffold_validity_audit.json":
+            shape_contract = audit.get("assembly_shape_contract") or {}
+            if shape_contract.get("declared"):
+                for check in shape_contract.get("checks") or []:
+                    lines.append(
+                        "         shape "
+                        f"{check.get('field')}="
+                        f"{check.get('observed', 'NA')} A "
+                        f"requested={check.get('requested_minimum')}.."
+                        f"{check.get('requested_maximum')} A"
+                    )
     structures = status["artifacts"]["structures"]
     lines.append(f"structures:  {len(structures)}")
     for path in structures:

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+from biotite.structure import AtomArray
 
+from rfd3.inference.parsing import InputSelection
 from rfd3_mosaic.design_compiler import lower_user_design
 from rfd3_mosaic.output import compile_rfd3_input
 from rfd3_mosaic.rfd3_prevalidate import (
@@ -27,6 +29,20 @@ LHD101_CONFIG = (
 
 
 class RFD3PrevalidationLogicTestCase(unittest.TestCase):
+    def test_empty_selection_accepts_extended_mmcif_chain_ids(self) -> None:
+        atoms = AtomArray(2)
+        atoms.chain_id = np.asarray(["AA", "AA"])
+        atoms.res_id = np.asarray([1, 1])
+        atoms.res_name = np.asarray(["ALA", "ALA"])
+        atoms.atom_name = np.asarray(["N", "CA"])
+
+        selection = InputSelection.from_any(False, atoms)
+
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.data, {})
+        self.assertEqual(selection.tokens, {})
+        self.assertFalse(selection.mask.any())
+
     def test_cross_copy_multi_seed_path_builds_runtime_constraint_groups(
         self,
     ) -> None:
@@ -382,6 +398,72 @@ class RFD3PrevalidationLogicTestCase(unittest.TestCase):
         self.assertTrue(
             any(
                 "runtime transform 1" in failure
+                for failure in audit["failures"]
+            )
+        )
+
+    def test_transform_audit_accepts_sparse_declared_registry_subset(
+        self,
+    ) -> None:
+        registry = {
+            "C4:e": self._z_transform(0.0),
+            "C4:r1": self._z_transform(90.0),
+            "C4:r2": self._z_transform(180.0),
+            "C4:r3": self._z_transform(270.0),
+        }
+        runtime = {
+            0: registry["C4:e"],
+            2: registry["C4:r2"],
+        }
+
+        strict = _audit_runtime_transform_matrices(
+            runtime,
+            registry,
+            ["C4:e", "C4:r1", "C4:r2", "C4:r3"],
+        )
+        quotient = _audit_runtime_transform_matrices(
+            runtime,
+            registry,
+            ["C4:e", "C4:r1", "C4:r2", "C4:r3"],
+            allow_declared_subset=True,
+        )
+
+        self.assertFalse(strict["passed"])
+        self.assertTrue(quotient["passed"])
+        self.assertEqual(
+            quotient["runtime_to_registry"],
+            {"0": "C4:e", "2": "C4:r2"},
+        )
+        self.assertEqual(
+            quotient["missing_registry_transform_ids"],
+            ["C4:r1", "C4:r3"],
+        )
+        self.assertEqual(
+            quotient["coverage_contract"],
+            "declared_registry_subset",
+        )
+
+    def test_transform_audit_rejects_subset_id_outside_registry(
+        self,
+    ) -> None:
+        identity = np.eye(4)
+
+        audit = _audit_runtime_transform_matrices(
+            {0: identity, 4: identity},
+            {
+                "C4:e": identity,
+                "C4:r1": self._z_transform(90.0),
+                "C4:r2": self._z_transform(180.0),
+                "C4:r3": self._z_transform(270.0),
+            },
+            ["C4:e", "C4:r1", "C4:r2", "C4:r3"],
+            allow_declared_subset=True,
+        )
+
+        self.assertFalse(audit["passed"])
+        self.assertTrue(
+            any(
+                "outside the declared registry" in failure
                 for failure in audit["failures"]
             )
         )

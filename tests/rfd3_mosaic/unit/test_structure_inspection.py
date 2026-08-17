@@ -269,6 +269,22 @@ class StructureInspectionTestCase(unittest.TestCase):
             "directed scaffold connection order",
             plan_payload["blocking_unresolved_variables"],
         )
+        tetrahedral_incidence = [
+            item
+            for item in plan_payload["component_incidence_hypotheses"]
+            if item["symmetry"] == "T"
+            and item["left_valency"] == 2
+            and item["right_valency"] == 3
+        ]
+        self.assertTrue(tetrahedral_incidence)
+        self.assertEqual(
+            (
+                tetrahedral_incidence[0]["left_component_count"],
+                tetrahedral_incidence[0]["right_component_count"],
+                tetrahedral_incidence[0]["physical_interface_count"],
+            ),
+            (6, 4, 12),
+        )
 
     def test_interface_use_resolves_exact_stabilizer_coset_orbits(self) -> None:
         inspection = inspect_structure_interfaces(self.structure)
@@ -340,6 +356,27 @@ class StructureInspectionTestCase(unittest.TestCase):
 
         self.assertFalse(disconnected.contact_graph_connected)
         self.assertEqual(disconnected.active_contact_pairs, (("A", "B"),))
+
+    def test_declared_oligomer_participants_aggregate_multiple_chains(
+        self,
+    ) -> None:
+        evidence = inspect_declared_interface_relation(
+            self.structure,
+            interface_id="oligomer_interface",
+            participants=("alpha_oligomer", "beta_oligomer"),
+            selectors={
+                "alpha_oligomer": "A1-2,C1-2",
+                "beta_oligomer": "B1-2",
+            },
+            minimum_atom_contacts=4,
+            minimum_contact_residues_per_side=2,
+        )
+
+        self.assertTrue(evidence.contact_graph_connected)
+        self.assertEqual(
+            evidence.active_contact_pairs,
+            (("alpha_oligomer", "beta_oligomer"),),
+        )
 
 
 if __name__ == "__main__":

@@ -111,7 +111,25 @@ def build_static_metric_map(
         metrics["cavities.minimum_central_void_radius"] = min(
             float(orbit["central_void_radius"]) for orbit in orbits
         )
+        metrics["cavities.minimum_central_void_diameter"] = 2.0 * min(
+            float(orbit["central_void_radius"]) for orbit in orbits
+        )
         metrics["cavities.minimum_axis_clearance"] = min(
             float(orbit["minimum_axis_clearance"]) for orbit in orbits
+        )
+        metrics["cavities.minimum_axis_clearance_diameter"] = 2.0 * min(
+            float(orbit["minimum_axis_clearance"]) for orbit in orbits
+        )
+        metrics["assemblies.outer_diameter"] = 2.0 * max(
+            float(
+                orbit.get(
+                    "maximum_center_extent",
+                    orbit.get(
+                        "maximum_axis_extent",
+                        orbit["central_void_radius"],
+                    ),
+                )
+            )
+            for orbit in orbits
         )
     return metrics

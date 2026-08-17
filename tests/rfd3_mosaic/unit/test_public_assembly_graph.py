@@ -306,6 +306,97 @@ class PublicAssemblyGraphTestCase(unittest.TestCase):
             {"three_way"},
         )
 
+    def test_atomic_three_participant_interface_lowers_to_one_hyperedge(
+        self,
+    ) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"] = [
+            {
+                "id": "three_way",
+                "between": ["face_alpha", "face_beta", "face_gamma"],
+                "contact_pairs": [
+                    ["face_alpha", "face_beta"],
+                    ["face_beta", "face_gamma"],
+                ],
+                "copy_relation": {"transform": "C3:r1"},
+                "relation": {"mode": "preserve_input"},
+                "use": {"exact": 3},
+            }
+        ]
+
+        design = UserDesignSpec.model_validate(payload)
+        self.assertEqual(len(design.interfaces), 1)
+        self.assertEqual(len(design.interfaces[0].between), 3)
+        lowered = lower_user_design(design)
+
+        self.assertEqual(len(lowered.interface_usage), 1)
+        self.assertEqual(
+            lowered.interface_usage[0].interface_id,
+            "three_way",
+        )
+        self.assertEqual(
+            lowered.interface_usage[0].physical_instance_count,
+            3,
+        )
+        self.assertEqual(len(lowered.specification.interfaces), 2)
+        self.assertEqual(
+            {
+                edge.hyperedge_id
+                for edge in lowered.specification.interfaces.values()
+            },
+            {"three_way"},
+        )
+        runtime_port_endpoints = [
+            port_id
+            for edge in lowered.specification.interfaces.values()
+            for port_id in (edge.left_port, edge.right_port)
+        ]
+        self.assertEqual(len(runtime_port_endpoints), 4)
+        self.assertEqual(len(set(runtime_port_endpoints)), 4)
+        instances = expand_symmetry_instances(lowered.specification)
+        self.assertEqual(len(instances.interfaces), 6)
+        self.assertEqual(
+            {edge.hyperedge_id for edge in instances.interfaces.values()},
+            {"three_way"},
+        )
+
+    def test_atomic_hyperedge_rejects_disconnected_contact_members(self) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"] = [
+            {
+                "id": "three_way",
+                "between": ["face_alpha", "face_beta", "face_gamma"],
+                "contact_pairs": [["face_alpha", "face_beta"]],
+                "relation": {"mode": "preserve_input"},
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "connect every participant",
+        ):
+            UserDesignSpec.model_validate(payload)
+
+    def test_atomic_hyperedge_cannot_be_generated_contact_target(self) -> None:
+        payload = self._multi_face_payload()
+        payload["interfaces"] = [
+            {
+                "id": "three_way",
+                "between": ["face_alpha", "face_beta", "face_gamma"],
+                "contact_pairs": [
+                    ["face_alpha", "face_beta"],
+                    ["face_beta", "face_gamma"],
+                ],
+                "relation": {"mode": "contact"},
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "require preserve_input",
+        ):
+            UserDesignSpec.model_validate(payload)
+
     def test_hyperedge_members_require_one_usage_contract(self) -> None:
         payload = self._multi_face_payload()
         for interface in payload["interfaces"]:

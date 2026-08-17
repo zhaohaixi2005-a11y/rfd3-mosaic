@@ -24,7 +24,7 @@ from itertools import permutations
 import json
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import yaml
 
@@ -51,12 +51,18 @@ from rfd3_mosaic.structure_inspection import (
 )
 from rfd3_mosaic.topology.polymer_path_solver import (
     BinaryInterfaceSeed,
+    DirectedPolymerLink,
     InterfaceHyperedgeSeed,
+    PolymerUnitPathCoverHypothesis,
     enumerate_directed_polymer_path_covers,
     enumerate_polymer_hyperedge_covers,
+    enumerate_polymer_unit_path_covers,
 )
 from rfd3_mosaic.topology.interface_seed_graph import (
     analyze_interleaved_interface_seed_topology,
+)
+from rfd3_mosaic.topology.component_incidence import (
+    enumerate_binary_interface_incidence_plans,
 )
 from rfd3_mosaic.topology.symmetry_connectivity import (
     minimal_group_relations,
@@ -64,6 +70,30 @@ from rfd3_mosaic.topology.symmetry_connectivity import (
 
 
 _CYCLIC = re.compile(r"^C(?P<order>[2-9][0-9]*)$")
+
+
+def _ordinary_component_pose(intent: SimpleCageIntentSpec) -> dict[str, Any]:
+    """Lower one high-level motion choice without exposing SE(3) tuning."""
+
+    motion = intent.preferences.component_motion
+    if motion is None or motion.value == "locked":
+        return {"mode": "fixed"}
+    return {
+        "mode": "bounded_mobile",
+        "subspace": (
+            "bounded_se3"
+            if motion.value == "free"
+            else "radial_axial_rotation"
+        ),
+        "proposal": "scaffold_objectives",
+        "max_translation": 4.0,
+        "max_rotation_deg": 10.0,
+        "start_fraction": 0.05,
+        "end_fraction": 0.75,
+        "response": 0.2,
+        "max_step_translation": 0.25,
+        "max_step_rotation_deg": 1.0,
+    }
 
 
 @dataclass(frozen=True)
@@ -88,6 +118,8 @@ class SimpleDesignCandidate:
     global_pose_initialization: bool = False
     interface_hyperedges: tuple[tuple[str, tuple[str, ...]], ...] = ()
     stabilizer_evidence: dict[str, Any] | None = None
+    topology_search_complete: bool = True
+    supplied_interface_ids: tuple[str, ...] = ()
 
     def metadata(self) -> dict[str, Any]:
         if self.polymer_links:
@@ -121,10 +153,21 @@ class SimpleDesignCandidate:
             "preflight_failures": list(self.preflight_failures),
             "pose_sample_index": self.pose_sample_index,
             "global_pose_initialization": self.global_pose_initialization,
+            "global_pose_initializer": (
+                "polyhedral_spherical_low_discrepancy_v1"
+                if self.global_pose_initialization
+                and self.symmetry in {"T", "O", "I"}
+                else "cyclic_dihedral_low_discrepancy_v1"
+                if self.global_pose_initialization
+                else None
+            ),
             "interface_hyperedges": {
                 interface_id: list(member_ids)
                 for interface_id, member_ids in self.interface_hyperedges
             },
+            "topology_search_complete": self.topology_search_complete,
+            "supplied_interface_ids": list(self.supplied_interface_ids),
+            "invented_interface_count": 0,
             "stabilizer_evidence": self.stabilizer_evidence,
             "neighbour_transforms": neighbour_transforms,
         }
@@ -148,14 +191,314 @@ def _validate_seed_contract(interface_id: str, seed) -> None:
             "The first ordinary resolver supports geometry=preserve_exact; "
             "bounded supplied-interface geometry is not frozen yet"
         )
-    for participant in seed.participants:
-        selector = seed.selectors[participant]
-        if len(parse_public_selector(selector)) != 1:
+    # Multi-range selectors are handled by the mixed-component incidence
+    # frontend when one supplied interface joins oligomeric building blocks.
+    # The historical single-fragment path-cover frontends retain their
+    # stricter one-range-per-side contract below.
+
+
+def _requires_mixed_component_incidence(seed) -> bool:
+    return len(seed.participants) == 2 and any(
+        len(parse_public_selector(seed.selectors[participant])) > 1
+        for participant in seed.participants
+    )
+
+
+def _component_protomer_paths(
+    *,
+    interface_id: str,
+    participant: str,
+    selector: str,
+) -> dict[str, tuple[Any, ...]]:
+    """Resolve explicit source-chain contigs for one oligomer participant."""
+
+    by_chain: dict[str, list[Any]] = {}
+    for segment in parse_public_selector(selector):
+        by_chain.setdefault(segment.chain_id, []).append(segment)
+    if len(by_chain) < 2:
+        raise ValueError(
+            f"Mixed-component interface {interface_id!r} participant "
+            f"{participant!r} must select at least two source protomer "
+            "chains; use the ordinary single-component resolver otherwise"
+        )
+    ordered: dict[str, tuple[Any, ...]] = {}
+    for chain_id, segments in by_chain.items():
+        chain_segments = tuple(
+            sorted(segments, key=lambda item: (item.residue_start, item.residue_end))
+        )
+        if len(chain_segments) < 2:
             raise NotImplementedError(
-                f"Interface {interface_id!r} selector {selector!r} contains "
-                "several disjoint ranges. Ordered multi-fragment paths must "
-                "be resolved explicitly before execution"
+                f"Mixed-component interface {interface_id!r} participant "
+                f"{participant!r} chain {chain_id!r} has only one fixed "
+                "fragment. Mosaic cannot invent whether to generate an N "
+                "terminus, C terminus, or cross-chain fusion; provide at "
+                "least two ordered fixed fragments on that chain or use "
+                "expert connections"
             )
+        for left, right in zip(chain_segments, chain_segments[1:]):
+            if left.residue_end >= right.residue_start:
+                raise ValueError(
+                    f"Mixed-component participant {participant!r} has "
+                    f"overlapping selectors on chain {chain_id!r}"
+                )
+        ordered[chain_id] = chain_segments
+    return ordered
+
+
+def _action_payload(action) -> dict[str, Any]:
+    return {
+        "coset_representative_ids": list(action.coset_representative_ids),
+        "stabilizer_transform_ids": list(action.stabilizer_transform_ids),
+        "transform_to_coset_representative": dict(
+            action.transform_to_coset_representative
+        ),
+    }
+
+
+def _enumerate_mixed_component_interface_candidates(
+    intent: SimpleCageIntentSpec,
+    *,
+    symmetry_ids: Iterable[str] | None,
+    seed_start: int,
+    timesteps: int,
+    max_candidates: int,
+) -> tuple[SimpleDesignCandidate, ...]:
+    """Lower one supplied oligomer--oligomer interface without inventing it.
+
+    Participant valencies come only from the source-chain membership declared
+    by the user.  Finite-group incidence chooses compatible component orbits;
+    the structure-aware compiler then proves the selected Cn/Dn/T/O/I
+    stabilizers against the supplied coordinates before a candidate survives.
+    """
+
+    interface_id, seed = next(iter(intent.interface_seeds.items()))
+    left_id, right_id = seed.participants
+    paths = {
+        participant: _component_protomer_paths(
+            interface_id=interface_id,
+            participant=participant,
+            selector=seed.selectors[participant],
+        )
+        for participant in seed.participants
+    }
+    # The user supplied this interface; verify that the selected oligomeric
+    # sides actually contact in the input before any symmetry is considered.
+    _validated_input_evidence(intent, interface_id, seed)
+    valencies = {
+        participant: len(paths[participant])
+        for participant in seed.participants
+    }
+    requested = (
+        tuple(symmetry_ids)
+        if symmetry_ids is not None
+        else candidate_symmetries(intent)
+    )
+    if not requested:
+        raise ValueError("At least one mixed-component symmetry is required")
+    explicit = symmetry_ids is not None or intent.goal.symmetry != "auto"
+    rejections: dict[str, list[str]] = {}
+    candidates: list[SimpleDesignCandidate] = []
+    for symmetry_id in requested:
+        reasons: list[str] = []
+        try:
+            group_order = symmetry_group_action_count(symmetry_id)
+        except ValueError as error:
+            reasons.append(str(error))
+            rejections[symmetry_id] = reasons
+            continue
+        if not seed.use.accepts(group_order):
+            reasons.append(
+                f"interface {interface_id} requests {seed.use.description}, "
+                f"but one free {symmetry_id} interface orbit has "
+                f"{group_order} physical instances"
+            )
+            rejections[symmetry_id] = reasons
+            continue
+        try:
+            plans = tuple(
+                plan
+                for plan in enumerate_binary_interface_incidence_plans(
+                    symmetry=symmetry_id,
+                    interface_id=interface_id,
+                    left_participant=left_id,
+                    right_participant=right_id,
+                    physical_interface_count=group_order,
+                    minimum_valency=min(valencies.values()),
+                    maximum_valency=max(valencies.values()),
+                    max_candidates=max_candidates,
+                )
+                if plan.left.valency == valencies[left_id]
+                and plan.right.valency == valencies[right_id]
+            )
+        except (NotImplementedError, ValueError) as error:
+            reasons.append(str(error))
+            plans = ()
+        if not plans:
+            reasons.append(
+                f"no {symmetry_id} incidence action has user-supplied "
+                f"participant valencies {valencies[left_id]}/"
+                f"{valencies[right_id]}"
+            )
+            rejections[symmetry_id] = reasons
+            continue
+
+        for plan_index, plan in enumerate(plans):
+            if len(candidates) >= max_candidates:
+                raise ValueError(
+                    "Mixed-component resolution exceeds "
+                    f"max_candidates={max_candidates}; narrow symmetry"
+                )
+            components: dict[str, dict[str, Any]] = {}
+            ports: dict[str, dict[str, Any]] = {}
+            connections: list[dict[str, Any]] = []
+            for participant, participant_plan in (
+                (left_id, plan.left),
+                (right_id, plan.right),
+            ):
+                selectors = [
+                    segment.public_expression
+                    for chain_segments in paths[participant].values()
+                    for segment in chain_segments
+                ]
+                component_id = f"component__{participant}"
+                port_id = f"port__{participant}"
+                components[component_id] = {
+                    "selectors": selectors,
+                    "geometry": "joint_rigid",
+                    "finite_orbit_action": _action_payload(
+                        participant_plan.action
+                    ),
+                    "pose": _ordinary_component_pose(intent),
+                }
+                ports[port_id] = {
+                    "component": component_id,
+                    "selectors": selectors,
+                }
+                for chain_id, chain_segments in paths[participant].items():
+                    for gap_index, (left, right) in enumerate(
+                        zip(chain_segments, chain_segments[1:]),
+                        start=1,
+                    ):
+                        connections.append({
+                            "id": (
+                                f"path__{participant}__{chain_id}__"
+                                f"{gap_index:02d}"
+                            ),
+                            "from": {
+                                "component": component_id,
+                                "selector": left.public_expression,
+                                "terminus": "c",
+                            },
+                            "to": {
+                                "component": component_id,
+                                "selector": right.public_expression,
+                                "terminus": "n",
+                            },
+                            "length": intent.generation.length,
+                            "copy_relation": {"orbit_offset": 0},
+                        })
+            payload: dict[str, Any] = {
+                "schema_version": 1,
+                "task": "preserve_supplied_geometry",
+                "name": (
+                    f"{intent.name}-{symmetry_id.lower()}-mixed-"
+                    f"{plan_index:04d}"
+                ),
+                "input": str(intent.input),
+                "symmetry": symmetry_id,
+                "components": components,
+                "ports": ports,
+                "interfaces": [{
+                    "id": interface_id,
+                    "between": [f"port__{left_id}", f"port__{right_id}"],
+                    "copy_relation": {"orbit_offset": 0},
+                    "relation": {
+                        "mode": "preserve_input",
+                        "cutoff": intent.inspection.contact_cutoff,
+                        "minimum_heavy_atom_contacts": (
+                            intent.inspection.minimum_atom_contacts
+                        ),
+                    },
+                    "use": seed.use.model_dump(
+                        mode="json", exclude_none=True
+                    ),
+                    "required": True,
+                }],
+                "connections": connections,
+                "sampling": {
+                    "timesteps": timesteps,
+                    "seed": seed_start + len(candidates),
+                    "preset": "exact_mosaic",
+                    "low_memory_mode": True,
+                    "execution_backend": "explicit_all_copy",
+                },
+                "resources": intent.resources.model_dump(
+                    mode="json", exclude_none=True
+                ),
+                "preferences": intent.preferences.model_dump(
+                    mode="json", exclude_none=True
+                ),
+                "assembly_shape": _assembly_shape_payload(intent),
+            }
+            if intent.output is not None:
+                payload["output"] = intent.output.model_dump(
+                    mode="json", exclude_none=True
+                )
+            try:
+                design = UserDesignSpec.model_validate(payload)
+                lowered = lower_user_design(design)
+            except ValueError as error:
+                reasons.append(
+                    f"incidence plan {plan_index} failed supplied-geometry "
+                    f"validation: {error}"
+                )
+                continue
+            from rfd3_mosaic.compile import expand_symmetry_instances
+
+            instances = expand_symmetry_instances(lowered.specification)
+            if len(instances.interfaces) != group_order:
+                raise RuntimeError(
+                    f"Mixed-component lowering emitted "
+                    f"{len(instances.interfaces)} physical interfaces; "
+                    f"expected {group_order}"
+                )
+            candidate_index = len(candidates)
+            candidates.append(SimpleDesignCandidate(
+                candidate_id=f"candidate_{candidate_index:06d}",
+                symmetry=symmetry_id,
+                topology_id=(
+                    f"{symmetry_id.lower()}__mixed_component__"
+                    f"valency_{valencies[left_id]}_{valencies[right_id]}__"
+                    f"plan_{plan_index:04d}"
+                ),
+                design=design,
+                connection_order=(left_id, right_id),
+                connection_orbit_offset=0,
+                resolution_frontend=(
+                    "supplied_oligomer_interface_incidence_v1"
+                ),
+                polymer_units_per_copy=(
+                    len(paths[left_id]) + len(paths[right_id])
+                ),
+                physical_polymer_unit_count=len(
+                    instances.generated_segments
+                ),
+                expanded_topology_status="connected_component_incidence",
+                stabilizer_evidence={
+                    "left_action": _action_payload(plan.left.action),
+                    "right_action": _action_payload(plan.right.action),
+                    "physical_edges": [list(edge) for edge in plan.physical_edges],
+                },
+            ))
+        if reasons:
+            rejections[symmetry_id] = reasons
+    if not candidates:
+        boundary = "Explicit" if explicit else "Automatic"
+        raise ValueError(
+            f"{boundary} mixed-component resolution produced no executable "
+            f"candidate: {rejections}"
+        )
+    return tuple(candidates)
 
 
 def _supported_seed(intent: SimpleCageIntentSpec):
@@ -172,38 +515,67 @@ def _supported_interface_seeds(
     seeds = tuple(sorted(intent.interface_seeds.items()))
     for interface_id, seed in seeds:
         _validate_seed_contract(interface_id, seed)
+        for participant in seed.participants:
+            selector = seed.selectors[participant]
+            segments = tuple(parse_public_selector(selector))
+            chains = {segment.chain_id for segment in segments}
+            if len(chains) != 1:
+                raise NotImplementedError(
+                    f"Multi-seed interface {interface_id!r} participant "
+                    f"{participant!r} selects several source chains. "
+                    "Ordinary mode accepts any number of ordered fixed "
+                    "fragments on one source polymer, but cross-chain "
+                    "covalent topology requires expert component paths"
+                )
+            ordered = tuple(
+                sorted(
+                    segments,
+                    key=lambda item: (
+                        item.residue_start,
+                        item.residue_end,
+                    ),
+                )
+            )
+            for left, right in zip(ordered, ordered[1:]):
+                if left.residue_end >= right.residue_start:
+                    raise ValueError(
+                        f"Multi-seed interface {interface_id!r} participant "
+                        f"{participant!r} has overlapping fixed ranges"
+                    )
 
     selected_ranges: list[tuple[str, str, int, int]] = []
     for interface_id, seed in seeds:
         for participant in seed.participants:
-            segment = parse_public_selector(seed.selectors[participant])[0]
-            for (
-                previous_interface,
-                previous_chain,
-                previous_start,
-                previous_end,
-            ) in selected_ranges:
-                if segment.chain_id != previous_chain:
-                    continue
-                if not (
-                    segment.residue_end < previous_start
-                    or segment.residue_start > previous_end
-                ):
-                    raise ValueError(
-                        "Multi-seed executable resolution requires disjoint "
-                        "selected fragments; "
-                        f"{interface_id!r}:{participant} overlaps "
-                        f"{previous_interface!r} on chain "
-                        f"{segment.chain_id}"
+            for segment in parse_public_selector(
+                seed.selectors[participant]
+            ):
+                for (
+                    previous_interface,
+                    previous_chain,
+                    previous_start,
+                    previous_end,
+                ) in selected_ranges:
+                    if segment.chain_id != previous_chain:
+                        continue
+                    if not (
+                        segment.residue_end < previous_start
+                        or segment.residue_start > previous_end
+                    ):
+                        raise ValueError(
+                            "Executable supplied-interface resolution "
+                            "requires disjoint selected fragments; "
+                            f"{interface_id!r}:{participant} overlaps "
+                            f"{previous_interface!r} on chain "
+                            f"{segment.chain_id}"
+                        )
+                selected_ranges.append(
+                    (
+                        interface_id,
+                        segment.chain_id,
+                        segment.residue_start,
+                        segment.residue_end,
                     )
-            selected_ranges.append(
-                (
-                    interface_id,
-                    segment.chain_id,
-                    segment.residue_start,
-                    segment.residue_end,
                 )
-            )
     return seeds
 
 
@@ -219,23 +591,31 @@ def _validate_resolution_contract(
     allow_continuous_geometry: bool = False,
 ) -> None:
     if intent.goal.composition == "heteromer":
-        raise NotImplementedError(
-            "Automatic heteromer ownership is not implemented; use expert "
-            "components or keep composition=auto"
-        )
-    if (
-        intent.goal.diameter_angstrom is not None
-        and not allow_continuous_geometry
-    ):
-        raise NotImplementedError(
-            "Requested assembly diameter is not yet part of the executable "
-            "continuous-pose objective"
-        )
-    if intent.goal.cavity_diameter_angstrom is not None:
-        raise NotImplementedError(
-            "Requested cavity diameter is not yet backed by an executable "
-            "cavity evaluator"
-        )
+        if len(intent.interface_seeds) < 2 or not intent.polymer_connections:
+            raise NotImplementedError(
+                "composition=heteromer requires at least two supplied "
+                "interface seeds and user-declared polymer_connections so "
+                "component ownership is authoritative rather than invented"
+            )
+    # Diameter and cavity ranges lower into required standalone objectives.
+    # A pre-positioned design is measured and accepted/rejected as supplied;
+    # an unknown-pose design additionally uses the same objective report in
+    # continuous pose restoration.  There is no separate shape filter.
+
+
+def _assembly_shape_payload(
+    intent: SimpleCageIntentSpec,
+) -> dict[str, Any] | None:
+    diameter = intent.goal.diameter_angstrom
+    cavity = intent.goal.cavity_diameter_angstrom
+    if diameter is None and cavity is None:
+        return None
+    payload: dict[str, Any] = {}
+    if diameter is not None:
+        payload["diameter_angstrom"] = diameter.model_dump(mode="json")
+    if cavity is not None:
+        payload["cavity_diameter_angstrom"] = cavity.model_dump(mode="json")
+    return payload
 
 
 def _validated_input_evidence(
@@ -438,6 +818,292 @@ def _single_seed_finite_action(
     )
 
 
+def _enumerate_single_supplied_hyperedge_candidates(
+    intent: SimpleCageIntentSpec,
+    *,
+    interface_id: str,
+    seed,
+    symmetry_ids: Iterable[str] | None,
+    seed_start: int,
+    timesteps: int,
+    max_candidates: int,
+) -> tuple[SimpleDesignCandidate, ...]:
+    """Rebuild explicit participant-chain paths around one rigid hyperedge.
+
+    A cooperative supplied interface does not, by itself, authorize Mosaic to
+    invent covalent links between its participants.  This executable slice is
+    therefore intentionally strict: every participant must provide at least
+    two ordered fragments on one source chain.  Only the missing intervals on
+    that same chain become generated connections.  The complete interface is
+    one joint-rigid component throughout lowering and inference.
+    """
+
+    participant_segments: dict[str, tuple[Any, ...]] = {}
+    for participant in seed.participants:
+        segments = tuple(
+            sorted(
+                parse_public_selector(seed.selectors[participant]),
+                key=lambda item: (
+                    item.chain_id,
+                    item.residue_start,
+                    item.residue_end,
+                ),
+            )
+        )
+        chain_ids = {segment.chain_id for segment in segments}
+        if len(chain_ids) != 1 or len(segments) < 2:
+            raise NotImplementedError(
+                f"Single multi-participant interface {interface_id!r} does "
+                "not determine polymer connectivity for participant "
+                f"{participant!r}. Provide at least two ordered fragments "
+                "on one source chain, add another supplied interface seed, "
+                "or use expert connections; Mosaic will not invent "
+                "covalent links between interface participants"
+            )
+        for left, right in zip(segments, segments[1:]):
+            if left.residue_end >= right.residue_start:
+                raise ValueError(
+                    f"Participant {participant!r} interface fragments "
+                    "must be disjoint and ordered from N to C"
+                )
+        participant_segments[participant] = segments
+
+    evidence = _validated_input_evidence(intent, interface_id, seed)
+    symmetry_order = _resolver_symmetry_order(intent, symmetry_ids)
+    contact_tree = _contact_spanning_tree(
+        seed.participants,
+        evidence["active_contact_pairs"],
+    )
+    candidates: list[SimpleDesignCandidate] = []
+    for symmetry_id in symmetry_order:
+        if len(candidates) >= max_candidates:
+            raise ValueError(
+                "Ordinary single-hyperedge resolution exceeds "
+                f"max_candidates={max_candidates}"
+            )
+        finite_action = _single_seed_finite_action(
+            intent,
+            symmetry_id=symmetry_id,
+            interface_id=interface_id,
+            seed=seed,
+        )
+        order = symmetry_group_action_count(symmetry_id)
+        physical_copy_count = (
+            len(finite_action.coset_representative_ids)
+            if finite_action is not None
+            else order
+        )
+        component_id = f"seed__{interface_id}"
+        component_selectors = [
+            segment.assembly_expression
+            for participant in seed.participants
+            for segment in participant_segments[participant]
+        ]
+        port_ids = {
+            participant: f"port__{interface_id}__{participant}"
+            for participant in seed.participants
+        }
+        ports = {
+            port_ids[participant]: {
+                "component": component_id,
+                "selectors": [
+                    segment.assembly_expression
+                    for segment in participant_segments[participant]
+                ],
+            }
+            for participant in seed.participants
+        }
+        connections: list[dict[str, Any]] = []
+        recorded_links: list[tuple[str, str, int | str]] = []
+        connection_ids_by_participant: dict[str, list[str]] = {
+            participant: [] for participant in seed.participants
+        }
+        for participant in seed.participants:
+            segments = participant_segments[participant]
+            for link_index, (left, right) in enumerate(
+                zip(segments, segments[1:]),
+                start=1,
+            ):
+                left_selector = left.assembly_expression
+                right_selector = right.assembly_expression
+                connection_id = (
+                    f"participant__{participant}__link_{link_index:02d}"
+                )
+                connections.append(
+                    {
+                        "id": connection_id,
+                        "from": {
+                            "component": component_id,
+                            "selector": left_selector,
+                            "terminus": "c",
+                        },
+                        "to": {
+                            "component": component_id,
+                            "selector": right_selector,
+                            "terminus": "n",
+                        },
+                        "length": intent.generation.length,
+                        "copy_relation": {"orbit_offset": 0},
+                    }
+                )
+                connection_ids_by_participant[participant].append(
+                    connection_id
+                )
+                recorded_links.append(
+                    (left_selector, right_selector, 0)
+                )
+
+        member_ids = tuple(
+            interface_id
+            if len(contact_tree) == 1
+            else f"{interface_id}__member_{index:02d}"
+            for index in range(1, len(contact_tree) + 1)
+        )
+        finite_action_payload = (
+            dict(finite_action.finite_action_payload)
+            if finite_action is not None
+            else None
+        )
+        if finite_action_payload is not None and physical_copy_count == 1:
+            transform_by_participant = {
+                participant: transform_id
+                for transform_id, participant
+                in finite_action.canonical_to_participant
+            }
+            if set(transform_by_participant) != set(seed.participants):
+                raise ValueError(
+                    "Stabilizer evidence does not assign every supplied "
+                    "interface participant to one canonical transform"
+                )
+            finite_action_payload["stabilizer_path_transform_ids"] = {
+                connection_id: transform_by_participant[participant]
+                for participant in seed.participants
+                for connection_id in connection_ids_by_participant[
+                    participant
+                ]
+            }
+
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "task": "preserve_supplied_geometry",
+            "name": (
+                f"{intent.name}-{symmetry_id.lower()}-"
+                f"{len(candidates):04d}"
+            ),
+            "input": str(intent.input),
+            "symmetry": (
+                {
+                    "id": symmetry_id,
+                    "axis": finite_action.symmetry_axis,
+                    "center": finite_action.symmetry_center,
+                }
+                if finite_action is not None
+                else symmetry_id
+            ),
+            "finite_orbit_action": (
+                finite_action_payload
+            ),
+            "components": {
+                component_id: {
+                    "selectors": component_selectors,
+                    "geometry": "joint_rigid",
+                    "pose": _ordinary_component_pose(intent),
+                }
+            },
+            "ports": ports,
+            "interfaces": [
+                {
+                    "id": interface_id,
+                    "hyperedge_id": interface_id,
+                    "between": [
+                        port_ids[participant]
+                        for participant in seed.participants
+                    ],
+                    "contact_pairs": [
+                        [port_ids[left], port_ids[right]]
+                        for left, right in contact_tree
+                    ],
+                    "copy_relation": {"orbit_offset": 0},
+                    "relation": {
+                        "mode": "preserve_input",
+                        "cutoff": intent.inspection.contact_cutoff,
+                        "minimum_heavy_atom_contacts": (
+                            intent.inspection.minimum_atom_contacts
+                        ),
+                    },
+                    "use": seed.use.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    ),
+                    "required": True,
+                }
+            ],
+            "connections": connections,
+            "sampling": {
+                "timesteps": timesteps,
+                "seed": seed_start + len(candidates),
+                "preset": "exact_mosaic",
+                "low_memory_mode": True,
+                "execution_backend": "explicit_all_copy",
+            },
+            "resources": intent.resources.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            "preferences": intent.preferences.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            "assembly_shape": _assembly_shape_payload(intent),
+        }
+        if intent.output is not None:
+            payload["output"] = intent.output.model_dump(
+                mode="json",
+                exclude_none=True,
+            )
+        design = UserDesignSpec.model_validate(payload)
+        # Compile now, not after ranking, so READY always means this exact
+        # participant path and atomic hyperedge are executable together.
+        lower_user_design(design)
+        first_link = recorded_links[0]
+        candidates.append(
+            SimpleDesignCandidate(
+                candidate_id=f"candidate_{len(candidates):06d}",
+                symmetry=symmetry_id,
+                topology_id=(
+                    f"{symmetry_id.lower()}__single_atomic_hyperedge__"
+                    "explicit_participant_paths"
+                ),
+                design=design,
+                connection_order=(first_link[0], first_link[1]),
+                connection_orbit_offset=0,
+                resolution_frontend=(
+                    "single_supplied_hyperedge_explicit_paths_v1"
+                ),
+                polymer_links=tuple(recorded_links),
+                polymer_units_per_copy=len(seed.participants),
+                physical_polymer_unit_count=(
+                    len(seed.participants) * physical_copy_count
+                ),
+                expanded_topology_status=(
+                    "explicit_intra_participant_paths"
+                ),
+                interface_hyperedges=((interface_id, member_ids),),
+                stabilizer_evidence=(
+                    finite_action.to_dict()
+                    if finite_action is not None
+                    else None
+                ),
+                supplied_interface_ids=(interface_id,),
+            )
+        )
+    if not candidates:
+        raise NotImplementedError(
+            "No executable Cn symmetry remains for the supplied hyperedge"
+        )
+    return tuple(candidates)
+
+
 def _multi_seed_side_records(
     seeds: tuple[tuple[str, Any], ...],
 ) -> tuple[
@@ -468,6 +1134,28 @@ def _multi_seed_side_records(
                 seed.selectors[participant],
             )
     return tuple(topology_seeds), sides
+
+
+def _ordered_fragment_selectors(selector: str) -> tuple[str, ...]:
+    """Expand one multi-helix participant into its polymer-ordered ranges."""
+
+    segments = tuple(
+        sorted(
+            parse_public_selector(selector),
+            key=lambda item: (
+                item.chain_id,
+                item.residue_start,
+                item.residue_end,
+            ),
+        )
+    )
+    chains = {segment.chain_id for segment in segments}
+    if len(chains) != 1:
+        raise NotImplementedError(
+            "Ordinary multi-fragment participants must come from one source "
+            "polymer chain"
+        )
+    return tuple(segment.assembly_expression for segment in segments)
 
 
 def _contact_spanning_tree(
@@ -581,11 +1269,11 @@ def _multi_seed_symmetry_order(
     if rejected and explicitly_requested:
         raise ValueError(
             "Explicit resolver symmetries are incompatible with the "
-            f"pre-positioned multi-seed contract: {rejected}"
+            f"multi-seed interface/unit contract: {rejected}"
         )
     if not accepted:
         raise ValueError(
-            "No requested symmetry satisfies the pre-positioned multi-seed "
+            "No requested symmetry satisfies the multi-seed "
             f"contract: {rejected}"
         )
     return tuple(accepted)
@@ -667,12 +1355,11 @@ def _source_chain_ownership_failures(
     """Reject ordinary candidates that split one known source polymer.
 
     A source chain reused by several declared interface seeds is evidence
-    that those seed faces belong to one physical component.  The current
-    binary path-cover frontend can preserve that ownership only when the two
-    sides from that chain are joined into one polymer unit.  Treating the
-    faces as unrelated components can place a generated terminus directly
-    into the occupied continuation of the same source backbone (the failure
-    observed for the 7mwr two-patch engineering canary).
+    that those seed faces belong to one physical component.  All of its
+    supplied faces must therefore belong to one connected scaffold path.
+    Treating those faces as unrelated components can place a generated
+    terminus directly into the occupied continuation of the same source
+    backbone (the failure observed for the 7mwr two-patch canary).
 
     Expert assembly graphs remain free to request a different chain
     topology explicitly.  Ordinary resolution must not silently discard the
@@ -681,31 +1368,146 @@ def _source_chain_ownership_failures(
 
     sides_by_chain: dict[str, list[str]] = {}
     for side_id, (_, _, selector) in side_records.items():
-        segment = parse_public_selector(selector)[0]
-        sides_by_chain.setdefault(segment.chain_id, []).append(side_id)
+        chain_ids = {
+            segment.chain_id for segment in parse_public_selector(selector)
+        }
+        if len(chain_ids) != 1:
+            raise ValueError(
+                "Ordinary source-chain ownership requires each supplied "
+                "participant to belong to one polymer chain"
+            )
+        sides_by_chain.setdefault(next(iter(chain_ids)), []).append(side_id)
 
-    linked_pairs = {
-        frozenset((source_side, target_side))
-        for source_side, target_side in directed_links
+    adjacency: dict[str, set[str]] = {
+        side_id: set() for side_id in side_records
     }
+    for source_side, target_side in directed_links:
+        adjacency[source_side].add(target_side)
+        adjacency[target_side].add(source_side)
+
+    component_by_side: dict[str, int] = {}
+    component_index = 0
+    for root in sorted(adjacency):
+        if root in component_by_side:
+            continue
+        pending = [root]
+        component_by_side[root] = component_index
+        while pending:
+            current = pending.pop()
+            for neighbour in sorted(adjacency[current]):
+                if neighbour in component_by_side:
+                    continue
+                component_by_side[neighbour] = component_index
+                pending.append(neighbour)
+        component_index += 1
+
     failures: list[str] = []
     for chain_id, side_ids in sorted(sides_by_chain.items()):
         if len(side_ids) < 2:
             continue
-        if len(side_ids) > 2:
-            failures.append(
-                f"source chain {chain_id!r} contributes {len(side_ids)} "
-                "interface faces; the binary ordinary resolver cannot "
-                "represent that multi-face component without splitting it"
-            )
-            continue
-        if frozenset(side_ids) not in linked_pairs:
+        path_components = {
+            component_by_side[side_id] for side_id in side_ids
+        }
+        if len(path_components) != 1:
             failures.append(
                 f"source chain {chain_id!r} is split across different "
-                "polymer units instead of preserving its two supplied "
-                "interface faces as one component"
+                "polymer units instead of preserving all supplied "
+                f"interface faces as one component: {sorted(side_ids)}"
             )
     return tuple(failures)
+
+
+def _declared_polymer_path_cover(
+    intent: SimpleCageIntentSpec,
+    side_records: dict[str, tuple[str, str, str]],
+) -> PolymerUnitPathCoverHypothesis:
+    """Bind the user's authoritative polymer graph without enumerating it."""
+
+    side_by_endpoint = {
+        (interface_id, participant): side_id
+        for side_id, (interface_id, participant, _) in side_records.items()
+    }
+    links: list[DirectedPolymerLink] = []
+    incoming: dict[str, str] = {}
+    outgoing: dict[str, str] = {}
+    adjacency = {side_id: set() for side_id in side_records}
+    for connection in intent.polymer_connections:
+        source_key = (
+            connection.from_endpoint.interface,
+            connection.from_endpoint.participant,
+        )
+        target_key = (
+            connection.to_endpoint.interface,
+            connection.to_endpoint.participant,
+        )
+        source_side = side_by_endpoint[source_key]
+        target_side = side_by_endpoint[target_key]
+        outgoing[source_side] = target_side
+        incoming[target_side] = source_side
+        adjacency[source_side].add(target_side)
+        adjacency[target_side].add(source_side)
+        links.append(DirectedPolymerLink(source_side, target_side))
+
+    visited: set[str] = set()
+    ordered_paths: list[tuple[str, ...]] = []
+    for root in sorted(adjacency):
+        if root in visited:
+            continue
+        component: set[str] = set()
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            if current in component:
+                continue
+            component.add(current)
+            pending.extend(adjacency[current] - component)
+        starts = sorted(component - set(incoming))
+        ends = sorted(component - set(outgoing))
+        if len(starts) != 1 or len(ends) != 1:
+            raise ValueError(
+                "user-declared polymer connections must form directed "
+                "linear protein units; cyclic or branched covalent paths "
+                f"are unsupported: {sorted(component)}"
+            )
+        path: list[str] = []
+        current = starts[0]
+        while True:
+            if current in path:
+                raise ValueError(
+                    "user-declared polymer connections contain a cycle"
+                )
+            path.append(current)
+            if current not in outgoing:
+                break
+            current = outgoing[current]
+        if set(path) != component:
+            raise ValueError(
+                "user-declared polymer connections do not form one "
+                f"continuous path for {sorted(component)}"
+            )
+        interface_ids = [side_records[side_id][0] for side_id in path]
+        if len(interface_ids) != len(set(interface_ids)):
+            raise ValueError(
+                "one polymer unit cannot contain two participants of the "
+                "same supplied interface occurrence; declare separate "
+                "interface occurrences when reusing an interface type"
+            )
+        visited.update(component)
+        ordered_paths.append(tuple(path))
+    if visited != set(side_records):
+        raise ValueError(
+            "user-declared polymer connections leave supplied interface "
+            f"participants unassigned: {sorted(set(side_records) - visited)}"
+        )
+    canonical_paths = tuple(sorted(ordered_paths))
+    return PolymerUnitPathCoverHypothesis(
+        canonical_key=canonical_paths,
+        ordered_paths=canonical_paths,
+        ordered_links=tuple(links),
+        unit_count=len(canonical_paths),
+        evidence_scope="user_declared_polymer_paths",
+        search_complete=True,
+    )
 
 
 def _enumerate_multi_seed_candidates(
@@ -716,13 +1518,17 @@ def _enumerate_multi_seed_candidates(
     timesteps: int,
     max_candidates: int,
     global_placement: bool = False,
-    pose_samples: int = 1,
+    pose_samples: int | None = None,
 ) -> tuple[SimpleDesignCandidate, ...]:
     """Freeze supplied interface hyperedges into finite-group hypotheses.
 
-    The input coordinates are authoritative for the relative pose of every
-    seed. The topology enumerator chooses which seed sides form polymer
-    units. For Cn, one cycle holonomy carries the familiar +/-1 winding. For
+    Each supplied seed is an authoritative rigid interface hyperedge.  The
+    relative pose *between* seeds is either preserved from a shared input or
+    replaced by deterministic global starts before continuous optimization,
+    according to the ordinary intent's ``seed_layout`` policy. The topology
+    enumerator chooses which seed sides form polymer units but is forbidden
+    from creating any new interface identity. For Cn, one cycle holonomy
+    carries the familiar +/-1 winding. For
     non-cyclic finite groups, independent base-graph cycles carry a minimal
     set of registry-derived generators. The fully expanded incidence graph,
     rather than generator count alone, decides whether a candidate is truly
@@ -742,7 +1548,68 @@ def _enumerate_multi_seed_candidates(
 
     seeds = _supported_interface_seeds(intent)
     topology_seeds, side_records = _multi_seed_side_records(seeds)
-    if all(len(seed.side_ids) == 2 for seed in topology_seeds):
+    declared_connections = bool(intent.polymer_connections)
+    # Three or more supplied interface identities can support protein units
+    # with more than two faces.  The user supplies every interface geometry
+    # and its multiplicity; Mosaic only enumerates how the supplied physical
+    # sides can be distributed across polymer units.  It never invents an
+    # interface not present in ``interface_seeds``.
+    all_binary = all(len(seed.side_ids) == 2 for seed in topology_seeds)
+    multi_face_frontend = (
+        len(topology_seeds) >= 3
+        and intent.goal.symmetry == "auto"
+    )
+    if declared_connections:
+        path_covers = (
+            _declared_polymer_path_cover(intent, side_records),
+        )
+        multi_face_frontend = any(
+            len(path) > 2 for path in path_covers[0].ordered_paths
+        )
+        hyperedge_frontend = not all_binary
+    elif multi_face_frontend and all_binary:
+        multi_face_covers = enumerate_polymer_unit_path_covers(
+            topology_seeds,
+            minimum_faces_per_unit=3,
+            maximum_faces_per_unit=min(8, len(topology_seeds)),
+            require_equal_unit_sizes=False,
+            max_candidates=max_candidates,
+        )
+        if len(topology_seeds) <= 4:
+            # Retain the complete historical two-face cycle family where it
+            # remains small, then add the higher-valency protein units.
+            binary_seeds = tuple(
+                BinaryInterfaceSeed(
+                    seed_id=seed.seed_id,
+                    left_side_id=seed.side_ids[0],
+                    right_side_id=seed.side_ids[1],
+                )
+                for seed in topology_seeds
+            )
+            path_covers = (
+                *enumerate_directed_polymer_path_covers(
+                    binary_seeds,
+                    max_candidates=max_candidates,
+                ),
+                *multi_face_covers,
+            )
+        else:
+            # Exhaustive two-face Hamiltonian cycles grow factorially.  For
+            # five or more supplied interface identities, spend the bounded
+            # ordinary-user search budget on the requested higher-valency
+            # cage units instead of pretending to enumerate every cycle.
+            path_covers = multi_face_covers
+        hyperedge_frontend = False
+    elif multi_face_frontend:
+        path_covers = enumerate_polymer_unit_path_covers(
+            topology_seeds,
+            minimum_faces_per_unit=2,
+            maximum_faces_per_unit=min(8, len(topology_seeds)),
+            require_equal_unit_sizes=False,
+            max_candidates=max_candidates,
+        )
+        hyperedge_frontend = True
+    elif all_binary:
         # Preserve the historical binary ordering and candidate identities.
         binary_seeds = tuple(
             BinaryInterfaceSeed(
@@ -763,30 +1630,80 @@ def _enumerate_multi_seed_candidates(
             max_candidates=max_candidates,
         )
         hyperedge_frontend = True
-    polymer_units_per_copy = sum(
-        len(seed.side_ids) for seed in topology_seeds
-    ) // 2
-    topological_cycle_rank = (
-        polymer_units_per_copy - len(topology_seeds) + 1
-    )
-    symmetry_order = _multi_seed_symmetry_order(
-        intent,
-        symmetry_ids,
-        polymer_units_per_copy=polymer_units_per_copy,
-        topological_cycle_rank=topological_cycle_rank,
-    )
-    total_candidate_count = 0
-    for symmetry_id in symmetry_order:
-        total_candidate_count += (
-            len(path_covers)
-            * 2  # both chemical chain directions
-            * len(
-                _connection_relation_plans(
-                    symmetry_id,
-                    polymer_units_per_copy,
-                )
+
+    total_side_count = sum(len(seed.side_ids) for seed in topology_seeds)
+    cover_unit_counts = {
+        id(hypothesis): (
+            getattr(hypothesis, "unit_count", total_side_count // 2)
+        )
+        for hypothesis in path_covers
+    }
+    symmetry_by_unit_count: dict[int, tuple[str, ...]] = {}
+    for polymer_unit_count in sorted(set(cover_unit_counts.values())):
+        topological_cycle_rank = (
+            total_side_count
+            - len(topology_seeds)
+            - polymer_unit_count
+            + 1
+        )
+        symmetry_by_unit_count[polymer_unit_count] = (
+            _multi_seed_symmetry_order(
+                intent,
+                symmetry_ids,
+                polymer_units_per_copy=polymer_unit_count,
+                topological_cycle_rank=topological_cycle_rank,
             )
         )
+    symmetry_order = tuple(
+        dict.fromkeys(
+            symmetry_id
+            for polymer_unit_count in sorted(symmetry_by_unit_count)
+            for symmetry_id in symmetry_by_unit_count[polymer_unit_count]
+        )
+    )
+    total_candidate_count = 0
+    direction_count = 1 if declared_connections else 2
+    for hypothesis in path_covers:
+        polymer_unit_count = cover_unit_counts[id(hypothesis)]
+        link_count = len(hypothesis.ordered_links)
+        for symmetry_id in symmetry_by_unit_count[polymer_unit_count]:
+            total_candidate_count += (
+                direction_count
+                * len(
+                    _connection_relation_plans(
+                        symmetry_id,
+                        link_count,
+                    )
+                )
+            )
+    topology_budget_truncated = False
+    if total_candidate_count > max_candidates and multi_face_frontend:
+        selected_covers = []
+        selected_candidate_count = 0
+        for hypothesis in path_covers:
+            polymer_unit_count = cover_unit_counts[id(hypothesis)]
+            link_count = len(hypothesis.ordered_links)
+            hypothesis_cost = sum(
+                direction_count * len(
+                    _connection_relation_plans(symmetry_id, link_count)
+                )
+                for symmetry_id in symmetry_by_unit_count[
+                    polymer_unit_count
+                ]
+            )
+            if selected_candidate_count + hypothesis_cost > max_candidates:
+                continue
+            selected_covers.append(hypothesis)
+            selected_candidate_count += hypothesis_cost
+        if not selected_covers:
+            raise ValueError(
+                "One multi-face topology hypothesis requires more than "
+                f"max_candidates={max_candidates}; increase the resolver "
+                "candidate budget or narrow the symmetry choices"
+            )
+        path_covers = tuple(selected_covers)
+        total_candidate_count = selected_candidate_count
+        topology_budget_truncated = True
     if total_candidate_count > max_candidates:
         raise ValueError(
             "Ordinary multi-seed resolution would create "
@@ -799,24 +1716,58 @@ def _enumerate_multi_seed_candidates(
     ports: dict[str, dict[str, Any]] = {}
     interfaces: list[dict[str, Any]] = []
     hyperedge_members: dict[str, list[str]] = {}
+    participant_fragments: dict[
+        tuple[str, str], tuple[str, ...]
+    ] = {}
+    internal_connection_payloads: list[dict[str, Any]] = []
     for interface_id, seed in seeds:
         component_id = f"seed__{interface_id}"
-        components[component_id] = {
-            "selectors": [
+        component_selectors: list[str] = []
+        for participant in seed.participants:
+            fragments = _ordered_fragment_selectors(
                 seed.selectors[participant]
-                for participant in seed.participants
-            ],
+            )
+            participant_fragments[(interface_id, participant)] = fragments
+            component_selectors.extend(fragments)
+        components[component_id] = {
+            "selectors": component_selectors,
             "geometry": "joint_rigid",
-            "pose": {"mode": "fixed"},
+            "pose": _ordinary_component_pose(intent),
         }
         interface_ports: list[str] = []
         for side_index, participant in enumerate(seed.participants):
             port_id = f"port__{interface_id}__{side_index + 1:02d}"
             interface_ports.append(port_id)
+            fragments = participant_fragments[(interface_id, participant)]
             ports[port_id] = {
                 "component": component_id,
-                "selectors": [seed.selectors[participant]],
+                "selectors": list(fragments),
             }
+            for fragment_index, (left, right) in enumerate(
+                zip(fragments, fragments[1:]),
+                start=1,
+            ):
+                internal_connection_payloads.append(
+                    {
+                        "id": (
+                            f"internal__{interface_id}__side_"
+                            f"{side_index + 1:02d}__link_"
+                            f"{fragment_index:02d}"
+                        ),
+                        "from": {
+                            "component": component_id,
+                            "selector": left,
+                            "terminus": "c",
+                        },
+                        "to": {
+                            "component": component_id,
+                            "selector": right,
+                            "terminus": "n",
+                        },
+                        "length": intent.generation.length,
+                        "copy_relation": {"orbit_offset": 0},
+                    }
+                )
         participant_ports = dict(
             zip(seed.participants, interface_ports, strict=True)
         )
@@ -825,52 +1776,78 @@ def _enumerate_multi_seed_candidates(
             seed.participants,
             evidence["active_contact_pairs"],
         )
-        member_ids: list[str] = []
-        for pair_index, (left, right) in enumerate(tree, start=1):
-            edge_id = (
+        member_ids = [
+            (
                 interface_id
                 if len(tree) == 1
                 else f"{interface_id}__member_{pair_index:02d}"
             )
-            member_ids.append(edge_id)
-            interfaces.append({
-                "id": edge_id,
-                "hyperedge_id": interface_id,
-                "between": [
-                    participant_ports[left],
-                    participant_ports[right],
-                ],
-                "copy_relation": {"orbit_offset": 0},
-                "relation": {
-                    "mode": "preserve_input",
-                    "cutoff": intent.inspection.contact_cutoff,
-                    "minimum_heavy_atom_contacts": (
-                        intent.inspection.minimum_atom_contacts
-                    ),
-                },
-                "use": seed.use.model_dump(
-                    mode="json",
-                    exclude_none=True,
+            for pair_index in range(1, len(tree) + 1)
+        ]
+        interface_payload: dict[str, Any] = {
+            "id": interface_id,
+            "hyperedge_id": interface_id,
+            "between": interface_ports,
+            "copy_relation": {"orbit_offset": 0},
+            "relation": {
+                "mode": "preserve_input",
+                "cutoff": intent.inspection.contact_cutoff,
+                "minimum_heavy_atom_contacts": (
+                    intent.inspection.minimum_atom_contacts
                 ),
-                "required": True,
-            })
+            },
+            "use": seed.use.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            "required": True,
+        }
+        if len(tree) > 1:
+            interface_payload["contact_pairs"] = [
+                [participant_ports[left], participant_ports[right]]
+                for left, right in tree
+            ]
+        interfaces.append(interface_payload)
         hyperedge_members[interface_id] = member_ids
+
+    supplied_interface_ids = tuple(sorted(hyperedge_members))
+    emitted_hyperedge_ids = {
+        str(interface["hyperedge_id"])
+        for interface in interfaces
+    }
+    if emitted_hyperedge_ids != set(supplied_interface_ids):
+        raise RuntimeError(
+            "Ordinary resolver interface-identity invariant failed: emitted "
+            f"{sorted(emitted_hyperedge_ids)}, supplied "
+            f"{list(supplied_interface_ids)}. Mosaic will not invent, omit "
+            "or merge user-supplied interface seeds"
+        )
 
     candidates: list[SimpleDesignCandidate] = []
     for symmetry_id in symmetry_order:
         order = symmetry_group_action_count(symmetry_id)
-        relation_plans = _connection_relation_plans(
-            symmetry_id,
-            polymer_units_per_copy,
-        )
         for path_index, hypothesis in enumerate(path_covers):
+            polymer_units_per_copy = cover_unit_counts[id(hypothesis)]
+            if (
+                symmetry_id
+                not in symmetry_by_unit_count[polymer_units_per_copy]
+            ):
+                continue
             canonical_links = tuple(
                 (link.source_side_id, link.target_side_id)
                 for link in hypothesis.ordered_links
             )
+            relation_plans = _connection_relation_plans(
+                symmetry_id,
+                len(canonical_links),
+            )
             directions = (
-                ("forward", canonical_links),
-                ("reverse", _reverse_polymer_links(canonical_links)),
+                (("declared", canonical_links),)
+                if declared_connections
+                else (
+                    ("forward", canonical_links),
+                    ("reverse", _reverse_polymer_links(canonical_links)),
+                )
             )
             for direction_label, directed_links in directions:
                 for relation_plan in relation_plans:
@@ -886,7 +1863,10 @@ def _enumerate_multi_seed_candidates(
                             f"{symmetry_id.lower()}__path_{path_index:04d}__"
                             f"{direction_label}__{relation_plan['label']}"
                         )
-                        connection_payloads: list[dict[str, Any]] = []
+                        connection_payloads: list[dict[str, Any]] = [
+                            dict(connection)
+                            for connection in internal_connection_payloads
+                        ]
                         recorded_links: list[
                             tuple[str, str, int | str]
                         ] = []
@@ -894,12 +1874,18 @@ def _enumerate_multi_seed_candidates(
                             source_side,
                             target_side,
                         ) in enumerate(directed_links):
-                            source_interface, _, source_selector = side_records[
+                            source_interface, source_participant, _ = side_records[
                                 source_side
                             ]
-                            target_interface, _, target_selector = side_records[
+                            target_interface, target_participant, _ = side_records[
                                 target_side
                             ]
+                            source_selector = participant_fragments[
+                                (source_interface, source_participant)
+                            ][-1]
+                            target_selector = participant_fragments[
+                                (target_interface, target_participant)
+                            ][0]
                             if source_interface == target_interface:
                                 raise RuntimeError(
                                     "Path-cover invariant violated: a "
@@ -914,9 +1900,7 @@ def _enumerate_multi_seed_candidates(
                             )
                             connection_payloads.append(
                                 {
-                                    "id": (
-                                        f"polymer_link_{link_index + 1:03d}"
-                                    ),
+                                    "id": f"polymer_link_{link_index + 1:03d}",
                                     "from": {
                                         "component": (
                                             f"seed__{source_interface}"
@@ -940,6 +1924,7 @@ def _enumerate_multi_seed_candidates(
                             )
                         payload: dict[str, Any] = {
                             "schema_version": 1,
+                            "task": "preserve_supplied_geometry",
                             "name": (
                                 f"{intent.name}-{symmetry_id.lower()}-"
                                 f"{candidate_index:04d}"
@@ -961,6 +1946,11 @@ def _enumerate_multi_seed_candidates(
                                 mode="json",
                                 exclude_none=True,
                             ),
+                            "preferences": intent.preferences.model_dump(
+                                mode="json",
+                                exclude_none=True,
+                            ),
+                            "assembly_shape": _assembly_shape_payload(intent),
                         }
                         if intent.output is not None:
                             payload["output"] = intent.output.model_dump(
@@ -974,7 +1964,9 @@ def _enumerate_multi_seed_candidates(
                         )
                         topology_valid = (
                             topology.is_valid_interface_unit_graph
-                            if hyperedge_frontend
+                            if declared_connections
+                            or hyperedge_frontend
+                            or multi_face_frontend
                             else topology.is_closed_alternating_cycle
                         )
                         if not topology_valid:
@@ -1032,9 +2024,14 @@ def _enumerate_multi_seed_candidates(
                                     else None
                                 ),
                                 resolution_frontend=(
-                                    "prepositioned_multi_interface_"
-                                    "hyperedge_v1"
-                                    if hyperedge_frontend
+                                    "user_declared_polymer_paths_v1"
+                                    if declared_connections
+                                    else "multi_face_polymer_unit_v1"
+                                    if multi_face_frontend
+                                    else (
+                                        "prepositioned_multi_interface_"
+                                        "hyperedge_v1"
+                                        if hyperedge_frontend
                                     else (
                                         "prepositioned_multi_binary_cn_"
                                         "experimental"
@@ -1042,6 +2039,7 @@ def _enumerate_multi_seed_candidates(
                                         else
                                         "prepositioned_multi_interface_"
                                         "finite_group_v1"
+                                    )
                                     )
                                 ),
                                 polymer_links=tuple(recorded_links),
@@ -1062,6 +2060,17 @@ def _enumerate_multi_seed_candidates(
                                     for interface_id, member_ids in sorted(
                                         hyperedge_members.items()
                                     )
+                                ),
+                                topology_search_complete=(
+                                    not topology_budget_truncated
+                                    and getattr(
+                                        hypothesis,
+                                        "search_complete",
+                                        True,
+                                    )
+                                ),
+                                supplied_interface_ids=(
+                                    supplied_interface_ids
                                 ),
                             )
                         )
@@ -1164,6 +2173,23 @@ def enumerate_simple_design_candidates(
         intent,
         allow_continuous_geometry=global_placement,
     )
+    if len(intent.interface_seeds) == 1:
+        _, only_seed = next(iter(intent.interface_seeds.items()))
+        if _requires_mixed_component_incidence(only_seed):
+            if global_placement:
+                raise NotImplementedError(
+                    "Mixed oligomer-component incidence currently requires "
+                    "one supplied coordinate frame; independent component "
+                    "pose optimization must first satisfy both stabilizers "
+                    "and the supplied natural interface"
+                )
+            return _enumerate_mixed_component_interface_candidates(
+                intent,
+                symmetry_ids=symmetry_ids,
+                seed_start=seed_start,
+                timesteps=timesteps,
+                max_candidates=max_candidates,
+            )
     if len(intent.interface_seeds) > 1:
         return _enumerate_multi_seed_candidates(
             intent,
@@ -1176,13 +2202,14 @@ def enumerate_simple_design_candidates(
         )
     interface_id, seed = _supported_seed(intent)
     if len(seed.participants) != 2:
-        raise NotImplementedError(
-            f"A single {len(seed.participants)}-participant interface "
-            "hyperedge "
-            "does not determine a unique polymer connectivity by itself. "
-            "Provide at least one additional supplied interface seed or use "
-            "expert connections; Mosaic will not invent covalent links "
-            "between participants of the same supplied interface"
+        return _enumerate_single_supplied_hyperedge_candidates(
+            intent,
+            interface_id=interface_id,
+            seed=seed,
+            symmetry_ids=symmetry_ids,
+            seed_start=seed_start,
+            timesteps=timesteps,
+            max_candidates=max_candidates,
         )
     symmetry_order = _resolver_symmetry_order(intent, symmetry_ids)
 
@@ -1221,6 +2248,7 @@ def enumerate_simple_design_candidates(
                 right_port = f"port__{interface_id}__right"
                 payload: dict[str, Any] = {
                     "schema_version": 1,
+                    "task": "preserve_supplied_geometry",
                     "name": (
                         f"{intent.name}-{symmetry_id.lower()}-"
                         f"{candidate_index:04d}"
@@ -1244,7 +2272,7 @@ def enumerate_simple_design_candidates(
                         component_id: {
                             "selectors": [selectors[left], selectors[right]],
                             "geometry": "joint_rigid",
-                            "pose": {"mode": "fixed"},
+                            "pose": _ordinary_component_pose(intent),
                         }
                     },
                     "ports": {
@@ -1305,6 +2333,10 @@ def enumerate_simple_design_candidates(
                     "resources": intent.resources.model_dump(
                         mode="json", exclude_none=True
                     ),
+                    "preferences": intent.preferences.model_dump(
+                        mode="json", exclude_none=True
+                    ),
+                    "assembly_shape": _assembly_shape_payload(intent),
                 }
                 if intent.output is not None:
                     payload["output"] = intent.output.model_dump(
@@ -1358,35 +2390,56 @@ def resolve_simple_intent(
     pose_optimization_levels: int = 3,
     pose_maximum_translation: float = 12.0,
     pose_maximum_rotation_deg: float = 25.0,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Resolve, rank and freeze ordinary candidates through the expert path."""
 
-    if pose_samples < 1:
+    if pose_samples is not None and pose_samples < 1:
         raise ValueError("pose_samples must be positive")
+    emit = progress if progress is not None else (lambda _message: None)
     output = Path(output_directory).expanduser().resolve()
+    emit("materializing supplied interface seeds")
     materialized = materialize_seed_library(
         intent,
         output / "_inputs",
     )
     working_intent = materialized.intent
-    if pose_samples != 1 and not materialized.independent_frames:
+    if (
+        pose_samples not in (None, 1)
+        and not materialized.independent_frames
+    ):
         raise NotImplementedError(
             "The first ordinary resolver keeps the supplied seed pose. "
             "Multiple global pose starts apply only to independently "
             "supplied seed files"
         )
+    diversity_pose_samples = {
+        "low": 4,
+        "medium": 8,
+        "high": 16,
+    }[working_intent.preferences.diversity.value]
     effective_pose_samples = (
-        max(8, pose_samples)
+        pose_samples
+        if materialized.independent_frames and pose_samples is not None
+        else diversity_pose_samples
         if materialized.independent_frames
         else 1
     )
     seed_records = _supported_binary_seeds(working_intent)
+    emit(
+        "validating "
+        f"{len(seed_records)} supplied interface geometries and termini"
+    )
     evidence_records = [
         _validated_input_evidence(working_intent, interface_id, seed)
         for interface_id, seed in seed_records
     ]
     if len(seed_records) > 1:
         _validate_multi_seed_backbone_anchors(working_intent)
+    emit(
+        "enumerating finite-group topology and pose starts "
+        f"({effective_pose_samples} pose samples)"
+    )
     candidates = enumerate_simple_design_candidates(
         working_intent,
         symmetry_ids=symmetry_ids,
@@ -1396,6 +2449,7 @@ def resolve_simple_intent(
         global_placement=materialized.independent_frames,
         pose_samples=effective_pose_samples,
     )
+    emit(f"enumerated {len(candidates)} candidate states")
     candidate_payloads = tuple(
         (candidate.candidate_id, candidate.design, candidate.metadata())
         for candidate in candidates
@@ -1405,6 +2459,10 @@ def resolve_simple_intent(
         and len(seed_records) > 1
     )
     if pose_optimization_applied:
+        emit(
+            "optimizing complete-seed SE(3) poses for the best "
+            f"{min(pose_optimize_top, len(candidate_payloads))} candidates"
+        )
         candidate_payloads = optimize_candidate_subset(
             candidate_payloads,
             top_count=pose_optimize_top,
@@ -1412,10 +2470,20 @@ def resolve_simple_intent(
             maximum_translation=pose_maximum_translation,
             maximum_rotation_deg=pose_maximum_rotation_deg,
         )
+        emit("continuous pose optimization finished")
+    emit(
+        "compiling, ranking and strictly replaying "
+        f"{len(candidate_payloads)} candidates"
+    )
     ranked = rank_design_candidates(
         candidate_payloads,
         output_directory,
         top_count=top_count,
+    )
+    emit(
+        "strict replay finished: "
+        f"accepted={ranked['accepted_count']} "
+        f"selected={ranked['selected_count']}"
     )
     normalized_intent_path = output / "normalized_intent.yaml"
     normalized_intent_path.write_text(
@@ -1449,7 +2517,13 @@ def resolve_simple_intent(
     manifest = {
         "schema_version": 1,
         "resolver": (
-            "rfd3_mosaic.independent_multi_interface_finite_group_v1"
+            "rfd3_mosaic.user_declared_polymer_global_pose_v1"
+            if multi_seed
+            and materialized.independent_frames
+            and working_intent.polymer_connections
+            else "rfd3_mosaic.user_declared_polymer_replay_v1"
+            if multi_seed and working_intent.polymer_connections
+            else "rfd3_mosaic.independent_multi_interface_finite_group_v1"
             if multi_seed
             and materialized.independent_frames
             and hyperedge_seed
@@ -1459,6 +2533,8 @@ def resolve_simple_intent(
             if multi_seed and hyperedge_seed
             else "rfd3_mosaic.prepositioned_multi_binary_cn_v1"
             if multi_seed
+            else "rfd3_mosaic.single_supplied_hyperedge_explicit_paths_v1"
+            if hyperedge_seed
             else "rfd3_mosaic.simple_binary_cn_ring_v1"
         ),
         "source_intent": str(source) if source is not None else None,
@@ -1472,6 +2548,17 @@ def resolve_simple_intent(
         "input_structure": str(working_intent.input),
         "input_structure_sha256": _sha256(working_intent.input),
         "seed_library": materialized.manifest,
+        "seed_layout": {
+            "requested": working_intent.seed_layout,
+            "relative_pose": (
+                "solve"
+                if materialized.independent_frames
+                else "preserve_input"
+            ),
+            "input_file_frames_ignored": (
+                materialized.independent_frames
+            ),
+        },
         "input_evidence": (
             evidence_records
             if multi_seed
@@ -1481,7 +2568,12 @@ def resolve_simple_intent(
         "execution_path": (
             "UserDesignSpec -> AssemblySpecification -> Mosaic-RFD3"
         ),
-        "automatic_selection": recommended is not None,
+        # A CPU score is a recommendation for inspection, never authority to
+        # execute a topology or protein-unit arrangement on the user's
+        # behalf.  This remains false even when only one replayable YAML is
+        # available.
+        "automatic_selection": False,
+        "cpu_recommendation_available": recommended is not None,
         "recommendation_scope": (
             "best_cpu_feasible_topology_and_initial_pose_before_diffusion"
         ),
@@ -1530,22 +2622,31 @@ def resolve_simple_intent(
             "hard_constraints": [
                 "zero_inter_group_hard_clashes",
                 "all_continuous_links_within_maximum_contour",
-                "all_linker_chords_clear_fixed_seed_atoms",
                 "all_required_input_interfaces_satisfied",
                 "all_required_static_objectives_satisfied",
                 "strict_frozen_replay",
             ],
+            "soft_ranking_preferences": [
+                "clear_straight_chord_linker_corridors",
+                "favourable_terminal_tangent_geometry",
+                "shorter_linker_endpoint_distances",
+                "larger_inter_group_clearance",
+            ],
         },
-        "selection_required": ranked["selected_count"] > 1,
+        "selection_required": ranked["selected_count"] > 0,
         "supported_contract": (
-            "several independent binary preserve_exact seed files; "
-            "canonical local frames; deterministic global pose starts; "
-            "bounded joint SE(3) refinement; path-cover; full-orbit Cn "
-            "winding"
+            "several user-supplied preserve_exact interface seeds; canonical "
+            "local frames; deterministic global finite-group pose starts; "
+            "bounded joint SE(3) refinement; polymer path-cover; no invented "
+            "interface identities"
             if multi_seed and materialized.independent_frames
             else "several disjoint pre-positioned binary preserve_exact "
             "seeds; bounded path-cover; full-orbit Cn winding"
             if multi_seed
+            else "one cooperative preserve_exact hyperedge; explicit "
+            "same-chain participant paths; no invented cross-participant "
+            "covalent links"
+            if hyperedge_seed
             else "one binary preserve_exact seed; full-orbit Cn ring"
         ),
         **ranked,

@@ -17,6 +17,7 @@ from rfd3_mosaic.schema.design import (
     UserDesignSpec,
 )
 from rfd3_mosaic.schema.specs import StrictModel
+from rfd3_mosaic.design_preferences import compile_design_preferences
 
 
 class ConstraintStage(str, Enum):
@@ -104,15 +105,25 @@ _CREATE_INTERFACE_ORBIT_POSE = FixedComponentPoseSpec(
 )
 
 
+_CREATE_INTERFACE_FREE_ORBIT_POSE = _CREATE_INTERFACE_ORBIT_POSE.model_copy(
+    update={"subspace": "bounded_se3"}
+)
+
+
 def _parameters(
     constraint: ConstraintClause,
     *,
     task: UserDesignTask | None = None,
     fixed_arrangement: FixedArrangementPolicy = FixedArrangementPolicy.LOCKED,
+    mobility_subspace: str | None = None,
 ) -> dict[str, object]:
     if isinstance(constraint, FixedXYZConstraint):
         pose = (
-            _CREATE_INTERFACE_ORBIT_POSE
+            (
+                _CREATE_INTERFACE_FREE_ORBIT_POSE
+                if mobility_subspace == "bounded_se3"
+                else _CREATE_INTERFACE_ORBIT_POSE
+            )
             if (
                 task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE
                 and fixed_arrangement
@@ -175,6 +186,8 @@ def _validate_exact_selector_conflicts(
 def compile_constraint_plan(design: UserDesignSpec) -> ConstraintPlan:
     """Compile constraints deterministically without choosing a backend."""
 
+    resolved_preferences = compile_design_preferences(design)
+
     legacy_operators = tuple(
         ConstraintOperatorPlan(
             id=f"constraint_{index:03d}",
@@ -205,6 +218,7 @@ def compile_constraint_plan(design: UserDesignSpec) -> ConstraintPlan:
                 constraint,
                 task=design.task,
                 fixed_arrangement=design.fixed_arrangement,
+                mobility_subspace=resolved_preferences.mobility_subspace,
             ),
         )
         for index, constraint in enumerate(design.constraints, start=1)

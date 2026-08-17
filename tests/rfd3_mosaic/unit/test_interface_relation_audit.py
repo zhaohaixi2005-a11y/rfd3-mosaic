@@ -194,6 +194,64 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             )
         )
 
+    def test_atomic_hyperedge_groups_member_edges_by_orbit_action(self) -> None:
+        """Pairwise runtime members remain one physical interface object."""
+
+        self._write_result()
+        compiled = self._compiled_input(
+            {
+                "mode": "reference_transform",
+                "from_reference_seed": True,
+                "translation_tolerance": 0.1,
+                "rotation_tolerance_deg": 1.0,
+            }
+        )
+        payload = json.loads(compiled.read_text(encoding="utf-8"))
+        members = []
+        for edge in payload["example"]["extra"][
+            "assembly_interface_relations"
+        ]:
+            for member_index in (1, 2):
+                member = dict(edge)
+                member["edge_instance_id"] = (
+                    f"three_way__member_{member_index:02d}"
+                    f"@orbit[{edge['source_copy_index']}]"
+                )
+                member["source_interface_id"] = (
+                    f"three_way__member_{member_index:02d}"
+                )
+                member["hyperedge_id"] = "three_way"
+                member["orbit_id"] = "motif_orbit"
+                member["action_copy_index"] = edge["source_copy_index"]
+                members.append(member)
+        payload["example"]["extra"][
+            "assembly_interface_relations"
+        ] = members
+        compiled.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_interface_relations(
+            compiled_input=compiled,
+            result_json=self.result_json,
+            result_structure=self.result_structure,
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["summary"]["interface_count"], 2)
+        self.assertEqual(report["summary"]["interface_hyperedge_count"], 1)
+        hyperedge = report["interface_hyperedges"][0]
+        self.assertEqual(hyperedge["hyperedge_id"], "three_way")
+        self.assertEqual(hyperedge["physical_instance_count"], 2)
+        self.assertEqual(hyperedge["member_edge_instance_count"], 4)
+        self.assertEqual(hyperedge["members_per_physical_instance"], [2])
+        self.assertTrue(hyperedge["satisfied"])
+        self.assertEqual(
+            {
+                (instance["orbit_id"], instance["action_copy_index"])
+                for instance in hyperedge["physical_instances"]
+            },
+            {("motif_orbit", 0), ("motif_orbit", 1)},
+        )
+
     def test_preserve_input_relation_detects_component_drift(self) -> None:
         self._write_result(right_shift=1.0)
         report = audit_interface_relations(

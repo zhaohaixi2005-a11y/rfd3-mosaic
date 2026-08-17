@@ -1,6 +1,62 @@
 # RFD3-Mosaic Current Product Status
 
-Last updated: 2026-08-11
+Last updated: 2026-08-17
+
+## Local development continuity
+
+Cluster availability is no longer a blocker for CPU engineering. A repository-
+local Python 3.12/CPU-PyTorch environment now runs the same editable Mosaic,
+RFD3 and Foundry sources used by the AI-cluster snapshot. Its acceptance gate
+is `make local-test`; GPU and scientific-quality claims still require frozen
+cluster canaries and are not inferred from local CPU success.
+
+## Current implementation checkpoint
+
+The latest compatibility-preserving pass closes three CPU execution gaps:
+
+- linker ranges are restored to exact symmetry-safe lengths before strict
+  replay, including one common length for every `tie_group`;
+- candidates outside the pose-optimization compute shortlist are no longer
+  rejected when they already pass the complete compiler contract;
+- ordinary diameter/cavity ranges now drive pose ranking and are checked
+  again on the final RFD3 structure.
+
+These changes retain all existing C3/D3/T, static quotient, fixed/mobile and
+packing paths. The repository-local Python 3.12 gate now passes 787 tests.
+The three-user-seed T resolver produces eight compiler-accepted hypotheses,
+selects one strict-replay candidate, and independently validates that frozen
+YAML as 10,416 atoms, 1,752 residues and 24 physical polymer chains with
+finite RFD3 runtime features. The remaining gate for this exact candidate is
+50-step CUDA execution and result audits after the AI cluster returns.
+
+The closeout order is deliberately one path, not another auxiliary sampler or
+submission script:
+
+```text
+complete local CPU unit suite
+-> ordinary three-seed T resolve
+-> exact restored-link lengths printed and stored in the manifest
+-> selected YAML strict replay + native RFD3 prevalidation
+-> one frozen 50-step GPU canary
+-> required supplied-interface, constraint, continuity, clash and shape audits
+```
+
+If a future resolve reports `accepted > 0` but `selected = 0`, the candidate's
+`replay_error` is the remaining compiler/runtime defect and must be fixed in
+the shared path. It must not be bypassed by manually editing the emitted
+contig, weakening a hard audit or submitting the provisional assembly.
+
+## Latest ordinary multi-interface evidence
+
+The real three-seed C3 engineering intent is CPU closed.  Resolution
+`three-seed-user-connected-c3-20260812T120807Z` produced 48 joint
+topology/pose candidates, accepted four, selected three strict-replay YAML
+files and validated rank 1 with three exact constraints, 2199 atoms, 357
+residues, nine chains and finite RFD3 runtime features.  This proves the
+ordinary resolver is not hard-coded to two supplied interfaces.  It does not
+yet prove a polyhedral cage.  The next explicit gate is two three-face protein
+units carrying three supplied interface types in T, followed by one 50-step
+GPU result whose complete required audit set passes.
 
 ## Executive status
 
@@ -121,9 +177,13 @@ compiler and sampler, but their geometry contracts are different:
 
 1. **Preserve a supplied interface** (`task: preserve_supplied_geometry`).
    The input already contains the functional cross-fragment or cross-subunit
-   interface. All fragments in one coupling group are restored by one joint
-   rigid correspondence while RFD3 generates only the declared missing
-   protein.
+   interface. Its two or more participants form one indivisible
+   `joint_rigid` hyperedge: their internal coordinates, relative orientation
+   and packing are restored together while RFD3 generates only the declared
+   missing protein. Participant termini may be scaffold endpoints, but are
+   never independently moved or re-paired. Different complete interface
+   seeds may still receive different whole-body poses during offline assembly
+   resolution; that does not alter either seed internally.
 2. **Create a new symmetric interface around a motif**
    (`task: create_symmetric_interface`). The input supplies an internally
    exact motif, not the desired final interface. RFD3 grows the declared
@@ -177,15 +237,38 @@ audit passes.
   interleaved cycles for disjoint binary seeds, uses every seed side exactly
   once and removes global rotation/reversal duplicates. Its output is
   topology-only and explicitly `executable: false`.
-- An experimental **pre-positioned multi-binary Cn bridge**. For several
+- A retained compatibility **pre-positioned multi-binary Cn bridge**. For several
   disjoint binary `preserve_exact` seeds that already share one authoritative
   input coordinate frame, it binds path-cover hypotheses to component/port/
   interface/connection graphs, enumerates chemical direction, closing seam
   and Cn winding, validates the expanded interface/unit graph, and sends each
   surviving candidate through normal static ranking, strict YAML replay and
-  native RFD3-adapter preflight. This is a narrow executable frontend, not
-  automatic cage pose discovery, and remains `schema_only` until the LRZ and
-  real-run gates below.
+  native RFD3-adapter preflight. This is the authoritative-input-layout branch
+  selected by `seed_layout: preserve_input`; it is no longer the boundary of
+  the unknown-pose resolver.
+- An explicit unknown-relative-pose contract for supplied seed libraries.
+  `seed_layout: auto` solves multiple independent source frames and preserves
+  a shared input frame; `solve` forces joint pose resolution even when the
+  seeds came from one PDB/mmCIF; `preserve_input` requires one meaningful
+  shared frame. Every complete seed is canonicalized as one rigid interface,
+  so the solver cannot alter its natural packing. Candidate metadata records
+  all supplied interface IDs and an invariant requires zero invented,
+  omitted or merged identities.
+- Multi-seed participants may contain any number of ordered, disjoint fixed
+  helices/fragments from one source chain. They remain one complete rigid
+  interface face; Mosaic generates only the ordered intra-chain gaps and the
+  user-declared or resolved links between seeds. Cross-chain covalent order
+  is never inferred in ordinary mode.
+- Deterministic global starts and continuous joint rigid-pose refinement are
+  now wired into that resolver. Cn/Dn retain the ring/layer initializer;
+  full-orbit T/O/I use a non-axis-biased spherical initializer. Every pose is
+  evaluated on the fully expanded assembly against required interface,
+  linker-contour, clash, closure and static-objective hard contracts before
+  strict YAML/hash replay. Straight endpoint-chord clearance is retained as
+  a soft routing/ranking signal because a flexible generated linker is not
+  constrained to that chord. Explicit stabilizer/coset
+  components still fail closed because they require stabilizer-aware local
+  frames.
 - Cross-seam fixed components now retain the selectors actually materialized
   in the ASU and resolve each supplied-seed member through its own relative
   native group action. A runtime prevalidation regression covers the real
@@ -198,16 +281,102 @@ audit passes.
 
 ## Not complete
 
-- General executable binding of several supplied interface seeds. The narrow
-  pre-positioned binary Cn case is joined end to end locally, but arbitrary
-  side ownership, unknown relative seed poses, homomer equivalence,
-  Dn/T/O/I actions and mixed component multiplicities are not.
-- Native three-or-more-participant relation/hyperedge lowering and runtime.
+### Supplied multi-interface seed resolver: staged checkpoint (2026-08-12)
+
+This module is not finished. Its current stage boundaries are:
+
+1. **Input and identity contract — implemented locally.** Users supply every
+   natural interface seed and its `auto`/exact/range physical usage.
+   `seed_layout` distinguishes authoritative shared coordinates from an
+   unknown relative-pose problem. Canonicalization moves a complete seed as
+   one rigid hyperedge, and candidate metadata requires exactly the supplied
+   interface IDs with `invented_interface_count: 0`.
+2. **Topology and finite-group hypothesis generation — implemented locally.**
+   The resolver enumerates polymer path/unit covers, assigns finite-group
+   relations, expands the complete interface/unit graph and rejects
+   disconnected lifts. A participant may now contain several ordered,
+   disjoint fixed ranges from one source chain; implicit covalent order across
+   unrelated source chains still fails closed. Automatic homomer equivalence
+   and heteromer component ownership remain unsupported.
+3. **Unknown relative pose — CPU executable for user-declared two-seed C3,
+   not yet GPU hardened.**
+   Deterministic Cn/Dn/T/O/I full-orbit starts and joint radius, azimuth,
+   axial and three-axis rotation refinement are wired to complete-assembly
+   linker/interface/clash/closure evaluation. The current bounded
+   coordinate/pattern search is not yet a globally reliable cage optimizer;
+   explicit stabilizer/coset component frames and cavity objectives still
+   fail closed.
+   The new authoritative `polymer_connections` path no longer enumerates
+   alternative participant pairings. LRZ run
+   `user-connected-two-seed-c3-20260812T114354Z` evaluated 32 global
+   topology/pose starts, accepted four and froze four strict-replay designs
+   while retaining the declared A1--B2/A2--B1 connection directions.
+4. **Freeze and replay — CPU validated on the real two-seed C3 intent.** Surviving
+   candidates are lowered to the normal expert graph, frozen as public YAML,
+   reloaded and required to match structure hashes and the RFD3 adapter. The
+   synchronized snapshot passed all 754 tests. Resolution directory
+   `two-seed-semantic-replay-20260812T103548Z` produced 16 hypotheses, accepted
+   four and validated rank 1 with 873 atoms, 153 residues, six chains and
+   finite runtime features. The frozen YAML explicitly records two complete
+   `joint_rigid` supplied interfaces as `preserve_input` and never emits a
+   generated `contact` target.
+5. **GPU and scientific quality — not yet closed for unknown-pose multi-seed
+   designs.** At least one 50-step canary must pass all required audits and
+   show the supplied interfaces, continuous chains and acceptable geometry.
+   A 200-step run plus an independent input/symmetry reproduction is required
+   before scientific validation.
+
+The multi-participant public representation is now atomic: a supplied
+interface may declare two or more ports in one `between` list. A connected
+compiler-generated `contact_pairs` tree feeds binary RFD3 compatibility
+features, while identity, requested use, symmetry multiplicity and audit
+grouping remain attached to one hyperedge. LRZ focused tests now validate the
+real PI25 three-participant C3/C3 quotient through standard-YAML standalone
+compile, strict replay and native RFD3 prevalidation. The complete stabilized
+trimer is represented as one preexpanded ASU with three transform-annotated
+polymer paths, avoiding both symmetry loss and erroneous nine-chain
+re-expansion. GPU execution is the next gate; native variadic sampler tensors
+are not claimed.
+
+For one multi-participant seed, ordinary resolution is executable only when
+each participant supplies an explicit same-chain ordered fragment path. This
+uses source-chain continuity as user-provided topology and generates only its
+missing intervals. Isolated interface sides do not authorize a guessed
+covalent graph. The portable real-structure gate is
+`lrz_simple_three_participant_c3_quotient_v100_50step_intent.yaml`, derived
+without coordinate changes from the PI25 C3 trimer contact patches; LRZ
+strict replay now passes and GPU closeout is pending.
+
+The immediate order is therefore: run one newly frozen 50-step canary from
+the validated rank-1 YAML, require complete supplied-interface, continuity,
+clash and scaffold audits, and only then continue with stabilizer-aware
+placement and component-equivalence inference. The CPU stages before that GPU
+gate are now complete.
+
+- General executable binding of several supplied interface seeds is CPU closed
+  for user-declared C3 examples and has reached strict replay for two- and
+  three-seed inputs. Unknown-relative full-orbit Cn/Dn/T/O/I starts and joint
+  pose optimization are implemented; the three-seed T case still needs the
+  compatibility-preserving linker restoration gate and representative GPU
+  evidence. Homomer equivalence, automatic heteromer ownership and
+  stabilizer-aware unknown-pose placement remain open and fail closed.
+- The two primary workflows remain intentionally distinct: supplied
+  multi-fragment interfaces are preserved exactly, while motif-only
+  `create_symmetric_interface` runs create new packing contacts. A hybrid run
+  that preserves some supplied interfaces and simultaneously creates other
+  new interface types in the same cage is not yet an ordinary-user contract;
+  it requires a mixed preserve/contact assembly task and joint GPU evidence.
+- Native variadic sampler tensors for three-or-more-participant relations.
+  Public hyperedge schema, compatibility lowering, physical multiplicity and
+  grouped audit are implemented locally; LRZ full-suite/strict replay and a
+  representative GPU closeout remain required.
 - Reliable packing-quality generation. Current guidance is more than a COM or
   radius pull, but repeated broad, well-oriented, all-atom interface evidence
   is still required.
-- Continuous joint optimization of radius, axial offset, azimuth, tilt and
-  twist for several interfaces.
+- Continuous joint optimization already searches component-wide translation
+  and rotation for several interfaces. Explicit stabilizer-frame placement
+  and systematic calibration of radius/axial/azimuth/tilt/twist schedules
+  across T/O/I remain open.
 - Vertex/edge/face stabilizers, cosets and mixed-multiplicity components.
 - Dynamic T production evidence; O and I GPU closure; helical semantics;
   high-order local-neighbourhood GPU equivalence.
@@ -226,7 +395,7 @@ audit passes.
 | Static C4/C2 quotient orbit | Frozen V100 runs 5742936 and 5742947 passed exact-target, two-coset, continuity, clash and scaffold gates | Dynamic quotient mobility and mixed full/quotient tasks remain separate modules |
 | New C3 generated interface | Run 5741271 completed; exact, interface-relation and scaffold audits passed | Final packing proxy and global pore/shape gate must pass on a new frozen run |
 | Pre-positioned two-seed C3 resolver | Run 5741324 completed inference; post-hoc multi-chain fixed audit recovered 273/273 atoms and all 6/6 supplied interface instances | Remove the six real CA clashes and obtain a newly frozen full PASS |
-| General multi-interface cage solver | Schema, graph and bounded Cn path-cover primitives only | Unknown-pose solving, multi-interface packing, stabilizer/coset and non-Cn GPU evidence |
+| General multi-interface cage solver | User-only seed identity invariant, hyperedge/path-cover topology, atomic public multi-participant relations, binary compatibility lowering, finite-group relations, explicit seed-layout policy, global full-orbit Cn/Dn/T/O/I starts, continuous pose refinement, earlier full 754-test LRZ suite and real two-seed C3 strict replay pass | Re-run the expanded LRZ suite, representative full PASS GPU result, then stabilizer-aware poses and native variadic sampler tensors |
 | O, I and helical production workflows | Registry/compiler or planned pieces only | Dedicated end-to-end GPU gates; they are not demo claims |
 
 Passing an earlier row must not be used as evidence for a later row. In
@@ -311,13 +480,17 @@ following are true for one frozen source snapshot:
 4. A newly rendered 50-step V100 or P100 run passes every required fixed-seed,
    symmetry, continuity, clash and scaffold audit. A second independent input
    or a second Cn order reproduces the result without source-specific code.
-5. Documentation and reports identify the input coordinates as pre-positioned
-   and never imply automatic radius/orientation/tilt optimization.
+5. Documentation and reports record the resolved `seed_layout` contract. For
+   `preserve_input`, the shared input coordinates are authoritative. For
+   `solve`, the report records canonicalization, initialization, continuous
+   pose optimization and the frozen replay candidate without implying that an
+   unvalidated candidate is a successful cage.
 
-Even after this gate, the capability is not a general cage solver. Unknown
-relative seed poses, three-or-more-participant relations, homomer equivalence,
-stabilizer/coset orbits, T/O/I winding, dynamic multi-seed refinement and
-sequence/refolding validation remain separate milestones.
+Even after this gate, the capability is not yet a universally validated cage
+solver. Full-orbit unknown relative seed poses are implemented locally, but
+three-or-more-participant native runtime, homomer/heteromer equivalence,
+stabilizer/coset component orbits, broad T/O/I GPU evidence, dynamic multi-seed
+refinement and sequence/refolding validation remain separate milestones.
 
 The authoritative detailed history remains in `DEVELOPMENT_STATUS.md`; the
 long-term architecture and release gates are in

@@ -722,26 +722,24 @@ converted into one joint-rigid component, two ports, one supplied-interface
 edge and one adjacent-copy scaffold link. Direction/offset alternatives are
 ranked and strict-replayed rather than hidden.
 
-The next bounded part of item 2 is implemented locally as
-`prepositioned_multi_binary_cn_v1`. It accepts several disjoint binary
-preserve-exact seeds from one authoritative coordinate frame, requires
-complete boundary backbone anchors, enumerates canonical path covers plus
-chemical directions/closing seams/Cn windings, lowers them to ordinary expert
-graphs, validates the expanded interface/unit topology, and then uses the
-existing linker/clash/closure ranking and strict replay. This bridge is
-experimental and `schema_only`; it has not yet crossed its complete LRZ and
-real GPU evidence gates.
+The earlier bounded part of item 2 remains available as the
+`seed_layout: preserve_input` compatibility path. The current local resolver
+also accepts `seed_layout: solve`: it canonicalizes each supplied interface as
+one rigid hyperedge, enumerates path/group hypotheses, initializes full-orbit
+Cn/Dn/T/O/I poses, jointly optimizes rigid pose variables and passes survivors
+through the same linker/clash/closure and strict-replay gates. Interface IDs
+remain exactly user supplied; invention, omission or merging is rejected.
 
 The distinction is non-negotiable: `PolymerPathCoverHypothesis` alone remains
 `executable: false`, because it proves only that every seed side participates
-in one alternating combinatorial cycle. The pre-positioned bridge becomes
-executable only for the restricted Cn case by adding input-contact evidence,
-backbone anchors, explicit symmetry winding, `UserDesignSpec` lowering,
-expanded topology validation and strict replay. It does not optimize radius,
-orientation, tilt or axial pose, prove homomer equivalence, lower hyperedges,
-or cover Dn/T/O/I and stabilizer/coset architectures.
+in one alternating combinatorial cycle. A candidate becomes executable only
+after real backbone anchors, finite-group relations, concrete scalar poses,
+`UserDesignSpec` lowering, expanded topology validation and strict replay are
+present. Unknown-pose full-orbit optimization does not yet prove homomer or
+heteromer equivalence, lower native 3+ participant hyperedges, or solve
+stabilizer/coset component frames.
 
-### 70% gate for pre-positioned multi-binary Cn resolution
+### Engineering promotion gate for supplied multi-seed resolution
 
 This narrow capability may be called 70% engineering-complete only when:
 
@@ -755,13 +753,14 @@ This narrow capability may be called 70% engineering-complete only when:
 4. a newly rendered 50-step V100/P100 run passes every required fixed-seed,
    symmetry, continuity and scaffold audit, followed by a second input or Cn
    order without source-specific code; and
-5. manifests, CLI output and documentation retain the word
-   **pre-positioned** and list the unsupported pose/search semantics.
+5. manifests, CLI output and documentation record `seed_layout`, every
+   supplied interface identity, zero invented identities, the resolved pose
+   provenance and all unsupported semantics.
 
-Crossing this gate does not promote general multi-interface cage solving.
-The next work remains continuous multi-seed pose search, component-type and
-homomer/heteromer inference, relation hyperedges, stabilizer/coset orbits,
-Dn/T/O/I execution and downstream sequence/refolding validation.
+Crossing this gate validates one full-orbit multi-seed execution slice; it does
+not promote universal cage solving. Remaining work includes component-type and
+homomer/heteromer inference, native relation hyperedges, stabilizer/coset
+orbits, broad Dn/T/O/I GPU evidence and downstream sequence/refolding.
 
 ## Historical first implementation order
 

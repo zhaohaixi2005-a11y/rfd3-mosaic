@@ -23,6 +23,7 @@ def audit_scaffold_geometry(
     ca_clash_distance: float = 3.0,
     expected_symmetry_multiplicity: int | None = None,
     expected_symmetry_transforms: tuple[np.ndarray, ...] | None = None,
+    expected_symmetry_chain_layout: tuple[dict[str, Any], ...] | None = None,
     max_chain_distance_matrix_rmsd: float = 0.01,
     max_chain_distance_matrix_error: float = 0.03,
     max_symmetry_coordinate_rmsd: float = 0.01,
@@ -53,7 +54,11 @@ def audit_scaffold_geometry(
     chains: list[dict[str, Any]] = []
     ca_coordinates_by_chain: dict[str, np.ndarray] = {}
     ca_records: list[tuple[str, int, np.ndarray]] = []
-    for chain_id, chain_residues in sorted(by_chain.items()):
+    # Preserve the chain order emitted by the compiler.  Lexicographic
+    # sorting is incorrect once chain identifiers pass Z (AA sorts before B)
+    # and breaks the one-to-one correspondence with a preexpanded mixed-orbit
+    # layout.
+    for chain_id, chain_residues in by_chain.items():
         cn_distances: list[float] = []
         ca_steps: list[float] = []
         breaks: list[dict[str, Any]] = []
@@ -230,12 +235,68 @@ def audit_scaffold_geometry(
                 validated_symmetry_transforms = tuple(
                     normalized_transforms
                 )
-        ordered_chain_ids = sorted(ca_coordinates_by_chain)
-        if (
+        ordered_chain_ids = list(ca_coordinates_by_chain)
+        orbit_chain_layouts: list[list[tuple[str, int, bool]]] = []
+        if expected_symmetry_chain_layout is not None:
+            if len(expected_symmetry_chain_layout) != len(ordered_chain_ids):
+                symmetry_failures.append(
+                    "declared preexpanded chain layout length does not match "
+                    f"output chain count: {len(expected_symmetry_chain_layout)} "
+                    f"!= {len(ordered_chain_ids)}"
+                )
+            else:
+                by_entity: dict[int, list[tuple[str, int, bool]]] = (
+                    defaultdict(list)
+                )
+                for chain_id, record in zip(
+                    ordered_chain_ids,
+                    expected_symmetry_chain_layout,
+                    strict=True,
+                ):
+                    try:
+                        entity_id = int(record["entity_id"])
+                        transform_index = int(record["transform_index"])
+                    except (KeyError, TypeError, ValueError) as error:
+                        symmetry_failures.append(
+                            "preexpanded chain layout records require integer "
+                            "entity_id and transform_index"
+                        )
+                        break
+                    if not 0 <= transform_index < expected_symmetry_multiplicity:
+                        symmetry_failures.append(
+                            f"chain {chain_id} has out-of-range transform "
+                            f"index {transform_index}"
+                        )
+                        continue
+                    by_entity[entity_id].append(
+                        (
+                            chain_id,
+                            transform_index,
+                            bool(record.get("is_asu", False)),
+                        )
+                    )
+                for entity_id, records in sorted(by_entity.items()):
+                    if len({item[1] for item in records}) != len(records):
+                        symmetry_failures.append(
+                            f"preexpanded entity {entity_id} repeats a "
+                            "symmetry transform"
+                        )
+                        continue
+                    asu_records = [item for item in records if item[2]]
+                    if len(asu_records) != 1:
+                        symmetry_failures.append(
+                            f"preexpanded entity {entity_id} requires exactly "
+                            f"one ASU chain; observed {len(asu_records)}"
+                        )
+                        continue
+                    reference = asu_records[0]
+                    orbit_chain_layouts.append(
+                        [reference]
+                        + [item for item in records if item != reference]
+                    )
+        elif (
             len(ordered_chain_ids) == 0
-            or len(ordered_chain_ids)
-            % expected_symmetry_multiplicity
-            != 0
+            or len(ordered_chain_ids) % expected_symmetry_multiplicity != 0
         ):
             symmetry_failures.append(
                 "chain count is not divisible by expected symmetry "
@@ -245,121 +306,119 @@ def audit_scaffold_geometry(
             asu_chain_count = (
                 len(ordered_chain_ids) // expected_symmetry_multiplicity
             )
-            for asu_chain_index in range(asu_chain_count):
-                orbit_chain_ids = [
-                    ordered_chain_ids[
-                        copy_index * asu_chain_count + asu_chain_index
-                    ]
-                    for copy_index in range(
-                        expected_symmetry_multiplicity
+            orbit_chain_layouts = [
+                [
+                    (
+                        ordered_chain_ids[
+                            copy_index * asu_chain_count + asu_chain_index
+                        ],
+                        copy_index,
+                        copy_index == 0,
                     )
+                    for copy_index in range(expected_symmetry_multiplicity)
                 ]
-                reference_id = orbit_chain_ids[0]
-                reference_coordinates = ca_coordinates_by_chain[
-                    reference_id
+                for asu_chain_index in range(asu_chain_count)
+            ]
+
+        for orbit_chain_layout in orbit_chain_layouts:
+            reference_id, reference_transform_index, _ = (
+                orbit_chain_layout[0]
+            )
+            reference_coordinates = ca_coordinates_by_chain[
+                reference_id
+            ]
+            if not len(reference_coordinates):
+                symmetry_failures.append(
+                    f"reference chain {reference_id} has no CA atoms"
+                )
+                continue
+            reference_distances = np.linalg.norm(
+                reference_coordinates[:, None, :]
+                - reference_coordinates[None, :, :],
+                axis=-1,
+            )
+            for observed_id, transform_index, _ in orbit_chain_layout[1:]:
+                observed_coordinates = ca_coordinates_by_chain[
+                    observed_id
                 ]
-                if not len(reference_coordinates):
+                if (
+                    observed_coordinates.shape
+                    != reference_coordinates.shape
+                ):
                     symmetry_failures.append(
-                        f"reference chain {reference_id} has no CA atoms"
+                        f"chains {reference_id} and {observed_id} "
+                        "have different CA counts"
                     )
                     continue
-                reference_distances = np.linalg.norm(
-                    reference_coordinates[:, None, :]
-                    - reference_coordinates[None, :, :],
+                observed_distances = np.linalg.norm(
+                    observed_coordinates[:, None, :]
+                    - observed_coordinates[None, :, :],
                     axis=-1,
                 )
-                for copy_index, observed_id in enumerate(
-                    orbit_chain_ids[1:],
-                    start=1,
-                ):
-                    observed_coordinates = ca_coordinates_by_chain[
-                        observed_id
-                    ]
-                    if (
-                        observed_coordinates.shape
-                        != reference_coordinates.shape
-                    ):
-                        symmetry_failures.append(
-                            f"chains {reference_id} and {observed_id} "
-                            "have different CA counts"
-                        )
-                        continue
-                    observed_distances = np.linalg.norm(
-                        observed_coordinates[:, None, :]
-                        - observed_coordinates[None, :, :],
-                        axis=-1,
+                difference = observed_distances - reference_distances
+                rmsd = float(np.sqrt(np.mean(np.square(difference))))
+                maximum = float(np.max(np.abs(difference)))
+                passed = (
+                    rmsd <= max_chain_distance_matrix_rmsd
+                    and maximum <= max_chain_distance_matrix_error
+                )
+                copy_internal_comparisons.append(
+                    {
+                        "reference_chain": reference_id,
+                        "observed_chain": observed_id,
+                        "ca_count": len(reference_coordinates),
+                        "distance_matrix_rmsd": rmsd,
+                        "maximum_distance_matrix_error": maximum,
+                        "passed": passed,
+                    }
+                )
+                if validated_symmetry_transforms is None:
+                    continue
+                reference_transform = np.asarray(
+                    validated_symmetry_transforms[
+                        reference_transform_index
+                    ],
+                    dtype=float,
+                )
+                observed_transform = np.asarray(
+                    validated_symmetry_transforms[transform_index],
+                    dtype=float,
+                )
+                relative_transform = (
+                    observed_transform @ np.linalg.inv(reference_transform)
+                )
+                expected_coordinates = (
+                    reference_coordinates @ relative_transform[:3, :3].T
+                    + relative_transform[:3, 3]
+                )
+                coordinate_errors = np.linalg.norm(
+                    observed_coordinates - expected_coordinates,
+                    axis=-1,
+                )
+                coordinate_rmsd = float(
+                    np.sqrt(np.mean(np.square(coordinate_errors)))
+                )
+                coordinate_maximum = float(np.max(coordinate_errors))
+                transform_passed = (
+                    coordinate_rmsd <= max_symmetry_coordinate_rmsd
+                    and coordinate_maximum <= max_symmetry_coordinate_error
+                )
+                transform_comparisons.append(
+                    {
+                        "reference_chain": reference_id,
+                        "observed_chain": observed_id,
+                        "runtime_transform_id": transform_index,
+                        "ca_count": len(reference_coordinates),
+                        "coordinate_rmsd": coordinate_rmsd,
+                        "maximum_coordinate_error": coordinate_maximum,
+                        "passed": transform_passed,
+                    }
+                )
+                if not transform_passed:
+                    symmetry_failures.append(
+                        f"chains {reference_id}/{observed_id} do not "
+                        "satisfy the declared symmetry transform"
                     )
-                    difference = (
-                        observed_distances - reference_distances
-                    )
-                    rmsd = float(
-                        np.sqrt(np.mean(np.square(difference)))
-                    )
-                    maximum = float(np.max(np.abs(difference)))
-                    passed = (
-                        rmsd <= max_chain_distance_matrix_rmsd
-                        and maximum <= max_chain_distance_matrix_error
-                    )
-                    copy_internal_comparisons.append(
-                        {
-                            "reference_chain": reference_id,
-                            "observed_chain": observed_id,
-                            "ca_count": len(reference_coordinates),
-                            "distance_matrix_rmsd": rmsd,
-                            "maximum_distance_matrix_error": maximum,
-                            "passed": passed,
-                        }
-                    )
-                    if validated_symmetry_transforms is None:
-                        continue
-                    reference_transform = np.asarray(
-                        validated_symmetry_transforms[0],
-                        dtype=float,
-                    )
-                    observed_transform = np.asarray(
-                        validated_symmetry_transforms[copy_index],
-                        dtype=float,
-                    )
-                    relative_transform = (
-                        observed_transform
-                        @ np.linalg.inv(reference_transform)
-                    )
-                    expected_coordinates = (
-                        reference_coordinates
-                        @ relative_transform[:3, :3].T
-                        + relative_transform[:3, 3]
-                    )
-                    coordinate_errors = np.linalg.norm(
-                        observed_coordinates - expected_coordinates,
-                        axis=-1,
-                    )
-                    coordinate_rmsd = float(
-                        np.sqrt(np.mean(np.square(coordinate_errors)))
-                    )
-                    coordinate_maximum = float(
-                        np.max(coordinate_errors)
-                    )
-                    transform_passed = (
-                        coordinate_rmsd <= max_symmetry_coordinate_rmsd
-                        and coordinate_maximum
-                        <= max_symmetry_coordinate_error
-                    )
-                    transform_comparisons.append(
-                        {
-                            "reference_chain": reference_id,
-                            "observed_chain": observed_id,
-                            "runtime_transform_id": copy_index,
-                            "ca_count": len(reference_coordinates),
-                            "coordinate_rmsd": coordinate_rmsd,
-                            "maximum_coordinate_error": coordinate_maximum,
-                            "passed": transform_passed,
-                        }
-                    )
-                    if not transform_passed:
-                        symmetry_failures.append(
-                            f"chains {reference_id}/{observed_id} do not "
-                            "satisfy the declared symmetry transform"
-                        )
     passed_symmetry = (
         True
         if expected_symmetry_multiplicity is None
@@ -475,6 +534,11 @@ def audit_scaffold_geometry(
             "ca_clash_distance": ca_clash_distance,
             "expected_symmetry_multiplicity": (
                 expected_symmetry_multiplicity
+            ),
+            "expected_symmetry_chain_layout": (
+                list(expected_symmetry_chain_layout)
+                if expected_symmetry_chain_layout is not None
+                else None
             ),
             "max_chain_distance_matrix_rmsd": (
                 max_chain_distance_matrix_rmsd

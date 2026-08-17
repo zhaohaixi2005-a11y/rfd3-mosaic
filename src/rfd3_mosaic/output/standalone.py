@@ -414,6 +414,7 @@ def _analyze_scaffold_link_geometry(
             {
                 "link_instance_id": link.id,
                 "source_link_id": link.source_id,
+                "tie_group": link.tie_group,
                 "from_fragment_instance_id": (
                     link.from_fragment_instance_id
                 ),
@@ -470,10 +471,130 @@ def _analyze_scaffold_link_geometry(
                 "chain_break": link.chain_break,
             }
         )
+    source_link_bindings: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        if bool(report["chain_break"]):
+            continue
+        source_id = str(report["source_link_id"])
+        entry = source_link_bindings.setdefault(
+            source_id,
+            {
+                "source_link_id": source_id,
+                "tie_group": report.get("tie_group"),
+                "configured_minimum_length": int(
+                    report["configured_minimum_length"]
+                ),
+                "configured_maximum_length": int(
+                    report["configured_maximum_length"]
+                ),
+                "physical_instance_ids": [],
+                "minimum_required_residues_by_instance": {},
+            },
+        )
+        configured = (
+            int(report["configured_minimum_length"]),
+            int(report["configured_maximum_length"]),
+        )
+        expected = (
+            entry["configured_minimum_length"],
+            entry["configured_maximum_length"],
+        )
+        if configured != expected:
+            raise ValueError(
+                "Symmetry instances of scaffold link "
+                f"{source_id!r} have inconsistent configured ranges"
+            )
+        if report.get("tie_group") != entry["tie_group"]:
+            raise ValueError(
+                "Symmetry instances of scaffold link "
+                f"{source_id!r} have inconsistent tie groups"
+            )
+        instance_id = str(report["link_instance_id"])
+        entry["physical_instance_ids"].append(instance_id)
+        entry["minimum_required_residues_by_instance"][instance_id] = int(
+            report["minimum_required_residues_at_3_8A"]
+        )
+    for entry in source_link_bindings.values():
+        minimum = int(entry["configured_minimum_length"])
+        maximum = int(entry["configured_maximum_length"])
+        midpoint = (minimum + maximum) // 2
+        requirements = tuple(
+            int(value)
+            for value in entry[
+                "minimum_required_residues_by_instance"
+            ].values()
+        )
+        required = max(requirements)
+        selected = max(midpoint, required)
+        entry["required_minimum_over_physical_instances"] = required
+        entry["automatic_materialized_length"] = selected
+        entry["automatic_materialization_feasible"] = selected <= maximum
+        entry["automatic_materialization_policy"] = (
+            "user_exact"
+            if minimum == maximum
+            else "configured_range_midpoint"
+            if selected == midpoint
+            else "configured_range_contour_sufficient"
+        )
+    tie_group_bindings: dict[str, dict[str, Any]] = {}
+    for source in source_link_bindings.values():
+        tie_group = source.get("tie_group")
+        if tie_group is None:
+            continue
+        entry = tie_group_bindings.setdefault(
+            str(tie_group),
+            {
+                "tie_group": str(tie_group),
+                "source_link_ids": [],
+                "common_configured_minimum_length": 0,
+                "common_configured_maximum_length": 2**31 - 1,
+                "required_minimum_over_all_physical_instances": 0,
+            },
+        )
+        entry["source_link_ids"].append(source["source_link_id"])
+        entry["common_configured_minimum_length"] = max(
+            int(entry["common_configured_minimum_length"]),
+            int(source["configured_minimum_length"]),
+        )
+        entry["common_configured_maximum_length"] = min(
+            int(entry["common_configured_maximum_length"]),
+            int(source["configured_maximum_length"]),
+        )
+        entry["required_minimum_over_all_physical_instances"] = max(
+            int(entry["required_minimum_over_all_physical_instances"]),
+            int(source["required_minimum_over_physical_instances"]),
+        )
+    for entry in tie_group_bindings.values():
+        minimum = int(entry["common_configured_minimum_length"])
+        maximum = int(entry["common_configured_maximum_length"])
+        required = int(
+            entry["required_minimum_over_all_physical_instances"]
+        )
+        midpoint = (minimum + maximum) // 2
+        selected = max(midpoint, required)
+        entry["automatic_materialized_length"] = selected
+        entry["automatic_materialization_feasible"] = (
+            minimum <= maximum and selected <= maximum
+        )
+        entry["source_link_ids"].sort()
+        entry["is_effective_multi_link_tie"] = (
+            len(entry["source_link_ids"]) > 1
+        )
+    infeasible_tie_groups = sorted(
+        tie_group
+        for tie_group, entry in tie_group_bindings.items()
+        if not bool(entry["automatic_materialization_feasible"])
+    )
     return {
         "all_continuous_links_within_maximum_contour": not infeasible_links,
+        "all_generated_link_constraints_materializable": (
+            not infeasible_links and not infeasible_tie_groups
+        ),
         "infeasible_link_instances": infeasible_links,
+        "infeasible_tie_groups": infeasible_tie_groups,
         "links": reports,
+        "source_link_bindings": source_link_bindings,
+        "tie_group_bindings": tie_group_bindings,
         "note": (
             "These are fixed-boundary and straight-chord proxy descriptors "
             "for one generated protomer segment. They are necessary CPU "
@@ -512,6 +633,8 @@ def _analyze_symmetry_cavities(
             axial_coordinates.max() - axial_coordinates.min()
         )
         maximum_axis_extent = float(radial_distances.max())
+        center_distances = np.linalg.norm(relative, axis=1)
+        maximum_center_extent = float(center_distances.max())
         radial_thickness = float(
             maximum_axis_extent - radial_distances.min()
         )
@@ -547,8 +670,10 @@ def _analyze_symmetry_cavities(
                     }
                 ),
                 "central_void_radius": float(
-                    np.linalg.norm(relative, axis=1).min()
+                    center_distances.min()
                 ),
+                "maximum_center_extent": maximum_center_extent,
+                "outer_diameter": 2.0 * maximum_center_extent,
                 "minimum_axis_clearance": float(
                     radial_distances.min()
                 ),
@@ -654,6 +779,12 @@ def _analyze_interface_edges(
             "right_port_instance_id": edge.right_port_instance_id,
             "source_copy_index": edge.source_copy_index,
             "target_copy_index": edge.target_copy_index,
+            "action_copy_index": edge.action_copy_index,
+            "action_transform_id": edge.action_transform_id,
+            "left_orbit_id": edge.left_orbit_id,
+            "right_orbit_id": edge.right_orbit_id,
+            "left_transform_index": edge.left_transform_index,
+            "right_transform_index": edge.right_transform_index,
             "satisfaction_stage": edge.satisfaction_stage,
             "centroid_distance": float(
                 np.linalg.norm(
@@ -861,11 +992,23 @@ def _sha256(path: Path) -> str:
 
 
 def _chain_id(index: int) -> str:
-    """Return A..Z, AA..AZ, BA... for a zero-based chain index."""
+    """Return RFD3-safe A..Z, a..z, then extended mmCIF identifiers.
+
+    AtomWorks' current contig grammar accepts one-letter chain identifiers.
+    Mixed preexpanded cages can easily need more than 26 source fragment
+    chains, so consume the lowercase alphabet before falling back to general
+    mmCIF identifiers.  The adapter separately fails closed if an executable
+    contig would reference an extended identifier.
+    """
 
     if index < 0:
         raise ValueError("Chain index cannot be negative")
-    value = index + 1
+    single = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    if index < len(single):
+        return single[index]
+    # Continue with AA after the 52 single-character identifiers.  Using the
+    # original spreadsheet-style value 27 avoids colliding with A..Z.
+    value = index - 25
     characters: list[str] = []
     while value:
         value, remainder = divmod(value - 1, 26)
@@ -1210,6 +1353,13 @@ def _interface_constraint_groups(
                 "source_interface_id": edge.source_id,
                 "hyperedge_id": edge.hyperedge_id or edge.source_id,
                 "orbit_id": edge.orbit_id,
+                "transform_set_id": edge.transform_set_id,
+                "action_copy_index": edge.action_copy_index,
+                "action_transform_id": edge.action_transform_id,
+                "left_orbit_id": edge.left_orbit_id,
+                "right_orbit_id": edge.right_orbit_id,
+                "left_transform_index": edge.left_transform_index,
+                "right_transform_index": edge.right_transform_index,
                 "source_copy_index": edge.source_copy_index,
                 "target_copy_index": edge.target_copy_index,
                 "left_port_instance_id": edge.left_port_instance_id,

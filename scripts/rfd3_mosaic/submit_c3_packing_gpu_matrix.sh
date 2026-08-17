@@ -17,7 +17,9 @@ designs=(
 if (( $# > 0 )); then
   profiles=("$@")
 else
-  profiles=(a100_80g h100)
+  # V100/P100 queues are the default fast evidence path.  Pass a100_80g or
+  # h100 explicitly when those queues are available.
+  profiles=(v100 p100)
 fi
 
 for profile in "${profiles[@]}"; do

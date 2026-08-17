@@ -1226,6 +1226,27 @@ class OrbitRigidMotifController:
                     translations=tuple(proposed_translations),
                     config=config,
                 )
+                initial_pose_energy = torch.zeros_like(initial_total)
+                proposed_pose_energy = torch.zeros_like(proposed_total)
+                if pose_energy is not None:
+                    initial_pose_energy = pose_energy(baseline_target)
+                    proposed_pose_energy = pose_energy(candidate_target)
+                    for name, value in (
+                        ("initial", initial_pose_energy),
+                        ("proposed", proposed_pose_energy),
+                    ):
+                        if value.ndim != 0 or not torch.isfinite(value):
+                            raise ValueError(
+                                "Additional joint motif pose energy must "
+                                f"be one finite scalar ({name})"
+                            )
+                    # The local SE(3) gradient above already contains this
+                    # packing term.  The atomic multi-orbit acceptance must
+                    # compare that same objective; otherwise a
+                    # packing-improving pose is silently rejected whenever
+                    # the scaffold-only term rises by any amount.
+                    initial_total = initial_total + initial_pose_energy
+                    proposed_total = proposed_total + proposed_pose_energy
             any_candidate = any(
                 proposal is not None and proposal.accepted
                 for proposal in proposals
@@ -1245,6 +1266,23 @@ class OrbitRigidMotifController:
                     ),
                     "initial_energy": initial_terms,
                     "proposed_energy": proposed_terms,
+                    "additional_pose_energy": {
+                        "initial": float(
+                            initial_pose_energy.detach().cpu().item()
+                        ),
+                        "proposed": float(
+                            proposed_pose_energy.detach().cpu().item()
+                        ),
+                        "delta": float(
+                            (
+                                proposed_pose_energy
+                                - initial_pose_energy
+                            )
+                            .detach()
+                            .cpu()
+                            .item()
+                        ),
+                    },
                     "joint_energy_delta": (
                         float(proposed_total.detach().cpu().item())
                         - float(initial_total.detach().cpu().item())
@@ -1325,12 +1363,14 @@ class OrbitRigidMotifController:
         pose_snapshot = self._mobile_pose_snapshot()
         patch_snapshot = dict(patch_state.assignments)
         patch_locked_snapshot = bool(patch_state.locked)
+        patch_lock_reason_snapshot = patch_state.lock_reason
 
         def rollback_mutable_state() -> None:
             self._restore_mobile_pose_snapshot(pose_snapshot)
             patch_state.assignments.clear()
             patch_state.assignments.update(patch_snapshot)
             patch_state.locked = patch_locked_snapshot
+            patch_state.lock_reason = patch_lock_reason_snapshot
             self.last_update_applied = False
 
         baseline_target = self.materialize_target()

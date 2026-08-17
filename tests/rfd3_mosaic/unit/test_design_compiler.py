@@ -15,6 +15,11 @@ from rfd3_mosaic.design_compiler import (
     parse_public_selector,
 )
 from rfd3_mosaic.schema import AssemblySpecification, UserDesignSpec
+from rfd3_mosaic.geometry import build_transform_registry
+from rfd3_mosaic.topology.component_incidence import (
+    enumerate_binary_interface_incidence_plans,
+)
+from rfd3_mosaic.topology.symmetry_connectivity import finite_symmetry_spec
 
 
 def _atom_line(
@@ -142,6 +147,52 @@ class DesignCompilerTestCase(unittest.TestCase):
             spec.symmetry.transform_sets["declared"].order,
             3,
         )
+
+    def test_lowers_assembly_size_intent_to_required_static_objectives(
+        self,
+    ) -> None:
+        lowered = lower_user_design(
+            self._design(
+                assembly_shape={
+                    "diameter_angstrom": {
+                        "minimum": 40.0,
+                        "maximum": 80.0,
+                    },
+                    "cavity_diameter_angstrom": {
+                        "minimum": 10.0,
+                        "maximum": 30.0,
+                    },
+                },
+                generation=[
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "c",
+                        "length": 20,
+                    }
+                ],
+                constraints=[
+                    {"kind": "fixed_xyz", "selector": "A1-2"},
+                ],
+            )
+        )
+
+        objectives = lowered.specification.objectives
+        outer = objectives["assembly_outer_diameter"]
+        cavity = objectives["assembly_cavity_diameter"]
+        self.assertEqual(outer.metric, "assemblies.outer_diameter")
+        self.assertEqual(outer.mode.value, "range")
+        self.assertEqual((outer.minimum, outer.maximum), (40.0, 80.0))
+        self.assertTrue(outer.required)
+        self.assertEqual(
+            cavity.metric,
+            "cavities.minimum_central_void_diameter",
+        )
+        self.assertEqual(
+            (cavity.minimum, cavity.maximum),
+            (10.0, 30.0),
+        )
+        self.assertTrue(cavity.required)
 
     def test_optimized_task_automatically_moves_axis_degenerate_motif(
         self,
@@ -880,6 +931,153 @@ class DesignCompilerTestCase(unittest.TestCase):
                 )
                 self.assertEqual(len(instances.fragments), order)
                 self.assertEqual(len(instances.generated_segments), order)
+
+    def test_component_finite_actions_lower_as_independent_orbits(
+        self,
+    ) -> None:
+        plan = next(
+            item
+            for item in enumerate_binary_interface_incidence_plans(
+                symmetry="T",
+                interface_id="natural_interface",
+                left_participant="alpha",
+                right_participant="beta",
+            )
+            if (item.left.valency, item.right.valency) == (2, 3)
+        )
+
+        def action_payload(participant_plan):
+            action = participant_plan.action
+            return {
+                "coset_representative_ids": (
+                    action.coset_representative_ids
+                ),
+                "stabilizer_transform_ids": (
+                    action.stabilizer_transform_ids
+                ),
+                "transform_to_coset_representative": dict(
+                    action.transform_to_coset_representative
+                ),
+            }
+
+        registry = build_transform_registry(finite_symmetry_spec("T"))
+        lines: list[str] = []
+        serial = 1
+        component_chains = (
+            ("alpha", ("A", "B"), plan.left),
+            ("beta", ("C", "D", "E"), plan.right),
+        )
+        for component_index, (_, chains, participant_plan) in enumerate(
+            component_chains
+        ):
+            for chain, transform_id in zip(
+                chains,
+                participant_plan.action.stabilizer_transform_ids,
+                strict=True,
+            ):
+                transform = registry.transform(transform_id)
+                for residue in range(1, 5):
+                    for atom_index, atom_name in enumerate(
+                        ("N", "CA", "C", "O")
+                    ):
+                        coordinate = np.asarray(
+                            (
+                                18.0 + component_index * 7.0 + residue * 1.2,
+                                5.0 + component_index * 11.0 + atom_index * 0.2,
+                                3.0 + residue * 1.4 + atom_index * 0.1,
+                            )
+                        )
+                        coordinate = (
+                            coordinate @ transform[:3, :3].T
+                            + transform[:3, 3]
+                        )
+                        lines.append(
+                            f"ATOM  {serial:5d} {atom_name:>4s} ALA "
+                            f"{chain:1s}{residue:4d}    "
+                            f"{coordinate[0]:8.3f}{coordinate[1]:8.3f}"
+                            f"{coordinate[2]:8.3f}{1.0:6.2f}{20.0:6.2f}"
+                            f"          {atom_name[0]:>2s}\n"
+                        )
+                        serial += 1
+        lines.append("END\n")
+        self.structure.write_text("".join(lines), encoding="utf-8")
+
+        component_selectors = {
+            component_id: [
+                selector
+                for chain in chains
+                for selector in (f"{chain}1-2", f"{chain}3-4")
+            ]
+            for component_id, chains, _ in component_chains
+        }
+        connections = []
+        for component_id, chains, _ in component_chains:
+            for chain in chains:
+                connections.append({
+                    "id": f"{component_id}_path_{chain}",
+                    "from": {
+                        "component": component_id,
+                        "selector": f"{chain}1-2",
+                        "terminus": "c",
+                    },
+                    "to": {
+                        "component": component_id,
+                        "selector": f"{chain}3-4",
+                        "terminus": "n",
+                    },
+                    "length": 20,
+                })
+
+        design = self._design(
+            symmetry="T",
+            components={
+                "alpha": {
+                    "selectors": component_selectors["alpha"],
+                    "geometry": "joint_rigid",
+                    "finite_orbit_action": action_payload(plan.left),
+                },
+                "beta": {
+                    "selectors": component_selectors["beta"],
+                    "geometry": "joint_rigid",
+                    "finite_orbit_action": action_payload(plan.right),
+                },
+            },
+            ports={
+                "alpha_face": {
+                    "component": "alpha",
+                    "selectors": component_selectors["alpha"],
+                },
+                "beta_face": {
+                    "component": "beta",
+                    "selectors": component_selectors["beta"],
+                },
+            },
+            interfaces=[{
+                "id": "natural_interface",
+                "between": ["alpha_face", "beta_face"],
+                "relation": {"mode": "preserve_input"},
+                "use": {"exact": 12},
+            }],
+            connections=connections,
+        )
+
+        lowered = lower_user_design(design)
+        self.assertEqual(
+            lowered.specification.constraint_group_strategy,
+            "interface_edges",
+        )
+        orbits = lowered.specification.symmetry.orbits
+        self.assertEqual(
+            set(orbits),
+            {"motif_orbit__alpha", "motif_orbit__beta"},
+        )
+        instances = expand_symmetry_instances(lowered.specification)
+        self.assertEqual(len(instances.motion_groups), 10)
+        self.assertEqual(len(instances.interfaces), 12)
+        self.assertEqual(
+            lowered.interface_usage[0].physical_instance_count,
+            12,
+        )
 
     def test_tetrahedral_joint_seed_accepts_one_generic_initial_pose(
         self,

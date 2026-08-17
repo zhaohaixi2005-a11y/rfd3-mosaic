@@ -159,6 +159,53 @@ class AddSymmetryFeats(Transform):
             atom_array.get_annotation("sym_entity_id")
         )
         categories = set(atom_array.get_annotation_categories())
+        if "mosaic_preexpanded_orbit_slot" in categories:
+            slots = np.asarray(
+                atom_array.get_annotation(
+                    "mosaic_preexpanded_orbit_slot"
+                ),
+                dtype=np.int64,
+            )
+            if slots.shape != (atom_array.shape[0],) or np.any(slots < 0):
+                raise ValueError(
+                    "Compiler-declared preexpanded orbit slots must be one "
+                    "nonnegative value per atom"
+                )
+            for entity_id in (
+                int(value)
+                for value in np.unique(entity_ids)
+                if int(value) >= 0
+            ):
+                entity_mask = entity_ids == entity_id
+                expected = None
+                for transform_id in (
+                    int(value)
+                    for value in np.unique(transform_ids[entity_mask])
+                    if int(value) >= 0
+                ):
+                    observed = tuple(
+                        sorted(
+                            int(value)
+                            for value in slots[
+                                entity_mask & (transform_ids == transform_id)
+                            ]
+                        )
+                    )
+                    if expected is None:
+                        expected = observed
+                    elif observed != expected:
+                        raise ValueError(
+                            "Compiler-declared preexpanded orbit slots differ "
+                            f"between copies of entity {entity_id}"
+                        )
+                    if observed != tuple(range(len(observed))):
+                        raise ValueError(
+                            "Compiler-declared preexpanded orbit slots must "
+                            "contain each integer from zero exactly once per "
+                            f"copy: entity={entity_id}, transform={transform_id}"
+                        )
+            result = torch.from_numpy(slots.copy())
+            return (result, True) if return_verification else result
         required_key_annotations = {"src_component", "atom_name"}
         missing = required_key_annotations - categories
         if missing:
@@ -402,10 +449,32 @@ class AddSymmetryFeats(Transform):
             group_id_to_index[group_id] = group_index
             key_to_index: dict[tuple[str, ...], int] = {}
             for member in group.get("members", ()):
+                actual_components = [
+                    str(value) for value in member["src_components"]
+                ]
+                correspondence_components = [
+                    str(value)
+                    for value in member.get(
+                        "correspondence_components",
+                        actual_components,
+                    )
+                ]
+                if len(actual_components) != len(correspondence_components):
+                    raise ValueError(
+                        f"Constraint group {group_id!r} member has unequal "
+                        "membership/correspondence component counts"
+                    )
+                correspondence_by_actual = dict(
+                    zip(
+                        actual_components,
+                        correspondence_components,
+                        strict=True,
+                    )
+                )
                 member_mask = (
                     np.isin(
                         source_components,
-                        member["src_components"],
+                        actual_components,
                     )
                     & (
                         transform_ids
@@ -417,7 +486,9 @@ class AddSymmetryFeats(Transform):
                     key = (
                         str(member["role"]),
                         str(member["source_fragment_id"]),
-                        str(source_components[atom_index]),
+                        correspondence_by_actual[
+                            str(source_components[atom_index])
+                        ],
                         str(atom_names[atom_index]),
                     )
                     if key in key_to_index:
@@ -736,13 +807,27 @@ class AddSymmetryFeats(Transform):
                 expanded_source_components(
                     relation["left_source_components"]
                 ),
-            ) & (transform_ids == int(relation["source_copy_index"]))
+            ) & (
+                transform_ids
+                == int(
+                    relation.get("left_transform_index")
+                    if relation.get("left_transform_index") is not None
+                    else relation["source_copy_index"]
+                )
+            )
             right = np.isin(
                 source_components,
                 expanded_source_components(
                     relation["right_source_components"]
                 ),
-            ) & (transform_ids == int(relation["target_copy_index"]))
+            ) & (
+                transform_ids
+                == int(
+                    relation.get("right_transform_index")
+                    if relation.get("right_transform_index") is not None
+                    else relation["target_copy_index"]
+                )
+            )
             if not np.any(left) or not np.any(right):
                 raise ValueError(
                     "Assembly interface relation matched no runtime atoms: "

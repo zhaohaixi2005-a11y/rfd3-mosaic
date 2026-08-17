@@ -47,7 +47,9 @@ class UserDesignTask(str, Enum):
     Omitting ``task`` preserves the legacy/custom declaration exactly.  The
     two named tasks are conveniences only: both are compiled through the
     normal constraint plan and ``AssemblySpecification`` rather than through
-    a separate sampler backend.
+    a separate sampler backend. Resolver-emitted expert graphs retain
+    ``preserve_supplied_geometry`` as an explicit provenance and safety
+    contract for complete user-supplied interface hyperedges.
     """
 
     PRESERVE_SUPPLIED_GEOMETRY = "preserve_supplied_geometry"
@@ -65,6 +67,82 @@ class FixedArrangementPolicy(str, Enum):
 
     LOCKED = "locked"
     OPTIMIZE_COMPONENTS = "optimize_components"
+
+
+class PackingPreference(str, Enum):
+    LOOSE = "loose"
+    BALANCED = "balanced"
+    TIGHT = "tight"
+
+
+class CavityPreference(str, Enum):
+    COMPACT = "compact"
+    AUTO = "auto"
+    OPEN = "open"
+
+
+class DiversityPreference(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class InterfaceAreaPreference(str, Enum):
+    SMALL = "small"
+    AUTO = "auto"
+    LARGE = "large"
+
+
+class ComponentMotionPreference(str, Enum):
+    LOCKED = "locked"
+    GUIDED = "guided"
+    FREE = "free"
+
+
+class UserDesignPreferences(StrictModel):
+    """Small, physical ordinary-user controls compiled into safe presets.
+
+    These are not raw loss weights.  Exact motif geometry, symmetry, chain
+    continuity and clash rejection remain hard contracts regardless of the
+    selected preference.
+    """
+
+    packing: PackingPreference = PackingPreference.BALANCED
+    cavity: CavityPreference = CavityPreference.AUTO
+    diversity: DiversityPreference = DiversityPreference.MEDIUM
+    interface_area: InterfaceAreaPreference = InterfaceAreaPreference.AUTO
+    component_motion: ComponentMotionPreference | None = None
+
+
+class ExpertPackingGuidanceSpec(StrictModel):
+    """Optional raw controls for expert assembly-graph authors only."""
+
+    weight: Annotated[float, Field(ge=0.0)] | None = None
+    coverage_weight: Annotated[float, Field(ge=0.0)] | None = None
+    continuity_weight: Annotated[float, Field(ge=0.0)] | None = None
+    orientation_weight: Annotated[float, Field(ge=0.0)] | None = None
+    shape_weight: Annotated[float, Field(ge=0.0)] | None = None
+    backbone_weight: Annotated[float, Field(ge=0.1)] | None = None
+    interface_balance_weight: Annotated[float, Field(ge=0.0)] | None = None
+    patch_exclusivity_weight: Annotated[float, Field(ge=1.0)] | None = None
+    clash_weight: Annotated[float, Field(ge=8.0)] | None = None
+    distance_weight: Annotated[float, Field(ge=0.0)] | None = None
+    pairs_per_edge: Annotated[int, Field(ge=1)] | None = None
+    maximum_token_step: Annotated[float, Field(gt=0.0)] | None = None
+    start_fraction: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    end_fraction: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> "ExpertPackingGuidanceSpec":
+        if (
+            self.start_fraction is not None
+            and self.end_fraction is not None
+            and self.start_fraction >= self.end_fraction
+        ):
+            raise ValueError(
+                "expert guidance requires start_fraction < end_fraction"
+            )
+        return self
 
 
 class CylindricalDegreeOfFreedom(str, Enum):
@@ -218,6 +296,30 @@ class NumericRange(StrictModel):
     def validate_order(self) -> "NumericRange":
         if self.minimum > self.maximum:
             raise ValueError("range minimum cannot exceed maximum")
+        return self
+
+
+class UserAssemblyShapeSpec(StrictModel):
+    """Optional physical size contract for CPU pose restoration and audit."""
+
+    diameter_angstrom: NumericRange | None = None
+    cavity_diameter_angstrom: NumericRange | None = None
+
+    @model_validator(mode="after")
+    def require_positive_shape_bounds(self) -> "UserAssemblyShapeSpec":
+        if (
+            self.diameter_angstrom is None
+            and self.cavity_diameter_angstrom is None
+        ):
+            raise ValueError(
+                "assembly_shape requires diameter and/or cavity diameter"
+            )
+        for name, bounds in (
+            ("diameter_angstrom", self.diameter_angstrom),
+            ("cavity_diameter_angstrom", self.cavity_diameter_angstrom),
+        ):
+            if bounds is not None and bounds.minimum <= 0.0:
+                raise ValueError(f"assembly_shape.{name} must be positive")
         return self
 
 
@@ -430,6 +532,7 @@ class UserAssemblyComponentSpec(StrictModel):
 
     selectors: Annotated[tuple[Selector, ...], Field(min_length=1)]
     geometry: Literal["rigid", "joint_rigid"] = "rigid"
+    finite_orbit_action: FiniteOrbitActionSpec | None = None
     pose: FixedComponentPoseSpec = Field(
         default_factory=FixedComponentPoseSpec
     )
@@ -597,7 +700,14 @@ class UserInterfaceUsageSpec(StrictModel):
 
 
 class UserAssemblyInterfaceSpec(StrictModel):
-    """One relationship edge between ports or legacy component nodes."""
+    """One complete interface relation between two or more ports.
+
+    ``between`` is the biological interface identity.  For a supplied
+    cooperative interface with three or more participants, ``contact_pairs``
+    records a connected contact-supported execution tree.  Those pairs are
+    compiler details: multiplicity, provenance and audit identity remain
+    attached to this one interface hyperedge.
+    """
 
     id: Identifier
     # Several pairwise runtime edges may be the contact-supported spanning
@@ -605,7 +715,8 @@ class UserAssemblyInterfaceSpec(StrictModel):
     # to physical instances of this hyperedge, not to the number of member
     # pairs.
     hyperedge_id: Identifier | None = None
-    between: Annotated[tuple[Identifier, Identifier], Field(min_length=2)]
+    between: Annotated[tuple[Identifier, ...], Field(min_length=2)]
+    contact_pairs: tuple[tuple[Identifier, Identifier], ...] = ()
     relation: UserInterfaceRelationSpec = Field(
         default_factory=UserPreserveInputRelationSpec
     )
@@ -619,17 +730,83 @@ class UserAssemblyInterfaceSpec(StrictModel):
 
     @model_validator(mode="after")
     def reject_identity_self_interface(self) -> "UserAssemblyInterfaceSpec":
-        if self.between[0] != self.between[1]:
+        if len(self.between) == 2 and self.between[0] == self.between[1]:
+            relation = self.copy_relation
+            if relation.orbit_offset == 0 or (
+                relation.transform is not None
+                and relation.transform.endswith(":e")
+            ):
+                raise ValueError(
+                    "A self-interface must target a non-identity symmetry "
+                    "copy"
+                )
+            if self.contact_pairs:
+                raise ValueError(
+                    "A symmetry-neighbour self-interface does not use "
+                    "contact_pairs"
+                )
             return self
-        relation = self.copy_relation
-        if relation.orbit_offset == 0 or (
-            relation.transform is not None
-            and relation.transform.endswith(":e")
-        ):
+
+        if len(set(self.between)) != len(self.between):
             raise ValueError(
-                "A self-interface must target a non-identity symmetry copy"
+                "Multi-participant interface ports must be unique"
+            )
+        if len(self.between) == 2:
+            allowed = {frozenset(self.between)}
+            declared = {frozenset(pair) for pair in self.contact_pairs}
+            if declared and declared != allowed:
+                raise ValueError(
+                    "Binary interface contact_pairs must contain only its "
+                    "declared port pair"
+                )
+            return self
+        if self.relation.mode != "preserve_input":
+            raise ValueError(
+                "Multi-participant generated contact guidance is not yet "
+                "supported; supplied hyperedges require preserve_input"
+            )
+        if not self.contact_pairs:
+            raise ValueError(
+                "A multi-participant supplied interface requires a "
+                "contact-supported contact_pairs tree"
+            )
+        node_set = set(self.between)
+        adjacency = {node: set() for node in self.between}
+        seen_pairs: set[frozenset[str]] = set()
+        for left, right in self.contact_pairs:
+            if left == right:
+                raise ValueError("Interface contact_pairs cannot self-pair")
+            if left not in node_set or right not in node_set:
+                raise ValueError(
+                    "Interface contact_pairs must reference ports in between"
+                )
+            key = frozenset((left, right))
+            if key in seen_pairs:
+                raise ValueError("Interface contact_pairs must be unique")
+            seen_pairs.add(key)
+            adjacency[left].add(right)
+            adjacency[right].add(left)
+        reached = {self.between[0]}
+        pending = [self.between[0]]
+        while pending:
+            current = pending.pop()
+            for neighbour in adjacency[current]:
+                if neighbour not in reached:
+                    reached.add(neighbour)
+                    pending.append(neighbour)
+        if reached != node_set:
+            raise ValueError(
+                "Interface contact_pairs must connect every participant"
             )
         return self
+
+    @property
+    def execution_pairs(self) -> tuple[tuple[Identifier, Identifier], ...]:
+        """Return binary runtime members without changing hyperedge identity."""
+
+        if self.contact_pairs:
+            return self.contact_pairs
+        return ((self.between[0], self.between[1]),)
 
 
 class UserComponentEndpointSpec(StrictModel):
@@ -692,6 +869,11 @@ class UserDesignSpec(StrictModel):
     fixed_arrangement: FixedArrangementPolicy = (
         FixedArrangementPolicy.LOCKED
     )
+    preferences: UserDesignPreferences = Field(
+        default_factory=UserDesignPreferences
+    )
+    guidance: ExpertPackingGuidanceSpec | None = None
+    assembly_shape: UserAssemblyShapeSpec | None = None
     generation: tuple[GenerationClause, ...] = ()
     constraints: tuple[ConstraintClause, ...] = ()
     components: dict[Identifier, UserAssemblyComponentSpec] = Field(
@@ -705,6 +887,32 @@ class UserDesignSpec(StrictModel):
     sampling: UserSamplingSpec = Field(default_factory=UserSamplingSpec)
     resources: UserResourceSpec = Field(default_factory=UserResourceSpec)
     output: UserOutputSpec | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_arrangement_from_motion_preference(cls, value: object) -> object:
+        """Keep the short ordinary YAML free of duplicate motion switches."""
+
+        if (
+            not isinstance(value, dict)
+            or "fixed_arrangement" in value
+            or value.get("task")
+            != UserDesignTask.CREATE_SYMMETRIC_INTERFACE.value
+        ):
+            return value
+        preferences = value.get("preferences")
+        if not isinstance(preferences, dict):
+            return value
+        motion = preferences.get("component_motion")
+        if motion is None:
+            return value
+        updated = dict(value)
+        updated["fixed_arrangement"] = (
+            FixedArrangementPolicy.LOCKED.value
+            if motion == ComponentMotionPreference.LOCKED.value
+            else FixedArrangementPolicy.OPTIMIZE_COMPONENTS.value
+        )
+        return updated
 
     @property
     def user_mode(self) -> Literal["simple", "expert"]:
@@ -827,9 +1035,32 @@ class UserDesignSpec(StrictModel):
         geometry.  Creating generated interface material does not imply that
         fixed components may move: ``fixed_arrangement=locked`` is the safe
         default.  Only ``optimize_components`` changes complete rigid poses.
-        Expert authors continue to declare custom component mobility directly
-        instead of combining it with an ordinary-user preset.
+        Expert authors declare component mobility directly. Resolver-emitted
+        expert graphs may retain ``preserve_supplied_geometry`` so downstream
+        stages never confuse supplied hyperedges with generated contacts.
         """
+
+        motion = self.preferences.component_motion
+        if self.guidance is not None and self.user_mode != "expert":
+            raise ValueError(
+                "raw guidance weights require expert assembly components; "
+                "ordinary designs use preferences"
+            )
+        if (
+            motion is not None
+            and self.task is not None
+            and self.user_mode == "simple"
+        ):
+            expected = (
+                FixedArrangementPolicy.LOCKED
+                if motion == ComponentMotionPreference.LOCKED
+                else FixedArrangementPolicy.OPTIMIZE_COMPONENTS
+            )
+            if self.fixed_arrangement != expected:
+                raise ValueError(
+                    "preferences.component_motion conflicts with "
+                    "fixed_arrangement"
+                )
 
         if self.task is None:
             if self.fixed_arrangement != FixedArrangementPolicy.LOCKED:
@@ -838,12 +1069,151 @@ class UserDesignSpec(StrictModel):
                     "task=create_symmetric_interface; expert designs use "
                     "component pose declarations"
                 )
+            if motion is not None and not self.components:
+                raise ValueError(
+                    "preferences.component_motion requires either "
+                    "task=create_symmetric_interface or assembly components"
+                )
+            if motion is not None and self.components:
+                expected_mode = (
+                    "fixed"
+                    if motion == ComponentMotionPreference.LOCKED
+                    else "bounded_mobile"
+                )
+                wrong_modes = sorted(
+                    component_id
+                    for component_id, component in self.components.items()
+                    if component.pose.mode != expected_mode
+                )
+                if wrong_modes:
+                    raise ValueError(
+                        "preferences.component_motion does not match "
+                        "component pose declarations: "
+                        + ", ".join(wrong_modes)
+                    )
+                if motion != ComponentMotionPreference.LOCKED:
+                    expected_subspace = (
+                        "bounded_se3"
+                        if motion == ComponentMotionPreference.FREE
+                        else "radial_axial_rotation"
+                    )
+                    wrong_subspaces = sorted(
+                        component_id
+                        for component_id, component in self.components.items()
+                        if (component.pose.subspace or "bounded_se3")
+                        != expected_subspace
+                    )
+                    if wrong_subspaces:
+                        raise ValueError(
+                            "preferences.component_motion does not match "
+                            "component mobility subspaces: "
+                            + ", ".join(wrong_subspaces)
+                        )
             return self
         if self.user_mode != "simple":
-            raise ValueError(
-                "task presets are for simple designs; expert assembly graphs "
-                "must declare component pose and interfaces explicitly"
+            if self.task != UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
+                raise ValueError(
+                    "task=create_symmetric_interface is a compact motif "
+                    "workflow; expert assembly graphs declare generated "
+                    "contact interfaces explicitly"
+                )
+            if self.fixed_arrangement != FixedArrangementPolicy.LOCKED:
+                raise ValueError(
+                    "expert preserve_supplied_geometry uses component.pose "
+                    "for whole-seed motion; fixed_arrangement must remain "
+                    "locked"
+                )
+            if not self.interfaces:
+                raise ValueError(
+                    "expert preserve_supplied_geometry requires at least "
+                    "one supplied interface"
+                )
+            generated_interfaces = sorted(
+                interface.id
+                for interface in self.interfaces
+                if interface.relation.mode != "preserve_input"
             )
+            if generated_interfaces:
+                raise ValueError(
+                    "preserve_supplied_geometry cannot redesign supplied "
+                    "interfaces: " + ", ".join(generated_interfaces)
+                )
+            non_joint_components = sorted(
+                component_id
+                for component_id, component in self.components.items()
+                if component.geometry != "joint_rigid"
+            )
+            if non_joint_components:
+                raise ValueError(
+                    "preserve_supplied_geometry requires every supplied "
+                    "interface component to be joint_rigid: "
+                    + ", ".join(non_joint_components)
+                )
+            independently_mobile_interfaces: list[str] = []
+            for interface in self.interfaces:
+                participant_components = {
+                    (
+                        self.ports[participant].component
+                        if self.ports
+                        else participant
+                    )
+                    for participant in interface.between
+                }
+                if len(participant_components) == 1:
+                    continue
+                if any(
+                    self.components[component_id].pose.mode
+                    == "bounded_mobile"
+                    for component_id in participant_components
+                ):
+                    independently_mobile_interfaces.append(interface.id)
+            if independently_mobile_interfaces:
+                raise ValueError(
+                    "A supplied interface spanning different components "
+                    "cannot move those components independently; keep them "
+                    "fixed or place every participant in one joint-rigid "
+                    "motion group: "
+                    + ", ".join(sorted(independently_mobile_interfaces))
+                )
+            # The preserved object is the complete interface geometry, not
+            # necessarily its global assembly pose.  A resolved expert graph
+            # may therefore move each joint-rigid seed as one SE(3) body.
+            if motion is not None:
+                expected_mode = (
+                    "fixed"
+                    if motion == ComponentMotionPreference.LOCKED
+                    else "bounded_mobile"
+                )
+                wrong_modes = sorted(
+                    component_id
+                    for component_id, component in self.components.items()
+                    if component.pose.mode != expected_mode
+                )
+                if wrong_modes:
+                    raise ValueError(
+                        "preferences.component_motion does not match "
+                        "supplied-interface component poses: "
+                        + ", ".join(wrong_modes)
+                    )
+                if motion != ComponentMotionPreference.LOCKED:
+                    expected_subspace = (
+                        "bounded_se3"
+                        if motion == ComponentMotionPreference.FREE
+                        else "radial_axial_rotation"
+                    )
+                    wrong_subspaces = sorted(
+                        component_id
+                        for component_id, component in self.components.items()
+                        if (component.pose.subspace or "bounded_se3")
+                        != expected_subspace
+                    )
+                    if wrong_subspaces:
+                        raise ValueError(
+                            "preferences.component_motion does not match "
+                            "supplied-interface component mobility "
+                            "subspaces: " + ", ".join(wrong_subspaces)
+                        )
+            return self
         fixed_constraints = tuple(
             constraint
             for constraint in self.constraints
@@ -907,6 +1277,14 @@ class UserDesignSpec(StrictModel):
             raise ValueError(
                 "preserve_supplied_geometry requires "
                 "fixed_arrangement=locked"
+            )
+        if (
+            self.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
+            and motion not in {None, ComponentMotionPreference.LOCKED}
+        ):
+            raise ValueError(
+                "preserve_supplied_geometry requires "
+                "preferences.component_motion=locked"
             )
         return self
 

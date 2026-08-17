@@ -11,8 +11,13 @@ import yaml
 from rfd3_mosaic.cli import main
 from rfd3_mosaic.compile import expand_symmetry_instances
 from rfd3_mosaic.design_compiler import lower_user_design
-from rfd3_mosaic.schema import SimpleCageIntentSpec
-from rfd3_mosaic.simple_resolver import enumerate_simple_design_candidates
+from rfd3_mosaic.rfd3_prevalidate import prevalidate_rfd3_input
+from rfd3_mosaic.schema import SimpleCageIntentSpec, UserDesignTask
+from rfd3_mosaic.schema.simple_intent import load_simple_cage_intent
+from rfd3_mosaic.simple_resolver import (
+    enumerate_simple_design_candidates,
+    resolve_simple_intent,
+)
 
 
 class SimpleIntentResolverTestCase(unittest.TestCase):
@@ -122,6 +127,45 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
             2,
         )
 
+    def test_size_goal_is_carried_into_executable_candidates(self) -> None:
+        payload = self._intent(symmetries=("C3",)).model_dump(
+            mode="json"
+        )
+        payload["goal"]["diameter_angstrom"] = {
+            "minimum": 40.0,
+            "maximum": 100.0,
+        }
+        payload["goal"]["cavity_diameter_angstrom"] = {
+            "minimum": 5.0,
+            "maximum": 60.0,
+        }
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("C3",),
+        )
+
+        self.assertTrue(candidates)
+        for candidate in candidates:
+            shape = candidate.design.assembly_shape
+            self.assertIsNotNone(shape)
+            assert shape is not None
+            self.assertEqual(
+                (
+                    shape.diameter_angstrom.minimum,
+                    shape.diameter_angstrom.maximum,
+                ),
+                (40.0, 100.0),
+            )
+            self.assertEqual(
+                (
+                    shape.cavity_diameter_angstrom.minimum,
+                    shape.cavity_diameter_angstrom.maximum,
+                ),
+                (5.0, 60.0),
+            )
+
     def test_candidates_are_standard_expert_designs_on_the_shared_path(
         self,
     ) -> None:
@@ -136,6 +180,10 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
             self.assertEqual(design.symmetry, "C3")
             self.assertEqual(design.input, self.structure)
             self.assertEqual(design.user_mode, "expert")
+            self.assertEqual(
+                design.task,
+                UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY,
+            )
             self.assertEqual(len(design.components), 1)
             component = next(iter(design.components.values()))
             self.assertEqual(component.geometry, "joint_rigid")
@@ -249,6 +297,206 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
             message,
         )
 
+    def test_single_three_participant_interface_rebuilds_declared_paths(
+        self,
+    ) -> None:
+        lines = []
+        serial = 1
+        chain_offsets = {
+            "A": (0.0, 0.0),
+            "B": (3.2, 0.0),
+            "C": (1.6, 2.7),
+        }
+        for chain, (x_offset, y_offset) in chain_offsets.items():
+            for residue, z_offset in ((1, 0.0), (2, 1.5), (10, 10.0), (11, 11.5)):
+                for atom_name, atom_offset in (
+                    ("N", (0.0, 0.0, 0.0)),
+                    ("CA", (0.4, 0.2, 0.3)),
+                    ("C", (0.8, 0.0, 0.6)),
+                    ("O", (1.1, -0.2, 0.8)),
+                ):
+                    x = x_offset + atom_offset[0]
+                    y = y_offset + atom_offset[1]
+                    z = z_offset + atom_offset[2]
+                    lines.append(
+                        f"ATOM  {serial:5d} {atom_name:^4s} ALA "
+                        f"{chain}{residue:4d}    "
+                        f"{x:8.3f}{y:8.3f}{z:8.3f}"
+                        f"{1.0:6.2f}{20.0:6.2f}"
+                        f"          {atom_name[0]:>2s}\n"
+                    )
+                    serial += 1
+        self.structure.write_text(
+            "".join(lines) + "END\n",
+            encoding="utf-8",
+        )
+        intent = SimpleCageIntentSpec.model_validate(
+            {
+                "name": "three-participant-explicit-paths",
+                "input": self.structure,
+                "goal": {
+                    "architecture": "cage",
+                    "composition": "auto",
+                    "symmetry": ["C3"],
+                },
+                "interface_seeds": {
+                    "cooperative_site": {
+                        "participants": ["A", "B", "C"],
+                        "selectors": {
+                            "A": "A/1-2/*,A/10-11/*",
+                            "B": "B/1-2/*,B/10-11/*",
+                            "C": "C/1-2/*,C/10-11/*",
+                        },
+                        "use": {"exact": 3},
+                        "geometry": "preserve_exact",
+                    }
+                },
+                "generation": {"length": 7},
+                "inspection": {
+                    "contact_cutoff": 4.5,
+                    "minimum_atom_contacts": 4,
+                    "minimum_contact_residues_per_side": 2,
+                },
+            }
+        )
+
+        candidates = enumerate_simple_design_candidates(intent)
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(
+            candidate.resolution_frontend,
+            "single_supplied_hyperedge_explicit_paths_v1",
+        )
+        self.assertEqual(candidate.polymer_units_per_copy, 3)
+        self.assertEqual(candidate.physical_polymer_unit_count, 9)
+        self.assertEqual(len(candidate.design.components), 1)
+        self.assertEqual(len(candidate.design.connections), 3)
+        interface = candidate.design.interfaces[0]
+        self.assertEqual(len(interface.between), 3)
+        self.assertEqual(len(interface.contact_pairs), 2)
+
+        lowered = lower_user_design(candidate.design)
+        self.assertEqual(len(lowered.specification.interfaces), 2)
+        self.assertEqual(len(lowered.interface_usage), 1)
+        self.assertEqual(
+            lowered.interface_usage[0].physical_instance_count,
+            3,
+        )
+        self.assertEqual(
+            {
+                edge.hyperedge_id
+                for edge in lowered.specification.interfaces.values()
+            },
+            {"cooperative_site"},
+        )
+        instances = expand_symmetry_instances(lowered.specification)
+        self.assertEqual(len(instances.interfaces), 6)
+
+    def test_real_pi25_three_participant_seed_resolves_one_c3_quotient(
+        self,
+    ) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        intent = load_simple_cage_intent(
+            repository
+            / "experiments"
+            / "lrz_simple_three_participant_c3_quotient_v100_50step_intent.yaml"
+        )
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            timesteps=50,
+            seed_start=950,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate.symmetry, "C3")
+        self.assertIsNotNone(candidate.design.finite_orbit_action)
+        self.assertEqual(
+            set(
+                candidate.design.finite_orbit_action
+                .stabilizer_path_transform_ids
+            ),
+            {
+                "participant__A__link_01",
+                "participant__B__link_01",
+                "participant__C__link_01",
+            },
+        )
+        self.assertEqual(
+            set(
+                candidate.design.finite_orbit_action
+                .stabilizer_path_transform_ids.values()
+            ),
+            {"C3:e", "C3:r1", "C3:r2"},
+        )
+        self.assertEqual(candidate.physical_polymer_unit_count, 3)
+        self.assertEqual(len(candidate.design.interfaces), 1)
+        self.assertEqual(len(candidate.design.interfaces[0].between), 3)
+        self.assertEqual(len(candidate.design.connections), 3)
+        lowered = lower_user_design(candidate.design)
+        self.assertEqual(len(lowered.interface_usage), 1)
+        self.assertEqual(
+            lowered.interface_usage[0].physical_instance_count,
+            1,
+        )
+        instances = expand_symmetry_instances(lowered.specification)
+        orbit = instances.constraint_orbits["motif_orbit"]
+        self.assertEqual(len(orbit.transform_ids), 1)
+        self.assertEqual(len(instances.interfaces), 2)
+
+        progress_messages: list[str] = []
+        manifest = resolve_simple_intent(
+            intent,
+            self.root / "pi25_three_way_resolution",
+            timesteps=50,
+            seed_start=950,
+            top_count=1,
+            progress=progress_messages.append,
+        )
+        self.assertTrue(
+            any("materializing" in message for message in progress_messages)
+        )
+        self.assertTrue(
+            any("enumerated 1" in message for message in progress_messages)
+        )
+        self.assertTrue(
+            any("strict replay finished" in message for message in progress_messages)
+        )
+        self.assertEqual(
+            manifest["resolver"],
+            "rfd3_mosaic.single_supplied_hyperedge_explicit_paths_v1",
+        )
+        self.assertEqual(manifest["candidate_count"], 1)
+        self.assertEqual(
+            manifest["accepted_count"],
+            1,
+            manifest["ranking"],
+        )
+        self.assertEqual(
+            manifest["selected_count"],
+            1,
+            manifest["ranking"],
+        )
+        self.assertTrue(manifest["recommended_design"])
+        self.assertTrue(
+            manifest["ranking"][0]["rfd3_adapter_validated"]
+        )
+        self.assertTrue(
+            manifest["ranking"][0]["rfd3_adapter_prevalidated"]
+        )
+        adapter_input = Path(
+            manifest["ranking"][0]["rfd3_adapter_input"]
+        )
+        prevalidation = prevalidate_rfd3_input(adapter_input)
+        self.assertEqual(prevalidation["expected_multiplicity"], 3)
+        self.assertEqual(prevalidation["chain_count"], 3)
+        self.assertEqual(
+            prevalidation["symmetry_action_kind"],
+            "preexpanded_stabilized_asu",
+        )
+
     def test_multi_seed_homomer_requires_path_equivalence_proof(
         self,
     ) -> None:
@@ -321,7 +569,10 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
         self.assertEqual(positional[1], output_directory)
         self.assertEqual(keywords["source_path"], intent_path)
         self.assertIsNone(keywords["symmetry_ids"])
-        self.assertEqual(keywords["pose_samples"], 1)
+        # Omission is distinct from an explicit ``--pose-samples 1``:
+        # the resolver uses the ordinary diversity preset only when this is
+        # None, while an explicit one-start fast gate must remain one start.
+        self.assertIsNone(keywords["pose_samples"])
         self.assertEqual(keywords["seed_start"], 0)
         self.assertEqual(keywords["top_count"], 20)
         self.assertEqual(keywords["max_candidates"], 4096)
@@ -330,6 +581,112 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
         self.assertEqual(keywords["pose_optimization_levels"], 3)
         self.assertEqual(keywords["pose_maximum_translation"], 12.0)
         self.assertEqual(keywords["pose_maximum_rotation_deg"], 25.0)
+
+    def test_resolve_cli_forwards_explicit_single_pose_sample(self) -> None:
+        intent_path = self.root / "explicit_pose_sample_intent.yaml"
+        intent_path.write_text(
+            yaml.safe_dump(
+                self._intent().model_dump(mode="json", exclude_none=True),
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        output_directory = self.root / "explicit_pose_sample_resolution"
+        expected = {
+            "resolver": "mock-simple-resolver",
+            "candidate_count": 1,
+            "accepted_count": 1,
+            "selected_count": 1,
+            "ranking": [],
+            "manifest_path": str(
+                output_directory / "resolution_manifest.json"
+            ),
+        }
+
+        with patch(
+            "rfd3_mosaic.cli.resolve_simple_intent",
+            return_value=expected,
+        ) as resolver, redirect_stdout(StringIO()):
+            main(
+                [
+                    "resolve",
+                    str(intent_path),
+                    "--output-dir",
+                    str(output_directory),
+                    "--pose-samples",
+                    "1",
+                    "--format",
+                    "json",
+                ]
+            )
+
+        resolver.assert_called_once()
+        self.assertEqual(resolver.call_args.kwargs["pose_samples"], 1)
+
+    def test_resolve_cli_reports_restored_linker_lengths(self) -> None:
+        intent_path = self.root / "restored_linker_intent.yaml"
+        intent_path.write_text(
+            yaml.safe_dump(
+                self._intent().model_dump(mode="json", exclude_none=True),
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        output_directory = self.root / "restored_linker_resolution"
+        selected = output_directory / "selected" / "rank_0001.yaml"
+        expected = {
+            "resolver": "mock-simple-resolver",
+            "candidate_count": 1,
+            "accepted_count": 1,
+            "selected_count": 1,
+            "recommended_design": str(selected),
+            "continuous_pose_optimization": {"enabled": True},
+            "ranking": [
+                {
+                    "candidate_id": "candidate_000000",
+                    "symmetry": "T",
+                    "topology_id": "t-test",
+                    "physical_polymer_unit_count": 24,
+                    "rank": 1,
+                    "resolved_design": str(selected),
+                    "feasibility_restoration": {
+                        "changed": True,
+                        "linker_length_bindings": [
+                            {
+                                "source_link_id": "polymer_link_002",
+                                "tie_group": "unit_length",
+                                "selected_length": 34,
+                            }
+                        ],
+                    },
+                }
+            ],
+            "manifest_path": str(
+                output_directory / "resolution_manifest.json"
+            ),
+        }
+        stdout = StringIO()
+
+        with patch(
+            "rfd3_mosaic.cli.resolve_simple_intent",
+            return_value=expected,
+        ), redirect_stdout(stdout):
+            main(
+                [
+                    "resolve",
+                    str(intent_path),
+                    "--output-dir",
+                    str(output_directory),
+                    "--top",
+                    "1",
+                ]
+            )
+
+        self.assertIn(
+            "restored linker lengths: polymer_link_002=34 "
+            "(tie=unit_length)",
+            stdout.getvalue(),
+        )
 
     def test_resolve_cli_rejects_already_standard_public_design(self) -> None:
         design_path = self.root / "standard_design.yaml"

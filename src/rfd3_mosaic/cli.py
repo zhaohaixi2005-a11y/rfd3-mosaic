@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import sys
 import tempfile
 from typing import Sequence
 
@@ -23,6 +24,7 @@ from rfd3_mosaic.design_compiler import (
     bind_constraint_plan,
     lower_user_design,
 )
+from rfd3_mosaic.design_preferences import compile_design_preferences
 from rfd3_mosaic.experiment import (
     build_execution_plan,
     render_submission,
@@ -48,6 +50,7 @@ from rfd3_mosaic.schema import (
     BetweenGeneration,
     SimpleCageIntentSpec,
     UserDesignSpec,
+    UserDesignTask,
     load_simple_cage_intent,
     load_user_design,
 )
@@ -61,6 +64,9 @@ from rfd3_mosaic.structure_inspection import (
     inspect_declared_interface_relation,
     inspect_structure_interfaces,
     write_structure_inspection,
+)
+from rfd3_mosaic.topology.component_incidence import (
+    enumerate_binary_interface_incidence_plans,
 )
 
 
@@ -154,7 +160,15 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         help="Candidate Cn symmetry; repeat, or use the intent choices.",
     )
-    resolve.add_argument("--pose-samples", type=int, default=1)
+    resolve.add_argument(
+        "--pose-samples",
+        type=int,
+        default=None,
+        help=(
+            "Explicit number of global seed-pose starts. When omitted, "
+            "the ordinary diversity preference selects 4/8/16 starts."
+        ),
+    )
     resolve.add_argument(
         "--optimize-poses",
         action=argparse.BooleanOptionalAction,
@@ -639,16 +653,37 @@ def _simple_intent_analysis(
         (seed.source or intent.input).expanduser().resolve()
         for seed in intent.interface_seeds.values()
     }
-    if (
-        any(seed.source is not None for seed in intent.interface_seeds.values())
-        and len(seed_sources) > 1
-    ):
+    independent_seed_layout = (
+        (
+            intent.seed_layout == "solve"
+            and len(intent.interface_seeds) > 1
+        )
+        or (
+            intent.seed_layout == "auto"
+            and any(
+                seed.source is not None
+                for seed in intent.interface_seeds.values()
+            )
+            and len(seed_sources) > 1
+        )
+    )
+    if independent_seed_layout:
         with tempfile.TemporaryDirectory(
             prefix="rfd3-mosaic-seed-library-plan-"
         ) as raw:
             materialized = materialize_seed_library(intent, Path(raw))
-            payload = _simple_intent_analysis(materialized.intent)
+            # The canonicalized seed library is already in arbitrary local
+            # frames.  Prevent recursive materialization while analyzing the
+            # ordinary architecture contract.
+            analysis_intent = materialized.intent.model_copy(
+                update={"seed_layout": "preserve_input"}
+            )
+            payload = _simple_intent_analysis(analysis_intent)
         payload["input"] = "independent interface-seed library"
+        payload["seed_layout"] = {
+            "requested": intent.seed_layout,
+            "relative_pose": "solve",
+        }
         payload["seed_library"] = {
             "mode": materialized.manifest["mode"],
             "seed_count": materialized.manifest["seed_count"],
@@ -657,14 +692,15 @@ def _simple_intent_analysis(
                 for seed_id, record in materialized.manifest["seeds"].items()
             },
             "file_frames_are_assembly_coordinates": False,
+            "requested_seed_layout": intent.seed_layout,
         }
         payload["architecture_resolution"] = (
             "global_seed_pose_and_topology_resolution_ready"
         )
         payload["ordinary_resolver"]["supported_contract"] = (
-            "independent binary preserve_exact seed files; physical "
-            "multiplicity filtering; canonical local frames; global Cn "
-            "pose starts; joint bounded SE(3) refinement; strict replay"
+            "user-supplied preserve_exact seed interfaces; physical "
+            "multiplicity filtering; canonical local frames; global finite-"
+            "group pose starts; joint bounded SE(3) refinement; strict replay"
         )
         return payload
     inspection = inspect_structure_interfaces(
@@ -713,6 +749,62 @@ def _simple_intent_analysis(
     )
     hypotheses = analyze_simple_architectures(intent)
     accepted_hypotheses = [item for item in hypotheses if item.accepted]
+    component_incidence_hypotheses: list[dict[str, object]] = []
+    if len(intent.interface_seeds) == 1:
+        interface_id, interface_seed = next(
+            iter(intent.interface_seeds.items())
+        )
+        if len(interface_seed.participants) == 2:
+            left_participant, right_participant = (
+                interface_seed.participants
+            )
+            for hypothesis in accepted_hypotheses:
+                if hypothesis.symmetry not in {"T", "O", "I"}:
+                    continue
+                physical_count = hypothesis.interface_physical_instances[
+                    interface_id
+                ]
+                try:
+                    incidence_plans = (
+                        enumerate_binary_interface_incidence_plans(
+                            symmetry=hypothesis.symmetry,
+                            interface_id=interface_id,
+                            left_participant=left_participant,
+                            right_participant=right_participant,
+                            physical_interface_count=physical_count,
+                        )
+                    )
+                except (NotImplementedError, ValueError):
+                    continue
+                seen: set[tuple[int, int, int, int]] = set()
+                for plan in incidence_plans:
+                    signature = (
+                        plan.left.valency,
+                        plan.right.valency,
+                        plan.left.physical_component_count,
+                        plan.right.physical_component_count,
+                    )
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    component_incidence_hypotheses.append({
+                        "symmetry": plan.symmetry,
+                        "interface_id": plan.interface_id,
+                        "physical_interface_count": (
+                            plan.physical_interface_count
+                        ),
+                        "left_participant": plan.left.participant,
+                        "left_valency": plan.left.valency,
+                        "left_component_count": (
+                            plan.left.physical_component_count
+                        ),
+                        "right_participant": plan.right.participant,
+                        "right_valency": plan.right.valency,
+                        "right_component_count": (
+                            plan.right.physical_component_count
+                        ),
+                        "executable": False,
+                    })
     unresolved_variables = sorted(
         {
             variable
@@ -747,6 +839,10 @@ def _simple_intent_analysis(
         "executable": False,
         "name": intent.name,
         "input": str(intent.input),
+        "seed_layout": {
+            "requested": intent.seed_layout,
+            "relative_pose": "preserve_input",
+        },
         "goal": {
             "architecture": intent.goal.architecture,
             "composition": intent.goal.composition,
@@ -817,6 +913,9 @@ def _simple_intent_analysis(
         "architecture_hypotheses": [
             item.to_dict() for item in hypotheses
         ],
+        "component_incidence_hypotheses": (
+            component_incidence_hypotheses
+        ),
         "accepted_architecture_hypothesis_count": len(
             accepted_hypotheses
         ),
@@ -834,8 +933,9 @@ def _simple_intent_analysis(
             "ready": resolver_ready,
             "candidate_count": resolver_candidate_count,
             "supported_contract": (
-                "several disjoint pre-positioned binary preserve_exact "
-                "seeds; bounded path-cover; full-orbit Cn winding"
+                "several user-supplied preserve_exact seeds; bounded "
+                "arbitrary-valency ordered unit paths; full-orbit finite-"
+                "group relations; optional global relative-pose solving"
                 if len(intent.interface_seeds) > 1
                 else "one binary preserve_exact seed; full-orbit Cn ring"
             ),
@@ -860,6 +960,13 @@ def _print_simple_intent_plan(
     print(f"architecture: {goal['architecture']}")
     print(f"composition:  {goal['composition']}")
     print(f"symmetry:     {goal['symmetry']}")
+    seed_layout = payload.get("seed_layout", {})
+    if seed_layout:
+        print(
+            "seed layout:  "
+            f"{seed_layout.get('requested', 'auto')} -> "
+            f"{seed_layout.get('relative_pose', 'preserve_input')}"
+        )
     length = payload["generation"]["length"]
     if isinstance(length, int):
         length_text = str(length)
@@ -920,6 +1027,19 @@ def _print_simple_intent_plan(
             f"  - {hypothesis['symmetry']}: {status}, "
             f"group_actions={hypothesis['group_action_count']}"
         )
+    if payload["component_incidence_hypotheses"]:
+        print("repeated supplied-interface component incidences:")
+        for hypothesis in payload["component_incidence_hypotheses"]:
+            print(
+                f"  - {hypothesis['symmetry']}: "
+                f"{hypothesis['left_participant']} "
+                f"C{hypothesis['left_valency']} x"
+                f"{hypothesis['left_component_count']} -- "
+                f"{hypothesis['right_participant']} "
+                f"C{hypothesis['right_valency']} x"
+                f"{hypothesis['right_component_count']}; "
+                f"interfaces={hypothesis['physical_interface_count']}"
+            )
 
 
 def _symmetry_copy_count(symmetry_id: str) -> int:
@@ -1068,6 +1188,9 @@ def _print_public_design_plan(
         "schema_version": 1,
         "user_mode": design.user_mode,
         "task": design.task.value if design.task is not None else None,
+        "resolved_preferences": compile_design_preferences(
+            design
+        ).model_dump(mode="json"),
         "name": design.name,
         "input": str(design.input),
         "symmetry": symmetry_id,
@@ -1125,7 +1248,8 @@ def _print_public_design_plan(
     elif design.task.value == "preserve_supplied_geometry":
         print(
             "task:       preserve supplied geometry "
-            "(fixed motif orbit; generate only declared regions)"
+            "(complete interface seed remains joint-rigid; generate only "
+            "declared scaffold)"
         )
     else:
         arrangement = design.fixed_arrangement.value
@@ -1137,6 +1261,21 @@ def _print_public_design_plan(
     print(f"name:       {design.name}")
     print(f"input:      {design.input}")
     print(f"symmetry:   {symmetry_id}")
+    resolved_preferences = compile_design_preferences(design)
+    if design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
+        print(
+            "packing guidance: inactive for supplied interfaces "
+            "(preserve_input is checked at the input stage)"
+        )
+    else:
+        print(
+            "preferences: "
+            f"packing={resolved_preferences.packing.value} "
+            f"area={resolved_preferences.interface_area.value} "
+            f"cavity={resolved_preferences.cavity.value} "
+            f"diversity={resolved_preferences.diversity.value} "
+            f"motion={resolved_preferences.component_motion.value}"
+        )
     print(
         "generation: "
         f"{len(design.generation) + len(design.connections)} region(s)"
@@ -1202,14 +1341,18 @@ def _print_public_design_plan(
                     else f"orbit_offset={relation.orbit_offset}"
                 )
                 hyperedge = (
-                    f"hyperedge={interface.hyperedge_id} member; "
+                    f"hyperedge={interface.hyperedge_id}; "
                     if interface.hyperedge_id is not None
                     else ""
                 )
+                participants = (
+                    f"{interface.between[0]} -> {interface.between[1]}"
+                    if len(interface.between) == 2
+                    else "[" + " + ".join(interface.between) + "]"
+                )
                 print(
                     f"  - {interface.id}: {hyperedge}"
-                    f"{interface.between[0]} -> "
-                    f"{interface.between[1]}@{neighbour} "
+                    f"{participants}@{neighbour} "
                     f"relation={interface.relation.mode} "
                     f"use={interface.use.description} "
                     f"required={interface.required}"
@@ -1534,6 +1677,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                     pose_maximum_rotation_deg=(
                         arguments.pose_maximum_rotation_deg
                     ),
+                    progress=lambda message: print(
+                        f"[resolve] {message}",
+                        file=sys.stderr,
+                        flush=True,
+                    ),
                 )
             except (
                 NotImplementedError,
@@ -1586,6 +1734,32 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
                 if candidate.get("resolved_design"):
                     print(f"    design: {candidate['resolved_design']}")
+                    restoration = candidate.get(
+                        "feasibility_restoration"
+                    ) or {}
+                    bindings = restoration.get(
+                        "linker_length_bindings"
+                    ) or []
+                    if restoration.get("changed") and bindings:
+                        rendered_bindings = ", ".join(
+                            f"{binding['source_link_id']}="
+                            f"{binding['selected_length']}"
+                            + (
+                                f" (tie={binding['tie_group']})"
+                                if binding.get("tie_group")
+                                else ""
+                            )
+                            for binding in bindings
+                        )
+                        print(
+                            "    restored linker lengths: "
+                            + rendered_bindings
+                        )
+                elif candidate.get("replay_error"):
+                    print(
+                        "    replay error: "
+                        f"{candidate['replay_error']}"
+                    )
                 elif candidate.get("error"):
                     print(f"    error: {candidate['error']}")
             print(f"manifest:    {result['manifest_path']}")

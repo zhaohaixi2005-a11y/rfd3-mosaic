@@ -1,0 +1,37 @@
+schema_version: 1
+name: c3-generated-interface-balanced
+input: inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry: C3
+task: create_symmetric_interface
+
+# Ordinary users select physical design intent.  Mosaic resolves these into
+# calibrated sampler settings and records the exact values in every run.
+preferences:
+  packing: balanced
+  interface_area: large
+  cavity: auto
+  diversity: high
+  component_motion: guided
+
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length:
+      minimum: 35
+      maximum: 50
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length:
+      minimum: 35
+      maximum: 50
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    coupling_group: motif
+
+sampling:
+  timesteps: 50
+  seed: 950

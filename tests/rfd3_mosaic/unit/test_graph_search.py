@@ -5,6 +5,8 @@ from pathlib import Path
 import yaml
 
 from rfd3_mosaic.graph_search import (
+    _ranking_key,
+    _summary,
     graph_neighbour_assignments,
     search_graph_design,
 )
@@ -40,6 +42,44 @@ class GraphSearchTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_single_component_summary_accepts_absent_inter_group_distance(
+        self,
+    ) -> None:
+        manifest = {
+            "validation": {
+                "inter_group_clashes": {
+                    "total_hard_clashes": 0,
+                    "minimum_inter_group_distance": None,
+                },
+                "interfaces": {
+                    "edges": [],
+                    "failed_required_edge_instances": [],
+                    "unsatisfied_output_target_instances": [],
+                },
+                "scaffold_link_geometry": {
+                    "links": [],
+                    "infeasible_link_instances": [],
+                },
+                "objectives": {
+                    "required_failure_count": 0,
+                    "total_weighted_penalty": 0.0,
+                },
+            }
+        }
+
+        summary = _summary(
+            manifest,
+            candidate_id="single_component",
+            symmetry_id="C3",
+            assignment={},
+            pose_sample_index=0,
+            directory=self.output,
+        )
+
+        self.assertTrue(summary["accepted"])
+        self.assertIsNone(summary["minimum_inter_group_distance"])
+        self.assertEqual(_ranking_key(summary)[-2], float("-inf"))
 
     def test_enumerates_canonical_nonidentity_neighbours(self) -> None:
         assignments = graph_neighbour_assignments(
@@ -99,6 +139,21 @@ class GraphSearchTestCase(unittest.TestCase):
             payload = yaml.safe_load(resolved.read_text(encoding="utf-8"))
             relation = payload["interfaces"][0]["copy_relation"]
             self.assertIn(relation["transform"], {"C3:r1", "C3:r2"})
+            # A public range is resolved once against every physical C3
+            # instance and frozen before strict replay.  The executable YAML
+            # must therefore no longer rely on the adapter independently
+            # choosing a midpoint later.
+            length = payload["connections"][0]["length"]
+            self.assertEqual(length["minimum"], length["maximum"])
+            restoration = candidate["feasibility_restoration"]
+            self.assertTrue(restoration["changed"])
+            self.assertEqual(
+                length["minimum"],
+                restoration["linker_length_bindings"][0][
+                    "selected_length"
+                ],
+            )
+            self.assertTrue(Path(candidate["ranked_structure"]).is_file())
 
     def test_search_keeps_unsatisfied_output_targets_for_diffusion(self) -> None:
         payload = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))

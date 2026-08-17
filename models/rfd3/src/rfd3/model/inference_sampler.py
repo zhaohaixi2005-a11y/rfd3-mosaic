@@ -30,6 +30,7 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     graph_interface_energy,
     graph_interface_energy_diagnostics,
     graph_interface_quality_satisfied,
+    resolve_graph_interface_patch_assignments,
 )
 from rfd3.inference.symmetry.symmetry_utils import (
     apply_symmetry_to_xyz_atomwise,
@@ -1739,12 +1740,6 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                     "Unified packing mobility was not fully "
                                     "initialized"
                                 )
-                            if (
-                                progress
-                                >= graph_interface_guidance_config.patch_lock_fraction
-                            ):
-                                graph_interface_patch_state.locked = True
-
                             def joint_projector(candidate: torch.Tensor):
                                 return self._joint_projector(f).project(
                                     candidate,
@@ -2112,11 +2107,6 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         "Graph interface patch state was not initialized"
                     )
                 progress = step_num / max(len(noise_schedule) - 2, 1)
-                if (
-                    progress
-                    >= graph_interface_guidance_config.patch_lock_fraction
-                ):
-                    graph_interface_patch_state.locked = True
                 X_L, interface_step = apply_graph_interface_guidance(
                     X_L,
                     f,
@@ -2144,6 +2134,24 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 raise RuntimeError(
                     "Graph interface guidance config was not initialized"
                 )
+            # If diffusion never formed a patch strong enough for a
+            # quality-triggered identity lock, choose the best reciprocal
+            # contiguous window in the actual final denoised state.  The
+            # deterministic polish then improves that one physical patch
+            # instead of hopping between sequence windows.
+            if (
+                graph_interface_patch_state is not None
+                and not graph_interface_patch_state.locked
+            ):
+                graph_interface_patch_state.assignments = (
+                    resolve_graph_interface_patch_assignments(
+                        X_L,
+                        graph_interface_topology,
+                        graph_interface_guidance_config,
+                    )
+                )
+                graph_interface_patch_state.locked = True
+                graph_interface_patch_state.lock_reason = "final_polish"
             # A bounded deterministic polish closes the gap between a useful
             # interface seen mid-trajectory and the structure that is
             # actually written.  Every correction is followed by the same

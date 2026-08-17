@@ -1,9 +1,247 @@
 # RFD3 Mosaic Development Status
 
-Last updated: 2026-08-11
+Last updated: 2026-08-17
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
+
+## 2026-08-17 local CPU development environment
+
+AI-cluster downtime no longer blocks compiler/runtime development. The
+repository now has a reproducible `.venv-local` path built by
+`scripts/rfd3_mosaic/setup_local_cpu_dev.sh`: standalone CPython 3.12,
+CPU-only PyTorch, editable RFD3-Mosaic/Foundry, AtomWorks, Biotite, Pydantic,
+pytest and ruff. `activate_local_dev.sh` fixes the local desktop's invalid
+`DEBUG=release` value to the boolean `false` expected by Foundry and exports
+the two editable source roots. `make local-test` is the single complete CPU
+gate. No checkpoint is downloaded and existing LRZ YAML/profiles are unchanged.
+
+This environment can close schema, compiler, resolver, strict replay, RFD3
+feature construction and audits. It cannot replace CUDA execution or
+scientific packing validation; those remain queued canaries after cluster
+recovery.
+
+A separate short-lived laboratory workstation now provides an additional
+compatibility buffer while the AI cluster is unavailable.  A repository-local
+Python 3.12 environment with PyTorch 2.7.1/CUDA 12.6 on an 8 GB RTX 3070 passes
+the same complete 787-test CPU gate.  An externally supplied
+`rfd3_latest.ckpt` is readable and its two available copies have identical
+SHA256
+`9b3f85923e0d51e9453e15cdd2f8c666e7ce096a60577f57d11bbc54ae6d67c1`.
+This workstation is not a replacement execution backend: temporary inputs,
+profiles and results stay outside the tracked repository, existing LRZ
+profiles/YAML remain unchanged, and no GPU evidence is claimed while another
+user occupies most of the device memory.  When the GPU becomes free, the
+first gate is one batch-1, low-memory C3 10-step compatibility smoke before
+any 50-step or polyhedral run.
+
+The first complete local gate passed **786 tests** before the extended-chain
+runtime correction and **787 tests** afterward. Local execution also closed
+the real three-user-seed T path that previously stopped after static
+acceptance: eight finite-group candidates compile, one frozen candidate is
+selected, and the selected YAML independently validates as 10,416 atoms,
+1,752 residues and 24 physical polymer chains with finite RFD3 runtime
+features. RFD3's empty-selection construction now accepts extended mmCIF
+chain identifiers, and strict replay now performs actual RFD3 feature
+prevalidation before publishing any YAML under `selected/`.
+
+## 2026-08-12 compatibility-preserving executable-candidate closeout
+
+This pass extends the existing compiler/runtime spine; it does not replace
+any previously validated fixed, mobile, quotient, packing or resolver path.
+Legacy designs without assembly connections or shape intent retain their
+previous lowering and sampler settings.
+
+The candidate boundary now performs deterministic feasibility restoration
+before a YAML is published. Every generated connection range is evaluated
+over all physical symmetry instances and frozen to one exact contour-safe
+length. Connections sharing `tie_group` are solved jointly over the
+intersection of their user-authorized ranges and receive the same exact
+length. Endpoint identity, supplied-interface geometry, component ownership,
+usage, symmetry and copy relations are guarded as immutable invariants. A
+restored candidate is recompiled and the restored structure—not its
+provisional ranged predecessor—is the one ranked and hash-replayed. This
+directly addresses the T three-seed failure in which static compilation
+accepted a 10--45 range but the adapter independently chose length 27 for a
+physical instance requiring a longer contour.
+
+Ordinary `goal.diameter_angstrom` and `goal.cavity_diameter_angstrom` now
+lower to normal required Assembly IR objectives, participate in full-assembly
+pose optimization, remain in frozen RFD3 provenance, and are evaluated again
+against final-output CA morphology by `scaffold_validity_audit.json`.
+`preferences.cavity` remains a soft compact/auto/open initialization bias;
+an explicit numeric range is a hard output contract. Run reports show both
+requested and observed values.
+
+The pose-optimization shortlist is no longer a hidden rejection filter.
+Candidates outside the compute shortlist may still be selected when their
+fully expanded compiler and strict-replay contracts already pass. Straight
+linker-chord obstruction remains a soft routing preference; actual fixed
+clashes, insufficient maximum contour, required supplied-interface failure,
+required size failure and replay mismatch remain hard. The next evidence gate
+is the synchronized LRZ full suite followed by a fresh three-seed T resolve;
+only then should a selected 50-step GPU canary be submitted.
+
+`resolve` now prints every range-to-exact linker restoration beside the
+selected design and records the complete decision in
+`resolution_manifest.json` (configured range, worst physical requirement,
+selected length, policy, tie group and physical instance IDs). This makes the
+adapter decision inspectable and prevents a repaired candidate from looking
+like an unexplained manual YAML edit.
+
+## 2026-08-12 three supplied interfaces CPU replay
+
+The ordinary user-declared connectivity path is no longer limited to two
+supplied interface identities.  LRZ resolution
+`three-seed-user-connected-c3-20260812T120807Z` consumed three complete
+two-participant seeds, retained the three user-declared cross-seed polymer
+connections, evaluated 48 topology/pose candidates, accepted four and wrote
+three strict-replay YAML files.  Rank 1 is
+`selected/rank_0001_candidate_000032.yaml`.  Public validation passed three
+exact constraints, geometry with 2199 atoms/357 residues/nine chains, and
+finite RFD3 runtime features.  No interface identity was invented.
+
+This closes the three-seed C3 CPU integration gate, not a tetrahedral cage
+claim.  The next CPU gate is three supplied interface identities arranged as
+two user-declared three-face protein units under T.  Its executable intent is
+`experiments/lrz_simple_three_seed_t_user_connections_v100_50step_intent.yaml`;
+T must assign two independent finite-group generators, expand 24 physical
+polymer units, preserve all three natural interfaces and survive strict
+replay before a GPU job is authorized.
+
+## 2026-08-12 supplied-interface semantic boundary
+
+A user-supplied interface is one complete physical contact face with two or
+more participants. It is not a bag of independently reusable "sides". The
+ordinary resolver now emits `task: preserve_supplied_geometry` explicitly,
+stores all participants of each supplied identity in one `joint_rigid`
+component, retains `relation.mode: preserve_input`, and rejects either a
+generated `contact` target or independently rigid components under that task.
+
+Scaffold compilation may reference a participant's real N/C terminus, but it
+must not detach, independently move, re-pair or invent a participant-level
+interface. Whole supplied hyperedges may be translated/rotated during global
+assembly pose solving while their complete internal geometry remains exact.
+This workflow is distinct from `task: create_symmetric_interface`, where the
+input is a central motif without the desired interface and packing guidance
+must create contacts in generated regions.
+
+The public assembly graph now also accepts one variadic supplied-interface
+declaration with `between: [port_A, port_C, port_D, ...]`. Resolver-generated
+`contact_pairs` must be unique, contained in `between` and connect every
+participant. Lowering creates compatibility member constraints for the
+current binary RFD3 tensors, but preserves one hyperedge ID and counts physical
+usage once. Multi-participant `mode: contact` fails closed: this slice is for
+preserving a supplied face, not inventing a cooperative generated interface.
+
+The ordinary resolver now has one additional fail-closed executable case for
+a single cooperative supplied hyperedge. If every participant selector
+contains two or more disjoint fragments on one source chain, those source
+chain orders define the covalent scaffold paths exactly. Mosaic generates
+only the missing interval within each participant; it never connects one
+interface participant to another. A single hyperedge made only of isolated
+fragments remains ambiguous and still requires another supplied seed or
+expert `connections`. The real PI25 C3 three-participant canary is the LRZ
+execution gate for this slice. Its focused resolver test now passes on LRZ:
+one cooperative seed is recognized as one C3/C3 quotient hyperedge, its three
+authoritative same-chain paths compile, and the resulting standard public
+YAML survives strict standalone replay. Internal binary compatibility members
+use distinct runtime port aliases while retaining one public hyperedge
+identity; the ranker also treats absent inter-group atom pairs in a single
+`joint_rigid` component as a valid `None` measurement. The native adapter now
+executes the mathematically valid C3/C3 one-coset case as a preexpanded
+stabilized ASU: the three authoritative paths are frozen onto `C3:e`,
+`C3:r1` and `C3:r2`, materialized exactly once, and annotated as one RFD3
+symmetry entity rather than incorrectly expanded into nine chains. Focused
+LRZ adapter and prevalidation tests pass with three chains and three runtime
+transforms. A 50-step GPU result remains the separate pending gate.
+
+Local `py_compile` and `git diff --check` pass. The synchronized LRZ snapshot
+then passed the complete suite (`754` tests). A real two-seed C3 semantic
+replay at
+`/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/two-seed-semantic-replay-20260812T103548Z`
+enumerated 16 candidates, accepted four and froze four replayable YAML files.
+Rank 1 is `selected/rank_0001_candidate_000012.yaml`; it explicitly contains
+`task: preserve_supplied_geometry`, two `joint_rigid` components and two
+`preserve_input` relations. Public validation passed geometry (873 atoms, 153
+residues and six chains) and finite RFD3 runtime features. This closes the
+supplied-interface identity and CPU compile/replay gate; representative GPU
+and final-scaffold quality remain separate gates.
+
+## 2026-08-12 unknown-relative-pose multi-seed resolver checkpoint
+
+The user-authoritative connectivity slice is now CPU closed for the real C3
+engineering input. Ordinary intents may declare `polymer_connections` using
+`interface.participant` endpoints. Once present, the resolver does not
+enumerate alternative participant pairings and does not reverse the declared
+chain directions; it only assigns the finite-group seam/relation and solves
+component poses. Independent seed materialization remaps those endpoints into
+canonical chain IDs together with their complete rigid interface geometry.
+
+LRZ resolution
+`user-connected-two-seed-c3-20260812T114354Z` discarded the mutual input pose,
+evaluated 32 topology/pose states, accepted four and selected four strictly
+replayable public YAML files. Rank 1 is
+`selected/rank_0001_candidate_000016.yaml`; its topology is explicitly marked
+`declared`, contains six physical polymer units, and preserves the requested
+cross-seed A1--B2/A2--B1 connectivity. This is CPU executable evidence, not
+yet GPU/scientific-quality evidence.
+
+The ordinary multi-interface frontend now distinguishes supplied interface
+geometry from arbitrary file placement. A new `seed_layout` intent field has
+three explicit meanings:
+
+- `auto`: solve relative pose when seeds use different source files; preserve
+  the overall pose when all seeds share one input structure;
+- `solve`: canonicalize every complete supplied seed and jointly solve their
+  relative placement even when they came from one PDB/mmCIF;
+- `preserve_input`: retain one shared input frame and reject multiple unrelated
+  source frames.
+
+This is not an interface-discovery mode. The user supplies every interface
+identity and physical usage. Materialization preserves the full intra-seed
+participant geometry; resolver metadata records all supplied IDs and asserts
+that emitted hyperedges are exactly the supplied set. Mosaic may enumerate
+polymer paths and finite group relations, but may not invent a new noncovalent
+seed combination.
+
+One supplied interface participant may now contain several ordered,
+non-overlapping residue ranges from the same source polymer chain (for
+example, two or three helices forming one interface face). Independent-file
+materialization keeps all ranges in one canonical participant, the complete
+multi-fragment interface remains one `joint_rigid` hyperedge, internal gaps
+become ordered generated links, and cross-seed paths bind only the outer N/C
+fragments. Ordinary mode still refuses to infer covalent links across
+different source chains; that topology must be user-declared in expert mode.
+
+The execution path is now wired as:
+
+```text
+supplied rigid interface hyperedges
+-> contact/connectivity validation
+-> canonical independent seed frames when requested
+-> polymer unit/path-cover enumeration
+-> finite-group relation assignment and expanded-graph validation
+-> deterministic global full-orbit Cn/Dn/T/O/I starts
+-> joint radius/azimuth/axial/rotation pattern search
+-> interface/linker-contour/clash/closure hard contracts
+-> straight-chord clearance, terminal tangent and packing soft ranking
+-> frozen UserDesignSpec
+-> strict YAML/hash replay and RFD3 adapter prevalidation
+```
+
+Cn/Dn preserve their existing ring/layer initializer. T/O/I full-orbit
+components use a deterministic Fibonacci-sphere family that avoids named
+symmetry axes. Components carrying explicit stabilizer/coset actions fail
+closed because their unknown-pose initialization needs stabilizer-aware local
+frames; a generic full-orbit start would be geometrically false.
+
+Local evidence: `py_compile`, `compileall` and `git diff --check` pass. New
+tests cover shared-file `solve`, shared-file `auto`, invalid multi-file
+`preserve_input`, single-seed misuse, exact supplied interface identity and
+polyhedral initialization. The full LRZ suite and the real C3 strict replay
+described above now pass. Representative GPU evidence is still required
+before this module is promoted from CPU validated to GPU validated.
 
 ## 2026-08-11 authoritative engineering checkpoint
 
@@ -216,8 +454,11 @@ The ordinary `inspect` frontend now separates residue-disconnected contact
 patches on the same pair of chains instead of merging them into one false
 interface seed. It also records the observed chain-to-interface incidence
 graph and detected port count, and accepts subunit, outer-diameter and cavity-
-diameter ranges directly on the command line. These are user intent fields;
-diameter and cavity constraints are not yet continuous pose-search objectives.
+diameter ranges directly on the command line. These numeric ranges now lower
+to required Assembly IR objectives, participate in complete-assembly pose
+ranking and are rechecked on final RFD3 CA morphology. The qualitative
+`preferences.cavity` field remains a soft initializer/ranking preference;
+only explicit numeric ranges are hard output contracts.
 
 Simple cage plans now report `resolution_stage: intent` and
 `executable: false` in machine-readable output, plus the variables still
@@ -261,15 +502,19 @@ Active experimental core:
   input, broad cage goal and per-interface usage (`auto`, exact or range);
   detected interface selectors and inspection thresholds are recorded for
   reproducible validation. The intent itself is never submitted directly. A
-  user must first choose one standard YAML produced by a supported resolver;
-  only the single-seed Cn and experimental pre-positioned multi-binary Cn
-  contracts currently provide that bridge;
+  user must first choose one standard YAML produced by a supported resolver.
+  The resolver now supports single-seed Cn plus supplied multi-seed layouts in
+  `preserve_input` and `solve` modes. The latter canonicalizes every supplied
+  seed independently and jointly solves candidate topology, symmetry relation
+  and continuous component poses before freezing a strict-replay YAML. This is
+  implemented locally but remains behind the LRZ full-suite/replay/GPU gate;
 - the ordinary intent schema represents an interface as two or more named
   participants rather than a hard-coded pair. Exact selector validation uses
   a connected participant contact graph, allowing cooperative A-C-D-style
-  sites without demanding an all-to-all clique. The current executable
-  Assembly IR relation remains pairwise, so hyperedge lowering is still an
-  explicit later gate;
+  sites without demanding an all-to-all clique. The public expert graph now
+  preserves that variadic relation as one atomic hyperedge. Compiler lowering
+  emits a connected binary compatibility tree for the current left/right RFD3
+  tensors while physical usage, provenance and audit remain hyperedge-level;
 - explicit assembly-graph interfaces now carry a physical multiplicity
   contract. After group expansion the compiler counts unique physical edge
   instances and rejects an expert symmetry/copy relation that cannot satisfy
@@ -279,14 +524,16 @@ Active experimental core:
   optional homomeric subunit bounds, but explicitly leaves polymer ownership,
   connection order, neighbour transforms, continuous pose and mixed
   stabilizer/coset multiplicities unresolved;
-- ordinary resolution now has two deliberately narrow local frontends. One
-  freezes a single binary preserve-exact seed into Cn-ring candidates. The
-  second experimental frontend accepts several disjoint binary preserve-exact
-  seeds only when their relative coordinates are already supplied, binds
-  canonical path covers to chemical directions, one closing seam and a
-  full-orbit Cn winding, validates the expanded interface/unit graph, and uses
-  the common static compiler/ranker/replay path. Neither frontend silently
-  chooses a candidate;
+- ordinary resolution retains the narrow single-binary Cn frontend and now has
+  a general supplied multi-seed frontend. `seed_layout: preserve_input` keeps a
+  shared reference layout; `seed_layout: solve` deliberately discards
+  cross-seed placement while preserving each seed's internal geometry. It
+  enumerates chemical path covers and group relations, initializes full-orbit
+  Cn/Dn/T/O/I placements, jointly refines radius/azimuth/axial/rotation, runs
+  hard linker/clash/closure checks, and freezes ranked candidates through the
+  common compiler/replay path. It never invents an interface identity and does
+  not silently select a candidate. Stabilizer/coset component orbits still fail
+  closed until their geometry-aware pose solver is implemented;
 
 - simple terminal-contig designs now infer that generated symmetry-neighbour
   regions must form an interface, choose a concrete nonidentity neighbour and
@@ -311,17 +558,18 @@ Major unfinished product/science layers:
   assignment, strict public validation and a three-pair GPU canary remain
   unfinished. Ordered same-chain paths are supported separately and are not
   the flagship cage topology;
-- the general ordinary architecture resolver still must infer or optimize
-  unknown interface-side ownership, directed polymer paths, symmetry
-  family/order, neighbour actions and seed poses. The new multi-binary bridge
-  handles only already pre-positioned disjoint seeds in Cn and must not be
-  described as solving this general inverse problem;
+- the general ordinary architecture resolver can now optimize unknown
+  full-orbit seed poses after the user supplies every interface identity and
+  usage. Remaining inverse-design gaps are automatic component-equivalence
+  inference for heteromers, geometry-aware stabilizer/coset assignments,
+  native higher-participant hyperedge runtime, and broad LRZ/GPU evidence;
 - repeated GPU evidence that automatic guidance produces broad, well-oriented
   and sequence-designable new interfaces, rather than merely geometric
   contact;
 - true solvent-accessible area, side-chain-aware shape complementarity,
   cavity/porosity and exposed-hydrophobe terms in the joint packing objective;
-- joint continuous pose optimization for several seed/interface orbits;
+- calibration and GPU validation of joint continuous pose optimization for
+  several seed/interface orbits;
 - vertex/edge/face stabilizers, cosets and mixed-multiplicity cage components;
 - dynamic T, O/I GPU closure, high-order local-neighbourhood execution and
   helical symmetry;
@@ -401,9 +649,9 @@ lowering is a useful local addition awaiting LRZ validation, but it is not the
 flagship blocker. The immediate missing work is cross-pair unit derivation,
 explicit input-chain/group-action ownership, per-interface-pair audits and
 broader N-pair GPU validation. Consequently
-`multi_chain_interface_seed_cage` is recorded as `schema_only`; the narrower
-pre-positioned graph that has already reached GPU remains
-`public_assembly_graph`.
+`multi_chain_interface_seed_cage` remains an implementation-stage capability
+until strict replay and GPU evidence pass. The earlier pre-positioned graph is
+retained as a compatibility/evidence path, not as the limit of the resolver.
 
 ## 2026-08-07 single-input ordered seed-path compiler slice
 
@@ -566,8 +814,10 @@ architecture comparison using complete-assembly feasibility, but it does not
 claim that one local relation uniquely identifies a global group. Automatic
 symmetry-family proposal, component topology, stabilizer/coset assignments and
 generated connectivity remain unresolved.
-Capability maturity remains `schema_only` until the LRZ suite and a frozen
-candidate validate/replay gate pass.
+The generic graph-search compiler/replay layer is CPU validated. Individual
+architecture families retain their own evidence level: a finite-group
+candidate is not promoted to GPU/scientific readiness until a frozen YAML for
+that family passes native adapter replay and its representative output audits.
 
 ## 2026-08-07 independent component initialization
 
@@ -3082,13 +3332,14 @@ continuous pose variables. It deliberately remains non-executable until a
 resolver freezes those variables into the same expert `UserDesignSpec` and
 `AssemblySpecification` path.
 
-The executable expert graph accepts any number of named components, ports and
-binary interface edges; no three- or four-face limit exists. A simple intent
-may already describe a connected interface with two or more participants, but
-automatic inspection and the executable relation/runtime are still pairwise.
-General participant hyperedges, polymer-unit ownership inferred across many
-seed pairs, stabilizer/coset orbits and mixed physical multiplicities remain
-the next architecture-resolver work rather than hidden special cases.
+The executable expert graph accepts any number of named components and ports,
+and every public interface may contain two or more participants; no three- or
+four-face limit exists. Multi-participant supplied relations lower to a
+contact-supported binary execution tree without changing their atomic public
+identity or physical multiplicity. Native variadic sampler tensors,
+polymer-unit ownership inferred across ambiguous many-seed inputs,
+stabilizer/coset orbits and mixed physical multiplicities remain the next
+architecture-resolver work rather than hidden special cases.
 
 Job `5741076` proved that packing diagnostics v4 could form transient contacts
 but did not retain a broad final interface: all three C3 edges finished with

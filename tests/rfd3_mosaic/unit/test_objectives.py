@@ -153,16 +153,27 @@ class ObjectiveScoringTestCase(unittest.TestCase):
                     {
                         "central_void_radius": 5.0,
                         "minimum_axis_clearance": 3.0,
+                        "maximum_center_extent": 12.0,
                     },
                     {
                         "central_void_radius": 4.0,
                         "minimum_axis_clearance": 2.0,
+                        "maximum_center_extent": 10.0,
                     },
                 ]
             },
         )
 
         self.assertEqual(metrics["clashes.total_hard_clashes"], 2.0)
+        self.assertEqual(
+            metrics["cavities.minimum_central_void_diameter"],
+            8.0,
+        )
+        self.assertEqual(
+            metrics["cavities.minimum_axis_clearance_diameter"],
+            4.0,
+        )
+        self.assertEqual(metrics["assemblies.outer_diameter"], 24.0)
         self.assertEqual(metrics["linkers.feasible_fraction"], 0.5)
         self.assertEqual(metrics["linkers.mean_endpoint_distance"], 25.0)
         self.assertEqual(metrics["linkers.maximum_endpoint_distance"], 30.0)

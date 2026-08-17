@@ -229,6 +229,66 @@ class ScaffoldValidityTestCase(unittest.TestCase):
             )
         )
 
+    def test_symmetry_audit_accepts_preexpanded_mixed_entity_orbits(
+        self,
+    ) -> None:
+        transforms = []
+        for angle in (0.0, 90.0, 180.0, 270.0):
+            radians = np.radians(angle)
+            transform = np.eye(4)
+            transform[:2, :2] = (
+                (np.cos(radians), -np.sin(radians)),
+                (np.sin(radians), np.cos(radians)),
+            )
+            transforms.append(transform)
+
+        atoms = []
+        layout = []
+        serial = 1
+        declarations = (
+            (0, (0, 2), np.asarray((5.0, 0.0, 0.0))),
+            (1, (0, 1, 2, 3), np.asarray((10.0, 0.0, 0.0))),
+        )
+        chain_index = 0
+        for entity_id, transform_indices, source in declarations:
+            for transform_index in transform_indices:
+                chain_id = chr(ord("A") + chain_index)
+                coordinate = (
+                    source @ transforms[transform_index][:3, :3].T
+                    + transforms[transform_index][:3, 3]
+                )
+                atoms.append(
+                    _atom(
+                        serial,
+                        "CA",
+                        1,
+                        *coordinate,
+                        chain=chain_id,
+                    )
+                )
+                layout.append(
+                    {
+                        "entity_id": entity_id,
+                        "transform_index": transform_index,
+                        "is_asu": transform_index == 0,
+                    }
+                )
+                serial += 1
+                chain_index += 1
+
+        report = audit_scaffold_geometry(
+            tuple(atoms),
+            expected_symmetry_multiplicity=4,
+            expected_symmetry_transforms=tuple(transforms),
+            expected_symmetry_chain_layout=tuple(layout),
+        )
+
+        self.assertTrue(report["summary"]["passed_symmetry"])
+        self.assertEqual(
+            len(report["symmetry"]["transform_comparisons"]),
+            4,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

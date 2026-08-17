@@ -59,6 +59,42 @@ def _selected_atoms(
     return selected
 
 
+def _ordered_participant_segments(selector: str):
+    """Return one participant's same-chain fixed fragments in chain order.
+
+    One physical interface face may be made from several helices or loops.
+    They remain one rigid participant, but their intervening sequence is a
+    polymer-path question.  Ordinary mode can infer that path only when all
+    selected fragments belong to one source chain; it must not invent a
+    covalent connection between unrelated chains.
+    """
+
+    segments = tuple(
+        sorted(
+            parse_public_selector(selector),
+            key=lambda item: (
+                item.chain_id,
+                item.residue_start,
+                item.residue_end,
+            ),
+        )
+    )
+    chains = {segment.chain_id for segment in segments}
+    if len(chains) != 1:
+        raise NotImplementedError(
+            "One ordinary interface participant may contain several "
+            "fixed fragments only when they belong to one source polymer "
+            "chain; use expert component paths for cross-chain participants"
+        )
+    for left, right in zip(segments, segments[1:]):
+        if left.residue_end >= right.residue_start:
+            raise ValueError(
+                "Interface participant fixed ranges must be ordered and "
+                "non-overlapping"
+            )
+    return segments
+
+
 def _canonical_frame(
     participant_atoms: tuple[tuple[AtomRecord, ...], ...],
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -221,14 +257,33 @@ def materialize_seed_library(
     explicit_sources = any(
         seed.source is not None for seed in intent.interface_seeds.values()
     )
-    independent = explicit_sources and len(set(sources.values())) > 1
-    if not independent:
+    distinct_source_count = len(set(sources.values()))
+    if intent.seed_layout == "preserve_input" and distinct_source_count > 1:
+        raise ValueError(
+            "seed_layout=preserve_input requires every supplied interface "
+            "seed to use one shared input structure. Use seed_layout=solve "
+            "when separate files are arbitrary local coordinate frames"
+        )
+    solve_layout = (
+        (
+            intent.seed_layout == "solve"
+            and len(intent.interface_seeds) > 1
+        )
+        or (
+            intent.seed_layout == "auto"
+            and explicit_sources
+            and distinct_source_count > 1
+        )
+    )
+    if not solve_layout:
         return SeedLibraryMaterialization(
             intent=intent,
             structure_path=intent.input,
             independent_frames=False,
             manifest={
                 "mode": "shared_input_frame",
+                "requested_seed_layout": intent.seed_layout,
+                "relative_seed_pose": "preserved",
                 "canonical_structure": str(intent.input),
                 "sources": {
                     seed_id: str(path) for seed_id, path in sources.items()
@@ -243,6 +298,7 @@ def materialize_seed_library(
         tuple[AtomRecord, str, tuple[float, float, float], int]
     ] = []
     normalized_seeds = {}
+    normalized_participants: dict[tuple[str, str], str] = {}
     seed_manifest: dict[str, Any] = {}
     for seed_index, (seed_id, seed) in enumerate(
         sorted(intent.interface_seeds.items()),
@@ -265,16 +321,14 @@ def materialize_seed_library(
         ):
             chain_id = f"S{seed_index:03d}P{participant_index:03d}"
             participants.append(chain_id)
-            ranges = parse_public_selector(seed.selectors[participant])
-            if len(ranges) != 1:
-                raise NotImplementedError(
-                    "Independent seed-library materialization currently "
-                    "requires one contiguous selector per participant"
-                )
-            residue_start = min(atom.residue_number for atom in selected)
-            residue_end = max(atom.residue_number for atom in selected)
-            selectors[chain_id] = (
-                f"{chain_id}/{residue_start}-{residue_end}/*"
+            normalized_participants[(seed_id, participant)] = chain_id
+            ranges = _ordered_participant_segments(
+                seed.selectors[participant]
+            )
+            selectors[chain_id] = ",".join(
+                f"{chain_id}/{segment.residue_start}-"
+                f"{segment.residue_end}/*"
+                for segment in ranges
             )
             for atom in selected:
                 identity = (
@@ -325,10 +379,38 @@ def materialize_seed_library(
         }
 
     _write_canonical_cif(structure_path, canonical_atoms)
+    normalized_connections = tuple(
+        connection.model_copy(
+            update={
+                "from_endpoint": connection.from_endpoint.model_copy(
+                    update={
+                        "participant": normalized_participants[
+                            (
+                                connection.from_endpoint.interface,
+                                connection.from_endpoint.participant,
+                            )
+                        ]
+                    }
+                ),
+                "to_endpoint": connection.to_endpoint.model_copy(
+                    update={
+                        "participant": normalized_participants[
+                            (
+                                connection.to_endpoint.interface,
+                                connection.to_endpoint.participant,
+                            )
+                        ]
+                    }
+                ),
+            }
+        )
+        for connection in intent.polymer_connections
+    )
     normalized_intent = intent.model_copy(
         update={
             "input": structure_path,
             "interface_seeds": normalized_seeds,
+            "polymer_connections": normalized_connections,
         }
     )
     return SeedLibraryMaterialization(
@@ -337,6 +419,8 @@ def materialize_seed_library(
         independent_frames=True,
         manifest={
             "mode": "independent_seed_local_frames",
+            "requested_seed_layout": intent.seed_layout,
+            "relative_seed_pose": "solve",
             "canonical_structure": str(structure_path),
             "canonical_structure_sha256": _sha256(structure_path),
             "seed_count": len(normalized_seeds),

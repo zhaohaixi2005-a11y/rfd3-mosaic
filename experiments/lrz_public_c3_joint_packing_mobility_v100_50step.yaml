@@ -5,6 +5,12 @@ input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
 symmetry: C3
 task: create_symmetric_interface
 fixed_arrangement: optimize_components
+preferences:
+  packing: balanced
+  interface_area: large
+  cavity: auto
+  diversity: medium
+  component_motion: guided
 
 # Ordinary-user flagship for the unified controller. The motif remains one
 # exact rigid orbit internally; Mosaic may translate and rotate that complete

@@ -295,6 +295,7 @@ def _resolve_runtime_bindings(
     allowed_source_fragment_ids: set[str] | None,
     registry_order: list[str],
     registry_matrices: dict[str, Any],
+    preexpanded: bool = False,
 ) -> tuple[list[_RuntimeBinding | None], int]:
     """Bind reference-port atoms to their compiled runtime provenance.
 
@@ -317,7 +318,7 @@ def _resolve_runtime_bindings(
     atom_indices = {key: index for index, key in enumerate(atom_keys)}
     for block_keys in atom_key_blocks:
         block_indices = [atom_indices[key] for key in block_keys]
-        if not groups and all(
+        if (preexpanded or not groups) and all(
             f"{chain}{residue}" in index_map
             for chain, residue, _ in block_keys
         ):
@@ -435,6 +436,7 @@ def _observed_coordinates(
     output_lookup: dict[tuple[str, int, str], np.ndarray],
     ordered_output_chains: list[str],
     asu_chain_count: int,
+    preexpanded: bool = False,
 ) -> tuple[np.ndarray, list[int]]:
     chain_positions = {
         chain: index for index, chain in enumerate(ordered_output_chains)
@@ -451,8 +453,13 @@ def _observed_coordinates(
         master_chain, output_residue = _component(str(destination))
         if master_chain not in chain_positions:
             continue
-        asu_chain_index = chain_positions[master_chain] % asu_chain_count
-        output_chain_index = action_index * asu_chain_count + asu_chain_index
+        if preexpanded:
+            output_chain_index = chain_positions[master_chain]
+        else:
+            asu_chain_index = chain_positions[master_chain] % asu_chain_count
+            output_chain_index = (
+                action_index * asu_chain_count + asu_chain_index
+            )
         if output_chain_index >= len(ordered_output_chains):
             continue
         output_chain = ordered_output_chains[output_chain_index]
@@ -472,6 +479,7 @@ def _output_chains_for_bindings(
     index_map: dict[str, Any],
     ordered_output_chains: list[str],
     asu_chain_count: int,
+    preexpanded: bool = False,
 ) -> set[str]:
     """Resolve which concrete output chains own one compiled port."""
 
@@ -489,8 +497,11 @@ def _output_chains_for_bindings(
         master_chain, _ = _component(str(destination))
         if master_chain not in chain_positions:
             continue
-        asu_chain_index = chain_positions[master_chain] % asu_chain_count
-        output_index = action_index * asu_chain_count + asu_chain_index
+        if preexpanded:
+            output_index = chain_positions[master_chain]
+        else:
+            asu_chain_index = chain_positions[master_chain] % asu_chain_count
+            output_index = action_index * asu_chain_count + asu_chain_index
         if output_index < len(ordered_output_chains):
             output_chains.add(ordered_output_chains[output_index])
     return output_chains
@@ -502,6 +513,7 @@ def _mapped_fixed_output_residues(
     ordered_output_chains: list[str],
     asu_chain_count: int,
     multiplicity: int,
+    preexpanded: bool = False,
 ) -> set[tuple[str, int]]:
     """Materialize all input-mapped motif residues in every output copy."""
 
@@ -511,6 +523,12 @@ def _mapped_fixed_output_residues(
     master_destinations = {
         _component(str(destination)) for destination in index_map.values()
     }
+    if preexpanded:
+        return {
+            destination
+            for destination in master_destinations
+            if destination[0] in chain_positions
+        }
     mapped: set[tuple[str, int]] = set()
     for master_chain, residue in master_destinations:
         if master_chain not in chain_positions:
@@ -644,16 +662,27 @@ def audit_interface_relations(
         },
         key=_chain_sort_key,
     )
-    if (
-        multiplicity < 1
-        or not ordered_output_chains
-        or len(ordered_output_chains) % multiplicity != 0
-    ):
+    preexpanded_layout = extra.get("preexpanded_chain_layout")
+    if not ordered_output_chains or multiplicity < 1:
+        raise ValueError("Interface audit requires output chains and symmetry")
+    if preexpanded_layout is not None:
+        if len(preexpanded_layout) != len(ordered_output_chains):
+            raise ValueError(
+                "Preexpanded chain layout does not match output chain "
+                f"count: {len(preexpanded_layout)} != "
+                f"{len(ordered_output_chains)}"
+            )
+        asu_chain_count = sum(
+            bool(record.get("is_asu", False))
+            for record in preexpanded_layout
+        )
+    elif len(ordered_output_chains) % multiplicity != 0:
         raise ValueError(
             "Output chain count is not divisible by symmetry multiplicity: "
             f"chains={ordered_output_chains}, multiplicity={multiplicity}"
         )
-    asu_chain_count = len(ordered_output_chains) // multiplicity
+    else:
+        asu_chain_count = len(ordered_output_chains) // multiplicity
     index_map = result.get("diffused_index_map") or {}
     if not isinstance(index_map, dict) or not index_map:
         raise ValueError("Result metadata contains no diffused_index_map")
@@ -662,6 +691,7 @@ def audit_interface_relations(
         ordered_output_chains=ordered_output_chains,
         asu_chain_count=asu_chain_count,
         multiplicity=multiplicity,
+        preexpanded=preexpanded_layout is not None,
     )
     motif_constraint_groups = extra.get("motif_constraint_groups")
 
@@ -677,8 +707,16 @@ def audit_interface_relations(
         )
         left_keys = [key for block in left_blocks for key in block]
         right_keys = [key for block in right_blocks for key in block]
-        source_copy = int(edge["source_copy_index"])
-        target_copy = int(edge["target_copy_index"])
+        source_copy = int(
+            edge.get("left_transform_index")
+            if edge.get("left_transform_index") is not None
+            else edge["source_copy_index"]
+        )
+        target_copy = int(
+            edge.get("right_transform_index")
+            if edge.get("right_transform_index") is not None
+            else edge["target_copy_index"]
+        )
         if not (0 <= source_copy < multiplicity) or not (
             0 <= target_copy < multiplicity
         ):
@@ -701,6 +739,7 @@ def audit_interface_relations(
             ),
             registry_order=order,
             registry_matrices=matrices,
+            preexpanded=preexpanded_layout is not None,
         )
         right_bindings, right_remapped = _resolve_runtime_bindings(
             right_keys,
@@ -716,6 +755,7 @@ def audit_interface_relations(
             ),
             registry_order=order,
             registry_matrices=matrices,
+            preexpanded=preexpanded_layout is not None,
         )
         left_observed, left_keep = _observed_coordinates(
             left_bindings,
@@ -723,6 +763,7 @@ def audit_interface_relations(
             output_lookup=output_lookup,
             ordered_output_chains=ordered_output_chains,
             asu_chain_count=asu_chain_count,
+            preexpanded=preexpanded_layout is not None,
         )
         right_observed, right_keep = _observed_coordinates(
             right_bindings,
@@ -730,17 +771,25 @@ def audit_interface_relations(
             output_lookup=output_lookup,
             ordered_output_chains=ordered_output_chains,
             asu_chain_count=asu_chain_count,
+            preexpanded=preexpanded_layout is not None,
         )
         left_matrix = np.asarray(matrices[str(order[source_copy])], dtype=float)
         right_matrix = np.asarray(matrices[str(order[target_copy])], dtype=float)
         left_master = np.asarray([source_lookup[key] for key in left_keys])
         right_master = np.asarray([source_lookup[key] for key in right_keys])
-        left_reference_all = (
-            left_master @ left_matrix[:3, :3].T + left_matrix[:3, 3]
-        )
-        right_reference_all = (
-            right_master @ right_matrix[:3, :3].T + right_matrix[:3, 3]
-        )
+        if preexpanded_layout is not None:
+            # The compiler materialized each quotient copy directly in the
+            # input structure; applying its group transform again would
+            # rotate the reference twice.
+            left_reference_all = left_master
+            right_reference_all = right_master
+        else:
+            left_reference_all = (
+                left_master @ left_matrix[:3, :3].T + left_matrix[:3, 3]
+            )
+            right_reference_all = (
+                right_master @ right_matrix[:3, :3].T + right_matrix[:3, 3]
+            )
         left_reference = left_reference_all[np.asarray(left_keep, dtype=int)]
         right_reference = right_reference_all[np.asarray(right_keep, dtype=int)]
         expected_atoms = len(left_keys) + len(right_keys)
@@ -763,12 +812,14 @@ def audit_interface_relations(
                 index_map=index_map,
                 ordered_output_chains=ordered_output_chains,
                 asu_chain_count=asu_chain_count,
+                preexpanded=preexpanded_layout is not None,
             )
             right_chains = _output_chains_for_bindings(
                 right_bindings,
                 index_map=index_map,
                 ordered_output_chains=ordered_output_chains,
                 asu_chain_count=asu_chain_count,
+                preexpanded=preexpanded_layout is not None,
             )
             left_evaluation_atoms = [
                 atom
@@ -830,6 +881,8 @@ def audit_interface_relations(
             "evaluated_right_atoms": len(right_observed),
             "source_copy_index": source_copy,
             "target_copy_index": target_copy,
+            "action_copy_index": edge.get("action_copy_index"),
+            "orbit_id": edge.get("orbit_id"),
             "target_mode": str(geometry["mode"]),
             "reference_basis": str(
                 edge.get("reference_basis", "compiled_input")
@@ -1092,27 +1145,61 @@ def audit_interface_relations(
     hyperedge_ids = sorted(
         {report["hyperedge_id"] for report in edge_reports}
     )
-    hyperedge_reports = [
-        {
+    hyperedge_reports = []
+    for hyperedge_id in hyperedge_ids:
+        members = [
+            report
+            for report in edge_reports
+            if report["hyperedge_id"] == hyperedge_id
+        ]
+        physical_members: dict[
+            tuple[str | None, int], list[dict[str, Any]]
+        ] = {}
+        for member in members:
+            action_copy = member.get("action_copy_index")
+            physical_index = int(
+                member["source_copy_index"]
+                if action_copy is None
+                else action_copy
+            )
+            physical_key = (member.get("orbit_id"), physical_index)
+            physical_members.setdefault(physical_key, []).append(member)
+        hyperedge_reports.append({
             "hyperedge_id": hyperedge_id,
+            "physical_instance_count": len(physical_members),
             "member_edge_instance_count": len(members),
+            "members_per_physical_instance": sorted(
+                {len(group) for group in physical_members.values()}
+            ),
             "required": any(member["required"] for member in members),
             "satisfied": all(
                 member["satisfied"]
                 for member in members
                 if member["required"]
             ),
+            "physical_instances": [
+                {
+                    "orbit_id": orbit_id,
+                    "action_copy_index": physical_index,
+                    "member_edge_instance_ids": sorted(
+                        member["edge_instance_id"]
+                        for member in group
+                    ),
+                    "satisfied": all(
+                        member["satisfied"]
+                        for member in group
+                        if member["required"]
+                    ),
+                }
+                for (orbit_id, physical_index), group in sorted(
+                    physical_members.items(),
+                    key=lambda item: (str(item[0][0]), item[0][1]),
+                )
+            ],
             "source_interface_ids": sorted(
                 {member["source_interface_id"] for member in members}
             ),
-        }
-        for hyperedge_id in hyperedge_ids
-        for members in [[
-            report
-            for report in edge_reports
-            if report["hyperedge_id"] == hyperedge_id
-        ]]
-    ]
+        })
     return {
         "audit": "rfd3_mosaic.assembly_interface_relations",
         "schema_version": 1,

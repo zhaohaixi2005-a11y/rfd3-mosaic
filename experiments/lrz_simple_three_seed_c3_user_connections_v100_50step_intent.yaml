@@ -1,0 +1,66 @@
+schema_version: 1
+kind: simple_cage_intent
+name: ordinary-three-seed-user-connected-c3-t50-s952
+
+# Three complete A/B contact patches are treated as three authoritative
+# interface seed types. seed_layout=solve discards their mutual file-frame
+# placement while preserving each complete two-participant interface.
+input: ../examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+seed_layout: solve
+
+goal:
+  architecture: ring
+  composition: auto
+  symmetry: [C3]
+  subunits: {minimum: 9, maximum: 9}
+
+interface_seeds:
+  interface_alpha:
+    participants: [A, B]
+    selectors: {A: A/166-170/*, B: B/217-225/*}
+    use: {exact: 3}
+    geometry: preserve_exact
+  interface_beta:
+    participants: [A, B]
+    selectors: {A: A/173-177/*, B: B/213-216/*}
+    use: {exact: 3}
+    geometry: preserve_exact
+  interface_gamma:
+    participants: [A, B]
+    selectors: {A: A/186-193/*, B: B/234-240/*}
+    use: {exact: 3}
+    geometry: preserve_exact
+
+# These three protein-unit paths are user input, not Mosaic hypotheses.
+polymer_connections:
+  - id: alpha_to_beta_unit
+    from: interface_alpha.A
+    to: interface_beta.B
+  - id: beta_to_gamma_unit
+    from: interface_beta.A
+    to: interface_gamma.B
+  - id: gamma_to_alpha_unit
+    from: interface_gamma.A
+    to: interface_alpha.B
+
+generation:
+  length: {minimum: 10, maximum: 45}
+
+inspection:
+  contact_cutoff: 4.5
+  minimum_atom_contacts: 4
+  minimum_contact_residues_per_side: 2
+
+preferences:
+  diversity: medium
+  component_motion: locked
+
+resources:
+  profile: v100
+  memory: 120G
+  cpus: 8
+  walltime: "02:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: ordinary-three-seed-user-connected-c3-canary-8_12

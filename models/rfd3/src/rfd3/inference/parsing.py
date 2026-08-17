@@ -47,6 +47,20 @@ class InputSelection(BaseModel):
         """Create InputSelection from various input types."""
         if v is None:
             return None
+        # ``False`` means an empty selection.  Building that empty mask by
+        # round-tripping every residue through Foundry's compact component
+        # grammar is both unnecessary and incorrect for mmCIF assemblies
+        # whose chain identifiers are longer than one character (for example
+        # ``AA`` after a large polyhedral expansion).  The compact grammar is
+        # intentionally unambiguous only for one-letter chain IDs, whereas an
+        # empty selection needs no component identifiers at all.
+        if v is False:
+            return cls(
+                raw=v,
+                data={},
+                mask=np.zeros(len(atom_array), dtype=bool),
+                tokens={},
+            )
         data, mask, _ = from_any_(v=v, atom_array=atom_array)
         return cls(
             raw=v,

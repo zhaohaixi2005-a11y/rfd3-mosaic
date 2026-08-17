@@ -12,18 +12,19 @@ The currently usable product path is:
 short user YAML -> AssemblySpecification -> Mosaic-RFD3 -> audited run
 ```
 
-Two ordinary motif-scaffolding templates are executable today.  The
-input-driven workflow can inspect one PDB/mmCIF, split independent contact
-patches, accept per-interface physical multiplicity requirements and filter
-candidate symmetries.  Its first executable resolver freezes one binary
-preserve-exact seed into ranked, hash-replayed Cn ring designs. General
-multi-seed cages are not solved.  A bounded path-cover enumerator proposes
-topology-only cycles.  A separate experimental bridge can turn a much narrower
-case--several disjoint, already co-positioned binary `preserve_exact` seeds in
-one reference frame--into ranked full-orbit Cn candidates after backbone-anchor,
-contact, expanded interface/unit-graph and ordinary compiler/replay checks.
-It does not search seed poses, infer heteromer ownership, support hyperedges or
-solve T/O/I cages.  Experts may provide unsupported details through the public
+Two ordinary motif-scaffolding templates are executable today. The
+input-driven workflow accepts only interface seeds supplied by the user,
+preserves each seed's exact internal interface geometry, accepts physical
+multiplicity requirements and resolves candidate polymer paths and finite
+symmetry relations. The multi-seed frontend also has an explicit
+unknown-relative-pose path: `seed_layout: solve` canonicalizes every supplied
+seed independently, creates deterministic global Cn/Dn/T/O/I starts, jointly
+optimizes rigid component poses against interface/linker/clash/closure
+contracts, and freezes only strict-replayed public YAML candidates. This path
+is locally implemented and still requires its LRZ unit/replay and representative
+GPU gates; stabilizer-aware unknown-pose placement, automatic heteromer
+equivalence and native multi-participant runtime hyperedges remain open.
+Experts may provide unsupported details through the public
 component/port/interface/connection graph; both routes use the same compiler
 and sampler.
 

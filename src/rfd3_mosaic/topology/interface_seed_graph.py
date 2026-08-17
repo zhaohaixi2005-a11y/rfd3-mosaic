@@ -275,9 +275,18 @@ def analyze_interleaved_interface_seed_topology(
             for side_id in touched_sides - {first}:
                 side_groups.union(first, side_id)
 
-        from_pairs = {side_pair[side_id] for side_id in from_sides}
-        to_pairs = {side_pair[side_id] for side_id in to_sides}
-        if from_pairs and from_pairs == to_pairs and len(from_pairs) == 1:
+        # A multi-fragment interface face legitimately contains covalent
+        # links between its own ordered helices.  That link touches the same
+        # physical side at both endpoints and must not be confused with the
+        # forbidden shortcut that covalently joins opposite participants of
+        # one supplied non-covalent interface.
+        joins_opposite_sides_of_one_pair = any(
+            from_side != to_side
+            and side_pair[from_side] == side_pair[to_side]
+            for from_side in from_sides
+            for to_side in to_sides
+        )
+        if joins_opposite_sides_of_one_pair:
             violations.append(
                 f"Scaffold link {link.id!r} directly joins the two sides "
                 "of one supplied interface seed; expected a protein unit "

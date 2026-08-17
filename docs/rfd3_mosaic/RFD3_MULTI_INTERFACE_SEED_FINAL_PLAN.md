@@ -1,11 +1,13 @@
 # RFD3 Multi-Interface Seed（Interface-Seed 2.0）最终架构与实施方案
 
-## 0. 当前规范：一份结构、一个 relation hypergraph、一个 scaffold graph
+## 0. 当前规范：用户提供 relation hypergraph，Mosaic 求解 scaffold graph 和 pose
 
-本项目所说的多个 interface seeds 首先指**一个输入 PDB/mmCIF** 中已经放置
-好的多个固定界面，不是要求用户准备 N 个互相独立的结构文件。总模型不再
-假定每个 interface 都只有 left/right 两侧：一个 interface identity 是含两个
-或更多 participants 的 relation/hyperedge。例如：
+多个 interface seeds 可以来自同一 PDB/mmCIF，也可以来自多个独立文件。
+每个 seed 内部的天然非共价界面是用户给出的事实，Mosaic 不得创造、删除、
+合并或改变这些 interface identities；软件只求解不同 seed 之间的相对 pose、
+symmetry relation 和 generated scaffold connectivity。总模型不再假定每个
+interface 都只有 left/right 两侧：一个 interface identity 是含两个或更多
+participants 的 relation/hyperedge。例如：
 
 ```text
 Interface I1 participants = {P1, P2}          # 常见二元界面
@@ -38,16 +40,19 @@ Interface I3: P31 <-> P32                       ...
  -- = generated covalent scaffold/linker belonging to one protein unit
 ```
 
-因此一个 protein unit 是来自若干不同 interface seeds 的半边所形成的有序
-scaffold path。一般形式是：
+因此 interface seed 本身始终是一个不可拆分的几何实体。为了生成同一条
+polypeptide，scaffold graph 可以引用该实体中某个 participant 的真实 N/C
+terminus 作为连接端点；这种引用不是把 participant 提取成新的 seed，也不允许
+重新配对、删除或改变原 interface。一般形式是：
 
 ```text
 Interface_i = relation(P_i1, P_i2, ..., P_in)
 Unit_j = participant(interface_a) -- ... -- participant(interface_k)
 ```
 
-每个 unit 可以携带 2、3、4 或更多 interface identities。最关键的是：每个
-relation hyperedge 不能因为编译 contig 而消失；unit 内的 scaffold path 也
+每个 unit 可以携带 2、3、4 或更多完整 interface identities。最关键的是：每个
+relation hyperedge 不能因为编译 contig 而消失；连接端点也不能被当作可独立
+移动或重新组合的 interface seed；unit 内的 scaffold path 也
 不能被误认为输入中已有的非共价界面。二元 interleaved seed-pair cycle 只是
 这一通用模型的一个受支持特例。
 
@@ -76,9 +81,9 @@ search 中推断并冻结可复现解。
 
 这里需要区分四种身份：
 
-1. **fixed interface pair**：每个 interface identity 的两侧均为任意数量的固定
-   fragments；全部所选原子的内部几何和跨侧相对 packing 由同一个 interface
-   constraint 保存并逐 pair 审计。
+1. **supplied interface hyperedge**：每个 interface identity 含两个或更多
+   participants；全部参与者及所选原子的内部几何和跨参与者 packing 由一个
+   `joint_rigid` constraint 整体保存并按完整 identity 审计。二元 pair 只是特例。
 2. **scaffold unit**：generated connections 将用户指定的一组 interface
    sides（例如 `A-C-D`）编译为同一条有序蛋白链；polymer chain ownership
    只由 scaffold graph 决定。
@@ -93,14 +98,81 @@ search 中推断并冻结可复现解。
 
 ```text
 one input containing Interface_A ... Interface_N
--> bind both sides of every interface identity
--> preserve interface graph: i.left <-> i.right
+-> bind every participant of every complete interface identity
+-> preserve each interface hyperedge as one joint-rigid entity
 -> derive arbitrary ordered polymer paths such as A-C-D or B-C-D
 -> assign interfaces and units to group actions/orbits
 -> emit each physical fragment and polymer unit exactly once
 -> exact constraint-orbit diffusion
 -> per-interface + per-unit + whole-cage audits
 ```
+
+普通用户必须明确输入文件中不同 seed 的整体摆放是否具有设计意义：
+
+```yaml
+# 默认：多个独立 source 文件求解；同一文件保留整体相对摆放
+seed_layout: auto
+
+# 即使所有 seed 位于同一文件，也忽略 seed 之间原始摆放并联合求解
+seed_layout: solve
+
+# 明确保留同一输入结构里的整体相对 pose
+seed_layout: preserve_input
+```
+
+`seed_layout` 不改变任何 seed 内部 participant 的相对几何。`solve` 只是把每个
+完整 seed 视为一个 rigid hyperedge；全局 initializer 与连续 optimizer 移动的
+是 hyperedge 整体。若多个独立 source 文件却声明 `preserve_input`，schema
+必须拒绝，因为不同文件的世界坐标没有共同物理意义。
+
+当前普通模式的数据流为：
+
+```text
+user-supplied complete interface seeds + physical usage
+-> validate every supplied contact graph
+-> canonicalize each complete seed when relative pose must be solved
+-> enumerate scaffold paths by referencing real participant termini without
+   splitting or recombining any supplied interface
+-> assign finite-group relations and expand the complete interface/unit graph
+-> deterministic global Cn/Dn/T/O/I pose starts
+-> joint radius/azimuth/axial/rotation optimization
+-> hard interface/linker/clash/closure evaluation
+-> freeze public UserDesignSpec YAML
+-> strict reload, structure hash replay and RFD3 adapter prevalidation
+-> RFD3 diffusion and final audits
+```
+
+### 0.1 使用与验证闭环
+
+普通用户只提供全部天然 interface seeds、每种 seed 的使用数量和目标 assembly
+基本性质。Mosaic 求解 topology、group relation 与相对刚体 pose，输出排名候选；
+它不能静默选择 rank 1，也不能发明用户没有提供的 interface。研发验证顺序固定为：
+
+```text
+focused resolver tests
+-> complete LRZ unit suite
+-> real intent resolve
+-> selected YAML strict replay and RFD3 prevalidation
+-> frozen 50-step GPU canary
+-> required audits and visual/interface-quality review
+-> 200-step and independent-input reproduction
+```
+
+状态报告必须使用三个不同标签，不能混写：
+
+```text
+implemented locally   = code and focused local checks exist
+CPU validated         = complete LRZ suite and strict replay pass
+GPU/science validated = real canary, all audits and interface evidence pass
+```
+
+当前 `seed_layout: solve` 的 C3 多 seed CPU strict replay 已通过；full-orbit
+Cn/Dn/T/O/I 初始 pose 与连续联合优化已经接线，但每个非 Cn family 仍需各自的
+strict-replay/GPU gate。resolver 在发布 YAML 前还会将用户允许的 linker range
+按全部 symmetry-expanded physical instances 恢复为一个 contour-safe 精确长度；
+同一 `tie_group` 必须共享一个精确长度。stabilizer/coset unknown-pose、自动异源
+component equivalence、native variadic RFD3 tensor 与 sequence/refolding 闭环仍
+是未实现或未闭环能力，必须 fail closed，不能用近似 full orbit 冒充。
 
 当前 Assembly IR 已经把 `interfaces` 与 `generated_segments/scaffold_links`
 存成不同实例类型，RFD3 adapter 也分别生成 interface audit plan 与 contig；这
@@ -111,11 +183,15 @@ interface/unit ownership、异源 component types、可变 relation cardinality�
 interface--unit incidence graph 验证，以及至少一个多 interface-per-unit 的
 端到端 GPU canary。原始相邻两半构成的环只是该图模型的一个特例。
 
-> 当前实现边界：公共 schema 的 `UserAssemblyInterfaceSpec.between` 仍固定为
-> 两个节点，runtime `InterfaceEdgeInstance` 也仍是 left/right。新加入的
-> topology analyzer 已能把任意数量 interface sides 聚合成一个 protein unit，
-> 但尚未把多参与者 relation hyperedge 贯通 schema -> Assembly IR -> RFD3。
-> 在该路径完成前，不能宣称复杂异源多价 cage 已完整支持。
+> 当前实现边界：unknown-pose full-orbit 初始化与连续优化已经接入普通 resolver，
+> 但仍处于 LRZ 单测/strict-replay 关卡，尚无代表性 GPU closeout。公共 schema 的
+> `UserAssemblyInterfaceSpec.between` 已允许两个或更多节点；一个 supplied
+> interface 在公共语义、usage、provenance 与 audit 中保持一个 atomic
+> hyperedge。compiler 暂以 contact-supported spanning tree 降为若干二元
+> `InterfaceEdgeInstance`，以兼容现有 RFD3 left/right tensor。也就是说公共
+> hyperedge lowering 已贯通，但原生 variadic sampler tensor 尚未实现；在新
+> LRZ full-suite、strict replay 和代表性 GPU gate 通过前，仍不能宣称复杂异源
+> 多价 cage 已完整支持。
 
 ### 原始 Interface-Seed 1.0 代码证据
 

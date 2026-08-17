@@ -26,6 +26,159 @@ def design(**updates: object) -> UserDesignSpec:
 
 
 class UserDesignConstraintTestCase(unittest.TestCase):
+    @staticmethod
+    def _expert_supplied_interface(**updates: object) -> UserDesignSpec:
+        payload: dict[str, object] = {
+            "name": "supplied-interface",
+            "input": "motif.pdb",
+            "symmetry": "C3",
+            "task": "preserve_supplied_geometry",
+            "components": {
+                "natural_interface": {
+                    "selectors": ["A1-2", "B1-2"],
+                    "geometry": "joint_rigid",
+                }
+            },
+            "ports": {
+                "side_a": {
+                    "component": "natural_interface",
+                    "selectors": ["A1-2"],
+                },
+                "side_b": {
+                    "component": "natural_interface",
+                    "selectors": ["B1-2"],
+                },
+            },
+            "interfaces": [
+                {
+                    "id": "natural_interface",
+                    "between": ["side_a", "side_b"],
+                    "relation": {"mode": "preserve_input"},
+                }
+            ],
+        }
+        payload.update(updates)
+        return UserDesignSpec.model_validate(payload)
+
+    def test_expert_supplied_interface_is_one_joint_rigid_entity(self) -> None:
+        supplied = self._expert_supplied_interface()
+
+        self.assertEqual(supplied.task.value, "preserve_supplied_geometry")
+        self.assertEqual(
+            supplied.components["natural_interface"].geometry,
+            "joint_rigid",
+        )
+        self.assertEqual(
+            supplied.interfaces[0].relation.mode,
+            "preserve_input",
+        )
+
+    def test_complete_supplied_interface_may_move_as_one_rigid_body(
+        self,
+    ) -> None:
+        supplied = self._expert_supplied_interface(
+            preferences={"component_motion": "free"},
+            components={
+                "natural_interface": {
+                    "selectors": ["A1-2", "B1-2"],
+                    "geometry": "joint_rigid",
+                    "pose": {
+                        "mode": "bounded_mobile",
+                        "subspace": "bounded_se3",
+                        "proposal": "scaffold_objectives",
+                        "max_translation": 3.0,
+                        "max_rotation_deg": 10.0,
+                    },
+                }
+            },
+        )
+
+        component = supplied.components["natural_interface"]
+        self.assertEqual(component.pose.mode, "bounded_mobile")
+        self.assertEqual(component.pose.subspace, "bounded_se3")
+
+    def test_expert_supplied_interface_cannot_become_contact_target(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError,
+            "cannot redesign supplied interfaces",
+        ):
+            self._expert_supplied_interface(
+                interfaces=[
+                    {
+                        "id": "natural_interface",
+                        "between": ["side_a", "side_b"],
+                        "relation": {"mode": "contact"},
+                    }
+                ]
+            )
+
+    def test_expert_supplied_interface_cannot_split_rigid_sides(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError,
+            "joint_rigid",
+        ):
+            self._expert_supplied_interface(
+                components={
+                    "side_a": {
+                        "selectors": ["A1-2"],
+                        "geometry": "rigid",
+                    },
+                    "side_b": {
+                        "selectors": ["B1-2"],
+                        "geometry": "rigid",
+                    },
+                },
+                ports={
+                    "side_a": {
+                        "component": "side_a",
+                        "selectors": ["A1-2"],
+                    },
+                    "side_b": {
+                        "component": "side_b",
+                        "selectors": ["B1-2"],
+                    },
+                },
+            )
+
+    def test_cross_component_supplied_interface_cannot_move_independently(
+        self,
+    ) -> None:
+        mobile_pose = {
+            "mode": "bounded_mobile",
+            "subspace": "bounded_se3",
+            "proposal": "scaffold_objectives",
+            "max_translation": 3.0,
+            "max_rotation_deg": 10.0,
+        }
+        with self.assertRaisesRegex(
+            ValidationError,
+            "cannot move those components independently",
+        ):
+            self._expert_supplied_interface(
+                components={
+                    "side_a": {
+                        "selectors": ["A1-2"],
+                        "geometry": "joint_rigid",
+                        "pose": mobile_pose,
+                    },
+                    "side_b": {
+                        "selectors": ["B1-2"],
+                        "geometry": "joint_rigid",
+                        "pose": mobile_pose,
+                    },
+                },
+                ports={
+                    "side_a": {
+                        "component": "side_a",
+                        "selectors": ["A1-2"],
+                    },
+                    "side_b": {
+                        "component": "side_b",
+                        "selectors": ["B1-2"],
+                    },
+                },
+            )
+
     def test_unconstrained_design_has_empty_plan(self) -> None:
         plan = compile_constraint_plan(design())
 

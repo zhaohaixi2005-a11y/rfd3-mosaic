@@ -113,6 +113,10 @@ def _resolve_interface_usage(
 
     instances = expand_symmetry_instances(specification)
     physical_by_source: dict[str, set[tuple[str, str]]] = {}
+    physical_by_hyperedge: dict[
+        str,
+        set[tuple[str | None, int]],
+    ] = {}
     for edge in instances.interfaces.values():
         physical_by_source.setdefault(edge.source_id, set()).add(
             tuple(
@@ -122,6 +126,17 @@ def _resolve_interface_usage(
                         edge.right_port_instance_id,
                     )
                 )
+            )
+        )
+        group_id = edge.hyperedge_id or edge.source_id
+        physical_by_hyperedge.setdefault(group_id, set()).add(
+            (
+                edge.orbit_id,
+                (
+                    edge.action_copy_index
+                    if edge.action_copy_index is not None
+                    else edge.source_copy_index
+                ),
             )
         )
 
@@ -144,17 +159,18 @@ def _resolve_interface_usage(
                 f"Interface hyperedge {group_id!r} has inconsistent use "
                 "requirements across its pairwise runtime members"
             )
-        observed_counts = {
-            len(physical_by_source.get(member.id, set()))
-            for member in members
-        }
-        if len(observed_counts) != 1:
-            raise ValueError(
-                f"Interface hyperedge {group_id!r} expands its member "
-                f"relations with inconsistent multiplicities: "
-                f"{sorted(observed_counts)}"
-            )
-        observed = next(iter(observed_counts))
+        if len(members) > 1:
+            observed_counts = {
+                len(physical_by_source.get(member.id, set()))
+                for member in members
+            }
+            if len(observed_counts) != 1:
+                raise ValueError(
+                    f"Interface hyperedge {group_id!r} expands its member "
+                    f"relations with inconsistent multiplicities: "
+                    f"{sorted(observed_counts)}"
+                )
+        observed = len(physical_by_hyperedge.get(group_id, set()))
         usage = members[0].use
         satisfied = usage.accepts(observed)
         resolution = InterfaceUsageResolution(
@@ -209,6 +225,186 @@ def _atom_identity(atom: AtomRecord) -> AtomIdentity:
         insertion_code=atom.insertion_code,
         atom_name=atom.atom_name.upper(),
     )
+
+
+def _component_chain_backbone_coordinates(
+    atoms: tuple[AtomRecord, ...],
+    selectors: tuple[str, ...],
+) -> tuple[tuple[str, tuple[tuple[int, str, str], ...], np.ndarray], ...]:
+    """Return comparable backbone coordinates for each selected source chain.
+
+    A component stabilizer acts on complete protomers, while public component
+    selectors may split one protomer into several disjoint fixed fragments.
+    Grouping those fragments by source chain prevents selector count from
+    being confused with stabilizer order.
+    """
+
+    segments_by_chain: dict[str, list[SelectorSegment]] = {}
+    for selector in selectors:
+        for segment in parse_public_selector(selector):
+            segments_by_chain.setdefault(segment.chain_id, []).append(segment)
+    records = []
+    for chain_id, segments in segments_by_chain.items():
+        selected = [
+            atom
+            for atom in atoms
+            if atom.chain_id == chain_id
+            and atom.atom_name.upper() in _BACKBONE
+            and any(
+                segment.residue_start
+                <= atom.residue_number
+                <= segment.residue_end
+                for segment in segments
+            )
+        ]
+        if not selected:
+            raise ValueError(
+                f"Component stabilizer selectors on chain {chain_id!r} "
+                "matched no backbone atoms"
+            )
+        residue_ids = sorted(
+            {
+                (atom.residue_number, atom.insertion_code)
+                for atom in selected
+            }
+        )
+        offsets = {
+            residue_id: index
+            for index, residue_id in enumerate(residue_ids)
+        }
+        keyed = sorted(
+            (
+                (
+                    offsets[(atom.residue_number, atom.insertion_code)],
+                    atom.residue_name,
+                    atom.atom_name.upper(),
+                ),
+                atom,
+            )
+            for atom in selected
+        )
+        records.append(
+            (
+                chain_id,
+                tuple(key for key, _ in keyed),
+                np.asarray(
+                    [atom.coordinate for _, atom in keyed],
+                    dtype=np.float64,
+                ),
+            )
+        )
+    return tuple(records)
+
+
+def _validate_component_finite_actions(
+    design: UserDesignSpec,
+    atoms: tuple[AtomRecord, ...],
+    registry,
+    *,
+    maximum_rmsd: float = 0.25,
+) -> None:
+    """Prove that every declared component stabilizer exists in the input.
+
+    Component quotient actions are executable only when the selected source
+    oligomer is invariant under the declared stabilizer in the declared
+    global frame.  This prevents a valid abstract C2--C3 incidence graph from
+    being lowered with unrelated, non-symmetric seed coordinates.
+    """
+
+    for component_id, component in design.components.items():
+        action = component.finite_orbit_action
+        if action is None:
+            continue
+        stabilizer_ids = tuple(action.stabilizer_transform_ids)
+        records = _component_chain_backbone_coordinates(
+            atoms,
+            component.selectors,
+        )
+        if len(records) != len(stabilizer_ids):
+            raise ValueError(
+                f"Component {component_id!r} declares a stabilizer of order "
+                f"{len(stabilizer_ids)}, but its selectors describe "
+                f"{len(records)} source protomer chains; supply every "
+                "stabilizer-related protomer explicitly"
+            )
+        signatures = [record[1] for record in records]
+        if any(signature != signatures[0] for signature in signatures[1:]):
+            raise ValueError(
+                f"Component {component_id!r} stabilizer-related protomers "
+                "do not have identical ordered backbone signatures"
+            )
+        try:
+            transforms = tuple(
+                np.asarray(registry.transform(transform_id), dtype=np.float64)
+                for transform_id in stabilizer_ids
+            )
+        except KeyError as error:
+            raise ValueError(
+                f"Component {component_id!r} finite action references an "
+                f"unknown stabilizer transform: {error}"
+            ) from error
+        observed = tuple(record[2] for record in records)
+        best_maximum = float("inf")
+
+        def bottleneck_assignment(costs: np.ndarray) -> float:
+            """Return the minimum possible maximum cost of a perfect match."""
+
+            size = costs.shape[0]
+            for threshold in sorted(float(value) for value in np.unique(costs)):
+                observed_to_expected = [-1] * size
+
+                def augment(expected_index: int, seen: set[int]) -> bool:
+                    for observed_index in range(size):
+                        if (
+                            observed_index in seen
+                            or costs[expected_index, observed_index] > threshold
+                        ):
+                            continue
+                        seen.add(observed_index)
+                        previous = observed_to_expected[observed_index]
+                        if previous < 0 or augment(previous, seen):
+                            observed_to_expected[observed_index] = expected_index
+                            return True
+                    return False
+
+                if all(augment(index, set()) for index in range(size)):
+                    return threshold
+            return float("inf")
+
+        # The identity-labelled protomer need not be the first chain in the
+        # input.  Try each physical protomer as the canonical source and find
+        # the best one-to-one assignment of declared stabilizer images.
+        for canonical in observed:
+            expected = tuple(
+                canonical @ transform[:3, :3].T + transform[:3, 3]
+                for transform in transforms
+            )
+            costs = np.asarray(
+                [
+                    [
+                        float(
+                            np.sqrt(
+                                np.mean(
+                                    np.sum((target - candidate) ** 2, axis=1)
+                                )
+                            )
+                        )
+                        for candidate in observed
+                    ]
+                    for target in expected
+                ],
+                dtype=np.float64,
+            )
+            best_maximum = min(
+                best_maximum,
+                bottleneck_assignment(costs),
+            )
+        if best_maximum > maximum_rmsd:
+            raise ValueError(
+                f"Component {component_id!r} does not satisfy its declared "
+                f"stabilizer in the supplied global frame: best backbone "
+                f"RMSD {best_maximum:.3f} A exceeds {maximum_rmsd:.3f} A"
+            )
 
 
 def _select_segment_atoms(
@@ -365,6 +561,42 @@ def _length_payload(length: object) -> dict[str, int]:
         "minimum": int(length.minimum),
         "maximum": int(length.maximum),
     }
+
+
+def _assembly_shape_objectives(
+    design: UserDesignSpec,
+) -> dict[str, dict[str, object]]:
+    """Lower ordinary size intent into normal required IR objectives."""
+
+    shape = design.assembly_shape
+    if shape is None:
+        return {}
+    objectives: dict[str, dict[str, object]] = {}
+    for objective_id, metric, bounds in (
+        (
+            "assembly_outer_diameter",
+            "assemblies.outer_diameter",
+            shape.diameter_angstrom,
+        ),
+        (
+            "assembly_cavity_diameter",
+            "cavities.minimum_central_void_diameter",
+            shape.cavity_diameter_angstrom,
+        ),
+    ):
+        if bounds is None:
+            continue
+        width = float(bounds.maximum - bounds.minimum)
+        objectives[objective_id] = {
+            "metric": metric,
+            "mode": "range",
+            "minimum": float(bounds.minimum),
+            "maximum": float(bounds.maximum),
+            "scale": max(1.0, width),
+            "weight": 1.0,
+            "required": True,
+        }
+    return objectives
 
 
 def _graph_endpoint_segment(
@@ -755,6 +987,11 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         design.input,
         mmcif_identifier_namespace="label",
     )
+    _validate_component_finite_actions(
+        design,
+        source_atoms,
+        declared_registry,
+    )
     fixed_operators = tuple(
         operator
         for operator in bound.operators
@@ -1018,45 +1255,86 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         }
     interfaces: dict[str, object] = {}
     for interface in design.interfaces:
-        left_node, right_node = interface.between
         if design.ports:
-            left_port = public_port_ids[left_node]
-            right_port = public_port_ids[right_node]
+            node_ports = {
+                node: public_port_ids[node] for node in interface.between
+            }
         else:
             # Backward-compatible component-as-interface shorthand.  New
             # cage designs should declare reusable named ports explicitly.
-            left_port = f"interface__{interface.id}__left"
-            right_port = f"interface__{interface.id}__right"
-            ports[left_port] = {
-                "group": motion_group_ids[left_node],
-                "fragments": component_members[left_node],
-                "atoms": "heavy",
-                "frame": {"method": "reference_interface_pca"},
+            node_ports = {}
+            for participant_index, node in enumerate(
+                interface.between,
+                start=1,
+            ):
+                port_id = (
+                    f"interface__{interface.id}__participant_"
+                    f"{participant_index:02d}"
+                )
+                node_ports[node] = port_id
+                ports[port_id] = {
+                    "group": motion_group_ids[node],
+                    "fragments": component_members[node],
+                    "atoms": "heavy",
+                    "frame": {"method": "reference_interface_pca"},
+                }
+        execution_pairs = interface.execution_pairs
+        for member_index, (left_node, right_node) in enumerate(
+            execution_pairs,
+            start=1,
+        ):
+            member_id = (
+                interface.id
+                if len(execution_pairs) == 1
+                else f"{interface.id}__member_{member_index:02d}"
+            )
+            left_port = node_ports[left_node]
+            right_port = node_ports[right_node]
+            if len(execution_pairs) > 1:
+                # The current reference-frame compiler requires one partner
+                # per runtime port.  A public cooperative hyperedge may use
+                # one participant in several contact-tree members, so give
+                # each binary compatibility member its own alias onto the
+                # same joint-rigid atoms.  This is an execution detail only:
+                # public identity, multiplicity and audit remain attached to
+                # the one hyperedge.
+                left_alias = (
+                    f"interface__{interface.id}__member_"
+                    f"{member_index:02d}__left"
+                )
+                right_alias = (
+                    f"interface__{interface.id}__member_"
+                    f"{member_index:02d}__right"
+                )
+                ports[left_alias] = dict(ports[left_port])
+                ports[right_alias] = dict(ports[right_port])
+                left_port = left_alias
+                right_port = right_alias
+            interfaces[member_id] = {
+                "left_port": left_port,
+                "right_port": right_port,
+                "hyperedge_id": (
+                    interface.hyperedge_id
+                    or (
+                        interface.id
+                        if len(execution_pairs) > 1
+                        else None
+                    )
+                ),
+                "copy_relation": interface.copy_relation.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                ),
+                "required": interface.required,
+                "satisfaction_stage": (
+                    "input"
+                    if interface.relation.mode == "preserve_input"
+                    else "output"
+                ),
+                "target_geometry": _graph_interface_geometry(
+                    interface.relation
+                ),
             }
-            ports[right_port] = {
-                "group": motion_group_ids[right_node],
-                "fragments": component_members[right_node],
-                "atoms": "heavy",
-                "frame": {"method": "reference_interface_pca"},
-            }
-        interfaces[interface.id] = {
-            "left_port": left_port,
-            "right_port": right_port,
-            "hyperedge_id": interface.hyperedge_id,
-            "copy_relation": interface.copy_relation.model_dump(
-                mode="json",
-                exclude_none=True,
-            ),
-            "required": interface.required,
-            "satisfaction_stage": (
-                "input"
-                if interface.relation.mode == "preserve_input"
-                else "output"
-            ),
-            "target_geometry": _graph_interface_geometry(
-                interface.relation
-            ),
-        }
 
     # Simple motif-scaffolding tasks do not need a hand-written assembly
     # graph.  Their contig topology already states the design intent:
@@ -1181,11 +1459,74 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 },
             }
 
+    explicit_component_actions = {
+        component_id: component.finite_orbit_action
+        for component_id, component in design.components.items()
+        if component.finite_orbit_action is not None
+    }
+    if explicit_component_actions and design.finite_orbit_action is not None:
+        raise ValueError(
+            "A design cannot combine one global finite_orbit_action with "
+            "component-level finite_orbit_action declarations"
+        )
+    if explicit_component_actions:
+        symmetry_orbits = {
+            f"motif_orbit__{component_id}": {
+                "transform_set": "declared",
+                "master_groups": [motion_group_ids[component_id]],
+                "component_mobility": (
+                    {
+                        motion_group_ids[component_id]: component_mobility[
+                            motion_group_ids[component_id]
+                        ]
+                    }
+                    if motion_group_ids[component_id] in component_mobility
+                    else {}
+                ),
+                "finite_action": (
+                    design.components[
+                        component_id
+                    ].finite_orbit_action.model_dump(mode="json")
+                    if design.components[
+                        component_id
+                    ].finite_orbit_action is not None
+                    else None
+                ),
+            }
+            for component_id in component_ids
+        }
+    else:
+        # Preserve the historical single-orbit layout byte-for-byte for all
+        # existing designs.  Multiple component orbits are created only when
+        # the public graph explicitly declares component finite actions.
+        symmetry_orbits = {
+            "motif_orbit": {
+                "transform_set": "declared",
+                "master_groups": list(motion_group_ids.values()),
+                "component_mobility": component_mobility,
+                "finite_action": (
+                    design.finite_orbit_action.model_dump(mode="json")
+                    if design.finite_orbit_action is not None
+                    else None
+                ),
+            }
+        }
+
     specification = AssemblySpecification.model_validate(
         {
             "schema_version": 2,
             "mode": "constraint_assembly",
-            "constraint_group_strategy": "motion_groups",
+            # Component-level finite actions describe distinct physical
+            # quotient orbits (for example the C2 and C3 building blocks in
+            # one tetrahedral cage).  Their supplied interface is the only
+            # exact runtime object that spans both orbits, so grouping all
+            # fixed atoms by motion group would incorrectly collapse the two
+            # component actions into one motif orbit.
+            "constraint_group_strategy": (
+                "interface_edges"
+                if explicit_component_actions and interfaces
+                else "motion_groups"
+            ),
             "random_seed": initialization_seed,
             "fragments": fragments,
             "motion_groups": {
@@ -1197,25 +1538,13 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             },
             "symmetry": {
                 "transform_sets": {"declared": _symmetry_payload(design)},
-                "orbits": {
-                    "motif_orbit": {
-                        "transform_set": "declared",
-                        "master_groups": list(motion_group_ids.values()),
-                        "component_mobility": component_mobility,
-                        "finite_action": (
-                            design.finite_orbit_action.model_dump(
-                                mode="json"
-                            )
-                            if design.finite_orbit_action is not None
-                            else None
-                        ),
-                    }
-                },
+                "orbits": symmetry_orbits,
             },
             "ports": ports,
             "interfaces": interfaces,
             "generated_segments": generated_segments,
             "initialization": initialization,
+            "objectives": _assembly_shape_objectives(design),
         }
     )
     interface_usage = _resolve_interface_usage(design, specification)
