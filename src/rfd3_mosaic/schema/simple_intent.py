@@ -14,6 +14,7 @@ from rfd3_mosaic.schema.design import (
     UserResourceSpec,
 )
 from rfd3_mosaic.schema.specs import Identifier, StrictModel
+from rfd3_mosaic.schema.specs import CopyRelationSpec
 
 
 SimpleSymmetryName = Annotated[
@@ -131,6 +132,7 @@ class SimplePolymerConnectionSpec(StrictModel):
         validation_alias=AliasChoices("to", "to_endpoint"),
         serialization_alias="to",
     )
+    copy_relation: CopyRelationSpec | None = None
 
 
 class SimpleInspectionSpec(StrictModel):

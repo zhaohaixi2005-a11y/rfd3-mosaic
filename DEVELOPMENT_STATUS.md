@@ -5,6 +5,42 @@ Last updated: 2026-08-17
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
 
+## 2026-08-17 three-supplied-interface tetrahedral CPU closeout
+
+The ordinary multi-interface resolver now accepts an optional authoritative
+`copy_relation` on every user-declared polymer connection. Fixed relations
+are never mutated; the resolver checks whether they generate the requested
+finite group and, only when necessary, enumerates the smallest deterministic
+completion on unassigned connections. The reference T intent fixes `T:g01`
+and `T:g03`, reducing eight equivalent generator assignments to one topology.
+
+Large presymmetrized structures no longer fail merely because an ASU fragment
+was assigned an extended mmCIF chain ID. When more than 52 fixed fragments are
+materialized, copy-zero ASU contig endpoints are allocated first in the
+one-character AtomWorks namespace; all other physical copies remain present
+with extended mmCIF identifiers. Runtime fixed-constraint lowering now keys
+repeated supplied-seed occurrences by concrete anchor instance rather than
+incorrectly requiring every source fragment identity to occur only once in a
+multi-unit ASU.
+
+Real CPU evidence on `mightymorphin`:
+
+```text
+intent: experiments/lrz_simple_three_seed_t_user_connections_v100_50step_intent.yaml
+candidates=1 accepted=1 selected=1 replay_failures=0
+symmetry=T; physical polymer units=24; invented interfaces=0
+restored linker lengths=27,28,27,27
+validate=PASSED; 10,872 atoms; 1,812 residues; 36 runtime chains
+RFD3 runtime features=finite
+```
+
+This closes topology/relation/pose/linker/strict-replay execution for the
+reference three-supplied-interface T cage. It does not claim CUDA diffusion
+or final scientific cage quality. The next gate is one frozen 50-step GPU
+canary with supplied-interface, constraint, continuity, clash and morphology
+audits; Dn/O/I real-input replay, unknown stabilizer/coset placement and
+automatic heteromer equivalence remain later modules.
+
 ## 2026-08-17 local CPU development environment
 
 AI-cluster downtime no longer blocks compiler/runtime development. The
@@ -24,7 +60,7 @@ recovery.
 A separate short-lived laboratory workstation now provides an additional
 compatibility buffer while the AI cluster is unavailable.  A repository-local
 Python 3.12 environment with PyTorch 2.7.1/CUDA 12.6 on an 8 GB RTX 3070 passes
-the same complete 787-test CPU gate.  An externally supplied
+the same complete 797-test CPU gate. An externally supplied
 `rfd3_latest.ckpt` is readable and its two available copies have identical
 SHA256
 `9b3f85923e0d51e9453e15cdd2f8c666e7ce096a60577f57d11bbc54ae6d67c1`.
@@ -36,12 +72,13 @@ first gate is one batch-1, low-memory C3 10-step compatibility smoke before
 any 50-step or polyhedral run.
 
 The first complete local gate passed **786 tests** before the extended-chain
-runtime correction and **787 tests** afterward. Local execution also closed
-the real three-user-seed T path that previously stopped after static
-acceptance: eight finite-group candidates compile, one frozen candidate is
-selected, and the selected YAML independently validates as 10,416 atoms,
-1,752 residues and 24 physical polymer chains with finite RFD3 runtime
-features. RFD3's empty-selection construction now accepts extended mmCIF
+runtime correction, then grew to **797 tests** with packing and the real T
+strict-replay regressions. Local execution also closed the real
+three-user-seed T path that previously stopped after static acceptance: the
+two authoritative generator relations yield one candidate, that candidate is
+selected, and the frozen YAML independently validates as 10,872 atoms, 1,812
+residues, 36 runtime chains and 24 physical polymer units with finite RFD3
+runtime features. RFD3's empty-selection construction now accepts extended mmCIF
 chain identifiers, and strict replay now performs actual RFD3 feature
 prevalidation before publishing any YAML under `selected/`.
 

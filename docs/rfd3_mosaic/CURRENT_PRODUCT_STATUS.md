@@ -35,12 +35,14 @@ The latest compatibility-preserving pass closes three CPU execution gaps:
   again on the final RFD3 structure.
 
 These changes retain all existing C3/D3/T, static quotient, fixed/mobile and
-packing paths. The repository-local Python 3.12 gate now passes 794 tests.
-The three-user-seed T resolver produces eight compiler-accepted hypotheses,
-selects one strict-replay candidate, and independently validates that frozen
-YAML as 10,416 atoms, 1,752 residues and 24 physical polymer chains with
-finite RFD3 runtime features. The remaining gate for this exact candidate is
-50-step CUDA execution and result audits after the AI cluster returns.
+packing paths. The repository-local Python 3.12 gate now passes 797 tests.
+The three-user-seed T resolver now accepts user-authoritative finite-group
+relations on polymer connections. The reference intent freezes `T:g01` and
+`T:g03`, produces one topology rather than eight equivalent generator
+assignments, selects that one candidate, and independently validates the
+frozen YAML as 10,872 atoms, 1,812 residues, 36 runtime chains and 24 physical
+polymer units with finite RFD3 runtime features. The remaining gate for this
+exact candidate is 50-step CUDA execution and result audits.
 
 The closeout order is deliberately one path, not another auxiliary sampler or
 submission script:
@@ -61,15 +63,17 @@ contig, weakening a hard audit or submitting the provisional assembly.
 
 ## Latest ordinary multi-interface evidence
 
-The real three-seed C3 engineering intent is CPU closed.  Resolution
+Both the real three-seed C3 engineering intent and the first real three-seed
+tetrahedral intent are CPU closed. C3 resolution
 `three-seed-user-connected-c3-20260812T120807Z` produced 48 joint
 topology/pose candidates, accepted four, selected three strict-replay YAML
 files and validated rank 1 with three exact constraints, 2199 atoms, 357
-residues, nine chains and finite RFD3 runtime features.  This proves the
-ordinary resolver is not hard-coded to two supplied interfaces.  It does not
-yet prove a polyhedral cage.  The next explicit gate is two three-face protein
-units carrying three supplied interface types in T, followed by one 50-step
-GPU result whose complete required audit set passes.
+residues, nine chains and finite RFD3 runtime features. The T reference then
+closed the polyhedral CPU gate with two three-face units, three supplied
+interface identities, four user-declared polymer connections and zero invented
+interfaces. Its one resolved candidate passes strict structure replay, native
+adapter construction and runtime-feature prevalidation. The next explicit
+gate is one frozen 50-step GPU result whose complete required audit set passes.
 
 ## Executive status
 
@@ -311,8 +315,8 @@ This module is not finished. Its current stage boundaries are:
    disjoint fixed ranges from one source chain; implicit covalent order across
    unrelated source chains still fails closed. Automatic homomer equivalence
    and heteromer component ownership remain unsupported.
-3. **Unknown relative pose — CPU executable for user-declared two-seed C3,
-   not yet GPU hardened.**
+3. **Unknown relative pose — CPU executable for user-declared C3 and the
+   reference three-seed T cage, not yet GPU hardened.**
    Deterministic Cn/Dn/T/O/I full-orbit starts and joint radius, azimuth,
    axial and three-axis rotation refinement are wired to complete-assembly
    linker/interface/clash/closure evaluation. The current bounded
@@ -324,7 +328,8 @@ This module is not finished. Its current stage boundaries are:
    `user-connected-two-seed-c3-20260812T114354Z` evaluated 32 global
    topology/pose starts, accepted four and froze four strict-replay designs
    while retaining the declared A1--B2/A2--B1 connection directions.
-4. **Freeze and replay — CPU validated on the real two-seed C3 intent.** Surviving
+4. **Freeze and replay — CPU validated on real two-seed C3, three-seed C3 and
+   three-seed T intents.** Surviving
    candidates are lowered to the normal expert graph, frozen as public YAML,
    reloaded and required to match structure hashes and the RFD3 adapter. The
    synchronized snapshot passed all 754 tests. Resolution directory
@@ -367,11 +372,11 @@ placement and component-equivalence inference. The CPU stages before that GPU
 gate are now complete.
 
 - General executable binding of several supplied interface seeds is CPU closed
-  for user-declared C3 examples and has reached strict replay for two- and
-  three-seed inputs. Unknown-relative full-orbit Cn/Dn/T/O/I starts and joint
-  pose optimization are implemented; the three-seed T case still needs the
-  compatibility-preserving linker restoration gate and representative GPU
-  evidence. Homomer equivalence, automatic heteromer ownership and
+  for user-declared C3 examples and the reference three-seed T cage. The T
+  path now completes symmetry-safe linker restoration, strict replay and
+  native RFD3 prevalidation. Unknown-relative full-orbit Cn/Dn/T/O/I starts
+  and joint pose optimization are implemented; Dn/O/I still need equivalent
+  real-input replay and GPU evidence. Homomer equivalence, automatic heteromer ownership and
   stabilizer-aware unknown-pose placement remain open and fail closed.
 - The two primary workflows remain intentionally distinct: supplied
   multi-fragment interfaces are preserved exactly, while motif-only

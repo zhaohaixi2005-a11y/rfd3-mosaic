@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import hashlib
-from itertools import permutations
+from itertools import combinations, permutations
 import json
 from pathlib import Path
 import re
@@ -33,6 +33,7 @@ from rfd3_mosaic.design_compiler import (
     parse_public_selector,
 )
 from rfd3_mosaic.graph_search import rank_design_candidates
+from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.pose_optimizer import (
     initialize_global_seed_layout,
     optimize_candidate_subset,
@@ -65,6 +66,8 @@ from rfd3_mosaic.topology.component_incidence import (
     enumerate_binary_interface_incidence_plans,
 )
 from rfd3_mosaic.topology.symmetry_connectivity import (
+    finite_symmetry_spec,
+    generated_transform_ids,
     minimal_group_relations,
 )
 
@@ -1288,11 +1291,32 @@ def _reverse_polymer_links(
 def _connection_relation_plans(
     symmetry_id: str,
     link_count: int,
+    *,
+    fixed_relations: tuple[int | str | None, ...] | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Assign enough group relations to connect every symmetry copy."""
+    """Assign only the missing relations needed to connect every copy.
+
+    An ordinary user may declare just the polymer chemistry, in which case
+    the historical canonical relation family is retained.  A knowledgeable
+    user may additionally freeze any subset of copy relations.  Mosaic then
+    proves whether those relations already generate the requested finite
+    group and, if necessary, enumerates the smallest deterministic completion
+    on the still-unassigned links.  It never changes a declared relation.
+    """
 
     if link_count < 1:
         raise ValueError("At least one polymer link is required")
+    if fixed_relations is not None and len(fixed_relations) != link_count:
+        raise ValueError(
+            "fixed polymer copy relations must match the link count"
+        )
+    if fixed_relations is not None and any(
+        relation is not None for relation in fixed_relations
+    ):
+        return _complete_declared_connection_relations(
+            symmetry_id,
+            fixed_relations,
+        )
     cyclic = _CYCLIC.fullmatch(symmetry_id)
     if cyclic is not None:
         order = int(cyclic.group("order"))
@@ -1344,6 +1368,132 @@ def _connection_relation_plans(
                 "primary_index": link_indices[0],
                 "primary_relation": generators[0],
             }
+        )
+    return tuple(plans)
+
+
+def _relation_transform_id(
+    symmetry_id: str,
+    relation: int | str,
+) -> str:
+    """Resolve either public relation spelling to one registry transform."""
+
+    registry = build_transform_registry(finite_symmetry_spec(symmetry_id))
+    if isinstance(relation, int):
+        return registry.transform_id_for_offset(relation)
+    # Resolve through the registry here so an unknown expert relation fails
+    # before candidate materialization rather than much later in compilation.
+    registry.transform(relation)
+    return relation
+
+
+def _complete_declared_connection_relations(
+    symmetry_id: str,
+    fixed_relations: tuple[int | str | None, ...],
+) -> tuple[dict[str, Any], ...]:
+    """Find every smallest group-generating completion of fixed links."""
+
+    registry = build_transform_registry(finite_symmetry_spec(symmetry_id))
+    identity = registry.identity_id
+    fixed_transform_ids = tuple(
+        _relation_transform_id(symmetry_id, relation)
+        for relation in fixed_relations
+        if relation is not None
+    )
+    open_indices = tuple(
+        index
+        for index, relation in enumerate(fixed_relations)
+        if relation is None
+    )
+
+    def generates(relations: tuple[str, ...]) -> bool:
+        active = tuple(item for item in relations if item != identity)
+        return len(generated_transform_ids(symmetry_id, active)) == len(
+            registry.transform_ids
+        )
+
+    completions: list[tuple[str, ...]] = []
+    if generates(fixed_transform_ids):
+        completions.append(())
+    else:
+        candidates = tuple(
+            transform_id
+            for transform_id in registry.transform_ids
+            if transform_id != identity
+            and transform_id not in fixed_transform_ids
+        )
+        for size in range(1, len(open_indices) + 1):
+            for completion in combinations(candidates, size):
+                if generates((*fixed_transform_ids, *completion)):
+                    completions.append(completion)
+            if completions:
+                break
+    if not completions:
+        rendered = [
+            relation if relation is not None else "auto"
+            for relation in fixed_relations
+        ]
+        raise ValueError(
+            f"Declared polymer copy relations {rendered} cannot generate "
+            f"the complete {symmetry_id} group with "
+            f"{len(open_indices)} unassigned links"
+        )
+
+    plans: list[dict[str, Any]] = []
+    seen: set[tuple[int | str, ...]] = set()
+    for completion in completions:
+        position_orders = (
+            permutations(open_indices, len(completion))
+            if completion
+            else ((),)
+        )
+        for positions in position_orders:
+            relations: list[int | str] = [
+                relation if relation is not None else 0
+                for relation in fixed_relations
+            ]
+            for position, transform_id in zip(
+                positions,
+                completion,
+                strict=True,
+            ):
+                relations[position] = transform_id
+            relation_tuple = tuple(relations)
+            if relation_tuple in seen:
+                continue
+            seen.add(relation_tuple)
+            transform_ids = tuple(
+                _relation_transform_id(symmetry_id, relation)
+                for relation in relation_tuple
+            )
+            if not generates(transform_ids):
+                continue
+            nonidentity_indices = tuple(
+                index
+                for index, transform_id in enumerate(transform_ids)
+                if transform_id != identity
+            )
+            primary_index = nonidentity_indices[0]
+            assignment = "__".join(
+                f"link_{index:02d}_{transform_id.replace(':', '_')}"
+                for index, transform_id in enumerate(transform_ids)
+                if transform_id != identity
+            )
+            plans.append(
+                {
+                    "label": f"declared_completion__{assignment}",
+                    "relations": relation_tuple,
+                    "primary_index": primary_index,
+                    "primary_relation": relation_tuple[primary_index],
+                    "declared_relation_count": sum(
+                        relation is not None for relation in fixed_relations
+                    ),
+                    "completed_relation_count": len(completion),
+                }
+            )
+    if not plans:
+        raise RuntimeError(
+            "Finite-group relation completion produced no connected plan"
         )
     return tuple(plans)
 
@@ -1549,6 +1699,39 @@ def _enumerate_multi_seed_candidates(
     seeds = _supported_interface_seeds(intent)
     topology_seeds, side_records = _multi_seed_side_records(seeds)
     declared_connections = bool(intent.polymer_connections)
+    declared_connection_by_link: dict[
+        tuple[str, str], tuple[int | str | None, str | None]
+    ] = {}
+    if declared_connections:
+        side_by_endpoint = {
+            (interface_id, participant): side_id
+            for side_id, (interface_id, participant, _) in side_records.items()
+        }
+        for connection in intent.polymer_connections:
+            source_side = side_by_endpoint[
+                (
+                    connection.from_endpoint.interface,
+                    connection.from_endpoint.participant,
+                )
+            ]
+            target_side = side_by_endpoint[
+                (
+                    connection.to_endpoint.interface,
+                    connection.to_endpoint.participant,
+                )
+            ]
+            copy_relation = connection.copy_relation
+            resolved_relation: int | str | None = None
+            if copy_relation is not None:
+                resolved_relation = (
+                    copy_relation.orbit_offset
+                    if copy_relation.orbit_offset is not None
+                    else copy_relation.transform
+                )
+            declared_connection_by_link[(source_side, target_side)] = (
+                resolved_relation,
+                connection.id,
+            )
     # Three or more supplied interface identities can support protein units
     # with more than two faces.  The user supplies every interface geometry
     # and its multiplicity; Mosaic only enumerates how the supplied physical
@@ -1840,6 +2023,14 @@ def _enumerate_multi_seed_candidates(
             relation_plans = _connection_relation_plans(
                 symmetry_id,
                 len(canonical_links),
+                fixed_relations=(
+                    tuple(
+                        declared_connection_by_link[link][0]
+                        for link in canonical_links
+                    )
+                    if declared_connections
+                    else None
+                ),
             )
             directions = (
                 (("declared", canonical_links),)
@@ -1898,9 +2089,20 @@ def _enumerate_multi_seed_candidates(
                                 if isinstance(relation, int)
                                 else {"transform": relation}
                             )
+                            declared_connection_id = (
+                                declared_connection_by_link[
+                                    (source_side, target_side)
+                                ][1]
+                                if declared_connections
+                                else None
+                            )
                             connection_payloads.append(
                                 {
-                                    "id": f"polymer_link_{link_index + 1:03d}",
+                                    "id": (
+                                        declared_connection_id
+                                        or f"polymer_link_"
+                                        f"{link_index + 1:03d}"
+                                    ),
                                     "from": {
                                         "component": (
                                             f"seed__{source_interface}"

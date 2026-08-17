@@ -1016,6 +1016,50 @@ def _chain_id(index: int) -> str:
     return "".join(reversed(characters))
 
 
+def _continuous_fragment_paths(scaffold_graph) -> tuple[tuple[str, ...], ...]:
+    """Return every physical polymer path in deterministic N-to-C order.
+
+    Fixed fragments joined by generated scaffold links are pieces of one
+    eventual protein chain.  Giving every fragment its own mmCIF chain wastes
+    AtomWorks' one-character contig namespace and made otherwise valid T
+    cages fail once they contained more than 52 fragments.  This topology is
+    already proven linear and acyclic by ``compile_scaffold_graph``.
+    """
+
+    incoming: dict[str, str] = {}
+    outgoing: dict[str, str] = {}
+    for link in scaffold_graph.links.values():
+        if link.chain_break:
+            continue
+        outgoing[link.from_fragment_instance_id] = (
+            link.to_fragment_instance_id
+        )
+        incoming[link.to_fragment_instance_id] = (
+            link.from_fragment_instance_id
+        )
+
+    paths: list[tuple[str, ...]] = []
+    visited: set[str] = set()
+    for start in scaffold_graph.nodes:
+        if start in incoming or start in visited:
+            continue
+        path: list[str] = []
+        current = start
+        while current not in visited:
+            visited.add(current)
+            path.append(current)
+            if current not in outgoing:
+                break
+            current = outgoing[current]
+        paths.append(tuple(path))
+    if visited != set(scaffold_graph.nodes):
+        raise RuntimeError(
+            "Validated scaffold graph could not be partitioned into "
+            "continuous polymer paths"
+        )
+    return tuple(paths)
+
+
 def _element(atom: AtomRecord) -> str:
     letters = re.sub(r"[^A-Za-z]", "", atom.element)
     if letters:
@@ -1071,22 +1115,61 @@ def _compile_atoms(
         )
         for fragment_id, fragment_spec in spec.fragments.items()
     }
+    polymer_paths = _continuous_fragment_paths(scaffold_graph)
     entity_ids = {
         fragment_id: str(index + 1)
         for index, fragment_id in enumerate(spec.fragments)
     }
 
+    # The complete presymmetrized structure may legitimately contain more
+    # than AtomWorks' 52 one-character chain identifiers. Only fragments in
+    # the native copy-zero ASU contig need that compact namespace; other
+    # physical copies can use extended mmCIF identifiers. Preserve the old
+    # allocation for small assemblies and prioritize required ASU endpoints
+    # only when the namespace would otherwise spill.
+    fragment_order = list(instances.fragments)
+    if len(fragment_order) > 52:
+        compact_required: set[str] = set()
+        for link in scaffold_graph.links.values():
+            if link.copy_index != 0:
+                continue
+            compact_required.update(
+                (
+                    link.from_fragment_instance_id,
+                    link.to_fragment_instance_id,
+                )
+            )
+        if len(compact_required) > 52:
+            raise NotImplementedError(
+                "The native ASU contig requires more than 52 fixed "
+                "fragments, exceeding AtomWorks' one-character chain "
+                "identifier namespace"
+            )
+        fragment_order = [
+            fragment_id
+            for fragment_id in fragment_order
+            if fragment_id in compact_required
+        ] + [
+            fragment_id
+            for fragment_id in fragment_order
+            if fragment_id not in compact_required
+        ]
+    chain_id_by_fragment = {
+        fragment_id: _chain_id(index)
+        for index, fragment_id in enumerate(fragment_order)
+    }
+
     compiled_atoms: list[_CompiledAtom] = []
     fragment_ranges: dict[str, dict[str, Any]] = {}
     global_residue_index = 0
-    for chain_index, fragment in enumerate(instances.fragments.values()):
+    for fragment in instances.fragments.values():
         atoms = source_atoms[fragment.source_id]
         coordinates = np.asarray(
             [atom.coordinate for atom in atoms],
             dtype=np.float64,
         )
         transformed = apply_transform(coordinates, fragment.transform)
-        chain_id = _chain_id(chain_index)
+        chain_id = chain_id_by_fragment[fragment.id]
         residue_labels: dict[tuple[str, int, str], int] = {}
         fragment_atom_start = len(compiled_atoms)
         fragment_residue_indices: list[int] = []
@@ -1130,6 +1213,8 @@ def _compile_atoms(
         "frames": frames,
         "fragment_ranges": fragment_ranges,
         "residue_count": global_residue_index,
+        "source_polymer_chain_count": len(polymer_paths),
+        "source_polymer_paths": [list(path) for path in polymer_paths],
         "master_transforms": {
             group_id: transform.tolist()
             for group_id, transform in master_transforms.items()
@@ -1411,6 +1496,10 @@ def compile_standalone(
             instances,
         ),
         "fragment_ranges": compilation["fragment_ranges"],
+        "source_polymer_chain_count": compilation[
+            "source_polymer_chain_count"
+        ],
+        "source_polymer_paths": compilation["source_polymer_paths"],
         "port_frames": compilation["frames"],
         "master_transforms": compilation["master_transforms"],
         "initialization_samples": compilation["initialization_samples"],

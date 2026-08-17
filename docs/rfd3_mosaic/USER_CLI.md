@@ -353,6 +353,9 @@ polymer_connections:
   - id: unit_one
     from: interface_alpha.A
     to: interface_beta.D
+    # Optional authoritative group action. If omitted, Mosaic searches only
+    # the missing relations required to close the requested cage.
+    copy_relation: {transform: "T:g01"}
   - id: unit_two
     from: interface_beta.C
     to: interface_alpha.B
@@ -365,7 +368,11 @@ the N/C connectivity of the ASU fragments. A specific fragment can have at
 most one incoming N-side and one outgoing C-side connection. Omitting
 `polymer_connections` retains the legacy bounded topology enumeration;
 providing it makes the declared participant pairing and direction
-authoritative, while Mosaic still solves the group seam, pose and geometry.
+authoritative. An optional connection `copy_relation` also freezes a known
+neighbour/group action. Mosaic never changes such a declaration; it searches
+only unassigned connections and deterministically adds the smallest set of
+relations required to generate the requested finite group. The declared and
+completed relation counts are recorded in candidate metadata.
 
 The same syntax also accepts a separate `source:` on each seed. In `auto`
 mode, distinct source files automatically enter the same solve path.
@@ -561,9 +568,9 @@ order, neighbour relations and continuous pose explicitly unresolved.
 This ordinary intent path supports `inspect`, `plan`, `validate` and
 `resolve`. The intent itself always refuses `run`; users run one explicitly
 chosen standard YAML emitted by `resolve`. Full-orbit unknown-pose
-initialization exists for Cn/Dn/T/O/I, but the non-Cn paths remain
-implementation-stage until their LRZ strict-replay and representative GPU
-gates pass. Stabilizer-aware unknown-pose placement, automatic composition
+initialization exists for Cn/Dn/T/O/I. The reference three-seed T intent now
+passes strict replay and native RFD3 prevalidation; Dn/O/I remain
+family-specific CPU/GPU gates. Stabilizer-aware unknown-pose placement, automatic composition
 equivalence and native variadic sampler tensors remain blocked. Public
 multi-participant supplied hyperedges already lower through a connected
 binary compatibility tree while retaining one interface identity, usage and
@@ -580,7 +587,8 @@ already passed this CPU boundary. Dn/T/O/I starts are implemented but remain
 family-specific validation gates; a failed family is never silently replaced
 by C3 or advertised as executable.
 
-The two-seed C3 `resolve -> validate` CPU replay gate has passed. Promotion
+The two-seed C3 and three-seed T `resolve -> validate` CPU replay gates have
+passed. Promotion
 beyond research-alpha scope still requires newly rendered 50-step GPU results
 passing every required supplied-seed, symmetry, continuity, clash and scaffold
 audit, plus one polyhedral multi-seed strict replay. Capability reporting keeps

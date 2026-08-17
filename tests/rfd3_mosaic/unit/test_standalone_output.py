@@ -47,7 +47,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self.assertTrue(self.outputs.mapping_path.is_file())
         self.assertTrue(self.outputs.manifest_path.is_file())
 
-    def test_cif_contains_six_chains_and_all_atoms(self) -> None:
+    def test_cif_contains_six_fixed_fragment_chains_and_all_atoms(self) -> None:
         atom_rows = [
             line.split()
             for line in self.outputs.structure_path.read_text(
@@ -66,6 +66,11 @@ class StandaloneOutputTestCase(unittest.TestCase):
 
         self.assertEqual(len(payload["atom_mappings"]), 1488)
         self.assertEqual(len(payload["fragment_ranges"]), 6)
+        self.assertEqual(payload["source_polymer_chain_count"], 3)
+        self.assertEqual(
+            sorted(len(path) for path in payload["source_polymer_paths"]),
+            [2, 2, 2],
+        )
         indices = [
             record["compiled"]["atom_index"]
             for record in payload["atom_mappings"]
@@ -126,11 +131,19 @@ class StandaloneOutputTestCase(unittest.TestCase):
             ).splitlines()
             if line.startswith(("ATOM ", "HETATM "))
         ]
+        mapping = json.loads(
+            self.outputs.mapping_path.read_text(encoding="utf-8")
+        )
+        master_atom_indices = {
+            record["compiled"]["atom_index"]
+            for record in mapping["atom_mappings"]
+            if record["instance"]["copy_index"] == 0
+        }
         first_group_coordinates = np.asarray(
             [
                 [float(row[10]), float(row[11]), float(row[12])]
-                for row in atom_rows
-                if row[6] in {"A", "B"}
+                for atom_index, row in enumerate(atom_rows)
+                if atom_index in master_atom_indices
             ]
         )
         center = first_group_coordinates.mean(axis=0)

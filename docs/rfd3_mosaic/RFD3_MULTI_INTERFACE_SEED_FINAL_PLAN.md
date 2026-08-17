@@ -166,9 +166,11 @@ CPU validated         = complete LRZ suite and strict replay pass
 GPU/science validated = real canary, all audits and interface evidence pass
 ```
 
-当前 `seed_layout: solve` 的 C3 多 seed CPU strict replay 已通过；full-orbit
-Cn/Dn/T/O/I 初始 pose 与连续联合优化已经接线，但每个非 Cn family 仍需各自的
-strict-replay/GPU gate。resolver 在发布 YAML 前还会将用户允许的 linker range
+当前 `seed_layout: solve` 的 C3 多 seed CPU strict replay 已通过；三种 supplied
+interface、两个三面 protein units 的 T reference 也已达到一候选、严格 replay、
+native RFD3 prevalidation 全通过。用户可在 `polymer_connections` 上声明已知的
+`copy_relation`；resolver 保持它不变，只为未声明连接补齐生成目标有限群所需的
+最小关系集合。Dn/O/I 仍需各自的真实输入 strict-replay/GPU gate。resolver 在发布 YAML 前还会将用户允许的 linker range
 按全部 symmetry-expanded physical instances 恢复为一个 contour-safe 精确长度；
 同一 `tie_group` 必须共享一个精确长度。stabilizer/coset unknown-pose、自动异源
 component equivalence、native variadic RFD3 tensor 与 sequence/refolding 闭环仍

@@ -751,10 +751,6 @@ def _runtime_fixed_motif_constraints(
             "declared orbit"
         )
     orbit_id = next(iter(orbit_ids))
-    if len({fragment.source_id for fragment in masters}) != len(masters):
-        raise ValueError(
-            "A fixed constraint orbit cannot repeat a source fragment"
-        )
     registry = build_transform_registry(transform_set)
     masters_by_component: dict[str, list[Any]] = {}
     for master in masters:
@@ -791,12 +787,12 @@ def _runtime_fixed_motif_constraints(
         # those labels and records the relative group action separately in
         # ``sym_transform_id``.
         source_components = {
-            master.source_id: _selector_source_components(
+            master.id: _selector_source_components(
                 _fragment_selector(mapping, master.id)
             )
             for master in component_masters
         }
-        copies_by_source_id: dict[str, dict[str, Any]] = {}
+        copies_by_master_id: dict[str, dict[str, Any]] = {}
         for master in component_masters:
             source_copies = [
                 fragment
@@ -819,7 +815,7 @@ def _runtime_fixed_motif_constraints(
                     f"Fixed motif {master.source_id!r} does not contain "
                     "exactly one fragment for every symmetry transform"
                 )
-            copies_by_source_id[master.source_id] = (
+            copies_by_master_id[master.id] = (
                 copies_by_transform_id
             )
 
@@ -836,8 +832,8 @@ def _runtime_fixed_motif_constraints(
         ):
             members: list[dict[str, Any]] = []
             for master in component_masters:
-                target_fragment = copies_by_source_id[
-                    master.source_id
+                target_fragment = copies_by_master_id[
+                    master.id
                 ][transform_id]
                 runtime_action = _runtime_action_index(
                     registry,
@@ -856,9 +852,7 @@ def _runtime_fixed_motif_constraints(
                     {
                         "role": "motif",
                         "source_fragment_id": master.source_id,
-                        "src_components": source_components[
-                            master.source_id
-                        ],
+                        "src_components": source_components[master.id],
                         "sym_transform_id": runtime_action,
                     }
                 )
@@ -890,7 +884,7 @@ def _runtime_fixed_motif_constraints(
                 "source_components": [
                     component
                     for master in component_masters
-                    for component in source_components[master.source_id]
+                    for component in source_components[master.id]
                 ],
                 "master_group_id": component_groups[0]["group_id"],
                 "group_ids": [

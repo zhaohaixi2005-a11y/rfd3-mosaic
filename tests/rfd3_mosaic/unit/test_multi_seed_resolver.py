@@ -13,6 +13,7 @@ from rfd3_mosaic.schema import (
     SimpleCageIntentSpec,
     UserDesignSpec,
     UserDesignTask,
+    load_simple_cage_intent,
 )
 from rfd3_mosaic.simple_architecture import symmetry_group_action_count
 from rfd3_mosaic.simple_resolver import (
@@ -342,6 +343,144 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
             )
             self.assertEqual(candidate.polymer_units_per_copy, 2)
             self.assertTrue(candidate.topology_search_complete)
+
+    def test_declared_c3_relation_eliminates_seam_enumeration(self) -> None:
+        payload = self._intent().model_dump(mode="json")
+        payload["polymer_connections"] = [
+            {
+                "id": "fixed_seam",
+                "from": "interface_alpha.A",
+                "to": "interface_beta.D",
+                "copy_relation": {"orbit_offset": 1},
+            },
+            {
+                "id": "same_copy_link",
+                "from": "interface_beta.C",
+                "to": "interface_alpha.B",
+            },
+        ]
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("C3",),
+            seed_start=9400,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(
+            {connection.id for connection in candidate.design.connections},
+            {"fixed_seam", "same_copy_link"},
+        )
+        relations = {
+            connection.id: connection.copy_relation.orbit_offset
+            for connection in candidate.design.connections
+        }
+        self.assertEqual(relations, {
+            "fixed_seam": 1,
+            "same_copy_link": 0,
+        })
+        self.assertEqual(candidate.connection_orbit_offset, 1)
+
+    def test_declared_t_generators_freeze_one_topology(self) -> None:
+        structure = self.root / "three_interface_seeds.pdb"
+        _write_two_seed_structure(structure, include_third_seed=True)
+        payload = self._intent(structure=structure).model_dump(mode="json")
+        payload["goal"] = {
+            "architecture": "cage",
+            "composition": "auto",
+            "symmetry": ["T"],
+            "subunits": {"minimum": 24, "maximum": 24},
+        }
+        for seed in payload["interface_seeds"].values():
+            seed["use"] = {"exact": 12}
+        payload["interface_seeds"]["interface_gamma"] = {
+            "participants": ["E", "F"],
+            "selectors": {"E": "E/1-4/*", "F": "F/1-4/*"},
+            "use": {"exact": 12},
+            "geometry": "preserve_exact",
+        }
+        payload["polymer_connections"] = [
+            {
+                "id": "t_generator_one",
+                "from": "interface_alpha.A",
+                "to": "interface_beta.D",
+                "copy_relation": {"transform": "T:g01"},
+            },
+            {
+                "id": "t_generator_two",
+                "from": "interface_beta.D",
+                "to": "interface_gamma.E",
+                "copy_relation": {"transform": "T:g03"},
+            },
+            {
+                "id": "same_copy_one",
+                "from": "interface_gamma.F",
+                "to": "interface_beta.C",
+            },
+            {
+                "id": "same_copy_two",
+                "from": "interface_beta.C",
+                "to": "interface_alpha.B",
+            },
+        ]
+        intent = SimpleCageIntentSpec.model_validate(payload)
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("T",),
+            seed_start=9530,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(
+            {
+                connection.id: connection.copy_relation.transform
+                for connection in candidate.design.connections
+                if connection.copy_relation.transform is not None
+            },
+            {
+                "t_generator_one": "T:g01",
+                "t_generator_two": "T:g03",
+            },
+        )
+        self.assertEqual(candidate.physical_polymer_unit_count, 24)
+
+    def test_real_three_seed_t_strict_replay_is_executable(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        config = (
+            repository
+            / "experiments/"
+            "lrz_simple_three_seed_t_user_connections_v100_50step_intent.yaml"
+        )
+        intent = load_simple_cage_intent(config)
+
+        report = resolve_simple_intent(
+            intent,
+            self.root / "real-three-seed-t-resolution",
+            source_path=config,
+            symmetry_ids=("T",),
+            pose_samples=1,
+            seed_start=953,
+            timesteps=50,
+            top_count=1,
+            optimize_poses=True,
+            pose_optimize_top=1,
+            pose_optimization_levels=1,
+        )
+
+        self.assertEqual(report["candidate_count"], 1)
+        self.assertEqual(report["accepted_count"], 1)
+        self.assertEqual(report["selected_count"], 1)
+        self.assertEqual(report["replay_failure_count"], 0)
+        selected = report["ranking"][0]
+        self.assertTrue(selected["replay_validated"])
+        self.assertTrue(selected["rfd3_adapter_validated"])
+        self.assertTrue(selected["rfd3_adapter_prevalidated"])
+        self.assertEqual(selected["physical_polymer_unit_count"], 24)
+        self.assertEqual(selected["invented_interface_count"], 0)
 
     def test_user_declared_paths_must_assign_every_participant(self) -> None:
         payload = self._intent().model_dump(mode="json")

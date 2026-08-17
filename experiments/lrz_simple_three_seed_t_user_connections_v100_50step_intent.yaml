@@ -31,15 +31,18 @@ interface_seeds:
     use: {exact: 12}
     geometry: preserve_exact
 
-# Two user-authoritative three-face units. Mosaic only assigns the two
-# independent tetrahedral generators and solves complete-seed poses.
+# Two user-authoritative three-face units. The two finite-group generators
+# are frozen on their intended polymer links, so resolve performs one exact
+# topology replay instead of enumerating equivalent generator placements.
 polymer_connections:
   - id: unit_alpha_beta_gamma_01
     from: interface_alpha.A
     to: interface_beta.B
+    copy_relation: {transform: "T:g01"}
   - id: unit_alpha_beta_gamma_02
     from: interface_beta.B
     to: interface_gamma.A
+    copy_relation: {transform: "T:g03"}
   - id: unit_gamma_beta_alpha_01
     from: interface_gamma.B
     to: interface_beta.A
