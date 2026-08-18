@@ -529,7 +529,7 @@ class UserSamplingSpec(StrictModel):
 
 
 class UserResourceSpec(StrictModel):
-    profile: str | Path = "p100"
+    profile: str | Path = "local"
     walltime: str | None = None
     memory: str | None = None
     cpus: Annotated[int, Field(ge=1)] | None = None

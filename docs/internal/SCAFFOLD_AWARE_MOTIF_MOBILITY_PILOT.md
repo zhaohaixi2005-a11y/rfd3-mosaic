@@ -1,4 +1,6 @@
-# Scaffold-aware interface-seed mobility pilot
+# Archived scaffold-aware interface-seed mobility pilot
+
+> Internal experiment history. Not a public usage requirement.
 
 ## 2026-08-11 implementation update
 

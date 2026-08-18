@@ -1,255 +1,164 @@
 # RFD3-Mosaic
 
-RFD3-Mosaic is a maintained Foundry/RFD3 fork for constraint-compiled design
-of symmetric protein assemblies.  It preserves supplied central motifs and
-cross-subunit interface seeds through every diffusion timestep, supports
-multiple rigid motif orbits and assembly graphs, and produces explicit
-symmetry, motif, mobility, interface and scaffold audits.
+Constraint-compiled design of symmetric protein assemblies with
+RFdiffusion3.
 
-The currently usable product path is:
+> [!IMPORTANT]
+> **Project status: research preview.** RFD3-Mosaic is under active
+> development. Its supported Cn/Dn workflows are usable and covered by
+> automated compiler, runtime and audit tests, but the project is not yet a
+> stable production release. Experimental capabilities are identified
+> explicitly and may change before the first stable version.
 
-```text
-short user YAML -> AssemblySpecification -> Mosaic-RFD3 -> audited run
-```
+This repository is the canonical development repository for RFD3-Mosaic.
 
-Install the maintained Mosaic branch with Python 3.12:
+RFD3-Mosaic extends the open-source Foundry/RFdiffusion3 stack with an
+assembly-aware compiler and constrained sampler. It is designed for workflows
+that must preserve supplied motifs or interface seeds while generating the
+remaining protein scaffold under exact symmetry.
+
+## What it provides
+
+- exact preservation of fixed motifs and supplied interface geometry;
+- Cn and Dn symmetric assembly generation;
+- fixed, bounded-mobile and jointly guided rigid components;
+- generated-interface packing guidance with translation and rotation;
+- multiple components, interface seeds and polymer connections;
+- deterministic configuration lowering and replayable RFD3 inputs;
+- post-generation audits for motif recovery, symmetry, interfaces, clashes
+  and chain continuity;
+- site-independent execution: the scientific compiler and sampler are not
+  tied to a particular server, institution or GPU model.
+
+Tetrahedral, octahedral and icosahedral compiler paths are available for
+research evaluation, but are not part of the current supported release scope.
+Fully automatic arbitrary cage solving and downstream sequence/refolding
+workflows also remain under development.
+
+## Installation
+
+Python 3.12 is required. Install a PyTorch build appropriate for the local
+CPU or CUDA runtime first, then install RFD3-Mosaic:
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install \
   "rfd3-mosaic[rfd3] @ git+https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git@refactor/product-core-v1"
+```
+
+RFD3 model weights are not distributed by this repository. Place an
+authorized `rfd3_latest.ckpt` at `~/.foundry/checkpoints/` or provide its path
+through a custom execution profile.
+
+Verify the installation without running inference:
+
+```bash
 rfd3-mosaic doctor --profile local
+rfd3-mosaic capabilities
 ```
 
-See [installation and release verification](docs/rfd3_mosaic/INSTALLATION.md)
-for local GPU and Slurm use. The release scope is the Cn/Dn fixed-motif,
-supplied-interface, generated-interface packing and bounded-mobility product
-path; O/I and advanced automatic cage solving are explicitly non-blocking
-experimental extensions.
+See the [installation guide](docs/rfd3_mosaic/INSTALLATION.md) for editable
+development installs and execution-environment configuration.
 
-Two ordinary motif-scaffolding templates are executable today. The
-input-driven workflow accepts only interface seeds supplied by the user,
-preserves each seed's exact internal interface geometry, accepts physical
-multiplicity requirements and resolves candidate polymer paths and finite
-symmetry relations. The multi-seed frontend also has an explicit
-unknown-relative-pose path: `seed_layout: solve` canonicalizes every supplied
-seed independently, creates deterministic global Cn/Dn/T/O/I starts, jointly
-optimizes rigid component poses against interface/linker/clash/closure
-contracts, and freezes only strict-replayed public YAML candidates. This path
-is locally implemented and still requires its LRZ unit/replay and representative
-GPU gates; stabilizer-aware unknown-pose placement, automatic heteromer
-equivalence and native multi-participant runtime hyperedges remain open.
-Experts may provide unsupported details through the public
-component/port/interface/connection graph; both routes use the same compiler
-and sampler.
+## Quick start
 
-- [User CLI and examples](docs/rfd3_mosaic/USER_CLI.md)
-- [Installation and release verification](docs/rfd3_mosaic/INSTALLATION.md)
-- [Current implementation status](DEVELOPMENT_STATUS.md)
-- [Concise product maturity report](docs/rfd3_mosaic/CURRENT_PRODUCT_STATUS.md)
-- [Productization and upgrade plan](docs/rfd3_mosaic/RFD3_MOSAIC_PRODUCTIZATION_PLAN.md)
-- [Multi-interface assembly architecture](docs/rfd3_mosaic/RFD3_MULTI_INTERFACE_SEED_FINAL_PLAN.md)
+Start from one of the maintained user templates:
 
-The upstream Foundry documentation is retained below because Mosaic relies on
-its RFD3, RF3 and ProteinMPNN environment.
-
----
-
-# Protein design with Foundry
-
-Foundry provides tooling and infrastructure for using and training all classes of models for protein design, including design (RFD3), inverse folding (ProteinMPNN) and protein folding (RF3).
-
-All models within Foundry rely on [AtomWorks](https://github.com/RosettaCommons/atomworks) - a unified framework for manipulating and processing biomolecular structures - for both training and inference. 
-
-
-> [!NOTE]
-> We have a slack now! Join for updates and to get your questions answered [here](https://join.slack.com/t/proteinmodelfoundry/shared_invite/zt-3pj032444-jC8MRqsV8nhpKX0PGowQ4A).
-
-## Getting Started
-### Quickstart guide
-**Installation**
 ```bash
-pip install "rc-foundry[all]"
+cp examples/rfd3_mosaic/simple_interface_seed.yaml my-design.yaml
+# or
+cp examples/rfd3_mosaic/simple_central_motif.yaml my-design.yaml
 ```
 
-**Intel XPU Installation**
+Edit the input structure, selectors, symmetry and output location, then run:
 
-For Intel XPU devices, install PyTorch with XPU support first, then install Foundry.
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/xpu
-pip install "rc-foundry[all]"
-```
-> [!NOTE]
-> Use `pip` (not `uv`) for XPU installs since UV re-resolves dependencies and may replace your XPU torch with the standard PyPI version.
-
-**macOS (Apple Silicon) Installation**
-
-MPS support is available via a community fork. Install PyTorch first, then install directly from the fork:
-```bash
-pip install torch
-pip install "rc-foundry[all] @ git+https://github.com/fnachon/foundry.git"
+rfd3-mosaic plan my-design.yaml --profile local
+rfd3-mosaic validate my-design.yaml
+rfd3-mosaic run my-design.yaml --profile local --run-root "$PWD/runs"
 ```
 
-All three models — **RFD3**, **RF3**, and **ProteinMPNN/LigandMPNN** — run on Apple Silicon MPS.
+The bundled synchronous executor can run on any compatible machine. Slurm is
+also supported through a site-defined profile. These are launch mechanisms,
+not restrictions on the server or GPU that may be used.
 
-> [!NOTE]
-> - The `rf3` extra (cuEquivariance) is Linux-only and is automatically skipped on macOS.
-> - Use `float32` precision — `bfloat16` is not supported on MPS. The MPS accelerator is selected and float32 precision is enforced automatically.
-> - Inference only; multi-GPU training is not supported on MPS.
-> - For `rf3 fold`, pass an absolute path to the input CIF file.
+## User workflows
 
-**Downloading weights** Models can be downloaded to a target folder with:
-```
-foundry install base-models --checkpoint-dir <path/to/ckpt/dir>
-```
-where `checkpoint-dir` will be `~/.foundry/checkpoints` by default. Foundry always searches `~/.foundry/checkpoints` plus any colon-separated entries in `$FOUNDRY_CHECKPOINT_DIRS` during inference or subsequent commands to find checkpoints. `base-models` installs the latest RFD3, RF3 and MPNN variants - you can also download all of the models supported (including multiple checkpoints of RF3) with `all`, or by listing the models sequentially (e.g. `foundry install rfd3 rf3 ...`).
-To list the registry of available checkpoints:
-```
-foundry list-available
-```
-To check what you already have downloaded (searches `~/.foundry/checkpoints` plus `$FOUNDRY_CHECKPOINT_DIRS` if set):
-```
-foundry list-installed
-```
+RFD3-Mosaic currently exposes two primary workflows:
 
->*See `examples/all.ipynb` for how to run each model and design proteins end-to-end in a notebook.*
+1. **Preserve supplied interfaces.** The user supplies one or more complete
+   interface seeds. Mosaic preserves each seed's internal geometry and
+   generates the requested polymer connections and scaffold.
+2. **Create a symmetric interface around a motif.** The user supplies a
+   central motif. Mosaic keeps the motif fixed internally and guides generated
+   regions toward a symmetric, clash-aware interface. Component translation
+   and rotation can be locked or bounded by the selected motion policy.
 
-### Docker Image
+Ordinary-user configurations describe the intended assembly and seed usage.
+Expert configurations may additionally specify components, ports, group
+relations, mobility subspaces and packing controls. Both modes compile to the
+same internal assembly representation and RFD3 runtime.
 
-There is an official [Foundry image](https://hub.docker.com/r/rosettacommons/foundry) maintained by the [Rosetta Commons](https://rosettacommons.org/). The default image comes with the model weights for the available models, but you can use the `slim` tag to either use pre-exiting model weights or use the image to download the available model weights. 
+## Validation model
 
-For more information and example syntax, see the [Overview on DockerHub](https://hub.docker.com/r/rosettacommons/foundry).
+A generated coordinate file is not considered successful merely because
+inference finished. Required result audits evaluate:
 
-The recipe to create the Docker image can be found in `foundry/examples/docker` and can be used as a "blue-print" for creating your own images. 
+- fixed-motif completeness and joint rigid recovery;
+- declared symmetry and component-orbit consistency;
+- supplied or generated interface relations;
+- backbone continuity, clashes and compactness;
+- runtime packing-guidance execution when enabled.
 
-### Google Colab
-For an interactive Google Colab notebook walking through a basic design pipeline with RFD3, MPNN, and RF3, please see the [IPD Design Pipeline Tutorial](https://colab.research.google.com/drive/1ZwIMV3n9h0ZOnIXX0GyKUuoiahgifBxh?usp=sharing).
+The CLI reports a run as passed only when every required audit passes.
 
-### RFdiffusion3 (RFD3)
+## Documentation
 
-[RFdiffusion3](https://www.biorxiv.org/content/10.1101/2025.09.18.676967v2) is an all-atom generative model capable of designing protein structures under complex constraints. 
+- [Installation and environment setup](docs/rfd3_mosaic/INSTALLATION.md)
+- [Quick start and user workflows](docs/rfd3_mosaic/QUICKSTART.md)
+- [Implemented capabilities and limitations](DEVELOPMENT_STATUS.md)
+- [Current research status](docs/rfd3_mosaic/PROJECT_STATUS.md)
 
-<div align="center">
-  <img src="docs/_static/cover.png" alt="RFdiffusion3 generation trajectory." width="700">
-</div>
-
-> *See [models/rfd3/README.md](models/rfd3/README.md) for complete documentation.*
-
-### RFdiffusion3NA (RFD3NA)
-
-[RFdiffusion3NA](https://www.biorxiv.org/content/10.1101/2025.09.18.676967v3) is an extension of RFDiffusion3 capable of designing also nucleic acid structures under complex constraints. 
-
-<div align="center">
-  <img src="models/rfd3na/docs/.assets/multipolymer.png" alt="RFdiffusion3NA multi polymer" width="400">
-</div>
-
-> *See [models/rfd3na/README.md](models/rfd3na/README.md) for complete documentation.*
-
-### RosettaFold3 (RF3)
-
-[RF3](https://doi.org/10.1101/2025.08.14.670328) is a structure prediction neural network that narrows the gap between closed-source AF-3 and open-source alternatives.
-
-<div align="center">
-  <img src="docs/_static/prot_dna.png" alt="Protein-DNA complex prediction" width="400">
-</div>
-
-> *See [models/rf3/README.md](models/rf3/README.md) for complete documentation.*
-
-### ProteinMPNN
-[ProteinMPNN](https://www.science.org/doi/10.1126/science.add2187) and [LigandMPNN](https://www.nature.com/articles/s41592-025-02626-1) are lightweight inverse-folding models which can be use to design diverse sequences for backbones under constrained conditions.
-
-> *See [models/mpnn/README.md](models/mpnn/README.md) for complete documentation.*
-
----
+Detailed architecture plans, experiment records and site-specific deployment
+notes are retained as development evidence, but are not prerequisites for
+installing or using the public software.
 
 ## Development
 
-### Code Organization
-
-**Strict dependency flow:** `foundry` → `atomworks`
-
-- **atomworks**: Structure I/O, preprocessing, featurization
-- **foundry**: Model architectures, training, inference endpoints
-- **models/\<model\>:** Released models.
-
-#### For Core Developers (Multiple Packages)
-
-Install both `foundry` and models in editable mode for development:
+For an editable installation:
 
 ```bash
-uv pip install -e '.[all,dev]'
+git clone --branch refactor/product-core-v1 \
+  https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git
+cd rfd3-mosaic
+python -m pip install -e ".[rfd3,dev]"
+make local-test
 ```
 
-This approach allows you to:
-- Modify `foundry` shared utilities and see changes immediately
-- Work on specific models without installing all models
-- Add new models as independent packages in `models/`
-
-> [!NOTE]
-> Running tests is not currently supported, test files may be missing.
-
-### Adding New Models
-
-To add a new model:
-
-1. Create `models/<model_name>/` directory with its own `pyproject.toml`
-2. Add `foundry` as a dependency
-3. Implement model-specific code in `models/<model_name>/src/`
-4. Users can install with: `uv pip install -e ./models/<model_name>`
-
-### Pre-commit Formatting
-
-We ship a `.pre-commit-config.yaml` that runs `make format` (via `ruff format`) before each commit. Enable it once per clone:
+Build and test an installable artifact with:
 
 ```bash
-pip install pre-commit  # if not already installed
-pre-commit install
+make mosaic-release-smoke
 ```
 
-After installation the hook automatically formats the repo whenever you `git commit`. Use `pre-commit run --all-files` to apply it manually.
+Contributions should preserve backward compatibility for validated workflows
+and include focused regression tests. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Citation
+## Upstream and attribution
 
-If you use this repository code or data in your work, please cite the relavant work as below:
+RFD3-Mosaic is derived from the open-source
+[Foundry](https://github.com/RosettaCommons/foundry) and RFdiffusion3 codebase.
+It is an independent research extension and is not an official Rosetta
+Commons or Institute for Protein Design release. Upstream model documentation
+is available in [models/rfd3/README.md](models/rfd3/README.md).
 
-```bibtex
-@article{corley2025accelerating,
-  title={Accelerating biomolecular modeling with atomworks and rf3},
-  author={Corley, Nathaniel and Mathis, Simon and Krishna, Rohith and Bauer, Magnus S and Thompson, Tuscan R and Ahern, Woody and Kazman, Maxwell W and Brent, Rafael I and Didi, Kieran and Kubaney, Andrew and others},
-  journal={bioRxiv},
-  year={2025}
-}
+If you use this software, cite the relevant upstream RFdiffusion3, Foundry,
+AtomWorks and model publications in addition to any future RFD3-Mosaic
+release citation.
 
-@article {butcher2025_rfdiffusion3,
-    author = {Butcher, Jasper and Krishna, Rohith and Mitra, Raktim and Brent, Rafael Isaac and Li, Yanjing and Corley, Nathaniel and Kim, Paul T and Funk, Jonathan and Mathis, Simon Valentin and Salike, Saman and Muraishi, Aiko and Eisenach, Helen and Thompson, Tuscan Rock and Chen, Jie and Politanska, Yuliya and Sehgal, Enisha and Coventry, Brian and Zhang, Odin and Qiang, Bo and Didi, Kieran and Kazman, Maxwell and DiMaio, Frank and Baker, David},
-    title = {De novo Design of All-atom Biomolecular Interactions with RFdiffusion3},
-    elocation-id = {2025.09.18.676967},
-    year = {2025},
-    doi = {10.1101/2025.09.18.676967},
-    publisher = {Cold Spring Harbor Laboratory},
-    URL = {https://www.biorxiv.org/content/early/2025/11/19/2025.09.18.676967},
-    eprint = {https://www.biorxiv.org/content/early/2025/11/19/2025.09.18.676967.full.pdf},
-    journal = {bioRxiv}
-}
+## License
 
-@article{dauparas2022robust,
-  title={Robust deep learning--based protein sequence design using ProteinMPNN},
-  author={Dauparas, Justas and Anishchenko, Ivan and Bennett, Nathaniel and Bai, Hua and Ragotte, Robert J and Milles, Lukas F and Wicky, Basile IM and Courbet, Alexis and de Haas, Rob J and Bethel, Neville and others},
-  journal={Science},
-  volume={378},
-  number={6615},
-  pages={49--56},
-  year={2022},
-  publisher={American Association for the Advancement of Science}
-}
-
-@article{dauparas2025atomic,
-  title={Atomic context-conditioned protein sequence design using LigandMPNN},
-  author={Dauparas, Justas and Lee, Gyu Rie and Pecoraro, Robert and An, Linna and Anishchenko, Ivan and Glasscock, Cameron and Baker, David},
-  journal={Nature Methods},
-  pages={1--7},
-  year={2025},
-  publisher={Nature Publishing Group US New York}
-}
-```
-## Acknowledgments
-We thank Rachel Clune and Hope Woods from the RosettaCommons for their collaboration on the codebase, documentation, tutorials and examples. 
+This repository retains the upstream BSD 3-Clause license. See
+[LICENSE.md](LICENSE.md).

@@ -26,6 +26,11 @@ def design(**updates: object) -> UserDesignSpec:
 
 
 class UserDesignConstraintTestCase(unittest.TestCase):
+    def test_public_design_defaults_to_site_independent_direct_profile(
+        self,
+    ) -> None:
+        self.assertEqual(design().resources.profile, "local")
+
     @staticmethod
     def _expert_supplied_interface(**updates: object) -> UserDesignSpec:
         payload: dict[str, object] = {

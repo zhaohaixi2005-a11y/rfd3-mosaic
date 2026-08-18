@@ -5,10 +5,9 @@ description = "Constraint-compiled symmetric protein assembly design on RFdiffus
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
-    { name = "Institute for Protein Design", email = "contact@ipd.uw.edu" },
+    { name = "RFD3-Mosaic contributors" },
 ]
 license = { file = "LICENSE.md" }
-
 classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
@@ -48,6 +47,11 @@ dependencies = [
     "assertpy",
     "toolz",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zhaohaixi2005-a11y/rfd3-mosaic"
+Repository = "https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git"
+Issues = "https://github.com/zhaohaixi2005-a11y/rfd3-mosaic/issues"
 
 
 [project.optional-dependencies]
@@ -130,11 +134,22 @@ packages = [
 "models/rfd3na/configs" = "rfd3na/configs"
 "models/rfd3/configs" = "rfd3/configs"
 "models/rf3/configs" = "rf3/configs"
-"configs/rfd3_mosaic" = "rfd3_mosaic/resources/configs/rfd3_mosaic"
+"configs/rfd3_mosaic/compatibility" = "rfd3_mosaic/resources/configs/rfd3_mosaic/compatibility"
+"configs/rfd3_mosaic/cyclic" = "rfd3_mosaic/resources/configs/rfd3_mosaic/cyclic"
+"configs/rfd3_mosaic/dihedral" = "rfd3_mosaic/resources/configs/rfd3_mosaic/dihedral"
+"configs/rfd3_mosaic/experimental" = "rfd3_mosaic/resources/configs/rfd3_mosaic/experimental"
+"configs/rfd3_mosaic/single_interface" = "rfd3_mosaic/resources/configs/rfd3_mosaic/single_interface"
+"configs/rfd3_mosaic/execution/local.yaml" = "rfd3_mosaic/resources/configs/rfd3_mosaic/execution/local.yaml"
+"configs/rfd3_mosaic/execution/slurm-example.yaml" = "rfd3_mosaic/resources/configs/rfd3_mosaic/execution/slurm-example.yaml"
 "examples/rfd3_mosaic" = "rfd3_mosaic/resources/examples/rfd3_mosaic"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+  "configs/rfd3_mosaic/sites/",
+  "docs/internal/",
+  "experiments/",
+  "reports/",
+  "scripts/",
   "models/*/tests/",
   "models/*/docs/.assets/",
   "docs/source/models/*/.assets/",

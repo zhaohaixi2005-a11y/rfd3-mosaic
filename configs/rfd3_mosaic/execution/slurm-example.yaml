@@ -1,0 +1,17 @@
+schema_version: 1
+name: slurm-example
+executor: slurm
+
+# Copy this file outside the package and adapt every value to the target site.
+slurm:
+  partition: gpu
+  gres: gpu:1
+  cpus: 8
+  memory: 64G
+  walltime: "04:00:00"
+
+# Examples include activating a virtual environment or loading site modules.
+setup_commands: []
+
+checkpoint: ~/.foundry/checkpoints/rfd3_latest.ckpt
+foundry_checkpoint_dirs: ~/.foundry/checkpoints

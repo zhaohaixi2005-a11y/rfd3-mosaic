@@ -630,7 +630,7 @@ def simple_intent_payload(
     diameter_maximum: float | None = None,
     cavity_diameter_minimum: float | None = None,
     cavity_diameter_maximum: float | None = None,
-    profile: str = "p100",
+    profile: str = "local",
 ) -> dict[str, Any]:
     if not inspection.interface_candidates:
         raise ValueError(
@@ -735,7 +735,7 @@ def write_structure_inspection(
     diameter_maximum: float | None = None,
     cavity_diameter_minimum: float | None = None,
     cavity_diameter_maximum: float | None = None,
-    profile: str = "p100",
+    profile: str = "local",
 ) -> tuple[Path, Path]:
     intent_payload = simple_intent_payload(
         inspection,

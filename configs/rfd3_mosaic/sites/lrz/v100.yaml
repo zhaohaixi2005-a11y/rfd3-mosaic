@@ -1,8 +1,8 @@
 schema_version: 1
-name: p100
+name: lrz-v100
 
 slurm:
-  partition: lrz-dgx-1-p100x8,lrz-hpe-p100x4
+  partition: lrz-dgx-1-v100x8,lrz-v100x2
   gres: gpu:1
   cpus: 8
   memory: 120G

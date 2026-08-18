@@ -167,6 +167,17 @@ def _resolve_profile_path(
         repository_root / "configs" / "rfd3_mosaic" / "execution" / f"{value}.yaml"
     )
     if not profile.is_file():
+        site_profile = (
+            repository_root
+            / "configs"
+            / "rfd3_mosaic"
+            / "sites"
+            / "lrz"
+            / f"{value}.yaml"
+        )
+        if site_profile.is_file():
+            profile = site_profile
+    if not profile.is_file():
         profile = bundled_resource_path(
             Path("configs/rfd3_mosaic/execution") / f"{value}.yaml"
         )

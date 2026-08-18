@@ -1,4 +1,4 @@
-.PHONY: format local-smoke local-test mosaic-build mosaic-release-smoke
+.PHONY: format local-smoke local-test mosaic-public-check mosaic-build mosaic-release-smoke
 
 # Use the currently activated environment on any workstation/server.  Fall
 # back to the repository-local CPU environment when no venv is active.
@@ -35,8 +35,12 @@ local-test: local-smoke
 mosaic-build:
 	@uv build
 
+## Reject private deployment details and broken links in public documentation.
+mosaic-public-check:
+	@"$(LOCAL_PYTHON)" scripts/rfd3_mosaic/check_public_surface.py
+
 ## Verify CLI resources and imports in a wheel install outside the checkout.
-mosaic-release-smoke: mosaic-build
+mosaic-release-smoke: mosaic-public-check mosaic-build
 	@bash scripts/rfd3_mosaic/release_smoke.sh
 
 #################################################################################

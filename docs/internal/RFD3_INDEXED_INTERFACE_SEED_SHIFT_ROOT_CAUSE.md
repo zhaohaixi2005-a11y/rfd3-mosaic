@@ -1,4 +1,6 @@
-# RFD3 indexed cross-subunit interface-seed shift
+# Archived RFD3 indexed cross-subunit interface-seed shift analysis
+
+> Internal debugging record. Not a public usage requirement.
 
 ## Source-level root-cause analysis
 

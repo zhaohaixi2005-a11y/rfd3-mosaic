@@ -1,4 +1,7 @@
-# RFD3-Mosaic Current Product Status
+# Archived RFD3-Mosaic product-status history
+
+> Internal historical evidence. The maintained public summary is
+> `docs/rfd3_mosaic/PROJECT_STATUS.md`.
 
 Last updated: 2026-08-18
 

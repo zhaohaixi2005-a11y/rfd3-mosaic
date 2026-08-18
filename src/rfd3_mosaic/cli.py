@@ -74,7 +74,7 @@ from rfd3_mosaic.topology.component_incidence import (
 
 def _add_quick_runtime_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--profile", default="p100")
+    parser.add_argument("--profile", default="local")
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -157,7 +157,7 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument("--diameter-max", type=float)
     inspect.add_argument("--cavity-diameter-min", type=float)
     inspect.add_argument("--cavity-diameter-max", type=float)
-    inspect.add_argument("--profile", default="p100")
+    inspect.add_argument("--profile", default="local")
 
     resolve = commands.add_parser(
         "resolve",

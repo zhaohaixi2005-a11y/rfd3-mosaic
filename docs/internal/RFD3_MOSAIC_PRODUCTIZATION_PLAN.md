@@ -1,4 +1,7 @@
-# RFD3-Mosaic Productization and Foundry Fork Plan
+# Archived RFD3-Mosaic productization and Foundry fork plan
+
+> Internal roadmap history. Current public status is maintained in
+> `docs/rfd3_mosaic/PROJECT_STATUS.md`.
 
 ## Purpose
 

@@ -1,4 +1,6 @@
-# LHD101 C5/C6/C7 200-step capability runbook
+# Archived LHD101 C5/C6/C7 capability runbook
+
+> Internal historical deployment record. Not part of the public user guide.
 
 ## 8.3 low-tilt 200-step campaign
 

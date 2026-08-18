@@ -1,4 +1,6 @@
-# RFdiffusion1 Interface-Seed 全量升级审计
+# Archived RFdiffusion1 interface-seed upgrade audit
+
+> Internal engineering analysis. Not a public usage requirement.
 
 ## 1. 审计范围与版本
 

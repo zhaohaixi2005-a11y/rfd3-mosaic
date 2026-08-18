@@ -11,6 +11,7 @@ from rfd3_mosaic.cli import (
     _write_quick_experiment,
 )
 from rfd3_mosaic.experiment import (
+    _resolve_profile_path,
     build_execution_plan,
     render_submission,
     resolve_experiment,
@@ -23,6 +24,26 @@ from rfd3_mosaic.experiment_worker import (
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
+    def test_legacy_site_profile_alias_is_source_checkout_only(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        resolved = _resolve_profile_path(
+            "v100",
+            experiment_directory=repository,
+            repository_root=repository,
+        )
+
+        self.assertEqual(
+            resolved,
+            (
+                repository
+                / "configs"
+                / "rfd3_mosaic"
+                / "sites"
+                / "lrz"
+                / "v100.yaml"
+            ).resolve(),
+        )
+
     def test_worker_enables_only_required_output_geometry_guidance(
         self,
     ) -> None:
@@ -546,6 +567,35 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertEqual(arguments.command, "doctor")
         self.assertEqual(arguments.profile, "local")
         self.assertIsNone(arguments.checkpoint)
+
+    def test_quick_commands_default_to_site_independent_direct_execution(
+        self,
+    ) -> None:
+        central = _parser().parse_args(
+            [
+                "central",
+                "--input",
+                "input.pdb",
+                "--motif",
+                "A1",
+                "--output",
+                "run",
+            ]
+        )
+        interface = _parser().parse_args(
+            [
+                "interface",
+                "--config",
+                "input.yaml",
+                "--pose-seed",
+                "1",
+                "--output",
+                "run",
+            ]
+        )
+
+        self.assertEqual(central.profile, "local")
+        self.assertEqual(interface.profile, "local")
 
     def test_product_commands_have_stable_public_arguments(self) -> None:
         run = _parser().parse_args(

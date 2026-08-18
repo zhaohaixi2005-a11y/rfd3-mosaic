@@ -1,8 +1,8 @@
 schema_version: 1
-name: h100
+name: lrz-a100-80g
 
 slurm:
-  partition: lrz-hgx-h100-94x4
+  partition: lrz-dgx-a100-80x8
   gres: gpu:1
   cpus: 12
   memory: 440G

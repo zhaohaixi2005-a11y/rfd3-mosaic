@@ -1,4 +1,6 @@
-# RFD3 Multi-Interface Seed（Interface-Seed 2.0）最终架构与实施方案
+# Archived RFD3 multi-interface seed architecture plan
+
+> Internal architecture history. Not a public user guide.
 
 ## 0. 当前规范：用户提供 relation hypergraph，Mosaic 求解 scaffold graph 和 pose
 
