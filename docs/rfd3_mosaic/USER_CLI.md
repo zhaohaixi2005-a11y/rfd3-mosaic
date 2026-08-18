@@ -28,6 +28,47 @@ Every design follows the same lifecycle:
 user intent -> plan -> validate -> resolve if needed -> run -> audits -> report
 ```
 
+### `init`
+
+```bash
+rfd3-mosaic init design.yaml \
+  --task central-motif \
+  --input motif.pdb \
+  --motif-selector A12-20 \
+  --symmetry C3
+```
+
+Creates a schema-valid ordinary-user YAML and prints the exact `plan`,
+`validate` and `run` commands to use next. Selectors remain explicit because
+they define scientific intent; radius, neighbour transforms and raw packing
+weights are not required.
+
+The two tasks are:
+
+- `central-motif`: preserve a motif and create surrounding interface packing;
+- `supplied-interface`: preserve both sides of a complete supplied interface
+  as one joint rigid geometric seed.
+
+For `central-motif`, `--component-motion locked|guided|free` selects whether
+the supplied arrangement stays fixed, moves in the calibrated constrained
+subspace, or uses bounded SE(3). High-level `--packing`, `--interface-area`,
+`--cavity` and `--diversity` preferences are also available. Hard symmetry,
+motif, continuity and clash contracts are never disabled by these options.
+
+### `examples` and `profiles`
+
+```bash
+rfd3-mosaic examples
+rfd3-mosaic examples --copy supplied-interface --output design.yaml
+rfd3-mosaic profiles
+rfd3-mosaic profiles --copy-slurm my-cluster.yaml
+```
+
+These discovery commands work from both source checkouts and installed
+packages. Copied examples resolve their bundled input and run paths; copied
+Slurm profiles are generic site templates. Both support `--format json`, and
+neither overwrites an existing file unless `--force` is supplied.
+
 ### `plan`
 
 ```bash
@@ -102,10 +143,15 @@ Use `rfd3-mosaic runs --root /path/to/runs` to list an indexed run root.
 
 ### Preserve supplied geometry
 
-Start from:
+Create it with:
 
 ```bash
-cp examples/rfd3_mosaic/simple_interface_seed.yaml design.yaml
+rfd3-mosaic init design.yaml \
+  --task supplied-interface \
+  --input interface-seed.pdb \
+  --side-a A165-194 \
+  --side-b B211-241 \
+  --symmetry C3
 ```
 
 Use this mode when the input already contains one or more complete interfaces.
@@ -115,10 +161,14 @@ geometry.
 
 ### Create a symmetric interface
 
-Start from:
+Create it with:
 
 ```bash
-cp examples/rfd3_mosaic/simple_central_motif.yaml design.yaml
+rfd3-mosaic init design.yaml \
+  --task central-motif \
+  --input motif.pdb \
+  --motif-selector A12-20 \
+  --symmetry C3
 ```
 
 Use this mode when the input supplies a motif and Mosaic should generate new
@@ -157,7 +207,7 @@ The profile can be copied and edited for any workstation or shared server.
 Copy the generic Slurm template:
 
 ```bash
-cp configs/rfd3_mosaic/execution/slurm-example.yaml my-cluster.yaml
+rfd3-mosaic profiles --copy-slurm my-cluster.yaml
 ```
 
 Set the site's partition, resources, environment activation and checkpoint,

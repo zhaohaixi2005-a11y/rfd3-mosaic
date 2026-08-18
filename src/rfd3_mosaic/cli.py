@@ -33,6 +33,13 @@ from rfd3_mosaic.experiment import (
     resolve_experiment,
 )
 from rfd3_mosaic.graph_search import search_graph_design
+from rfd3_mosaic.onboarding import (
+    available_examples,
+    available_profiles,
+    copy_example,
+    copy_slurm_profile,
+    initialize_design,
+)
 from rfd3_mosaic.posthoc_audit import audit_existing_run
 from rfd3_mosaic.rfd3_prevalidate import prevalidate_rfd3_input
 from rfd3_mosaic.run_index import (
@@ -115,6 +122,73 @@ def _parser() -> argparse.ArgumentParser:
         choices=("text", "json"),
         default="text",
     )
+
+    initialize = commands.add_parser(
+        "init",
+        help="Create a short user design YAML from a structure and selectors.",
+    )
+    initialize.add_argument("output", type=Path, help="YAML file to create.")
+    initialize.add_argument(
+        "--task",
+        required=True,
+        choices=("central-motif", "supplied-interface"),
+    )
+    initialize.add_argument("--input", required=True, type=Path)
+    initialize.add_argument("--symmetry", default="C3")
+    initialize.add_argument("--name")
+    initialize.add_argument("--profile", default="local")
+    initialize.add_argument("--run-root", type=Path, default=Path("runs"))
+    initialize.add_argument(
+        "--motif-selector",
+        help="Fixed motif selector, for example A12-20.",
+    )
+    initialize.add_argument("--side-a", help="First supplied interface side.")
+    initialize.add_argument("--side-b", help="Second supplied interface side.")
+    initialize.add_argument("--n-length", type=int, default=35)
+    initialize.add_argument("--c-length", type=int, default=35)
+    initialize.add_argument("--linker-minimum", type=int, default=70)
+    initialize.add_argument("--linker-maximum", type=int, default=100)
+    initialize.add_argument("--timesteps", type=int, default=200)
+    initialize.add_argument("--seed", type=int, default=42)
+    initialize.add_argument(
+        "--packing", choices=("loose", "balanced", "tight"), default="balanced"
+    )
+    initialize.add_argument(
+        "--cavity", choices=("compact", "auto", "open"), default="auto"
+    )
+    initialize.add_argument(
+        "--diversity", choices=("low", "medium", "high"), default="medium"
+    )
+    initialize.add_argument(
+        "--interface-area", choices=("small", "auto", "large"), default="auto"
+    )
+    initialize.add_argument(
+        "--component-motion",
+        choices=("locked", "guided", "free"),
+        default="locked",
+        help=(
+            "locked keeps the supplied arrangement fixed; guided uses "
+            "packing-aware constrained motion; free uses bounded SE(3)."
+        ),
+    )
+    initialize.add_argument("--force", action="store_true")
+
+    examples = commands.add_parser(
+        "examples",
+        help="List or copy maintained, portable user examples.",
+    )
+    examples.add_argument("--copy", choices=("central-motif", "supplied-interface"))
+    examples.add_argument("--output", type=Path)
+    examples.add_argument("--force", action="store_true")
+    examples.add_argument("--format", choices=("text", "json"), default="text")
+
+    profiles = commands.add_parser(
+        "profiles",
+        help="List execution profiles or create a portable Slurm template.",
+    )
+    profiles.add_argument("--copy-slurm", type=Path)
+    profiles.add_argument("--force", action="store_true")
+    profiles.add_argument("--format", choices=("text", "json"), default="text")
 
     inspect = commands.add_parser(
         "inspect",
@@ -1546,6 +1620,113 @@ def main(argv: Sequence[str] | None = None) -> None:
             print("readiness: " + ("PASSED" if report["passed"] else "FAILED"))
         if not report["passed"]:
             raise SystemExit(1)
+        return
+    if arguments.command == "init":
+        try:
+            path = initialize_design(
+                arguments.output,
+                task=arguments.task,
+                input_path=arguments.input,
+                symmetry=arguments.symmetry,
+                name=arguments.name,
+                profile=arguments.profile,
+                run_root=arguments.run_root,
+                motif_selector=arguments.motif_selector,
+                side_a=arguments.side_a,
+                side_b=arguments.side_b,
+                n_length=arguments.n_length,
+                c_length=arguments.c_length,
+                linker_minimum=arguments.linker_minimum,
+                linker_maximum=arguments.linker_maximum,
+                timesteps=arguments.timesteps,
+                seed=arguments.seed,
+                packing=arguments.packing,
+                cavity=arguments.cavity,
+                diversity=arguments.diversity,
+                interface_area=arguments.interface_area,
+                component_motion=arguments.component_motion,
+                overwrite=arguments.force,
+            )
+            # Validate the generated public declaration immediately. Full
+            # geometry preflight remains the job of `validate`.
+            load_user_design(path)
+        except (
+            FileExistsError,
+            FileNotFoundError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
+            parser.error(str(error))
+        print("RFD3-Mosaic design created")
+        print(f"config:   {path}")
+        print(f"next:     rfd3-mosaic plan {path}")
+        print(f"validate: rfd3-mosaic validate {path}")
+        print(f"run:      rfd3-mosaic run {path}")
+        return
+    if arguments.command == "examples":
+        try:
+            if arguments.copy is not None:
+                if arguments.output is None:
+                    raise ValueError("--copy requires --output")
+                path = copy_example(
+                    arguments.copy,
+                    arguments.output,
+                    overwrite=arguments.force,
+                )
+                load_user_design(path)
+                payload: object = {"copied": arguments.copy, "path": str(path)}
+            else:
+                if arguments.output is not None:
+                    raise ValueError("--output is only valid with --copy")
+                payload = available_examples()
+        except (
+            FileExistsError,
+            FileNotFoundError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
+            parser.error(str(error))
+        if arguments.format == "json":
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif arguments.copy is not None:
+            print(f"Copied {arguments.copy} example to {path}")
+            print(f"next: rfd3-mosaic plan {path}")
+        else:
+            print("RFD3-Mosaic examples")
+            for item in payload:
+                print(f"  - {item['id']}: {item['path']}")
+            print("copy: rfd3-mosaic examples --copy ID --output design.yaml")
+        return
+    if arguments.command == "profiles":
+        try:
+            if arguments.copy_slurm is not None:
+                path = copy_slurm_profile(
+                    arguments.copy_slurm,
+                    overwrite=arguments.force,
+                )
+                payload = {"copied": "slurm-example", "path": str(path)}
+            else:
+                payload = available_profiles()
+        except (
+            FileExistsError,
+            FileNotFoundError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
+            parser.error(str(error))
+        if arguments.format == "json":
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        elif arguments.copy_slurm is not None:
+            print(f"Copied Slurm profile template to {path}")
+            print(f"next: rfd3-mosaic doctor --profile {path}")
+        else:
+            print("RFD3-Mosaic execution profiles")
+            for item in payload:
+                print(f"  - {item['id']} ({item['scope']}): {item['path']}")
+            print("copy: rfd3-mosaic profiles --copy-slurm my-cluster.yaml")
         return
     if arguments.command == "inspect":
         try:

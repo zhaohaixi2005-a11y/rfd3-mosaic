@@ -20,6 +20,7 @@ The current supported target comprises:
   rotation;
 - deterministic lowering to RFD3 inputs;
 - strict replay and required post-generation audits;
+- guided configuration creation and portable packaged examples;
 - local execution and configurable Slurm execution.
 
 These capabilities have extensive CPU regression coverage. Representative GPU

@@ -30,7 +30,7 @@ sampling:
   seed: 42
 
 resources:
-  profile: v100
+  profile: local
 
 output:
   root: /path/to/runs

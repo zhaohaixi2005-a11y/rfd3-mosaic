@@ -10,8 +10,9 @@ server or deployment site.
 
 - installable `rfd3-mosaic` Python distribution;
 - packaged public examples and execution profiles;
+- guided `init`, portable `examples` and discoverable `profiles` onboarding;
 - `doctor`, `capabilities`, `plan`, `validate`, `resolve`, `render`, `run`,
-  `status`, `report` and `audit` commands;
+  `status`, `report` and `audit` lifecycle commands;
 - direct synchronous and Slurm execution adapters;
 - immutable execution configuration and software provenance;
 - strict result verdicts based on required scientific audits;

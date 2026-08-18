@@ -64,21 +64,39 @@ development installs and execution-environment configuration.
 
 ## Quick start
 
-Start from one of the maintained user templates:
+Create a design directly from a structure and selectors. For a central motif
+whose surrounding symmetric interface should be generated:
 
 ```bash
-cp examples/rfd3_mosaic/simple_interface_seed.yaml my-design.yaml
-# or
-cp examples/rfd3_mosaic/simple_central_motif.yaml my-design.yaml
+rfd3-mosaic init my-design.yaml \
+  --task central-motif \
+  --input motif.pdb \
+  --motif-selector A12-20 \
+  --symmetry C3
 ```
 
-Edit the input structure, selectors, symmetry and output location, then run:
+For a complete two-sided interface seed that must remain unchanged:
 
 ```bash
-rfd3-mosaic plan my-design.yaml --profile local
+rfd3-mosaic init my-design.yaml \
+  --task supplied-interface \
+  --input interface-seed.pdb \
+  --side-a A165-194 \
+  --side-b B211-241 \
+  --symmetry C3
+```
+
+Then inspect, validate and run the generated YAML:
+
+```bash
+rfd3-mosaic plan my-design.yaml
 rfd3-mosaic validate my-design.yaml
-rfd3-mosaic run my-design.yaml --profile local --run-root "$PWD/runs"
+rfd3-mosaic run my-design.yaml
 ```
+
+`rfd3-mosaic examples` lists maintained templates, and
+`rfd3-mosaic profiles` lists execution profiles. Both commands can copy a
+portable starting file without requiring a source checkout.
 
 The bundled synchronous executor can run on any compatible machine. Slurm is
 also supported through a site-defined profile. These are launch mechanisms,

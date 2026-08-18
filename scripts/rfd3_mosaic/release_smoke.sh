@@ -4,6 +4,14 @@ set -euo pipefail
 REPOSITORY=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SMOKE_ROOT=$(mktemp -d)
 trap 'rm -rf "$SMOKE_ROOT"' EXIT
+PYTHON_BIN=${PYTHON:-"$REPOSITORY/.venv-local/bin/python"}
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    PYTHON_BIN=$(command -v python3 || command -v python || true)
+fi
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    echo "No Python interpreter is available for the wheel smoke" >&2
+    exit 1
+fi
 
 WHEEL=$(find "$REPOSITORY/dist" -maxdepth 1 -name 'rfd3_mosaic-*.whl' \
     -print | sort | tail -n 1)
@@ -64,13 +72,27 @@ output:
   campaign: release-smoke
 EOF
 cd "$SMOKE_ROOT"
-PYTHONPATH="$SMOKE_ROOT/site-packages" python -m rfd3_mosaic.cli \
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
     capabilities --format json >/dev/null
-PYTHONPATH="$SMOKE_ROOT/site-packages" python -m rfd3_mosaic.cli doctor \
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli doctor \
     --profile local \
     --checkpoint "$SMOKE_ROOT/rfd3_latest.ckpt" \
     --format json >/dev/null
-PYTHONPATH="$SMOKE_ROOT/site-packages" python -m rfd3_mosaic.cli render \
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
+    examples --format json >/dev/null
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
+    examples --copy central-motif \
+    --output "$SMOKE_ROOT/example.yaml" >/dev/null
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
+    profiles --format json >/dev/null
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
+    profiles --copy-slurm "$SMOKE_ROOT/slurm.yaml" >/dev/null
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli init \
+    "$SMOKE_ROOT/design.yaml" \
+    --task central-motif \
+    --input "$SMOKE_ROOT/source.cif" \
+    --motif-selector A1 >/dev/null
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli render \
     "$SMOKE_ROOT/experiment.yaml" \
     --output-dir "$SMOKE_ROOT/rendered" >/dev/null
 test ! -e "$SMOKE_ROOT/rendered/source_snapshot.tar.gz"
