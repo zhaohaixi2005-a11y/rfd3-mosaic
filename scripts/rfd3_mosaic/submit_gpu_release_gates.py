@@ -201,7 +201,12 @@ def main() -> None:
         if not source_input.is_absolute():
             source_input = (source.parent / source_input).resolve()
         payload["input"] = str(source_input)
-        payload["name"] = f"{payload['name']}-release-gate"
+        # Experiment submission names are intentionally capped at 64
+        # characters.  Several descriptive source-design names already use
+        # that budget, so appending a suffix makes an otherwise valid frozen
+        # design impossible to submit.  Gate names are unique within this
+        # matrix and remain short, stable identifiers for the run index.
+        payload["name"] = f"{gate_name}-release-gate"
         payload["sampling"] = dict(payload["sampling"])
         payload["sampling"]["designs"] = int(gate["designs"])
         payload["output"] = dict(payload["output"])

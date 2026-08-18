@@ -139,6 +139,7 @@ The CLI reports a run as passed only when every required audit passes.
 - [Quick start and user workflows](docs/rfd3_mosaic/QUICKSTART.md)
 - [Implemented capabilities and limitations](DEVELOPMENT_STATUS.md)
 - [Current research status](docs/rfd3_mosaic/PROJECT_STATUS.md)
+- [Ho-Yeung LHD101 backbone comparison](docs/rfd3_mosaic/HOYEUNG_BACKBONE_COMPARISON.md)
 
 Detailed architecture plans, experiment records and site-specific deployment
 notes are retained as development evidence, but are not prerequisites for

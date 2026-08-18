@@ -1,0 +1,71 @@
+schema_version: 1
+name: lhd101-c3-guided-template
+
+# Mosaic/RFD3 reproduction of the published Ho-Yeung interface-seed design
+# task.  The input and polymer construction match the 7mwr/LHD101 C3 task;
+# this experiment deliberately runs Mosaic, not RFdiffusion1.
+input: ../examples/rfd3_mosaic/lhd101_c3/inputs/7mwr_interface.pdb
+symmetry:
+  id: C3
+  axis: [0.0, 0.0, 1.0]
+  center: [0.0, 0.0, 0.0]
+
+generation:
+  - kind: between
+    from_selector: B211-241
+    to_selector: A165-194
+    orbit_offset: 1
+    length: {minimum: 70, maximum: 100}
+
+constraints:
+  # A and B are the two sides of one supplied natural interface.  Their
+  # shared coupling group is one joint rigid body: no internal interface
+  # distance or angle is allowed to change.  Only the pose of the complete
+  # seed orbit can improve while all C3 copies are reconstructed exactly.
+  - kind: fixed_xyz
+    selector: A165-194
+    atoms: all
+    coupling_group: supplied_interface_seed
+    pose: &guided_seed_pose
+      mode: bounded_mobile
+      subspace: radial_axial_rotation
+      proposal: scaffold_objectives
+      max_translation: 5.0
+      max_rotation_deg: 15.0
+      start_fraction: 0.05
+      end_fraction: 0.80
+      response: 0.20
+      max_step_translation: 0.25
+      max_step_rotation_deg: 1.0
+
+  - kind: fixed_xyz
+    selector: B211-241
+    atoms: all
+    coupling_group: supplied_interface_seed
+    pose: *guided_seed_pose
+
+sampling:
+  # Match the published 50-step task while using Mosaic's exact-symmetry
+  # sampler.  The campaign launcher replaces both seeds and design count for
+  # every recoverable shard.
+  timesteps: 50
+  designs: 1
+  seed: 10000
+  initial_pose:
+    radius: {minimum: 20.0, maximum: 30.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    orientation: {method: uniform_so3}
+    seed: 10000
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: any_gpu
+  memory: 120G
+  cpus: 8
+  walltime: "24:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: mosaic-lhd101-c3-guided
