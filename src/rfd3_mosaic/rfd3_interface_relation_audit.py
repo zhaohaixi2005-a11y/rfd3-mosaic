@@ -1037,6 +1037,13 @@ def audit_interface_relations(
             "source_copy_index": source_copy,
             "target_copy_index": target_copy,
             "action_copy_index": edge.get("action_copy_index"),
+            "physical_edge_index": edge.get("physical_edge_index"),
+            "equivalent_action_transform_ids": list(
+                edge.get("equivalent_action_transform_ids") or ()
+            ),
+            "edge_stabilizer_order": int(
+                edge.get("edge_stabilizer_order", 1)
+            ),
             "orbit_id": edge.get("orbit_id"),
             "target_mode": str(geometry["mode"]),
             "reference_basis": str(
@@ -1442,6 +1449,22 @@ def audit_interface_relations(
             "interface_count": len(interface_ids),
             "interface_hyperedge_count": len(hyperedge_ids),
             "edge_instance_count": len(edge_reports),
+            "unique_physical_edge_instance_count": len(edge_reports),
+            "equivalent_group_action_count": sum(
+                int(report.get("edge_stabilizer_order", 1))
+                for report in edge_reports
+            ),
+            "quotient_edge_instance_count": sum(
+                int(report.get("edge_stabilizer_order", 1)) > 1
+                for report in edge_reports
+            ),
+            "maximum_edge_stabilizer_order": max(
+                (
+                    int(report.get("edge_stabilizer_order", 1))
+                    for report in edge_reports
+                ),
+                default=1,
+            ),
             "required_edge_instance_count": len(required_reports),
             "satisfied_required_edge_instance_count": (
                 len(required_reports) - len(failed_required)

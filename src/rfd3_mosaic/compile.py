@@ -466,7 +466,10 @@ def expand_symmetry_instances(
             right_mapping = orbit_transform_to_representative[right_orbit_id]
             left_selected = orbit_transform_ids[left_orbit_id]
             right_selected = orbit_transform_ids[right_orbit_id]
-            physical_pairs: set[tuple[int, int]] = set()
+            pair_actions: dict[
+                tuple[int, int],
+                list[tuple[int, str, str, str]],
+            ] = {}
             for action_copy_index, action_id in enumerate(
                 registry.transform_ids
             ):
@@ -479,16 +482,27 @@ def expand_symmetry_instances(
                 left_copy_index = left_selected.index(left_representative)
                 right_copy_index = right_selected.index(right_representative)
                 physical_pair = (left_copy_index, right_copy_index)
-                if physical_pair in physical_pairs:
-                    raise NotImplementedError(
-                        f"Cross-orbit interface {edge_id!r} has a quotient "
-                        "edge stabilizer: several group actions map to the "
-                        f"same physical component pair {physical_pair}. "
-                        "The first executable mixed-orbit contract requires "
-                        "one free interface-edge orbit"
+                pair_actions.setdefault(physical_pair, []).append(
+                    (
+                        action_copy_index,
+                        action_id,
+                        left_representative,
+                        right_representative,
                     )
-                physical_pairs.add(physical_pair)
-                edge_orbit_id = f"interface_orbit__{edge_id}"
+                )
+
+            edge_orbit_id = f"interface_orbit__{edge_id}"
+            for physical_edge_index, (
+                physical_pair,
+                equivalent_actions,
+            ) in enumerate(pair_actions.items()):
+                left_copy_index, right_copy_index = physical_pair
+                (
+                    action_copy_index,
+                    action_id,
+                    left_representative,
+                    right_representative,
+                ) = equivalent_actions[0]
                 edge_instance_id = _instance_id(
                     edge_id,
                     edge_orbit_id,
@@ -520,6 +534,11 @@ def expand_symmetry_instances(
                         transform_set_id=transform_set_id,
                         action_transform_id=action_id,
                         action_copy_index=action_copy_index,
+                        physical_edge_index=physical_edge_index,
+                        equivalent_action_transform_ids=tuple(
+                            item[1] for item in equivalent_actions
+                        ),
+                        edge_stabilizer_order=len(equivalent_actions),
                         left_orbit_id=left_orbit_id,
                         right_orbit_id=right_orbit_id,
                         left_transform_index=registry.transform_ids.index(

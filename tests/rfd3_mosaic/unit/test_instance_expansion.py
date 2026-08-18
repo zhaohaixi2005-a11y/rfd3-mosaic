@@ -373,6 +373,82 @@ class InstanceExpansionTestCase(unittest.TestCase):
             ),
         )
 
+    def test_t_c2_c2_interface_expands_quotient_edge_orbit(self) -> None:
+        payload = load_interface_seed_config(LHD101_CONFIG).model_dump(
+            mode="python"
+        )
+        payload["symmetry"]["transform_sets"]["ring_c3"] = {
+            "type": "tetrahedral",
+            "order": 12,
+        }
+        plan = next(
+            item
+            for item in enumerate_binary_interface_incidence_plans(
+                symmetry="T",
+                interface_id="ring_interface",
+                left_participant="left",
+                right_participant="right",
+            )
+            if item.left.valency == 2
+        )
+        action = plan.left.action
+        action_payload = {
+            "coset_representative_ids": action.coset_representative_ids,
+            "stabilizer_transform_ids": action.stabilizer_transform_ids,
+            "transform_to_coset_representative": dict(
+                action.transform_to_coset_representative
+            ),
+        }
+        payload["motion_groups"] = {
+            "left_group": {"members": ["left"], "mode": "fixed"},
+            "right_group": {"members": ["right"], "mode": "fixed"},
+        }
+        payload["symmetry"]["orbits"] = {
+            "left_c2_orbit": {
+                "transform_set": "ring_c3",
+                "master_groups": ["left_group"],
+                "finite_action": action_payload,
+            },
+            "right_c2_orbit": {
+                "transform_set": "ring_c3",
+                "master_groups": ["right_group"],
+                "finite_action": action_payload,
+            },
+        }
+        payload["ports"]["left_port"]["group"] = "left_group"
+        payload["ports"]["right_port"]["group"] = "right_group"
+        payload["interfaces"]["ring_interface"]["copy_relation"] = {
+            "orbit_offset": 0,
+        }
+        payload["scaffold_links"] = {}
+        payload["generated_segments"] = {}
+        payload["initialization"] = {}
+
+        instances = expand_symmetry_instances(
+            InterfaceSeedSpec.model_validate(payload)
+        )
+
+        self.assertEqual(len(instances.interfaces), 6)
+        self.assertEqual(
+            {edge.edge_stabilizer_order for edge in instances.interfaces.values()},
+            {2},
+        )
+        self.assertEqual(
+            {
+                action_id
+                for edge in instances.interfaces.values()
+                for action_id in edge.equivalent_action_transform_ids
+            },
+            set(dict(action.transform_to_coset_representative)),
+        )
+        self.assertEqual(
+            len({
+                (edge.left_port_instance_id, edge.right_port_instance_id)
+                for edge in instances.interfaces.values()
+            }),
+            6,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

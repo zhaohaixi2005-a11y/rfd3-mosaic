@@ -753,6 +753,11 @@ def _runtime_interface_constraint_groups(
                 "transform_set_id": edge.transform_set_id,
                 "action_copy_index": edge.action_copy_index,
                 "action_transform_id": edge.action_transform_id,
+                "physical_edge_index": edge.physical_edge_index,
+                "equivalent_action_transform_ids": list(
+                    edge.equivalent_action_transform_ids
+                ),
+                "edge_stabilizer_order": edge.edge_stabilizer_order,
                 "left_orbit_id": edge.left_orbit_id,
                 "right_orbit_id": edge.right_orbit_id,
                 "left_transform_index": edge.left_transform_index,
@@ -1206,6 +1211,11 @@ def _runtime_interface_relation_audit_plan(
             "target_copy_index": edge.target_copy_index,
             "action_copy_index": edge.action_copy_index,
             "action_transform_id": edge.action_transform_id,
+            "physical_edge_index": edge.physical_edge_index,
+            "equivalent_action_transform_ids": list(
+                edge.equivalent_action_transform_ids
+            ),
+            "edge_stabilizer_order": edge.edge_stabilizer_order,
             "left_orbit_id": edge.left_orbit_id,
             "right_orbit_id": edge.right_orbit_id,
             "left_transform_index": edge.left_transform_index,

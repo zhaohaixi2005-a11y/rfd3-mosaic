@@ -184,6 +184,18 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["summary"]["edge_instance_count"], 2)
+        self.assertEqual(
+            report["summary"]["unique_physical_edge_instance_count"], 2
+        )
+        self.assertEqual(
+            report["summary"]["equivalent_group_action_count"], 2
+        )
+        self.assertEqual(
+            report["summary"]["quotient_edge_instance_count"], 0
+        )
+        self.assertEqual(
+            report["summary"]["maximum_edge_stabilizer_order"], 1
+        )
         self.assertTrue(
             all(edge["satisfied"] for edge in report["interfaces"])
         )
@@ -250,6 +262,52 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
                 for instance in hyperedge["physical_instances"]
             },
             {("motif_orbit", 0), ("motif_orbit", 1)},
+        )
+
+    def test_quotient_edge_reports_actions_separately_from_physical_edges(
+        self,
+    ) -> None:
+        self._write_result()
+        compiled = self._compiled_input(
+            {
+                "mode": "reference_transform",
+                "from_reference_seed": True,
+                "translation_tolerance": 0.1,
+                "rotation_tolerance_deg": 1.0,
+            }
+        )
+        payload = json.loads(compiled.read_text(encoding="utf-8"))
+        relations = payload["example"]["extra"][
+            "assembly_interface_relations"
+        ]
+        for edge_index, edge in enumerate(relations):
+            edge["physical_edge_index"] = edge_index
+            edge["equivalent_action_transform_ids"] = [
+                f"C2:action_{edge_index}_a",
+                f"C2:action_{edge_index}_b",
+            ]
+            edge["edge_stabilizer_order"] = 2
+        compiled.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_interface_relations(
+            compiled_input=compiled,
+            result_json=self.result_json,
+            result_structure=self.result_structure,
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["summary"]["edge_instance_count"], 2)
+        self.assertEqual(
+            report["summary"]["unique_physical_edge_instance_count"], 2
+        )
+        self.assertEqual(
+            report["summary"]["equivalent_group_action_count"], 4
+        )
+        self.assertEqual(
+            report["summary"]["quotient_edge_instance_count"], 2
+        )
+        self.assertEqual(
+            report["summary"]["maximum_edge_stabilizer_order"], 2
         )
 
     def test_preserve_input_relation_detects_component_drift(self) -> None:

@@ -82,6 +82,9 @@ class InterfaceEdgeInstance(StrictModel):
     transform_set_id: Identifier | None = None
     action_transform_id: str | None = None
     action_copy_index: int | None = Field(default=None, ge=0)
+    physical_edge_index: int | None = Field(default=None, ge=0)
+    equivalent_action_transform_ids: tuple[str, ...] = ()
+    edge_stabilizer_order: int = Field(default=1, ge=1)
     left_orbit_id: Identifier | None = None
     right_orbit_id: Identifier | None = None
     left_transform_index: int | None = Field(default=None, ge=0)
@@ -104,6 +107,23 @@ class InterfaceEdgeInstance(StrictModel):
                 "Interface edge orbit_id, transform_set_id and "
                 "action_transform_id must be declared together"
             )
+        if self.equivalent_action_transform_ids:
+            if (
+                self.action_transform_id
+                not in self.equivalent_action_transform_ids
+            ):
+                raise ValueError(
+                    "Canonical interface action must belong to its "
+                    "equivalent action set"
+                )
+            if (
+                len(self.equivalent_action_transform_ids)
+                != self.edge_stabilizer_order
+            ):
+                raise ValueError(
+                    "Interface edge stabilizer order must equal the number "
+                    "of equivalent group actions"
+                )
         return self
 
 

@@ -9,6 +9,27 @@ Scope decision (2026-08-18): helical/screw symmetry is not part of the Mosaic
 product plan. It is excluded from capability maturity, release milestones and
 completion estimates. The supported symmetry roadmap is Cn, Dn and T/O/I.
 
+## 2026-08-18 quotient interface-edge stabilizers
+
+Cross-orbit interface expansion now supports a nontrivial interface-edge
+stabilizer. When several finite-group actions map to the same pair of physical
+component copies, the compiler emits that physical interface once and retains
+the complete equivalent action set as provenance. It no longer rejects every
+interface orbit smaller than the full group order.
+
+The native RFD3 relation plan and motif constraint groups carry the canonical
+action, equivalent action IDs, physical-edge index and stabilizer order. The
+post-run interface audit separately reports unique physical edge instances,
+equivalent group actions and quotient-edge instances. A tetrahedral C2--C2
+regression proves that 12 T actions lower to six physical interfaces with an
+edge stabilizer of order two, then passes native RFD3 feature prevalidation.
+The focused expansion, adapter and audit suites pass; the complete local CPU
+gate passes **817 tests**.
+
+This closes static, pre-positioned quotient interface-edge execution. It does
+not yet claim unknown-pose stabilizer-frame optimization, dynamic quotient
+mobility or GPU/scientific-quality validation.
+
 ## 2026-08-18 unified native polymer paths
 
 The native RFD3 adapter no longer treats scaffold links and terminal
@@ -28,7 +49,8 @@ explicit independent ASU polymer paths instead of rejecting them or inventing
 a covalent linker. Symmetry-equivalent copies already represented by a
 cross-copy path are deduplicated by source-fragment identity. That extension
 raises the complete CPU gate to 815 tests. General multi-orbit path ownership
-and quotient interface-edge stabilizers remain subsequent milestones.
+remains a subsequent milestone; quotient interface-edge stabilizers are closed
+by the following 817-test CPU checkpoint.
 
 ## 2026-08-17 public cylindrical runtime and ordinary one-command spine
 

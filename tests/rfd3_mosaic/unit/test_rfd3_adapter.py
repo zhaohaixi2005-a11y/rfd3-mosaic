@@ -919,6 +919,62 @@ class RFD3AdapterTestCase(unittest.TestCase):
             matrix_audit["coverage_contract"],
             "declared_registry_subset",
         )
+
+        quotient_payload = yaml.safe_load(config.read_text(encoding="utf-8"))
+        quotient_payload["assembly"]["symmetry"]["orbits"]["c3_orbit"][
+            "finite_action"
+        ] = action_payload(plan.left)
+        quotient_assembly = quotient_payload["assembly"]
+        for fragment_id in (
+            "c3_component_D_n",
+            "c3_component_D_c",
+            "c3_component_E_n",
+            "c3_component_E_c",
+        ):
+            quotient_assembly["fragments"].pop(fragment_id)
+            quotient_assembly["motion_groups"]["c3_component"][
+                "members"
+            ].remove(fragment_id)
+            quotient_assembly["ports"]["c3_port"]["fragments"].remove(
+                fragment_id
+            )
+        quotient_assembly["scaffold_links"].pop("path_D")
+        quotient_assembly["scaffold_links"].pop("path_E")
+        quotient_config = self.output_directory / "mixed-t-c2-c2.yaml"
+        quotient_config.write_text(
+            yaml.safe_dump(quotient_payload, sort_keys=False),
+            encoding="utf-8",
+        )
+        quotient_outputs = compile_rfd3_input(
+            quotient_config,
+            self.output_directory / "mixed-t-c2-c2-output",
+            example_id="mixed-t-c2-c2",
+        )
+        quotient_emitted = json.loads(
+            quotient_outputs.input_path.read_text()
+        )["mixed-t-c2-c2"]
+        quotient_extra = quotient_emitted["extra"]
+        self.assertEqual(
+            len(quotient_extra["assembly_interface_relations"]),
+            6,
+        )
+        self.assertEqual(
+            {
+                relation["edge_stabilizer_order"]
+                for relation in quotient_extra[
+                    "assembly_interface_relations"
+                ]
+            },
+            {2},
+        )
+        self.assertEqual(
+            len(quotient_extra["motif_constraint_groups"]),
+            6,
+        )
+        quotient_report = prevalidate_rfd3_input(
+            quotient_outputs.input_path
+        )
+        self.assertEqual(quotient_report["status"], "passed")
         self.assertEqual(
             matrix_audit["runtime_transform_count"],
             len(

@@ -16,6 +16,23 @@ cluster canaries and are not inferred from local CPU success.
 
 ## Current implementation checkpoint
 
+### Quotient interface-edge orbits: static CPU path closed
+
+Interface edges may now have their own finite-group stabilizer, independently
+of component-orbit stabilizers. The compiler groups all symmetry actions by
+their resulting physical component pair, materializes each unique interface
+once, and preserves the full action equivalence class in runtime provenance.
+Consequently one interface type may occur fewer than `|G|` times without being
+misreported or rejected.
+
+Native RFD3 constraint groups and relation audits use the deduplicated physical
+edge orbit. Reports distinguish the number of unique physical interfaces from
+the number of group actions they represent. The executable tetrahedral C2--C2
+regression lowers 12 T actions to six physical interfaces, each with stabilizer
+order two, and passes RFD3 runtime-feature prevalidation. The complete local
+CPU suite passes 817 tests. Unknown-pose stabilizer placement, dynamic quotient
+motion and GPU quality evidence remain separate open gates.
+
 ### Unified native polymer paths: CPU closed
 
 One native RFD3 polymer path may now combine generated N/C terminal regions,
@@ -29,7 +46,8 @@ backward compatible. Fixed selectors belonging to a declared component may
 also remain as independent ASU paths when no user connection uses their chain
 termini; Mosaic does not invent a linker for them. Equivalent fragments
 already represented through a cross-copy path are not duplicated. The
-complete local CPU suite passes 815 tests.
+complete local CPU checkpoint for that slice passed 815 tests; the subsequent
+quotient-edge milestone raises the current gate to 817 tests.
 
 ### Ordinary-user execution spine: CPU closed
 
