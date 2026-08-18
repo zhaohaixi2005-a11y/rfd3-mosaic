@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
-import json
-import os
 from pathlib import Path
-import shutil
-import subprocess
 from typing import Any
 
 import yaml
 
-from rfd3_mosaic.run_index import read_run_record
-
+from rfd3_mosaic.run_index import read_run_record, valid_run_id
 
 SCHEMA_VERSION = 1
 AUDIT_GLOBS = (
@@ -51,12 +50,7 @@ def _run_directory_from_submission(directory: Path, job_id: str) -> Path:
     resolved = _load_yaml(directory / "resolved_config.yaml")
     output = resolved.get("output") or {}
     root = Path(str(output["root"])).expanduser()
-    return (
-        root
-        / str(output["campaign"])
-        / str(resolved["name"])
-        / job_id
-    ).resolve()
+    return (root / str(output["campaign"]) / str(resolved["name"]) / job_id).resolve()
 
 
 def _reference_from_submission(directory: Path) -> RunReference:
@@ -75,9 +69,7 @@ def _reference_from_submission(directory: Path) -> RunReference:
 def _candidate_root(root: str | Path | None) -> Path:
     value = root or os.environ.get("RFD3_MOSAIC_RUN_ROOT")
     if value is None:
-        raise ValueError(
-            "A numeric JobID requires --root or RFD3_MOSAIC_RUN_ROOT"
-        )
+        raise ValueError("A run ID requires --root or RFD3_MOSAIC_RUN_ROOT")
     path = Path(value).expanduser().resolve()
     if not path.is_dir():
         raise FileNotFoundError(f"Run root does not exist: {path}")
@@ -89,7 +81,7 @@ def resolve_run_reference(
     *,
     root: str | Path | None = None,
 ) -> RunReference:
-    """Resolve a run directory, submission receipt, or numeric Slurm JobID."""
+    """Resolve a run directory, submission receipt, or executor run ID."""
 
     raw = str(target)
     path = Path(raw).expanduser()
@@ -103,15 +95,14 @@ def resolve_run_reference(
             return _reference_from_submission(path.parent)
         if (path / "submission.json").is_file():
             return _reference_from_submission(path)
-        job_id = path.name if path.name.isdigit() else None
+        job_id = path.name if valid_run_id(path.name) else None
         if (path / "experiment_summary.json").is_file() or job_id:
             return RunReference(job_id=job_id, run_directory=path)
         raise ValueError(
-            "Directory is neither a run nor submission directory: "
-            f"{path}"
+            "Directory is neither a run nor submission directory: " f"{path}"
         )
 
-    if not raw.isdigit():
+    if not valid_run_id(raw):
         raise FileNotFoundError(f"Run reference does not exist: {path}")
     search_root = _candidate_root(root)
     indexed = read_run_record(search_root, raw)
@@ -119,9 +110,7 @@ def resolve_run_reference(
         indexed_run = Path(str(indexed["run_directory"])).resolve()
         submission_value = indexed.get("submission_directory")
         indexed_submission = (
-            Path(str(submission_value)).resolve()
-            if submission_value
-            else None
+            Path(str(submission_value)).resolve() if submission_value else None
         )
         return RunReference(
             job_id=raw,
@@ -186,7 +175,7 @@ def _run_scheduler(command: list[str]) -> str | None:
 def query_scheduler(job_id: str | None) -> dict[str, Any] | None:
     """Read Slurm without making scheduler state a reporting dependency."""
 
-    if not job_id:
+    if not job_id or job_id.startswith("local-"):
         return None
     output = _run_scheduler(
         [
@@ -282,9 +271,7 @@ def _audit_record(path: Path) -> dict[str, Any]:
             "passed": bool(passed),
             "status": payload.get("status"),
             "summary": payload.get("summary"),
-            "assembly_shape_contract": payload.get(
-                "assembly_shape_contract"
-            ),
+            "assembly_shape_contract": payload.get("assembly_shape_contract"),
         }
     )
     return record
@@ -385,9 +372,7 @@ def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
             context.update(
                 {
                     "task": task,
-                    "symmetry_multiplicity": extra.get(
-                        "symmetry_multiplicity"
-                    ),
+                    "symmetry_multiplicity": extra.get("symmetry_multiplicity"),
                     "fixed_component_count": len(
                         extra.get("motif_constraint_orbits") or []
                     ),
@@ -401,9 +386,7 @@ def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
                 if interface_id is None:
                     continue
                 label = str(interface_id)
-                interface_instances[label] = (
-                    interface_instances.get(label, 0) + 1
-                )
+                interface_instances[label] = interface_instances.get(label, 0) + 1
             if interface_instances:
                 context["interface_instances"] = interface_instances
 
@@ -482,14 +465,9 @@ def collect_run_status(
         summary_path = run_directory / "experiment_summary.json"
         if summary_path.is_file():
             worker = _load_json(summary_path)
-    scheduler = (
-        query_scheduler(reference.job_id) if include_scheduler else None
-    )
+    scheduler = query_scheduler(reference.job_id) if include_scheduler else None
     audits = (
-        [
-            _audit_record(path)
-            for path in _audit_paths(run_directory, worker)
-        ]
+        [_audit_record(path) for path in _audit_paths(run_directory, worker)]
         if run_directory is not None
         else []
     )
@@ -499,9 +477,7 @@ def collect_run_status(
     if state in {"queued", "running", "submitted", "unknown"}:
         passed = None
     elif state == "completed":
-        passed = bool(declared_reports) and all(
-            audit["passed"] for audit in audits
-        )
+        passed = bool(declared_reports) and all(audit["passed"] for audit in audits)
     else:
         passed = False
 
@@ -515,7 +491,12 @@ def collect_run_status(
         ]
         logs = [
             str(path.resolve())
-            for pattern in ("slurm-*.out", "slurm-*.err")
+            for pattern in (
+                "slurm-*.out",
+                "slurm-*.err",
+                "run-*.out",
+                "run-*.err",
+            )
             for path in sorted(run_directory.glob(pattern))
         ]
     return {
@@ -524,8 +505,7 @@ def collect_run_status(
         "job_id": reference.job_id,
         "state": state,
         "passed": passed,
-        "experiment": worker.get("experiment")
-        or (scheduler or {}).get("job_name"),
+        "experiment": worker.get("experiment") or (scheduler or {}).get("job_name"),
         "run_directory": str(run_directory) if run_directory else None,
         "submission_directory": (
             str(reference.submission_directory)
@@ -640,9 +620,7 @@ def format_status_text(status: dict[str, Any]) -> str:
         label = "PASS" if audit["passed"] else "FAIL"
         lines.append(f"  - {label:<4} {audit['name']}")
         if audit["name"] == "graph_interface_guidance_audit.json":
-            metrics = (audit.get("summary") or {}).get(
-                "final_packing_metrics"
-            ) or {}
+            metrics = (audit.get("summary") or {}).get("final_packing_metrics") or {}
             if metrics:
                 lines.append(
                     "         packing "
@@ -683,8 +661,7 @@ def format_status_text(status: dict[str, Any]) -> str:
     worker = status.get("worker") or {}
     if worker.get("error"):
         lines.append(
-            f"failure:     {worker.get('error_type', 'Error')}: "
-            f"{worker['error']}"
+            f"failure:     {worker.get('error_type', 'Error')}: " f"{worker['error']}"
         )
     return "\n".join(lines)
 
@@ -703,9 +680,7 @@ def render_html_report(status: dict[str, Any]) -> str:
     for audit in status["audits"]:
         summary = audit.get("summary")
         summary_text = (
-            json.dumps(summary, sort_keys=True, indent=2)
-            if summary is not None
-            else ""
+            json.dumps(summary, sort_keys=True, indent=2) if summary is not None else ""
         )
         audit_rows.append(
             "<tr>"
@@ -716,10 +691,13 @@ def render_html_report(status: dict[str, Any]) -> str:
             f"{escape(summary_text)}</pre></details></td>"
             "</tr>"
         )
-    structure_items = "".join(
-        f"<li><code>{escape(path)}</code></li>"
-        for path in status["artifacts"]["structures"]
-    ) or "<li>None available</li>"
+    structure_items = (
+        "".join(
+            f"<li><code>{escape(path)}</code></li>"
+            for path in status["artifacts"]["structures"]
+        )
+        or "<li>None available</li>"
+    )
     scheduler = status.get("scheduler") or {}
     worker = status.get("worker") or {}
     design = status.get("design") or {}

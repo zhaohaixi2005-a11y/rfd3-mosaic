@@ -12,6 +12,7 @@ from rfd3_mosaic.geometry import (
     build_cyclic_registry,
     validate_transform,
 )
+from rfd3_mosaic.schema import FrameMethod, InterfacePortFrameSpec
 from rfd3_mosaic.structure import load_selected_atoms
 
 
@@ -60,6 +61,60 @@ class LHD101ReferenceIntegrationTestCase(unittest.TestCase):
         self.assertEqual(first, second)
         validate_transform(first["left_port"])
         validate_transform(first["right_port"])
+
+    def test_real_anchor_frame_is_resolved_from_selected_atoms(self) -> None:
+        ports = dict(self.spec.ports)
+        ports["left_port"] = ports["left_port"].model_copy(
+            update={
+                "frame": InterfacePortFrameSpec(
+                    method=FrameMethod.ANCHORS,
+                    origin_atoms=["left:A165:CA"],
+                    x_axis_atoms=["left:A165:CA", "left:A175:CA"],
+                    xy_plane_atoms=[
+                        "left:A165:N",
+                        "left:A165:CA",
+                        "left:A165:C",
+                    ],
+                )
+            }
+        )
+        spec = self.spec.model_copy(update={"ports": ports})
+
+        frame = resolve_reference_port_frames(
+            spec,
+            base_directory=REPOSITORY_ROOT,
+        )["left_port"]
+
+        validate_transform(frame)
+        ca165 = next(
+            atom
+            for atom in self.left_atoms
+            if atom.residue_number == 165 and atom.atom_name == "CA"
+        )
+        np.testing.assert_allclose(
+            np.asarray(frame)[:3, 3],
+            ca165.coordinate,
+            atol=1e-8,
+        )
+
+    def test_real_principal_axis_anchor_frame_is_resolved(self) -> None:
+        ports = dict(self.spec.ports)
+        ports["left_port"] = ports["left_port"].model_copy(
+            update={
+                "frame": InterfacePortFrameSpec(
+                    method=FrameMethod.PRINCIPAL_AXIS_WITH_ANCHOR,
+                    anchor_atom="left:A165:CA",
+                )
+            }
+        )
+        spec = self.spec.model_copy(update={"ports": ports})
+
+        frame = resolve_reference_port_frames(
+            spec,
+            base_directory=REPOSITORY_ROOT,
+        )["left_port"]
+
+        validate_transform(frame)
 
     def test_port_normals_point_toward_partner_centroids(self) -> None:
         frames = resolve_reference_port_frames(

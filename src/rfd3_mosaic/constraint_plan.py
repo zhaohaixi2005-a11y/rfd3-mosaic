@@ -4,20 +4,20 @@ from enum import Enum
 
 from pydantic import Field
 
+from rfd3_mosaic.design_preferences import compile_design_preferences
 from rfd3_mosaic.schema.design import (
     AtomScope,
     BoundedMobileConstraint,
     ConstraintClause,
     ConstraintOrbitScope,
     CylindricalConstraint,
-    FixedComponentPoseSpec,
     FixedArrangementPolicy,
+    FixedComponentPoseSpec,
     FixedXYZConstraint,
-    UserDesignTask,
     UserDesignSpec,
+    UserDesignTask,
 )
 from rfd3_mosaic.schema.specs import StrictModel
-from rfd3_mosaic.design_preferences import compile_design_preferences
 
 
 class ConstraintStage(str, Enum):

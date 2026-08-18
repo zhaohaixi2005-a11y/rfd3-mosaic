@@ -8,22 +8,13 @@ copies never receive independent rigid motions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import math
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import torch
-
 from rfd3.inference.symmetry.constraint_orbit import (
     ConstraintOrbitLayout,
-)
-from rfd3.inference.symmetry.scaffold_guidance import (
-    BoundaryTopology,
-    CyclicAxis,
-    ScaffoldGuidanceConfig,
-    insert_master_orbit,
-    propose_bounded_se3_step,
-    scaffold_orbit_energy,
 )
 from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceGuidanceConfig,
@@ -32,6 +23,14 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     apply_graph_interface_guidance,
     graph_interface_energy,
     graph_interface_proposal_acceptable,
+)
+from rfd3.inference.symmetry.scaffold_guidance import (
+    BoundaryTopology,
+    CyclicAxis,
+    ScaffoldGuidanceConfig,
+    insert_master_orbit,
+    propose_bounded_se3_step,
+    scaffold_orbit_energy,
 )
 
 
@@ -45,14 +44,11 @@ def mobility_window_weight(
 
     if not 0.0 <= start_fraction < end_fraction <= 1.0:
         raise ValueError(
-            "mobility fractions must satisfy "
-            "0 <= start_fraction < end_fraction <= 1"
+            "mobility fractions must satisfy " "0 <= start_fraction < end_fraction <= 1"
         )
     if progress <= start_fraction or progress >= end_fraction:
         return 0.0
-    unit = (progress - start_fraction) / (
-        end_fraction - start_fraction
-    )
+    unit = (progress - start_fraction) / (end_fraction - start_fraction)
     return math.sin(math.pi * unit) ** 2
 
 
@@ -62,14 +58,16 @@ def _invert_frame(points, rotation, translation):
 
 def _proper_rotation_from_cross_covariance(covariance):
     u, _, vh = torch.linalg.svd(covariance, full_matrices=False)
-    correction = torch.eye(
-        3,
-        dtype=covariance.dtype,
-        device=covariance.device,
-    ).expand(covariance.shape[0], 3, 3).clone()
-    correction[:, -1, -1] = torch.sign(
-        torch.linalg.det(torch.matmul(u, vh))
+    correction = (
+        torch.eye(
+            3,
+            dtype=covariance.dtype,
+            device=covariance.device,
+        )
+        .expand(covariance.shape[0], 3, 3)
+        .clone()
     )
+    correction[:, -1, -1] = torch.sign(torch.linalg.det(torch.matmul(u, vh)))
     return torch.matmul(torch.matmul(u, correction), vh)
 
 
@@ -151,14 +149,12 @@ def _axis_angle(rotation):
     )
     axis[largest] = torch.sqrt(diagonal[largest]).clamp_min(1e-8)
     other = [index for index in range(3) if index != largest]
-    axis[other[0]] = (
-        rotation[largest, other[0]]
-        + rotation[other[0], largest]
-    ) / (4.0 * axis[largest])
-    axis[other[1]] = (
-        rotation[largest, other[1]]
-        + rotation[other[1], largest]
-    ) / (4.0 * axis[largest])
+    axis[other[0]] = (rotation[largest, other[0]] + rotation[other[0], largest]) / (
+        4.0 * axis[largest]
+    )
+    axis[other[1]] = (rotation[largest, other[1]] + rotation[other[1], largest]) / (
+        4.0 * axis[largest]
+    )
     axis = axis / torch.linalg.vector_norm(axis).clamp_min(1e-8)
     return axis, angle
 
@@ -318,6 +314,7 @@ class OrbitRigidMotifController:
                 "bounded_se3",
                 "radial",
                 "radial_axial",
+                "tilt_only",
                 "radial_rotation",
                 "radial_axial_rotation",
             }:
@@ -336,14 +333,14 @@ class OrbitRigidMotifController:
                 "scaffold_objectives",
             }:
                 raise ValueError(
-                    "A mobile constraint orbit has no executable proposal "
-                    "source"
+                    "A mobile constraint orbit has no executable proposal " "source"
                 )
             if (
                 orbit.mobility_subspace
                 in {
                     "radial",
                     "radial_axial",
+                    "tilt_only",
                     "radial_rotation",
                     "radial_axial_rotation",
                 }
@@ -359,9 +356,7 @@ class OrbitRigidMotifController:
                 dtype=torch.long,
                 device=fixed_target.device,
             )
-            master_indices = layout.groups[
-                orbit.master_group_index
-            ].atom_indices
+            master_indices = layout.groups[orbit.master_group_index].atom_indices
             atom_count = len(master_indices)
             compact_indices = []
             for group_index in orbit.group_indices:
@@ -391,9 +386,7 @@ class OrbitRigidMotifController:
                     master_atom_indices=master_indices,
                     template_master=template_master,
                     maximum_translation=orbit.maximum_translation,
-                    maximum_rotation_degrees=(
-                        orbit.maximum_rotation_degrees
-                    ),
+                    maximum_rotation_degrees=(orbit.maximum_rotation_degrees),
                     mobility_subspace=orbit.mobility_subspace,
                     proposal_source=orbit.proposal_source,
                     objective_ids=orbit.objective_ids,
@@ -450,16 +443,10 @@ class OrbitRigidMotifController:
         translation: torch.Tensor,
     ) -> torch.Tensor:
         if motif.template_master.shape[0] != 1:
-            raise ValueError(
-                "Scaffold-derived motif guidance supports one pose batch"
-            )
+            raise ValueError("Scaffold-derived motif guidance supports one pose batch")
         center = motif.template_master[0].mean(dim=0)
         centered = motif.template_master[0] - center[None, :]
-        return (
-            centered @ rotation.T
-            + center[None, :]
-            + translation[None, :]
-        )
+        return centered @ rotation.T + center[None, :] + translation[None, :]
 
     def materialize_target(self) -> torch.Tensor:
         """Return the dense fixed target for the current master poses."""
@@ -522,9 +509,7 @@ class OrbitRigidMotifController:
 
     def _inverse_average_proposal(self, motif, raw_coordinates):
         canonical_copies = []
-        for group_row, transform_id_tensor in enumerate(
-            motif.group_transform_ids
-        ):
+        for group_row, transform_id_tensor in enumerate(motif.group_transform_ids):
             transform_id = int(transform_id_tensor.item())
             rotation, translation = self.sym_transforms[transform_id]
             observed = raw_coordinates[
@@ -532,9 +517,7 @@ class OrbitRigidMotifController:
                 motif.group_atom_indices[group_row],
                 :,
             ]
-            canonical_copies.append(
-                _invert_frame(observed, rotation, translation)
-            )
+            canonical_copies.append(_invert_frame(observed, rotation, translation))
         return torch.stack(canonical_copies, dim=0).mean(dim=0)
 
     def update(
@@ -551,13 +534,10 @@ class OrbitRigidMotifController:
         )
         if raw_coordinates.shape != self.base_target.shape:
             raise ValueError(
-                "Mobility proposal coordinates must match the fixed target "
-                "shape"
+                "Mobility proposal coordinates must match the fixed target " "shape"
             )
         if not torch.isfinite(raw_coordinates).all():
-            raise ValueError(
-                "Mobility proposal coordinates contain NaN or Inf"
-            )
+            raise ValueError("Mobility proposal coordinates contain NaN or Inf")
         self.update_calls += 1
         self.last_update_applied = False
         windows = [
@@ -589,30 +569,23 @@ class OrbitRigidMotifController:
                     and torch.isfinite(desired_translation).all()
                     and torch.isfinite(proposal_rmsd).all()
                 ):
-                    raise ValueError(
-                        "Rigid motif pose fitting produced NaN or Inf"
-                    )
+                    raise ValueError("Rigid motif pose fitting produced NaN or Inf")
                 updated_rotations = []
                 updated_translations = []
                 for batch_index in range(raw_coordinates.shape[0]):
                     current_rotation = motif.state.rotation[batch_index]
                     relative_rotation = (
-                        desired_rotation[batch_index]
-                        @ current_rotation.T
+                        desired_rotation[batch_index] @ current_rotation.T
                     )
                     increment = _scaled_rotation(
                         relative_rotation,
-                        math.radians(
-                            motif.per_step_rotation_degrees * motif_window
-                        ),
+                        math.radians(motif.per_step_rotation_degrees * motif_window),
                         motif.response * motif_window,
                     )
                     rotation = increment @ current_rotation
                     rotation = _scaled_rotation(
                         rotation,
-                        math.radians(
-                            motif.maximum_rotation_degrees
-                        ),
+                        math.radians(motif.maximum_rotation_degrees),
                         1.0,
                     )
                     delta_translation = (
@@ -624,8 +597,7 @@ class OrbitRigidMotifController:
                         motif.per_step_translation * motif_window,
                     )
                     translation = (
-                        motif.state.translation[batch_index]
-                        + delta_translation
+                        motif.state.translation[batch_index] + delta_translation
                     )
                     translation = _clamp_vector(
                         translation,
@@ -702,8 +674,7 @@ class OrbitRigidMotifController:
             == len(translations)
         ):
             raise ValueError(
-                "Joint scaffold energy inputs must match the mobile orbit "
-                "count"
+                "Joint scaffold energy inputs must match the mobile orbit " "count"
             )
         geometry_config = replace(
             config,
@@ -753,21 +724,13 @@ class OrbitRigidMotifController:
                 {
                     "tilt": float(pose.tilt.detach().cpu().item()),
                     "weighted_tilt": float(
-                        (config.tilt_weight * pose.tilt)
-                        .detach()
-                        .cpu()
-                        .item()
+                        (config.tilt_weight * pose.tilt).detach().cpu().item()
                     ),
                     "prior": float(pose.prior.detach().cpu().item()),
                     "weighted_prior": float(
-                        (config.prior_weight * pose.prior)
-                        .detach()
-                        .cpu()
-                        .item()
+                        (config.prior_weight * pose.prior).detach().cpu().item()
                     ),
-                    "tilt_degrees": float(
-                        pose.tilt_degrees.detach().cpu().item()
-                    ),
+                    "tilt_degrees": float(pose.tilt_degrees.detach().cpu().item()),
                 }
             )
         minimum_clash_distance = torch.minimum(
@@ -778,23 +741,13 @@ class OrbitRigidMotifController:
             "total": float(total.detach().cpu().item()),
             "junction": float(geometry.junction.detach().cpu().item()),
             "weighted_junction": float(
-                (config.junction_weight * geometry.junction)
-                .detach()
-                .cpu()
-                .item()
+                (config.junction_weight * geometry.junction).detach().cpu().item()
             ),
             "clash": float(combined_clash.detach().cpu().item()),
-            "scaffold_clash": float(
-                geometry.clash.detach().cpu().item()
-            ),
-            "inter_orbit_clash": float(
-                inter_orbit_clash.detach().cpu().item()
-            ),
+            "scaffold_clash": float(geometry.clash.detach().cpu().item()),
+            "inter_orbit_clash": float(inter_orbit_clash.detach().cpu().item()),
             "weighted_clash": float(
-                (config.clash_weight * combined_clash)
-                .detach()
-                .cpu()
-                .item()
+                (config.clash_weight * combined_clash).detach().cpu().item()
             ),
             "maximum_junction_error": float(
                 geometry.maximum_junction_error.detach().cpu().item()
@@ -838,9 +791,7 @@ class OrbitRigidMotifController:
 
         fixed_ca = {
             int(value)
-            for value in (
-                topology.fixed_ca_atom_indices.detach().cpu().tolist()
-            )
+            for value in (topology.fixed_ca_atom_indices.detach().cpu().tolist())
         }
         orbit_ca_indices: list[torch.Tensor] = []
         for motif in self.motifs:
@@ -874,11 +825,7 @@ class OrbitRigidMotifController:
                     continue
                 distances = torch.cdist(target[left], target[right])
                 penalties.append(
-                    torch.mean(
-                        torch.square(
-                            torch.relu(clash_distance - distances)
-                        )
-                    )
+                    torch.mean(torch.square(torch.relu(clash_distance - distances)))
                 )
                 minimum_distances.append(distances.min())
         if not penalties:
@@ -922,22 +869,17 @@ class OrbitRigidMotifController:
                 "principal_axes must contain one axis per mobile motif orbit"
             )
         if self.base_target.shape[0] != 1:
-            raise ValueError(
-                "Scaffold-derived motif guidance supports one pose batch"
-            )
+            raise ValueError("Scaffold-derived motif guidance supports one pose batch")
         scaffold = scaffold_coordinates.to(
             dtype=self.base_target.dtype,
             device=self.base_target.device,
         )
         if scaffold.shape != self.base_target.shape:
             raise ValueError(
-                "Scaffold guidance coordinates must match the fixed target "
-                "shape"
+                "Scaffold guidance coordinates must match the fixed target " "shape"
             )
         if not torch.isfinite(scaffold).all():
-            raise ValueError(
-                "Scaffold guidance coordinates contain NaN or Inf"
-            )
+            raise ValueError("Scaffold guidance coordinates contain NaN or Inf")
 
         self.update_calls += 1
         self.last_update_applied = False
@@ -989,9 +931,7 @@ class OrbitRigidMotifController:
                     extra["orbit_proposals"].append(
                         {
                             "orbit_index": orbit_index,
-                            "constraint_orbit_id": (
-                                motif.constraint_orbit_id
-                            ),
+                            "constraint_orbit_id": (motif.constraint_orbit_id),
                             "component_id": motif.coupling_group_id,
                             "active": False,
                             "accepted": False,
@@ -1002,15 +942,56 @@ class OrbitRigidMotifController:
 
                 translation_basis = None
                 rotation_basis = None
-                maximum_step_rotation = (
-                    motif.per_step_rotation_degrees * motif_window
-                )
+                maximum_step_rotation = motif.per_step_rotation_degrees * motif_window
                 maximum_total_rotation = motif.maximum_rotation_degrees
                 rotation_step_size = (
-                    motif.per_step_rotation_degrees
-                    * motif.response
-                    * motif_window
+                    motif.per_step_rotation_degrees * motif.response * motif_window
                 )
+                if motif.mobility_subspace == "tilt_only":
+                    axis_direction = axis.direction.to(
+                        dtype=current_translation.dtype,
+                        device=current_translation.device,
+                    )
+                    axis_direction = axis_direction / torch.linalg.vector_norm(
+                        axis_direction
+                    )
+                    # Pick the Cartesian direction least parallel to the
+                    # symmetry axis, then build an orthonormal basis for the
+                    # plane perpendicular to it.  Projecting the infinitesimal
+                    # rotation vector into this plane permits tilt while
+                    # forbidding axial twist.  Translation is explicitly
+                    # projected into the empty subspace.
+                    reference_index = int(
+                        torch.argmin(torch.abs(axis_direction)).item()
+                    )
+                    reference = torch.zeros_like(axis_direction)
+                    reference[reference_index] = 1.0
+                    tilt_axis_1 = torch.linalg.cross(
+                        axis_direction,
+                        reference,
+                    )
+                    tilt_axis_1 = tilt_axis_1 / torch.linalg.vector_norm(
+                        tilt_axis_1
+                    )
+                    tilt_axis_2 = torch.linalg.cross(
+                        axis_direction,
+                        tilt_axis_1,
+                    )
+                    tilt_axis_2 = tilt_axis_2 / torch.linalg.vector_norm(
+                        tilt_axis_2
+                    )
+                    translation_basis = torch.empty(
+                        (0, 3),
+                        dtype=current_translation.dtype,
+                        device=current_translation.device,
+                    )
+                    rotation_basis = torch.stack(
+                        (tilt_axis_1, tilt_axis_2),
+                        dim=0,
+                    )
+                    maximum_step_translation = 0.0
+                    maximum_total_translation = 0.0
+                    translation_step_size = 0.0
                 if motif.mobility_subspace in {
                     "radial",
                     "radial_axial",
@@ -1021,23 +1002,25 @@ class OrbitRigidMotifController:
                         dtype=current_translation.dtype,
                         device=current_translation.device,
                     )
-                    axis_direction = (
+                    axis_direction = axis_direction / torch.linalg.vector_norm(
                         axis_direction
-                        / torch.linalg.vector_norm(axis_direction)
                     )
                     axis_point = axis.point.to(
                         dtype=current_translation.dtype,
                         device=current_translation.device,
                     )
                     master_center = (
-                        motif.template_master[0].mean(dim=0)
-                        + current_translation
+                        motif.template_master[0].mean(dim=0) + current_translation
                     )
                     offset = master_center - axis_point
-                    radial = offset - torch.dot(
-                        offset,
-                        axis_direction,
-                    ) * axis_direction
+                    radial = (
+                        offset
+                        - torch.dot(
+                            offset,
+                            axis_direction,
+                        )
+                        * axis_direction
+                    )
                     radial_norm = torch.linalg.vector_norm(radial)
                     if float(radial_norm.item()) <= 1e-8:
                         raise ValueError(
@@ -1067,17 +1050,23 @@ class OrbitRigidMotifController:
                         maximum_total_rotation = 0.0
                         rotation_step_size = 0.0
 
-                def energy_function(rotation, translation):
+                def energy_function(
+                    rotation,
+                    translation,
+                    *,
+                    active_motif=motif,
+                    active_principal_axis=principal_axis,
+                ):
                     master = self._master_coordinates_for_pose(
-                        motif,
+                        active_motif,
                         rotation,
                         translation,
                     )
                     candidate_target = insert_master_orbit(
                         baseline_target,
                         master,
-                        motif.group_atom_indices,
-                        motif.group_transform_ids,
+                        active_motif.group_atom_indices,
+                        active_motif.group_transform_ids,
                         self.sym_transforms,
                     )
                     energy = scaffold_orbit_energy(
@@ -1085,7 +1074,7 @@ class OrbitRigidMotifController:
                         scaffold[0],
                         topology,
                         axis,
-                        principal_axis=principal_axis,
+                        principal_axis=active_principal_axis,
                         pose_rotation=rotation,
                         pose_translation=translation,
                         config=config,
@@ -1112,13 +1101,21 @@ class OrbitRigidMotifController:
                     current_translation,
                     energy_function,
                     maximum_step_translation=(
-                        motif.per_step_translation * motif_window
+                        maximum_step_translation
+                        if motif.mobility_subspace == "tilt_only"
+                        else motif.per_step_translation * motif_window
                     ),
                     maximum_step_rotation_degrees=maximum_step_rotation,
-                    maximum_total_translation=motif.maximum_translation,
+                    maximum_total_translation=(
+                        maximum_total_translation
+                        if motif.mobility_subspace == "tilt_only"
+                        else motif.maximum_translation
+                    ),
                     maximum_total_rotation_degrees=maximum_total_rotation,
                     translation_step_size=(
-                        motif.per_step_translation
+                        translation_step_size
+                        if motif.mobility_subspace == "tilt_only"
+                        else motif.per_step_translation
                         * motif.response
                         * motif_window
                     ),
@@ -1161,8 +1158,7 @@ class OrbitRigidMotifController:
                             "initial": local_initial,
                             "proposed": local_proposed,
                             "delta": {
-                                term: local_proposed[term]
-                                - local_initial[term]
+                                term: local_proposed[term] - local_initial[term]
                                 for term in tracked_terms
                             },
                         },
@@ -1249,36 +1245,23 @@ class OrbitRigidMotifController:
                     initial_total = initial_total + initial_pose_energy
                     proposed_total = proposed_total + proposed_pose_energy
             any_candidate = any(
-                proposal is not None and proposal.accepted
-                for proposal in proposals
+                proposal is not None and proposal.accepted for proposal in proposals
             )
             joint_accepted = bool(
                 any_candidate
-                and float(proposed_total.item())
-                < float(initial_total.item()) - 1e-12
+                and float(proposed_total.item()) < float(initial_total.item()) - 1e-12
             )
             extra.update(
                 {
                     "accepted": joint_accepted,
-                    "joint_decision": (
-                        "accepted"
-                        if joint_accepted
-                        else "rejected"
-                    ),
+                    "joint_decision": ("accepted" if joint_accepted else "rejected"),
                     "initial_energy": initial_terms,
                     "proposed_energy": proposed_terms,
                     "additional_pose_energy": {
-                        "initial": float(
-                            initial_pose_energy.detach().cpu().item()
-                        ),
-                        "proposed": float(
-                            proposed_pose_energy.detach().cpu().item()
-                        ),
+                        "initial": float(initial_pose_energy.detach().cpu().item()),
+                        "proposed": float(proposed_pose_energy.detach().cpu().item()),
                         "delta": float(
-                            (
-                                proposed_pose_energy
-                                - initial_pose_energy
-                            )
+                            (proposed_pose_energy - initial_pose_energy)
                             .detach()
                             .cpu()
                             .item()
@@ -1353,13 +1336,9 @@ class OrbitRigidMotifController:
         """
 
         if scaffold_coordinates.shape != self.base_target.shape:
-            raise ValueError(
-                "Joint packing scaffold must match the motif target shape"
-            )
+            raise ValueError("Joint packing scaffold must match the motif target shape")
         if self.base_target.shape[0] != 1:
-            raise ValueError(
-                "Joint packing mobility supports one pose batch"
-            )
+            raise ValueError("Joint packing mobility supports one pose batch")
         self.last_joint_transaction_applied = False
         pose_snapshot = self._mobile_pose_snapshot()
         patch_snapshot = dict(patch_state.assignments)
@@ -1391,17 +1370,15 @@ class OrbitRigidMotifController:
         baseline_translations = tuple(
             motif.state.translation[0].clone() for motif in self.motifs
         )
-        baseline_scaffold_total, baseline_scaffold_terms = (
-            self._joint_scaffold_energy(
-                baseline_target[0],
-                baseline_coordinates[0],
-                topology=topology,
-                axis=axis,
-                principal_axes=principal_axes,
-                rotations=baseline_rotations,
-                translations=baseline_translations,
-                config=scaffold_config,
-            )
+        baseline_scaffold_total, baseline_scaffold_terms = self._joint_scaffold_energy(
+            baseline_target[0],
+            baseline_coordinates[0],
+            topology=topology,
+            axis=axis,
+            principal_axes=principal_axes,
+            rotations=baseline_rotations,
+            translations=baseline_translations,
+            config=scaffold_config,
         )
 
         try:
@@ -1518,16 +1495,11 @@ class OrbitRigidMotifController:
             baseline_graph.minimum_global_safety_distance.reshape(1),
             candidate_graph.minimum_global_safety_distance.reshape(1),
         )
-        baseline_junction = float(
-            baseline_graph.junction.detach().cpu().item()
-        )
-        candidate_junction = float(
-            candidate_graph.junction.detach().cpu().item()
-        )
+        baseline_junction = float(baseline_graph.junction.detach().cpu().item())
+        candidate_junction = float(candidate_graph.junction.detach().cpu().item())
         junction_limit = (
             interface_config.maximum_backbone_loss
-            if baseline_junction
-            <= interface_config.maximum_backbone_loss
+            if baseline_junction <= interface_config.maximum_backbone_loss
             else baseline_junction
         )
         junction_safe = candidate_junction <= junction_limit + 1.0e-8
@@ -1537,8 +1509,7 @@ class OrbitRigidMotifController:
             < float(baseline_total.detach().cpu().item()) - 1.0e-10
         )
         transaction_has_change = bool(
-            packing_step.get("proposal_accepted", False)
-            or motif_pose_changed
+            packing_step.get("proposal_accepted", False) or motif_pose_changed
         )
         accepted = bool(
             transaction_has_change
@@ -1566,18 +1537,10 @@ class OrbitRigidMotifController:
             "edge_safe": edge_safe,
             "global_safe": global_safe,
             "junction_safe": junction_safe,
-            "baseline_total": float(
-                baseline_total.detach().cpu().item()
-            ),
-            "candidate_total": float(
-                candidate_total.detach().cpu().item()
-            ),
-            "baseline_packing": float(
-                baseline_graph.total.detach().cpu().item()
-            ),
-            "candidate_packing": float(
-                candidate_graph.total.detach().cpu().item()
-            ),
+            "baseline_total": float(baseline_total.detach().cpu().item()),
+            "candidate_total": float(candidate_total.detach().cpu().item()),
+            "baseline_packing": float(baseline_graph.total.detach().cpu().item()),
+            "candidate_packing": float(candidate_graph.total.detach().cpu().item()),
             "baseline_scaffold": baseline_scaffold_terms,
             "candidate_scaffold": candidate_scaffold_terms,
             "packing_step": packing_step,
@@ -1599,13 +1562,9 @@ class OrbitRigidMotifController:
                     "joint_packing_transaction": True,
                     "joint_packing_accepted": accepted,
                     "joint_packing_committed": committed,
-                    "joint_packing_energy_delta": diagnostics[
-                        "candidate_total"
-                    ]
+                    "joint_packing_energy_delta": diagnostics["candidate_total"]
                     - diagnostics["baseline_total"],
-                    "packing_energy_delta": diagnostics[
-                        "candidate_packing"
-                    ]
+                    "packing_energy_delta": diagnostics["candidate_packing"]
                     - diagnostics["baseline_packing"],
                 }
             )
@@ -1631,8 +1590,7 @@ class OrbitRigidMotifController:
                 for value in motif.group_transform_ids.detach().cpu().tolist()
             ],
             "translation_norms": [
-                float(value)
-                for value in translation_norms.detach().cpu().tolist()
+                float(value) for value in translation_norms.detach().cpu().tolist()
             ],
             "translation_vectors": [
                 [float(component) for component in vector]
@@ -1645,9 +1603,7 @@ class OrbitRigidMotifController:
             "rotation_degrees": rotation_degrees,
             "proposal_rmsd": [
                 float(value)
-                for value in (
-                    motif.state.last_proposal_rmsd.detach().cpu().tolist()
-                )
+                for value in (motif.state.last_proposal_rmsd.detach().cpu().tolist())
             ],
             "maximum_translation": motif.maximum_translation,
             "maximum_rotation_degrees": motif.maximum_rotation_degrees,
@@ -1659,9 +1615,7 @@ class OrbitRigidMotifController:
                 "end_fraction": motif.end_fraction,
                 "response": motif.response,
                 "max_step_translation": motif.per_step_translation,
-                "max_step_rotation_degrees": (
-                    motif.per_step_rotation_degrees
-                ),
+                "max_step_rotation_degrees": (motif.per_step_rotation_degrees),
             },
         }
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
-from pathlib import Path
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -27,16 +27,14 @@ from rfd3_mosaic.schema import (
     FixedArrangementPolicy,
     SymmetryTransformSetSpec,
     TerminalGeneration,
-    UserDesignTask,
     UserDesignSpec,
+    UserDesignTask,
     UserSymmetrySpec,
 )
 from rfd3_mosaic.structure import AtomRecord, read_structure_atoms
 
-
 _PUBLIC_RANGE = re.compile(
-    r"^(?P<chain>[^0-9,/\s]+)(?P<start>-?[0-9]+)"
-    r"(?:-(?P<end>-?[0-9]+))?$"
+    r"^(?P<chain>[^0-9,/\s]+)(?P<start>-?[0-9]+)" r"(?:-(?P<end>-?[0-9]+))?$"
 )
 _ASSEMBLY_RANGE = re.compile(
     r"^(?P<chain>[^/]+)/(?P<start>-?[0-9]+)"
@@ -97,9 +95,7 @@ class LoweredUserDesign:
     sampling_plan: SamplingPlan
     bound_constraints: BoundConstraintPlan
     interface_usage: tuple[InterfaceUsageResolution, ...] = ()
-    runtime_constraint_metadata: dict[str, object] = field(
-        default_factory=dict
-    )
+    runtime_constraint_metadata: dict[str, object] = field(default_factory=dict)
 
 
 def _resolve_interface_usage(
@@ -164,8 +160,7 @@ def _resolve_interface_usage(
             )
         if len(members) > 1:
             observed_counts = {
-                len(physical_by_source.get(member.id, set()))
-                for member in members
+                len(physical_by_source.get(member.id, set())) for member in members
             }
             if len(observed_counts) != 1:
                 raise ValueError(
@@ -254,9 +249,7 @@ def _component_chain_backbone_coordinates(
             if atom.chain_id == chain_id
             and atom.atom_name.upper() in _BACKBONE
             and any(
-                segment.residue_start
-                <= atom.residue_number
-                <= segment.residue_end
+                segment.residue_start <= atom.residue_number <= segment.residue_end
                 for segment in segments
             )
         ]
@@ -266,15 +259,9 @@ def _component_chain_backbone_coordinates(
                 "matched no backbone atoms"
             )
         residue_ids = sorted(
-            {
-                (atom.residue_number, atom.insertion_code)
-                for atom in selected
-            }
+            {(atom.residue_number, atom.insertion_code) for atom in selected}
         )
-        offsets = {
-            residue_id: index
-            for index, residue_id in enumerate(residue_ids)
-        }
+        offsets = {residue_id: index for index, residue_id in enumerate(residue_ids)}
         keyed = sorted(
             (
                 (
@@ -356,21 +343,40 @@ def _validate_component_finite_actions(
             for threshold in sorted(float(value) for value in np.unique(costs)):
                 observed_to_expected = [-1] * size
 
-                def augment(expected_index: int, seen: set[int]) -> bool:
+                def augment(
+                    expected_index: int,
+                    seen: set[int],
+                    *,
+                    current_threshold: float,
+                    assignment: list[int],
+                ) -> bool:
                     for observed_index in range(size):
                         if (
                             observed_index in seen
-                            or costs[expected_index, observed_index] > threshold
+                            or costs[expected_index, observed_index] > current_threshold
                         ):
                             continue
                         seen.add(observed_index)
-                        previous = observed_to_expected[observed_index]
-                        if previous < 0 or augment(previous, seen):
-                            observed_to_expected[observed_index] = expected_index
+                        previous = assignment[observed_index]
+                        if previous < 0 or augment(
+                            previous,
+                            seen,
+                            current_threshold=current_threshold,
+                            assignment=assignment,
+                        ):
+                            assignment[observed_index] = expected_index
                             return True
                     return False
 
-                if all(augment(index, set()) for index in range(size)):
+                if all(
+                    augment(
+                        index,
+                        set(),
+                        current_threshold=threshold,
+                        assignment=observed_to_expected,
+                    )
+                    for index in range(size)
+                ):
                     return threshold
             return float("inf")
 
@@ -386,11 +392,7 @@ def _validate_component_finite_actions(
                 [
                     [
                         float(
-                            np.sqrt(
-                                np.mean(
-                                    np.sum((target - candidate) ** 2, axis=1)
-                                )
-                            )
+                            np.sqrt(np.mean(np.sum((target - candidate) ** 2, axis=1)))
                         )
                         for candidate in observed
                     ]
@@ -419,16 +421,11 @@ def _select_segment_atoms(
         _atom_identity(atom)
         for atom in atoms
         if atom.chain_id == segment.chain_id
-        and segment.residue_start
-        <= atom.residue_number
-        <= segment.residue_end
+        and segment.residue_start <= atom.residue_number <= segment.residue_end
         and (
             scope == AtomScope.ALL
             or (scope == AtomScope.CA and atom.atom_name.upper() == "CA")
-            or (
-                scope == AtomScope.BACKBONE
-                and atom.atom_name.upper() in _BACKBONE
-            )
+            or (scope == AtomScope.BACKBONE and atom.atom_name.upper() in _BACKBONE)
         )
     )
     if not selected:
@@ -436,9 +433,7 @@ def _select_segment_atoms(
             "Selector resolved to zero atoms: "
             f"{segment.public_expression} atoms={scope.value}"
         )
-    residues = {
-        (item.chain_id, item.residue_number) for item in selected
-    }
+    residues = {(item.chain_id, item.residue_number) for item in selected}
     expected = {
         (segment.chain_id, residue)
         for residue in range(segment.residue_start, segment.residue_end + 1)
@@ -629,9 +624,7 @@ def _graph_interface_geometry(relation) -> dict[str, object]:
             "from_reference_seed": True,
             "translation_tolerance": relation.translation_tolerance,
             "rotation_tolerance_deg": relation.rotation_tolerance_deg,
-            "minimum_heavy_atom_contacts": (
-                relation.minimum_heavy_atom_contacts
-            ),
+            "minimum_heavy_atom_contacts": (relation.minimum_heavy_atom_contacts),
             "contact_cutoff": relation.cutoff,
         }
 
@@ -652,9 +645,7 @@ def _graph_interface_geometry(relation) -> dict[str, object]:
         }
     if relation.minimum_heavy_atom_contacts is not None:
         geometry["contacts"] = {
-            "min_heavy_atom_contacts": (
-                relation.minimum_heavy_atom_contacts
-            ),
+            "min_heavy_atom_contacts": (relation.minimum_heavy_atom_contacts),
             "cutoff": relation.cutoff,
         }
     else:
@@ -730,13 +721,9 @@ def _generic_orbit_direction(
     radial_y = np.cross(axis, radial_x)
 
     symmetry_id = (
-        design.symmetry
-        if isinstance(design.symmetry, str)
-        else design.symmetry.id
+        design.symmetry if isinstance(design.symmetry, str) else design.symmetry.id
     )
-    axial_fractions = (
-        (0.0,) if symmetry_id.startswith("C") else (0.23, 0.47, 0.71)
-    )
+    axial_fractions = (0.0,) if symmetry_id.startswith("C") else (0.23, 0.47, 0.71)
     best: tuple[float, np.ndarray, float] | None = None
     for axial_fraction in axial_fractions:
         for azimuth_index in range(16):
@@ -787,9 +774,7 @@ def _automatic_simple_component_plan(
     extent = float(np.linalg.norm(coordinates - center, axis=1).max())
     image_distances = [
         float(
-            np.linalg.norm(
-                _apply_transform(registry.transform(item), center) - center
-            )
+            np.linalg.norm(_apply_transform(registry.transform(item), center) - center)
         )
         for item in registry.transform_ids[1:]
     ]
@@ -817,9 +802,7 @@ def _automatic_simple_component_plan(
     target_separation = max(12.0, 2.0 * extent + 6.0)
     radial = target_separation / unit_separation
     axial_offset = radial * axial_fraction
-    planned_center = (
-        symmetry_center + radial * radial_direction + axial_offset * axis
-    )
+    planned_center = symmetry_center + radial * radial_direction + axial_offset * axis
     payload: dict[str, object] = {
         "random_seed": design.sampling.seed,
         "center_method": "interface_heavy_atom_com",
@@ -880,23 +863,15 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     sampling_plan = compile_sampling_plan(design)
     plan.require_backend_support({"fixed_xyz", "cylindrical"})
     for operator in plan.operators:
-        if (
-            operator.operator == "fixed_xyz"
-            and operator.atoms != AtomScope.ALL
-        ):
-            raise ValueError(
-                "The first fixed_xyz backend requires atoms=all"
-            )
+        if operator.operator == "fixed_xyz" and operator.atoms != AtomScope.ALL:
+            raise ValueError("The first fixed_xyz backend requires atoms=all")
     bound = bind_constraint_plan(design, plan)
 
     symmetry_id = (
-        design.symmetry
-        if isinstance(design.symmetry, str)
-        else design.symmetry.id
+        design.symmetry if isinstance(design.symmetry, str) else design.symmetry.id
     )
     if any(
-        operator.operator == "cylindrical"
-        for operator in plan.operators
+        operator.operator == "cylindrical" for operator in plan.operators
     ) and symmetry_id[0] not in {"C", "D"}:
         raise NotImplementedError(
             "Public cylindrical projection currently requires a Cn or Dn "
@@ -928,8 +903,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         invalid_offsets = [
             clause.orbit_offset
             for clause in design.generation
-            if isinstance(clause, BetweenGeneration)
-            and clause.orbit_offset != 0
+            if isinstance(clause, BetweenGeneration) and clause.orbit_offset != 0
         ]
         invalid_offsets.extend(
             connection.copy_relation.orbit_offset
@@ -982,6 +956,16 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 ),
             )
         )
+    # Preserve constrained motif fragments even when they are not linker
+    # endpoints.  The native adapter represents each such source polymer as
+    # an independent ASU path; it must not invent a covalent connection just
+    # to make the fragment reachable from a generated segment.  This also
+    # keeps legacy/expert constraint declarations on the same path already
+    # used by public assembly-graph components.
+    for operator in plan.operators:
+        if operator.operator not in {"fixed_xyz", "cylindrical"}:
+            continue
+        generation_segments.extend(parse_public_selector(operator.selector))
     ordered_segments = tuple(dict.fromkeys(generation_segments))
     source_atoms = read_structure_atoms(
         design.input,
@@ -1003,9 +987,6 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         if operator.plan.operator == "cylindrical"
     )
     structural_operators = fixed_operators + cylindrical_operators
-    fixed_atom_ids = frozenset().union(
-        *(operator.atom_ids for operator in fixed_operators)
-    )
     generation_atom_ids = {
         segment: _select_segment_atoms(
             source_atoms,
@@ -1045,23 +1026,6 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             "Current native adapter requires explicit fixed_xyz or "
             "cylindrical constraints for every generated-region endpoint"
         )
-    used_atom_ids = frozenset().union(*generation_atom_ids.values())
-    unused_fixed_atom_ids = fixed_atom_ids - used_atom_ids
-    if unused_fixed_atom_ids:
-        raise NotImplementedError(
-            "Fixed selections not attached to generated regions are not yet "
-            f"supported: {len(unused_fixed_atom_ids)} extra atoms"
-        )
-    unused_cylindrical_atom_ids = frozenset().union(
-        *(operator.atom_ids for operator in cylindrical_operators)
-    ) - used_atom_ids
-    if unused_cylindrical_atom_ids:
-        raise NotImplementedError(
-            "Cylindrical selections not attached to generated regions are "
-            "not yet supported: "
-            f"{len(unused_cylindrical_atom_ids)} extra atoms"
-        )
-
     segment_ids = {
         segment: f"motif_{index:03d}"
         for index, segment in enumerate(ordered_segments, start=1)
@@ -1087,15 +1051,13 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     component_by_segment: dict[SelectorSegment, str] = {}
     for segment in ordered_segments:
         operator = operator_by_segment[segment].plan
-        component_by_segment[segment] = (
-            operator.coupling_group or operator.id
-        )
+        component_by_segment[segment] = operator.coupling_group or operator.id
 
     component_members: dict[str, list[str]] = {}
     for segment, fragment_id in segment_ids.items():
-        component_members.setdefault(
-            component_by_segment[segment], []
-        ).append(fragment_id)
+        component_members.setdefault(component_by_segment[segment], []).append(
+            fragment_id
+        )
     component_ids = tuple(component_members)
     motion_group_ids = {
         component_id: f"fixed_component_{index:03d}"
@@ -1127,12 +1089,8 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 "start_fraction": pose["start_fraction"],
                 "end_fraction": pose["end_fraction"],
                 "response": pose["response"],
-                "max_step_translation": pose[
-                    "max_step_translation"
-                ],
-                "max_step_rotation_deg": pose[
-                    "max_step_rotation_deg"
-                ],
+                "max_step_translation": pose["max_step_translation"],
+                "max_step_rotation_deg": pose["max_step_rotation_deg"],
             },
         }
     generated_segments: dict[str, object] = {}
@@ -1199,9 +1157,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     # Both public authoring modes converge here.  Expert declarations may
     # provide an explicit initial pose; ordinary contig designs may receive a
     # deterministic pose from the automatic planner below.
-    initialization_seed, initialization = assembly_initialization_payload(
-        sampling_plan
-    )
+    initialization_seed, initialization = assembly_initialization_payload(sampling_plan)
     if initialization:
         if sampling_plan.initial_pose is not None:
             if len(motion_group_ids) != 1:
@@ -1216,9 +1172,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 )
             }
         else:
-            unknown_components = sorted(
-                set(initialization) - set(motion_group_ids)
-            )
+            unknown_components = sorted(set(initialization) - set(motion_group_ids))
             if unknown_components:
                 raise ValueError(
                     "sampling.initial_poses references unknown fixed "
@@ -1252,9 +1206,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             )
         )
         component_atoms = tuple(
-            atom
-            for atom in source_atoms
-            if _atom_identity(atom) in component_atom_ids
+            atom for atom in source_atoms if _atom_identity(atom) in component_atom_ids
         )
         automatic_initialization, _ = _automatic_simple_component_plan(
             design,
@@ -1262,9 +1214,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             component_atoms,
         )
         if automatic_initialization is not None:
-            initialization[motion_group_ids[component_id]] = (
-                automatic_initialization
-            )
+            initialization[motion_group_ids[component_id]] = automatic_initialization
 
     ports: dict[str, object] = {}
     public_port_ids: dict[str, str] = {}
@@ -1288,9 +1238,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     interfaces: dict[str, object] = {}
     for interface in design.interfaces:
         if design.ports:
-            node_ports = {
-                node: public_port_ids[node] for node in interface.between
-            }
+            node_ports = {node: public_port_ids[node] for node in interface.between}
         else:
             # Backward-compatible component-as-interface shorthand.  New
             # cage designs should declare reusable named ports explicitly.
@@ -1331,12 +1279,10 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 # public identity, multiplicity and audit remain attached to
                 # the one hyperedge.
                 left_alias = (
-                    f"interface__{interface.id}__member_"
-                    f"{member_index:02d}__left"
+                    f"interface__{interface.id}__member_" f"{member_index:02d}__left"
                 )
                 right_alias = (
-                    f"interface__{interface.id}__member_"
-                    f"{member_index:02d}__right"
+                    f"interface__{interface.id}__member_" f"{member_index:02d}__right"
                 )
                 ports[left_alias] = dict(ports[left_port])
                 ports[right_alias] = dict(ports[right_port])
@@ -1347,11 +1293,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 "right_port": right_port,
                 "hyperedge_id": (
                     interface.hyperedge_id
-                    or (
-                        interface.id
-                        if len(execution_pairs) > 1
-                        else None
-                    )
+                    or (interface.id if len(execution_pairs) > 1 else None)
                 ),
                 "copy_relation": interface.copy_relation.model_dump(
                     mode="json",
@@ -1359,13 +1301,9 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 ),
                 "required": interface.required,
                 "satisfaction_stage": (
-                    "input"
-                    if interface.relation.mode == "preserve_input"
-                    else "output"
+                    "input" if interface.relation.mode == "preserve_input" else "output"
                 ),
-                "target_geometry": _graph_interface_geometry(
-                    interface.relation
-                ),
+                "target_geometry": _graph_interface_geometry(interface.relation),
             }
 
     # Simple motif-scaffolding tasks do not need a hand-written assembly
@@ -1375,9 +1313,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
     # joins supplied fixed fragments and therefore does not invent a new
     # interface objective.  Explicit graph interfaces remain available for
     # advanced multi-face cages and take precedence over this inference.
-    infer_terminal_interfaces = (
-        design.task != UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
-    )
+    infer_terminal_interfaces = design.task != UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
     if not design.interfaces and infer_terminal_interfaces:
         terminal_components: list[str] = []
         for clause in design.generation:
@@ -1417,10 +1353,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                     design,
                     initialization[motion_group_id],
                 )
-            elif (
-                design.fixed_arrangement
-                == FixedArrangementPolicy.LOCKED
-            ):
+            elif design.fixed_arrangement == FixedArrangementPolicy.LOCKED:
                 # Preserve the supplied complete-orbit frame exactly.  The
                 # generated scaffold may still receive interface guidance,
                 # but the fixed target and all inter-copy distances/angles
@@ -1516,12 +1449,10 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                     else {}
                 ),
                 "finite_action": (
-                    design.components[
-                        component_id
-                    ].finite_orbit_action.model_dump(mode="json")
-                    if design.components[
-                        component_id
-                    ].finite_orbit_action is not None
+                    design.components[component_id].finite_orbit_action.model_dump(
+                        mode="json"
+                    )
+                    if design.components[component_id].finite_orbit_action is not None
                     else None
                 ),
             }
@@ -1588,9 +1519,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             if operator_by_segment[segment] is not operator:
                 continue
             selected_atoms = sorted(
-                operator.atom_ids.intersection(
-                    generation_atom_ids[segment]
-                )
+                operator.atom_ids.intersection(generation_atom_ids[segment])
             )
             if not selected_atoms:
                 raise ValueError(

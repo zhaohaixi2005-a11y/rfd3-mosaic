@@ -18,7 +18,6 @@ from pydantic import Field, field_validator, model_validator
 from rfd3_mosaic.geometry.se3 import validate_transform
 from rfd3_mosaic.schema.specs import Identifier, StrictModel
 
-
 Selector = Annotated[str, Field(min_length=1)]
 Nonnegative = Annotated[float, Field(ge=0.0)]
 

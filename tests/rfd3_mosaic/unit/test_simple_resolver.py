@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from pydantic import ValidationError
 
 from rfd3_mosaic.cli import main
 from rfd3_mosaic.compile import expand_symmetry_instances
@@ -63,6 +64,15 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
                 },
             }
         )
+
+    def test_ordinary_supplied_interface_cannot_be_deformed(self) -> None:
+        payload = self._intent().model_dump(mode="python")
+        payload["interface_seeds"]["supplied_interface"]["geometry"] = (
+            "bounded"
+        )
+
+        with self.assertRaisesRegex(ValidationError, "preserve_exact"):
+            SimpleCageIntentSpec.model_validate(payload)
 
     @staticmethod
     def _candidate_signature(candidate) -> tuple[object, ...]:

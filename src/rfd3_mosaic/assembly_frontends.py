@@ -7,11 +7,11 @@ RFD3 feature compiler, and runtime sampler.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-import json
 from pathlib import Path
-import re
 from typing import Any, Mapping
 
 import numpy as np
@@ -25,7 +25,6 @@ from rfd3_mosaic.schema import (
     AssemblySpecification,
     load_user_design,
 )
-
 
 _RFD3_SELECTOR = re.compile(r"^([^0-9,+-]+)([0-9]+)-([0-9]+)$")
 

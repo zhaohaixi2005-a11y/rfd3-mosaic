@@ -1,9 +1,9 @@
 """Small deterministic PDB reader for standalone Interface-Seed compilation."""
 
-from dataclasses import dataclass
 import gzip
-from pathlib import Path
 import shlex
+from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)

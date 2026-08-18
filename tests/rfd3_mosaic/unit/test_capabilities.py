@@ -38,6 +38,16 @@ class CapabilityLedgerTestCase(unittest.TestCase):
             CapabilityMaturity.CPU_VALIDATED,
         )
 
+    def test_assembly_shape_contract_has_cpu_closed_loop_evidence(
+        self,
+    ) -> None:
+        record = capability_by_id("assembly_shape_contract")
+
+        self.assertEqual(
+            record.maturity,
+            CapabilityMaturity.CPU_VALIDATED,
+        )
+
     def test_functional_geometry_is_not_overclaimed(self) -> None:
         schema = capability_by_id("functional_geometry_schema")
         runtime = capability_by_id("cooperative_site_orbit")

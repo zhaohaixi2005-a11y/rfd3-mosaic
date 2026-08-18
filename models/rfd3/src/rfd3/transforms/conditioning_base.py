@@ -162,7 +162,6 @@ def convert_existing_annotations_to_bool(
         if annotation not in atom_array.get_annotation_categories():
             continue
         tmp = atom_array.get_annotation(annotation).copy()
-        atom_array.get_annotation(annotation).dtype = bool
         if isinstance(tmp[0], (str, np.str_, np.dtypes.StrDType)):
             tmp = np.array([ast.literal_eval(x) for x in tmp], dtype=bool)
         else:

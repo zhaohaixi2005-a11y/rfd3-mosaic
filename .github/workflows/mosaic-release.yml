@@ -1,0 +1,48 @@
+name: mosaic-release
+
+on:
+  push:
+    branches: [main, production, refactor/product-core-v1]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheel-and-cpu-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install CPU development environment
+        run: pip install -e ".[rfd3,dev]"
+      - name: RFD3-Mosaic CPU contracts and coverage
+        env:
+          DEBUG: "false"
+          TYPE_CHECK: "false"
+          NAN_CHECK: "true"
+          CCD_MIRROR_PATH: ""
+          PDB_MIRROR_PATH: ""
+        run: |
+          coverage run --source=src/rfd3_mosaic \
+            -m unittest discover \
+            -s tests/rfd3_mosaic/unit \
+            -p 'test_*.py'
+          coverage report --show-missing
+          coverage xml -o mosaic-coverage.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mosaic-cpu-coverage
+          path: mosaic-coverage.xml
+      - name: Build and smoke wheel outside checkout
+        run: |
+          pip install build
+          python -m build
+          bash scripts/rfd3_mosaic/release_smoke.sh

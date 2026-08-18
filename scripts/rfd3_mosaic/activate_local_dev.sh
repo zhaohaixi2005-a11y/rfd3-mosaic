@@ -27,11 +27,18 @@ export DEBUG=false
 export TYPE_CHECK=false
 export NAN_CHECK=true
 
+# The local CPU environment intentionally uses Biotite's built-in chemical
+# component data and does not ship full CCD/PDB mirrors.  Empty values make
+# that policy explicit to AtomWorks and avoid misleading import-time warnings.
+export CCD_MIRROR_PATH="${CCD_MIRROR_PATH:-}"
+export PDB_MIRROR_PATH="${PDB_MIRROR_PATH:-}"
+
 export RFD3_MOSAIC_LOCAL_CPU=1
 hash -r
 
 echo "RFD3-Mosaic local CPU development environment active"
 echo "python: $(python --version 2>&1)"
 echo "root:   $MOSAIC_LOCAL_ROOT"
+echo "mirrors: external CCD/PDB mirrors optional for local CPU prevalidation"
 
 unset MOSAIC_LOCAL_ROOT MOSAIC_LOCAL_VENV

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from itertools import combinations
 import re
+from itertools import combinations
 
 from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.schema import SymmetryTransformSetSpec
-
 
 _CYCLIC = re.compile(r"^C(?P<order>[1-9][0-9]*)$")
 _DIHEDRAL = re.compile(r"^D(?P<order>[2-9][0-9]*)$")

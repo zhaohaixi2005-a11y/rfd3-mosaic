@@ -27,7 +27,12 @@ from rfd3_mosaic.topology.symmetry_connectivity import finite_symmetry_spec
 @dataclass(frozen=True)
 class ParticipantOrbitPlan:
     participant: str
+    # Order of the component stabilizer (for example 2 for a C2 building
+    # block).  This is intentionally distinct from ``interface_degree``:
+    # a quotient edge orbit may use one face of a C2 component while another
+    # interface type uses its other face.
     valency: int
+    interface_degree: int
     physical_component_count: int
     action: StabilizerCosetHypothesis
 
@@ -42,6 +47,10 @@ class BinaryInterfaceIncidencePlan:
     left: ParticipantOrbitPlan
     right: ParticipantOrbitPlan
     physical_edges: tuple[tuple[str, str], ...]
+    physical_edge_actions: tuple[
+        tuple[str, str, tuple[str, ...]], ...
+    ]
+    edge_stabilizer_order: int
     executable: bool = False
     evidence_scope: str = "finite_group_component_incidence_only"
 
@@ -50,9 +59,11 @@ class BinaryInterfaceIncidencePlan:
         return (
             self.left.valency,
             self.right.valency,
+            self.left.interface_degree,
+            self.right.interface_degree,
             self.left.action.stabilizer_transform_ids,
             self.right.action.stabilizer_transform_ids,
-            self.physical_edges,
+            self.physical_edge_actions,
         )
 
 
@@ -88,12 +99,12 @@ def enumerate_binary_interface_incidence_plans(
 ) -> tuple[BinaryInterfaceIncidencePlan, ...]:
     """Enumerate mixed-stabilizer component orbits for one fixed interface.
 
-    The first executable slice uses one free interface-edge orbit, so its
-    physical multiplicity equals the full finite-group order.  Component
-    counts may be smaller because each participant can have a non-trivial
-    stabilizer.  Every full-group transform must map to a unique left/right
-    component pair; plans with repeated physical edges or non-uniform valency
-    are rejected.
+    Every group action is mapped onto a concrete left/right component pair.
+    Actions that map onto the same pair form the stabilizer of one physical
+    interface edge and are represented once.  This supports both free edge
+    orbits (one physical edge per group action) and quotient edge orbits
+    (fewer physical interfaces than ``|G|``) without confusing component
+    stabilizer order with interface-specific graph degree.
     """
 
     if not interface_id or not left_participant or not right_participant:
@@ -115,12 +126,16 @@ def enumerate_binary_interface_incidence_plans(
         if physical_interface_count is None
         else physical_interface_count
     )
-    if requested_edges != group_order:
-        raise NotImplementedError(
-            "The first component-incidence solver requires one free "
-            f"interface orbit ({group_order} physical instances for "
-            f"{symmetry}); requested {requested_edges}. Quotient interface "
-            "edges require separate geometric stabilizer evidence"
+    if requested_edges < 1 or requested_edges > group_order:
+        raise ValueError(
+            "physical_interface_count must be between one and the finite "
+            f"group order ({group_order} for {symmetry})"
+        )
+    if group_order % requested_edges:
+        raise ValueError(
+            f"{requested_edges} physical interfaces cannot form one "
+            f"uniform transitive edge orbit under {symmetry} order "
+            f"{group_order}"
         )
 
     actions_by_valency: dict[
@@ -149,16 +164,39 @@ def enumerate_binary_interface_incidence_plans(
                 left_map = _action_map(left_action)
                 for right_action in right_actions:
                     right_map = _action_map(right_action)
-                    edges = tuple(sorted({
-                        (left_map[transform_id], right_map[transform_id])
-                        for transform_id in transform_ids
-                    }))
+                    pair_actions: dict[tuple[str, str], list[str]] = {}
+                    for transform_id in transform_ids:
+                        pair = (
+                            left_map[transform_id],
+                            right_map[transform_id],
+                        )
+                        pair_actions.setdefault(pair, []).append(transform_id)
+                    edges = tuple(sorted(pair_actions))
                     if len(edges) != requested_edges:
                         continue
-                    if _constant_degree(edges, side=0) != left_valency:
+                    left_degree = _constant_degree(edges, side=0)
+                    right_degree = _constant_degree(edges, side=1)
+                    if left_degree is None or right_degree is None:
                         continue
-                    if _constant_degree(edges, side=1) != right_valency:
+                    edge_stabilizer_orders = {
+                        len(actions) for actions in pair_actions.values()
+                    }
+                    if len(edge_stabilizer_orders) != 1:
                         continue
+                    edge_stabilizer_order = next(iter(edge_stabilizer_orders))
+                    if edge_stabilizer_order * requested_edges != group_order:
+                        raise RuntimeError(
+                            "Interface action classes do not partition the "
+                            "finite group"
+                        )
+                    physical_edge_actions = tuple(
+                        (
+                            left,
+                            right,
+                            tuple(pair_actions[(left, right)]),
+                        )
+                        for left, right in edges
+                    )
                     plan = BinaryInterfaceIncidencePlan(
                         symmetry=symmetry,
                         interface_id=interface_id,
@@ -166,6 +204,7 @@ def enumerate_binary_interface_incidence_plans(
                         left=ParticipantOrbitPlan(
                             participant=left_participant,
                             valency=left_valency,
+                            interface_degree=left_degree,
                             physical_component_count=(
                                 len(left_action.coset_representative_ids)
                             ),
@@ -174,12 +213,20 @@ def enumerate_binary_interface_incidence_plans(
                         right=ParticipantOrbitPlan(
                             participant=right_participant,
                             valency=right_valency,
+                            interface_degree=right_degree,
                             physical_component_count=(
                                 len(right_action.coset_representative_ids)
                             ),
                             action=right_action,
                         ),
                         physical_edges=edges,
+                        physical_edge_actions=physical_edge_actions,
+                        edge_stabilizer_order=edge_stabilizer_order,
+                        evidence_scope=(
+                            "finite_group_free_interface_incidence"
+                            if edge_stabilizer_order == 1
+                            else "finite_group_quotient_interface_incidence"
+                        ),
                     )
                     plans[plan.canonical_key] = plan
                     if len(plans) > max_candidates:

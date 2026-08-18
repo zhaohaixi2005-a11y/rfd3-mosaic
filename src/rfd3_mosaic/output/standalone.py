@@ -1,10 +1,10 @@
 """RFD3-independent structure, mapping, and manifest output."""
 
-from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -27,8 +27,8 @@ from rfd3_mosaic.objectives import (
 from rfd3_mosaic.provenance import build_mapping_registry
 from rfd3_mosaic.structure import AtomRecord, load_selected_atoms
 from rfd3_mosaic.topology import (
-    compiled_scaffold_links,
     compile_scaffold_graph,
+    compiled_scaffold_links,
 )
 
 

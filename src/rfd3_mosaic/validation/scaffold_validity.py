@@ -256,7 +256,7 @@ def audit_scaffold_geometry(
                     try:
                         entity_id = int(record["entity_id"])
                         transform_index = int(record["transform_index"])
-                    except (KeyError, TypeError, ValueError) as error:
+                    except (KeyError, TypeError, ValueError):
                         symmetry_failures.append(
                             "preexpanded chain layout records require integer "
                             "entity_id and transform_index"

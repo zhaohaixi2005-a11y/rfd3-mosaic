@@ -1,4 +1,4 @@
-.PHONY: format local-smoke local-test
+.PHONY: format local-smoke local-test mosaic-build mosaic-release-smoke
 
 # Use the currently activated environment on any workstation/server.  Fall
 # back to the repository-local CPU environment when no venv is active.
@@ -24,12 +24,20 @@ format:
 ## Verify the active local development environment and CLI.
 local-smoke:
 	@test -x "$(LOCAL_PYTHON)" || (echo "Python environment not found: $(LOCAL_PYTHON)"; false)
-	@DEBUG=false TYPE_CHECK=false NAN_CHECK=true "$(LOCAL_PYTHON)" -c "import torch, rfd3, rfd3_mosaic; print('local environment: OK; torch=' + torch.__version__ + '; cuda=' + str(torch.cuda.is_available()))"
-	@DEBUG=false TYPE_CHECK=false NAN_CHECK=true "$(LOCAL_PYTHON)" -m rfd3_mosaic.cli capabilities >/dev/null
+	@DEBUG=false TYPE_CHECK=false NAN_CHECK=true CCD_MIRROR_PATH= PDB_MIRROR_PATH= "$(LOCAL_PYTHON)" -c "import torch, rfd3, rfd3_mosaic; print('local environment: OK; torch=' + torch.__version__ + '; cuda=' + str(torch.cuda.is_available()))"
+	@DEBUG=false TYPE_CHECK=false NAN_CHECK=true CCD_MIRROR_PATH= PDB_MIRROR_PATH= "$(LOCAL_PYTHON)" -m rfd3_mosaic.cli capabilities >/dev/null
 
 ## Run the complete RFD3-Mosaic CPU unit suite in the local environment.
 local-test: local-smoke
-	@DEBUG=false TYPE_CHECK=false NAN_CHECK=true "$(LOCAL_PYTHON)" -m unittest discover -s tests/rfd3_mosaic/unit -p 'test_*.py' -v
+	@DEBUG=false TYPE_CHECK=false NAN_CHECK=true CCD_MIRROR_PATH= PDB_MIRROR_PATH= "$(LOCAL_PYTHON)" -m unittest discover -s tests/rfd3_mosaic/unit -p 'test_*.py' -v
+
+## Build the distributable RFD3-Mosaic wheel and source archive.
+mosaic-build:
+	@uv build
+
+## Verify CLI resources and imports in a wheel install outside the checkout.
+mosaic-release-smoke: mosaic-build
+	@bash scripts/rfd3_mosaic/release_smoke.sh
 
 #################################################################################
 # Self Documenting Commands                                                     #

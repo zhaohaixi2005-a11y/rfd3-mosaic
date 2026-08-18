@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from rfd3_mosaic.structure import read_structure_atoms
-
 
 _SELECTOR = re.compile(r"^([^0-9,+-]+)([0-9]+)-([0-9]+)$")
 

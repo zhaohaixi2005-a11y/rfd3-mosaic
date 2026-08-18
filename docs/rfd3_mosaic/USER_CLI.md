@@ -1,5 +1,21 @@
 # RFD3-Mosaic user CLI
 
+## Install and verify
+
+The supported core can be installed directly from the maintained GitHub
+branch. Full commands, checkpoint placement and release verification are in
+[`INSTALLATION.md`](INSTALLATION.md). After installation, run:
+
+```bash
+rfd3-mosaic doctor --profile local
+rfd3-mosaic capabilities
+```
+
+`--profile local` executes synchronously on the current workstation. Existing
+`v100`, `p100`, `a100_80g` and `h100` profiles continue to render immutable
+Slurm jobs. Both modes use the same compiler, sampler and required result
+audits; local execution is not a reduced scientific path.
+
 ## Local CPU development while the AI cluster is unavailable
 
 The repository includes an isolated Python 3.12 CPU environment for compiler,
@@ -249,6 +265,13 @@ rfd3-mosaic validate \
 rfd3-mosaic run \
   resolved_ring/selected/rank_0001_candidate_000000.yaml
 ```
+
+`preserve_exact` is not a tuning preset. It means the complete supplied
+interface (two or more participants, and any number of helices/fragments on
+each participant) is one natural rigid hyperedge. Mosaic may solve the
+translation and rotation of that complete seed relative to other seeds, but
+never pulls its participants apart or repacks the supplied interface itself.
+Ordinary mode intentionally has no deformable supplied-interface option.
 
 For ordinary use the same strict workflow is also available as one command:
 
@@ -1015,6 +1038,13 @@ pose:
 mode rotates the component.  Omitting `subspace` retains full
 `bounded_se3`, which also requires `max_rotation_deg`.
 
+`tilt_only` is the complementary rotation-only expert subspace. It permits
+rotation about the two axes perpendicular to the declared symmetry axis,
+with exactly zero translation and zero axial twist. `radial_rotation` and
+`radial_axial_rotation` combine axis-aware translation with bounded rotation.
+All of these use the same joint proposal, exact-symmetry projection,
+accept-or-rollback transaction and mobility audit.
+
 These coordinates are execution primitives, not a requirement that routine
 users know the correct radius in advance.  The intended default product
 workflow is an adaptive pose planner that derives feasible bounds from
@@ -1035,12 +1065,13 @@ rfd3-mosaic submit design.yaml
 
 The separate legacy-style top-level `bounded_mobile` operator is not the
 component-pose control above and remains unavailable to the executable public
-backend. `cylindrical` is executable for complete Cn/Dn orbits attached to a
-generated region; compact stabilizer/quotient ASUs and T/O/I cylindrical axes
-remain fail-closed. Partial-atom fixed XYZ, unconstrained endpoints, or fixed
-regions detached from every generated region also fail with a direct
-backend/lowering error. These cases are not silently converted to historical
-adapter behavior. Every cylindrical run requires
+backend. `cylindrical` is executable for complete Cn/Dn orbits; compact
+stabilizer/quotient ASUs and T/O/I cylindrical axes remain fail-closed.
+Constrained motif fragments that are not linker endpoints are retained as
+independent ASU polymer paths, with no invented covalent connection.
+Partial-atom fixed XYZ and unconstrained generated endpoints still fail with
+a direct backend/lowering error. These cases are not silently converted to
+historical adapter behavior. Every cylindrical run requires
 `cylindrical_coordinate_audit.json` in addition to the universal scaffold
 audit.
 

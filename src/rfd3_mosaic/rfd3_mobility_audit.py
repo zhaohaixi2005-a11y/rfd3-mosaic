@@ -8,7 +8,6 @@ import math
 from pathlib import Path
 from typing import Any
 
-
 _OBJECTIVE_TERMS = ("total", "junction", "clash", "tilt", "prior")
 
 

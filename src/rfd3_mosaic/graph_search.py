@@ -10,9 +10,9 @@ execution path.
 
 from __future__ import annotations
 
-from itertools import product
 import hashlib
 import json
+from itertools import product
 from pathlib import Path
 from typing import Any, Iterable
 

@@ -12,12 +12,10 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 import torch
-
 from rfd3.inference.symmetry.cylindrical_projector import (
     CylindricalCoordinateProjector,
 )
 from rfd3.inference.symmetry.joint_projector import UnifiedJointProjector
-
 
 ProposalSource = Literal["denoiser", "scaffold_boundary"]
 

@@ -35,6 +35,9 @@ class ComponentIncidenceTestCase(unittest.TestCase):
                 component_counts,
             )
             self.assertFalse(plan.executable)
+            self.assertEqual(plan.edge_stabilizer_order, 1)
+            self.assertEqual(plan.left.interface_degree, plan.left.valency)
+            self.assertEqual(plan.right.interface_degree, plan.right.valency)
 
     def test_tetrahedral_c2_c3_incidence(self) -> None:
         self._assert_valency_pair("T", 12, (2, 3), (6, 4))
@@ -45,14 +48,53 @@ class ComponentIncidenceTestCase(unittest.TestCase):
     def test_icosahedral_c2_c5_incidence(self) -> None:
         self._assert_valency_pair("I", 60, (2, 5), (30, 12))
 
-    def test_non_full_interface_orbit_fails_closed(self) -> None:
-        with self.assertRaisesRegex(NotImplementedError, "free interface orbit"):
+    def test_tetrahedral_c2_c2_quotient_interface_orbit(self) -> None:
+        plans = enumerate_binary_interface_incidence_plans(
+            symmetry="T",
+            interface_id="natural_interface",
+            left_participant="A",
+            right_participant="B",
+            physical_interface_count=6,
+            minimum_valency=2,
+            maximum_valency=2,
+        )
+        selected = [
+            plan
+            for plan in plans
+            if plan.left.physical_component_count == 6
+            and plan.right.physical_component_count == 6
+            and plan.left.interface_degree == 1
+            and plan.right.interface_degree == 1
+        ]
+
+        self.assertTrue(selected)
+        for plan in selected:
+            self.assertEqual(plan.edge_stabilizer_order, 2)
+            self.assertEqual(len(plan.physical_edges), 6)
+            self.assertEqual(
+                {len(actions) for _, _, actions in plan.physical_edge_actions},
+                {2},
+            )
+            self.assertEqual(
+                {
+                    action
+                    for _, _, actions in plan.physical_edge_actions
+                    for action in actions
+                },
+                {
+                    action
+                    for action, _ in plan.left.action.transform_to_coset_representative
+                },
+            )
+
+    def test_nonuniform_edge_orbit_size_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "uniform transitive edge orbit"):
             enumerate_binary_interface_incidence_plans(
                 symmetry="T",
                 interface_id="natural_interface",
                 left_participant="A",
                 right_participant="B",
-                physical_interface_count=6,
+                physical_interface_count=5,
             )
 
 

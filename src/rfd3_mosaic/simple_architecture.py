@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import re
+from dataclasses import asdict, dataclass
 
 from rfd3_mosaic.schema import SimpleCageIntentSpec
 from rfd3_mosaic.topology.stabilizer_cosets import (
     stabilizer_coset_hypotheses,
     supported_orbit_sizes,
 )
-
 
 _CYCLIC = re.compile(r"^C(?P<order>[1-9][0-9]*)$")
 _DIHEDRAL = re.compile(r"^D(?P<order>[2-9][0-9]*)$")

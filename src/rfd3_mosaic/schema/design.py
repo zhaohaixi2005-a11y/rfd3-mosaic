@@ -22,7 +22,6 @@ from rfd3_mosaic.schema.specs import (
     StrictModel,
 )
 
-
 Selector = Annotated[str, Field(min_length=1)]
 PositiveLength = Annotated[int, Field(ge=1)]
 RequestedLength = PositiveLength | LinkLengthSpec
@@ -159,6 +158,7 @@ class FixedComponentPoseSpec(StrictModel):
         "bounded_se3",
         "radial",
         "radial_axial",
+        "tilt_only",
         "radial_rotation",
         "radial_axial_rotation",
     ] | None = None
@@ -202,10 +202,24 @@ class FixedComponentPoseSpec(StrictModel):
             )
         if self.mode == "bounded_mobile":
             subspace = self.subspace or "bounded_se3"
-            if self.max_translation is None:
+            if subspace != "tilt_only" and self.max_translation is None:
                 raise ValueError(
                     "pose.mode=bounded_mobile requires max_translation"
                 )
+            if subspace == "tilt_only":
+                if self.max_translation is not None:
+                    raise ValueError(
+                        "tilt_only mobility cannot define max_translation"
+                    )
+                if self.max_rotation_deg is None:
+                    raise ValueError(
+                        "tilt_only mobility requires max_rotation_deg"
+                    )
+                if self.proposal != "scaffold_objectives":
+                    raise ValueError(
+                        "tilt_only mobility requires "
+                        "proposal=scaffold_objectives"
+                    )
             if subspace == "bounded_se3" and self.max_rotation_deg is None:
                 raise ValueError(
                     "bounded_se3 mobility requires max_rotation_deg"

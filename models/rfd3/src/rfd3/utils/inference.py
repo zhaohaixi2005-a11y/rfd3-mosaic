@@ -13,6 +13,7 @@ from atomworks.constants import STANDARD_AA, STANDARD_DNA
 from atomworks.io.parser import (
     STANDARD_PARSER_ARGS,
 )
+from atomworks.io.utils.io_utils import suppress_logging_messages
 from atomworks.ml.encoding_definitions import AF3SequenceEncoding
 from atomworks.ml.preprocessing.utils.structure_utils import (
     get_atom_mask_from_cell_list,
@@ -329,6 +330,7 @@ def inference_load_(
         **STANDARD_PARSER_ARGS,
         **{
             "fix_arginines": False,
+            "fix_formal_charges": False,
             "add_missing_atoms": False,
             "remove_ccds": [],
         },
@@ -345,11 +347,15 @@ def inference_load_(
     )
 
     # Use the parse function with the merged CIF parser arguments
-    result_dict = parse(
-        filename=file,
-        build_assembly=(assembly_id,),  # Convert list to tuple (make hashable)
-        **merged_cif_parser_args,
-    )
+    # Compiler-generated CIF files intentionally omit some optional RFD3
+    # annotations; defaults are added below. Suppress only those expected
+    # field warnings while preserving all other AtomWorks diagnostics.
+    with suppress_logging_messages("atomworks.io", "not found in file"):
+        result_dict = parse(
+            filename=file,
+            build_assembly=(assembly_id,),  # Convert list to tuple (make hashable)
+            **merged_cif_parser_args,
+        )
 
     atom_array = result_dict["assemblies"][assembly_id][0]
     atom_array = convert_existing_annotations_to_bool(atom_array)

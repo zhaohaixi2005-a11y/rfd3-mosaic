@@ -3,27 +3,31 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import re
 import shlex
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
 
+from rfd3_mosaic.constraint_plan import compile_constraint_plan
+from rfd3_mosaic.design_preferences import resolved_preferences_payload
+from rfd3_mosaic.installation import (
+    bundled_resource_path,
+    installation_root,
+    source_repository_root,
+)
 from rfd3_mosaic.provenance.software import (
     collect_repository_provenance,
     file_identity,
     load_compatibility_manifest,
 )
 from rfd3_mosaic.provenance.source_snapshot import create_source_snapshot
-from rfd3_mosaic.constraint_plan import compile_constraint_plan
 from rfd3_mosaic.schema import load_user_design
-from rfd3_mosaic.design_preferences import resolved_preferences_payload
-
 
 SCHEMA_VERSION = 1
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -58,14 +62,9 @@ SAMPLER_PRESETS: dict[str, dict[str, Any]] = {
 
 
 def _repository_root() -> Path:
-    for candidate in (Path.cwd(), *Path.cwd().parents):
-        if (candidate / ".project-root").is_file():
-            return candidate.resolve()
-    module_path = Path(__file__).resolve()
-    for candidate in module_path.parents:
-        if (candidate / ".project-root").is_file():
-            return candidate
-    raise RuntimeError("Cannot locate the rfd3-mosaic repository root")
+    """Return a source checkout when present, otherwise the installation root."""
+
+    return source_repository_root() or installation_root()
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -165,12 +164,12 @@ def _resolve_profile_path(
             label="execution profile",
         )
     profile = (
-        repository_root
-        / "configs"
-        / "rfd3_mosaic"
-        / "execution"
-        / f"{value}.yaml"
+        repository_root / "configs" / "rfd3_mosaic" / "execution" / f"{value}.yaml"
     )
+    if not profile.is_file():
+        profile = bundled_resource_path(
+            Path("configs/rfd3_mosaic/execution") / f"{value}.yaml"
+        )
     if not profile.is_file():
         raise FileNotFoundError(
             f"Unknown execution profile {value!r}; expected {profile}"
@@ -221,15 +220,11 @@ def _runtime_dependency_files(payload: dict[str, Any]) -> list[tuple[str, Path]]
             raise ValueError("Assembly fragments must be a mapping")
         for fragment_id, fragment in fragments.items():
             if not isinstance(fragment, dict) or not fragment.get("source"):
-                raise ValueError(
-                    f"Assembly fragment {fragment_id!r} has no source"
-                )
+                raise ValueError(f"Assembly fragment {fragment_id!r} has no source")
             source = Path(str(fragment["source"])).expanduser()
             if not source.is_absolute():
                 source = project / source
-            dependencies.append(
-                (f"fragment source {fragment_id}", source.resolve())
-            )
+            dependencies.append((f"fragment source {fragment_id}", source.resolve()))
         manifest = topology.get("pose_candidate_manifest")
         if manifest is not None:
             dependencies.append(("pose candidate manifest", Path(manifest)))
@@ -280,9 +275,7 @@ def _freeze_render_identity(payload: dict[str, Any]) -> dict[str, Any]:
     # target cluster.  Rendering there materializes the exact digest into the
     # resolved configuration before the job is submitted.
     resources["checkpoint_sha256"] = observed_checkpoint_sha
-    repository = collect_repository_provenance(
-        Path(payload["project_directory"])
-    )
+    repository = collect_repository_provenance(Path(payload["project_directory"]))
     all_dependency_records = [
         file_identity(path, role=role)
         for role, path in _runtime_dependency_files(payload)
@@ -292,9 +285,7 @@ def _freeze_render_identity(payload: dict[str, Any]) -> dict[str, Any]:
     expected_source_hashes = {
         "experiment source": provenance["experiment_sha256"],
         "execution profile": provenance["profile_sha256"],
-        "Foundry compatibility manifest": provenance[
-            "foundry_compatibility"
-        ]["sha256"],
+        "Foundry compatibility manifest": provenance["foundry_compatibility"]["sha256"],
     }
     for role, expected_sha256 in expected_source_hashes.items():
         observed_sha256 = by_role[role]["sha256"]
@@ -428,11 +419,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
                 "controlled_dofs": list(operator.controlled_dofs),
                 "parameters": operator.parameters,
                 **(
-                    {
-                        "coupling_group": (
-                            operator.coupling_group or operator.id
-                        )
-                    }
+                    {"coupling_group": (operator.coupling_group or operator.id)}
                     if operator.operator == "fixed_xyz"
                     else {}
                 ),
@@ -441,10 +428,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             for operator in constraint_plan.operators
         ]
         generation = {
-            "regions": [
-                item.model_dump(mode="json")
-                for item in declared.generation
-            ],
+            "regions": [item.model_dump(mode="json") for item in declared.generation],
             "connections": [
                 item.model_dump(mode="json", by_alias=True)
                 for item in declared.connections
@@ -463,8 +447,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
                 for component_id, component in declared.components.items()
             },
             "interfaces": [
-                interface.model_dump(mode="json")
-                for interface in declared.interfaces
+                interface.model_dump(mode="json") for interface in declared.interfaces
             ],
             "resolved_preferences": resolved_preferences_payload(declared),
         }
@@ -501,13 +484,9 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "commit": repository["commit"],
             "branch": repository["branch"],
             "tracked_dirty": repository["tracked_dirty"],
-            "working_tree_diff_sha256": repository[
-                "working_tree_diff_sha256"
-            ],
+            "working_tree_diff_sha256": repository["working_tree_diff_sha256"],
             "compatibility_id": compatibility["manifest"]["engine_id"],
-            "foundry_base_commit": compatibility["manifest"]["foundry"][
-                "base_commit"
-            ],
+            "foundry_base_commit": compatibility["manifest"]["foundry"]["base_commit"],
             "compatibility_manifest_sha256": compatibility["sha256"],
         },
     }
@@ -532,6 +511,7 @@ def resolve_experiment(
     name = _safe_name(raw.get("name"), "name")
     experiment_directory = source_path.parent
     repository_root = _repository_root()
+    source_root = source_repository_root(repository_root)
 
     topology = raw.get("topology")
     if not isinstance(topology, dict):
@@ -666,10 +646,7 @@ def resolve_experiment(
     )
     preset = str(sampling.get("preset", "exact_mosaic"))
     if preset not in SAMPLER_PRESETS:
-        raise ValueError(
-            "sampling.preset must be one of "
-            f"{sorted(SAMPLER_PRESETS)}"
-        )
+        raise ValueError("sampling.preset must be one of " f"{sorted(SAMPLER_PRESETS)}")
     timesteps = _positive_integer(sampling.get("timesteps", 200), "sampling.timesteps")
     if not 2 <= timesteps <= 200:
         raise ValueError("sampling.timesteps must be between 2 and 200")
@@ -731,46 +708,50 @@ def resolve_experiment(
     if int(profile.get("schema_version", 0)) != SCHEMA_VERSION:
         raise ValueError(f"profile schema_version must be {SCHEMA_VERSION}")
     executor = str(profile.get("executor", "slurm"))
-    if executor != "slurm":
-        raise ValueError(
-            "Only executor=slurm is implemented; local execution is planned"
-        )
+    if executor not in {"slurm", "local"}:
+        raise ValueError("profile.executor must be slurm or local")
+    resolved_slurm: dict[str, Any] = {}
     slurm = profile.get("slurm")
-    if not isinstance(slurm, dict):
-        raise ValueError("profile.slurm must be a mapping")
-    _reject_unknown(
-        slurm,
-        {"partition", "gres", "cpus", "memory", "walltime", "qos", "account"},
-        "profile.slurm",
-    )
-    resolved_slurm = dict(slurm)
-    for key in ("partition", "memory", "walltime"):
-        if resources.get(key) is not None:
-            resolved_slurm[key] = resources[key]
-    if resources.get("cpus") is not None:
-        resolved_slurm["cpus"] = _positive_integer(resources["cpus"], "resources.cpus")
-    required_slurm = {"partition", "gres", "cpus", "memory", "walltime"}
-    missing_slurm = required_slurm - set(resolved_slurm)
-    if missing_slurm:
-        raise ValueError(
-            f"Execution profile lacks Slurm fields {sorted(missing_slurm)}"
+    if executor == "slurm":
+        if not isinstance(slurm, dict):
+            raise ValueError("profile.slurm must be a mapping")
+        _reject_unknown(
+            slurm,
+            {"partition", "gres", "cpus", "memory", "walltime", "qos", "account"},
+            "profile.slurm",
         )
-    resolved_slurm["cpus"] = _positive_integer(resolved_slurm["cpus"], "slurm.cpus")
-    for key in ("partition", "gres", "memory", "walltime"):
-        resolved_slurm[key] = _single_line(
-            resolved_slurm[key],
-            f"slurm.{key}",
-        )
-    for key in ("qos", "account"):
-        if resolved_slurm.get(key) is not None:
+        resolved_slurm = dict(slurm)
+        for key in ("partition", "memory", "walltime"):
+            if resources.get(key) is not None:
+                resolved_slurm[key] = resources[key]
+        if resources.get("cpus") is not None:
+            resolved_slurm["cpus"] = _positive_integer(
+                resources["cpus"], "resources.cpus"
+            )
+        required_slurm = {"partition", "gres", "cpus", "memory", "walltime"}
+        missing_slurm = required_slurm - set(resolved_slurm)
+        if missing_slurm:
+            raise ValueError(
+                f"Execution profile lacks Slurm fields {sorted(missing_slurm)}"
+            )
+        resolved_slurm["cpus"] = _positive_integer(resolved_slurm["cpus"], "slurm.cpus")
+        for key in ("partition", "gres", "memory", "walltime"):
             resolved_slurm[key] = _single_line(
                 resolved_slurm[key],
                 f"slurm.{key}",
             )
+        for key in ("qos", "account"):
+            if resolved_slurm.get(key) is not None:
+                resolved_slurm[key] = _single_line(
+                    resolved_slurm[key],
+                    f"slurm.{key}",
+                )
+    elif slurm is not None:
+        raise ValueError("profile.slurm must be omitted for executor=local")
 
     setup_commands = profile.get("setup_commands")
-    if not isinstance(setup_commands, list) or not setup_commands:
-        raise ValueError("profile.setup_commands must be a non-empty list")
+    if not isinstance(setup_commands, list):
+        raise ValueError("profile.setup_commands must be a list")
     if not all(isinstance(item, str) and item for item in setup_commands):
         raise ValueError("Every setup command must be a non-empty string")
     checkpoint = _resolve_path(
@@ -822,6 +803,9 @@ def resolve_experiment(
         },
         "output": resolved_output,
         "project_directory": str(repository_root),
+        "installation_mode": (
+            "source_checkout" if source_root is not None else "installed_distribution"
+        ),
         "provenance": {
             "experiment_source": str(source_path),
             "experiment_sha256": _sha256(source_path),
@@ -829,11 +813,17 @@ def resolve_experiment(
             "profile_sha256": _sha256(profile_path),
             "repository": collect_repository_provenance(repository_root),
             "foundry_compatibility": load_compatibility_manifest(
-                repository_root
-                / "configs"
-                / "rfd3_mosaic"
-                / "compatibility"
-                / "foundry.yaml"
+                (
+                    source_root
+                    / "configs"
+                    / "rfd3_mosaic"
+                    / "compatibility"
+                    / "foundry.yaml"
+                    if source_root is not None
+                    else bundled_resource_path(
+                        "configs/rfd3_mosaic/compatibility/foundry.yaml"
+                    )
+                )
             ),
         },
     }
@@ -850,10 +840,7 @@ def render_submission(
     if output_directory is None:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         output = (
-            experiment.run_root.parent
-            / "_submissions"
-            / experiment.name
-            / timestamp
+            experiment.run_root.parent / "_submissions" / experiment.name / timestamp
         )
     else:
         output = Path(output_directory).expanduser().resolve()
@@ -862,15 +849,17 @@ def render_submission(
     _freeze_public_user_design(resolved_payload, output)
     render_identity = _freeze_render_identity(resolved_payload)
     source_archive = output / "source_snapshot.tar.gz"
-    try:
-        render_identity["source_snapshot"] = create_source_snapshot(
-            Path(resolved_payload["project_directory"]),
-            source_archive,
-        )
-    except Exception:
-        source_archive.unlink(missing_ok=True)
-        output.rmdir()
-        raise
+    source_checkout = resolved_payload.get("installation_mode") == "source_checkout"
+    if source_checkout:
+        try:
+            render_identity["source_snapshot"] = create_source_snapshot(
+                Path(resolved_payload["project_directory"]),
+                source_archive,
+            )
+        except Exception:
+            source_archive.unlink(missing_ok=True)
+            output.rmdir()
+            raise
     resolved_payload["provenance"]["render_identity"] = render_identity
 
     resolved_path = output / "resolved_config.yaml"
@@ -888,63 +877,88 @@ def render_submission(
     resources = resolved_payload["resources"]
     slurm = resources["slurm"]
     run_root = experiment.run_root
-    lines = [
-        "#!/bin/bash -l",
-        f"#SBATCH --job-name={experiment.name}",
-        f"#SBATCH --partition={slurm['partition']}",
-        f"#SBATCH --gres={slurm['gres']}",
-        f"#SBATCH --cpus-per-task={slurm['cpus']}",
-        f"#SBATCH --mem={slurm['memory']}",
-        f"#SBATCH --time={slurm['walltime']}",
-    ]
-    if slurm.get("qos"):
-        lines.append(f"#SBATCH --qos={slurm['qos']}")
-    if slurm.get("account"):
-        lines.append(f"#SBATCH --account={slurm['account']}")
+    lines = ["#!/bin/bash -l"]
+    if resources["executor"] == "slurm":
+        lines.extend(
+            [
+                f"#SBATCH --job-name={experiment.name}",
+                f"#SBATCH --partition={slurm['partition']}",
+                f"#SBATCH --gres={slurm['gres']}",
+                f"#SBATCH --cpus-per-task={slurm['cpus']}",
+                f"#SBATCH --mem={slurm['memory']}",
+                f"#SBATCH --time={slurm['walltime']}",
+            ]
+        )
+        if slurm.get("qos"):
+            lines.append(f"#SBATCH --qos={slurm['qos']}")
+        if slurm.get("account"):
+            lines.append(f"#SBATCH --account={slurm['account']}")
+        lines.extend(
+            [
+                f"#SBATCH --output={output}/bootstrap-%j.out",
+                f"#SBATCH --error={output}/bootstrap-%j.err",
+            ]
+        )
     lines.extend(
         [
-            f"#SBATCH --output={output}/bootstrap-%j.out",
-            f"#SBATCH --error={output}/bootstrap-%j.err",
             "",
             "set -euo pipefail",
-            f"SOURCE_ARCHIVE={shlex.quote(str(source_archive))}",
-            "SOURCE_SNAPSHOT_SHA256="
-            + shlex.quote(
-                render_identity["source_snapshot"]["archive"]["sha256"]
-            ),
             f"RUN_ROOT={shlex.quote(str(run_root))}",
-            'RUN_DIR="$RUN_ROOT/$SLURM_JOB_ID"',
+            'RUN_ID="${SLURM_JOB_ID:-${RFD3_MOSAIC_JOB_ID:-}}"',
+            'if [[ -z "$RUN_ID" ]]; then',
+            '    echo "ERROR: no scheduler or local run identity"',
+            "    exit 2",
+            "fi",
+            'RUN_DIR="$RUN_ROOT/$RUN_ID"',
             'if [[ -e "$RUN_DIR" ]]; then',
             '    echo "ERROR: refusing to reuse $RUN_DIR"',
             "    exit 2",
             "fi",
             'mkdir -p "$RUN_DIR"',
-            'exec >"$RUN_DIR/slurm-$SLURM_JOB_ID.out" '
-            '2>"$RUN_DIR/slurm-$SLURM_JOB_ID.err"',
+            'exec >"$RUN_DIR/run-$RUN_ID.out" ' '2>"$RUN_DIR/run-$RUN_ID.err"',
             *resources["setup_commands"],
-            'OBSERVED_SOURCE_SHA256=$(sha256sum "$SOURCE_ARCHIVE" '
-            "| awk '{print $1}')",
-            'if [[ "$OBSERVED_SOURCE_SHA256" != '
-            '"$SOURCE_SNAPSHOT_SHA256" ]]; then',
-            '    echo "ERROR: source snapshot SHA256 mismatch"',
-            "    exit 3",
-            "fi",
-            'SOURCE_ROOT="$RUN_DIR/software"',
-            'mkdir -p "$SOURCE_ROOT"',
-            'tar -xzf "$SOURCE_ARCHIVE" -C "$SOURCE_ROOT"',
-            'cd "$SOURCE_ROOT"',
-            'export PYTHONPATH="$SOURCE_ROOT/src:'
-            '$SOURCE_ROOT/models/rfd3/src:${PYTHONPATH:-}"',
-            "export FOUNDRY_CHECKPOINT_DIRS="
-            + shlex.quote(resources["foundry_checkpoint_dirs"]),
-            "python -m rfd3_mosaic.experiment_worker "
-            + "--resolved-config "
-            + shlex.quote(str(resolved_path))
-            + ' --run-dir "$RUN_DIR"'
-            + ' --source-root "$SOURCE_ROOT"',
-            "",
         ]
     )
+    worker_arguments = (
+        "python -m rfd3_mosaic.experiment_worker "
+        + "--resolved-config "
+        + shlex.quote(str(resolved_path))
+        + ' --run-dir "$RUN_DIR"'
+    )
+    if source_checkout:
+        lines.extend(
+            [
+                f"SOURCE_ARCHIVE={shlex.quote(str(source_archive))}",
+                "SOURCE_SNAPSHOT_SHA256="
+                + shlex.quote(render_identity["source_snapshot"]["archive"]["sha256"]),
+                'OBSERVED_SOURCE_SHA256=$(sha256sum "$SOURCE_ARCHIVE" '
+                "| awk '{print $1}')",
+                'if [[ "$OBSERVED_SOURCE_SHA256" != '
+                '"$SOURCE_SNAPSHOT_SHA256" ]]; then',
+                '    echo "ERROR: source snapshot SHA256 mismatch"',
+                "    exit 3",
+                "fi",
+                'SOURCE_ROOT="$RUN_DIR/software"',
+                'mkdir -p "$SOURCE_ROOT"',
+                'tar -xzf "$SOURCE_ARCHIVE" -C "$SOURCE_ROOT"',
+                'cd "$SOURCE_ROOT"',
+                'export PYTHONPATH="$SOURCE_ROOT/src:'
+                '$SOURCE_ROOT/models/rfd3/src:${PYTHONPATH:-}"',
+                "export FOUNDRY_CHECKPOINT_DIRS="
+                + shlex.quote(resources["foundry_checkpoint_dirs"]),
+                worker_arguments + ' --source-root "$SOURCE_ROOT"',
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "export FOUNDRY_CHECKPOINT_DIRS="
+                + shlex.quote(resources["foundry_checkpoint_dirs"]),
+                worker_arguments,
+                "",
+            ]
+        )
     script_path = output / "generated_job.sbatch"
     script_path.write_text("\n".join(lines), encoding="utf-8")
     return script_path

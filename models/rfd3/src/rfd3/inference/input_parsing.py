@@ -12,6 +12,7 @@ import numpy as np
 from atomworks.constants import STANDARD_AA, STANDARD_DNA, STANDARD_RNA
 from atomworks.io.parser import parse_atom_array
 from atomworks.io.utils.bonds import get_inferred_polymer_bonds
+from atomworks.io.utils.io_utils import suppress_logging_messages
 
 # from atomworks.ml.datasets.datasets import BaseDataset
 from atomworks.ml.transforms.base import TransformedDict
@@ -882,15 +883,21 @@ def prepare_pipeline_input_from_atom_array(  # see atomworks.ml.datasets.parsers
         atom_array_orig.bonds = BondList(atom_array_orig.array_length())
 
     # Temporary spoof of chain IDs to ensure duplicates aren't dropped:
-    result_dict = parse_atom_array(
-        atom_array_orig,
-        remove_ccds=[],
-        fix_arginines=False,
-        add_missing_atoms=False,
-        extra_fields=INFERENCE_ANNOTATIONS,
-        build_assembly=None,
-        hydrogen_policy="remove",
-    )
+    # These annotations are optional when reading compiler-generated CIF.
+    # AtomWorks otherwise emits one warning per absent optional field.  Formal
+    # charge repair is also impossible without template completion, so disable
+    # that no-op explicitly instead of warning on every prevalidation.
+    with suppress_logging_messages("atomworks.io", "not found in file"):
+        result_dict = parse_atom_array(
+            atom_array_orig,
+            remove_ccds=[],
+            fix_arginines=False,
+            fix_formal_charges=False,
+            add_missing_atoms=False,
+            extra_fields=INFERENCE_ANNOTATIONS,
+            build_assembly=None,
+            hydrogen_policy="remove",
+        )
     atom_array = result_dict["asym_unit"][0]
 
     # HACK: Set iid information manually

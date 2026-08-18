@@ -96,8 +96,13 @@ def _write_polyhedral_c2_cn_interface_seed(
     *,
     symmetry: str,
     right_valency: int,
+    physical_interface_count: int | None = None,
 ) -> None:
-    right_id = f"c{right_valency}"
+    right_id = (
+        f"c{right_valency}_peer"
+        if right_valency == 2
+        else f"c{right_valency}"
+    )
     plan = next(
         item
         for item in enumerate_binary_interface_incidence_plans(
@@ -105,6 +110,9 @@ def _write_polyhedral_c2_cn_interface_seed(
             interface_id="natural_interface",
             left_participant="c2",
             right_participant=right_id,
+            physical_interface_count=physical_interface_count,
+            minimum_valency=2,
+            maximum_valency=max(2, right_valency),
         )
         if (item.left.valency, item.right.valency) == (2, right_valency)
     )
@@ -162,6 +170,15 @@ def _write_t_c2_c3_interface_seed(path: Path) -> None:
         path,
         symmetry="T",
         right_valency=3,
+    )
+
+
+def _write_t_c2_c2_quotient_interface_seed(path: Path) -> None:
+    _write_polyhedral_c2_cn_interface_seed(
+        path,
+        symmetry="T",
+        right_valency=2,
+        physical_interface_count=6,
     )
 
 
@@ -719,6 +736,55 @@ class MultiSeedSimpleResolverTestCase(unittest.TestCase):
         )
         self.assertEqual(len(instances.interfaces), 12)
         self.assertEqual(len(instances.motion_groups), 10)
+
+    def test_one_supplied_t_c2_c2_interface_resolves_quotient_edge_orbit(
+        self,
+    ) -> None:
+        source = self.root / "t_c2_c2_quotient_interface.pdb"
+        _write_t_c2_c2_quotient_interface_seed(source)
+        intent = SimpleCageIntentSpec.model_validate({
+            "name": "ordinary-t-c2-c2-quotient-interface",
+            "input": source,
+            "goal": {
+                "architecture": "cage",
+                "composition": "auto",
+                "symmetry": ["T"],
+            },
+            "interface_seeds": {
+                "natural_interface": {
+                    "participants": ["c2", "c2_peer"],
+                    "selectors": {
+                        "c2": "A1-2,A5-6,B1-2,B5-6",
+                        "c2_peer": "C1-2,C5-6,D1-2,D5-6",
+                    },
+                    "use": {"exact": 6},
+                    "geometry": "preserve_exact",
+                }
+            },
+            "generation": {"length": {"minimum": 2, "maximum": 2}},
+        })
+
+        candidates = enumerate_simple_design_candidates(
+            intent,
+            symmetry_ids=("T",),
+            timesteps=50,
+        )
+
+        self.assertTrue(candidates)
+        candidate = candidates[0]
+        self.assertEqual(candidate.physical_interface_count, 6)
+        self.assertEqual(
+            candidate.stabilizer_evidence["edge_stabilizer_order"],
+            2,
+        )
+        instances = expand_symmetry_instances(
+            lower_user_design(candidate.design).specification
+        )
+        self.assertEqual(len(instances.interfaces), 6)
+        self.assertEqual(
+            {edge.edge_stabilizer_order for edge in instances.interfaces.values()},
+            {2},
+        )
 
     def test_one_supplied_t_c2_c3_interface_strictly_replays(self) -> None:
         source = self.root / "t_c2_c3_replay_interface.pdb"

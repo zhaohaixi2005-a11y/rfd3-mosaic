@@ -1,12 +1,11 @@
 """Parser and resolver for Interface-Seed fragment atom selections."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 from rfd3_mosaic.schema import FragmentSpec
 from rfd3_mosaic.structure.pdb import AtomRecord, read_structure_atoms
-
 
 _SELECTION_PATTERN = re.compile(
     r"^(?P<chain>[^/]+)/(?P<start>-?\d+)"

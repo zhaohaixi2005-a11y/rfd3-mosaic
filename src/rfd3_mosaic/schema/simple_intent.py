@@ -13,9 +13,7 @@ from rfd3_mosaic.schema.design import (
     UserOutputSpec,
     UserResourceSpec,
 )
-from rfd3_mosaic.schema.specs import Identifier, StrictModel
-from rfd3_mosaic.schema.specs import CopyRelationSpec
-
+from rfd3_mosaic.schema.specs import CopyRelationSpec, Identifier, StrictModel
 
 SimpleSymmetryName = Annotated[
     str,
@@ -80,7 +78,11 @@ class SimpleInterfaceSeedSpec(StrictModel):
     use: UserInterfaceUsageSpec = Field(
         default_factory=UserInterfaceUsageSpec
     )
-    geometry: Literal["preserve_exact", "bounded"] = "preserve_exact"
+    # A supplied natural interface is one atomic rigid hyperedge.  Ordinary
+    # mode may move that complete seed while solving the cage, but it never
+    # deforms the geometry between its participants.  Component-level
+    # bounded mobility remains available through the expert public graph.
+    geometry: Literal["preserve_exact"] = "preserve_exact"
 
     @model_validator(mode="after")
     def validate_sides(self) -> "SimpleInterfaceSeedSpec":

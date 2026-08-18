@@ -186,6 +186,14 @@ class SpecsTestCase(unittest.TestCase):
 
         self.assertEqual(radial.effective_subspace, MobilitySubspace.RADIAL)
         self.assertEqual(tilt.effective_subspace, MobilitySubspace.TILT_ONLY)
+        self.assertEqual(
+            radial.effective_proposal,
+            MobilityProposal.SCAFFOLD_OBJECTIVES,
+        )
+        self.assertEqual(
+            tilt.effective_proposal,
+            MobilityProposal.SCAFFOLD_OBJECTIVES,
+        )
 
     def test_radial_rotation_requires_translation_and_rotation(self) -> None:
         mobility = OrbitMobilitySpec(

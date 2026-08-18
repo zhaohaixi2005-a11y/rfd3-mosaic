@@ -1,8 +1,8 @@
 """Construct and audit an RFD3 atom array without loading a checkpoint."""
 
 import argparse
-from collections import Counter
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 

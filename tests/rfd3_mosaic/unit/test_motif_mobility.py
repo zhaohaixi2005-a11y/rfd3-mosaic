@@ -1123,6 +1123,56 @@ class MotifMobilityTestCase(unittest.TestCase):
             )
         )
 
+    def test_scaffold_tilt_only_rotates_without_translation_or_twist(self) -> None:
+        (
+            _,
+            _,
+            _,
+            controller,
+            scaffold,
+            topology,
+            axis,
+            _,
+        ) = self._scaffold_guidance_case()
+        motif = controller.motifs[0]
+        motif.mobility_subspace = "tilt_only"
+        config = ScaffoldGuidanceConfig(
+            junction_weight=0.0,
+            clash_weight=0.0,
+            tilt_weight=1.0,
+            prior_weight=0.0,
+            maximum_tilt_degrees=5.0,
+        )
+
+        controller.update_from_scaffold(
+            scaffold,
+            progress=0.5,
+            topology=topology,
+            axis=axis,
+            principal_axis=torch.tensor(
+                [1.0, 0.0, 0.2],
+                dtype=scaffold.dtype,
+            ),
+            config=config,
+            apply_update=True,
+        )
+
+        rotation = motif.state.rotation[0]
+        translation = motif.state.translation[0]
+        self.assertTrue(controller.last_update_applied)
+        self.assertTrue(torch.equal(translation, torch.zeros_like(translation)))
+        self.assertFalse(
+            torch.allclose(
+                rotation,
+                torch.eye(3, dtype=rotation.dtype),
+                atol=1e-8,
+            )
+        )
+        # The infinitesimal tilt proposal has no component about the cyclic
+        # z axis.  For the small bounded step this appears as equal diagonal
+        # x/y rotation terms and zero in-plane skew (no axial twist).
+        self.assertAlmostEqual(float(rotation[1, 0] - rotation[0, 1]), 0.0, places=8)
+
     @staticmethod
     def _two_orbit_scaffold_guidance_case(*, dihedral: bool = False):
         template = torch.tensor(

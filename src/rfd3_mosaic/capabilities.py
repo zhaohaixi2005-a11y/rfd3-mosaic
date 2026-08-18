@@ -248,7 +248,7 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
     CapabilityRecord(
         id="assembly_shape_contract",
         title="Assembly diameter and cavity contract",
-        maturity=CapabilityMaturity.SCHEMA_ONLY,
+        maturity=CapabilityMaturity.CPU_VALIDATED,
         public_interface=True,
         summary=(
             "Use ordinary diameter/cavity ranges during full-assembly CPU "
@@ -257,8 +257,10 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         ),
         dependencies=("graph_pose_search",),
         evidence=(
-            "schema, objective lowering and final-audit regressions added; "
-            "complete LRZ suite pending",
+            "ordinary goal ranges lower to required static objectives and "
+            "participate in full-assembly pose ranking",
+            "Cn/Dn/polyhedral morphology regressions and final scaffold "
+            "audits enforce the same diameter/cavity contract",
         ),
     ),
     CapabilityRecord(
@@ -521,11 +523,11 @@ def required_capabilities_for_design(
     from rfd3_mosaic.schema.design import (  # noqa: PLC0415
         BoundedMobileConstraint,
         CylindricalConstraint,
-        FixedXYZConstraint,
         FixedArrangementPolicy,
+        FixedXYZConstraint,
         TerminalGeneration,
-        UserDesignTask,
         UserDesignSpec,
+        UserDesignTask,
     )
 
     if not isinstance(design, UserDesignSpec):

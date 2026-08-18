@@ -18,12 +18,12 @@ remain explicit fail-closed boundaries.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import hashlib
-from itertools import combinations, permutations
 import json
-from pathlib import Path
 import re
+from dataclasses import dataclass, replace
+from itertools import combinations, permutations
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import yaml
@@ -32,15 +32,15 @@ from rfd3_mosaic.design_compiler import (
     lower_user_design,
     parse_public_selector,
 )
-from rfd3_mosaic.graph_search import rank_design_candidates
 from rfd3_mosaic.geometry import build_transform_registry
+from rfd3_mosaic.graph_search import rank_design_candidates
 from rfd3_mosaic.pose_optimizer import (
     initialize_global_seed_layout,
     optimize_candidate_subset,
 )
+from rfd3_mosaic.schema import SimpleCageIntentSpec, UserDesignSpec
 from rfd3_mosaic.seed_library import materialize_seed_library
 from rfd3_mosaic.seed_stabilizer import resolve_seed_stabilizer
-from rfd3_mosaic.schema import SimpleCageIntentSpec, UserDesignSpec
 from rfd3_mosaic.simple_architecture import (
     analyze_simple_architectures,
     candidate_symmetries,
@@ -49,6 +49,12 @@ from rfd3_mosaic.simple_architecture import (
 from rfd3_mosaic.structure import read_structure_atoms
 from rfd3_mosaic.structure_inspection import (
     inspect_declared_interface_relation,
+)
+from rfd3_mosaic.topology.component_incidence import (
+    enumerate_binary_interface_incidence_plans,
+)
+from rfd3_mosaic.topology.interface_seed_graph import (
+    analyze_interleaved_interface_seed_topology,
 )
 from rfd3_mosaic.topology.polymer_path_solver import (
     BinaryInterfaceSeed,
@@ -59,18 +65,11 @@ from rfd3_mosaic.topology.polymer_path_solver import (
     enumerate_polymer_hyperedge_covers,
     enumerate_polymer_unit_path_covers,
 )
-from rfd3_mosaic.topology.interface_seed_graph import (
-    analyze_interleaved_interface_seed_topology,
-)
-from rfd3_mosaic.topology.component_incidence import (
-    enumerate_binary_interface_incidence_plans,
-)
 from rfd3_mosaic.topology.symmetry_connectivity import (
     finite_symmetry_spec,
     generated_transform_ids,
     minimal_group_relations,
 )
-
 
 _CYCLIC = re.compile(r"^C(?P<order>[2-9][0-9]*)$")
 
@@ -196,9 +195,9 @@ def _validate_seed_contract(interface_id: str, seed) -> None:
             f"Interface {interface_id!r} requires at least two participants"
         )
     if seed.geometry != "preserve_exact":
-        raise NotImplementedError(
-            "The first ordinary resolver supports geometry=preserve_exact; "
-            "bounded supplied-interface geometry is not frozen yet"
+        raise ValueError(
+            "Ordinary supplied interfaces must preserve their complete "
+            "natural geometry"
         )
     # Multi-range selectors are handled by the mixed-component incidence
     # frontend when one supplied interface joins oligomeric building blocks.
@@ -305,6 +304,10 @@ def _enumerate_mixed_component_interface_candidates(
     if not requested:
         raise ValueError("At least one mixed-component symmetry is required")
     explicit = symmetry_ids is not None or intent.goal.symmetry != "auto"
+    architecture_by_symmetry = {
+        hypothesis.symmetry: hypothesis
+        for hypothesis in analyze_simple_architectures(intent)
+    }
     rejections: dict[str, list[str]] = {}
     candidates: list[SimpleDesignCandidate] = []
     for symmetry_id in requested:
@@ -315,14 +318,18 @@ def _enumerate_mixed_component_interface_candidates(
             reasons.append(str(error))
             rejections[symmetry_id] = reasons
             continue
-        if not seed.use.accepts(group_order):
+        architecture = architecture_by_symmetry.get(symmetry_id)
+        if architecture is None or not architecture.accepted:
             reasons.append(
                 f"interface {interface_id} requests {seed.use.description}, "
-                f"but one free {symmetry_id} interface orbit has "
-                f"{group_order} physical instances"
+                f"but {symmetry_id} has no compatible finite-group edge "
+                "orbit"
             )
             rejections[symmetry_id] = reasons
             continue
+        physical_interface_count = (
+            architecture.interface_physical_instances[interface_id]
+        )
         try:
             plans = tuple(
                 plan
@@ -331,7 +338,7 @@ def _enumerate_mixed_component_interface_candidates(
                     interface_id=interface_id,
                     left_participant=left_id,
                     right_participant=right_id,
-                    physical_interface_count=group_order,
+                    physical_interface_count=physical_interface_count,
                     minimum_valency=min(valencies.values()),
                     maximum_valency=max(valencies.values()),
                     max_candidates=max_candidates,
@@ -465,11 +472,11 @@ def _enumerate_mixed_component_interface_candidates(
             from rfd3_mosaic.compile import expand_symmetry_instances
 
             instances = expand_symmetry_instances(lowered.specification)
-            if len(instances.interfaces) != group_order:
+            if len(instances.interfaces) != physical_interface_count:
                 raise RuntimeError(
                     f"Mixed-component lowering emitted "
                     f"{len(instances.interfaces)} physical interfaces; "
-                    f"expected {group_order}"
+                    f"expected {physical_interface_count}"
                 )
             candidate_index = len(candidates)
             candidates.append(SimpleDesignCandidate(
@@ -508,6 +515,13 @@ def _enumerate_mixed_component_interface_candidates(
                     "left_action": _action_payload(plan.left.action),
                     "right_action": _action_payload(plan.right.action),
                     "physical_edges": [list(edge) for edge in plan.physical_edges],
+                    "physical_edge_actions": [
+                        [left, right, list(actions)]
+                        for left, right, actions in plan.physical_edge_actions
+                    ],
+                    "edge_stabilizer_order": plan.edge_stabilizer_order,
+                    "left_interface_degree": plan.left.interface_degree,
+                    "right_interface_degree": plan.right.interface_degree,
                 },
                 supplied_interface_ids=(interface_id,),
             ))

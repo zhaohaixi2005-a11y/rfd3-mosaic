@@ -23,7 +23,6 @@ import numpy as np
 
 from rfd3_mosaic.structure import AtomRecord
 
-
 _AXIS_COSINE_TOLERANCE = 1.0e-6
 _FIXED_POINT_TOLERANCE = 1.0e-5
 

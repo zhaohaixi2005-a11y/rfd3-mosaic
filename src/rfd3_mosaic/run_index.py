@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import re
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
 
-
 SCHEMA_VERSION = 1
 INDEX_DIRECTORY = ".rfd3-mosaic"
+RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 def _now() -> str:
@@ -22,9 +22,15 @@ def _now() -> str:
 
 def _validate_job_id(job_id: str) -> str:
     value = str(job_id)
-    if not re.fullmatch(r"[0-9]+(?:_[0-9]+)?", value):
-        raise ValueError(f"Invalid scheduler JobID: {value!r}")
+    if not RUN_ID_PATTERN.fullmatch(value) or value in {".", ".."}:
+        raise ValueError(f"Invalid execution run ID: {value!r}")
     return value
+
+
+def valid_run_id(value: str) -> bool:
+    """Return whether an executor identity is safe for paths and indexing."""
+
+    return bool(RUN_ID_PATTERN.fullmatch(str(value))) and value not in {".", ".."}
 
 
 def _index_path(root: Path, job_id: str) -> Path:
@@ -75,9 +81,23 @@ def record_submission(
     root_path = Path(root).expanduser().resolve()
     path = _index_path(root_path, job_id)
     if path.exists():
-        raise FileExistsError(
-            f"Run index already contains JobID {job_id}: {path}"
+        existing = read_run_record(root_path, job_id)
+        if existing is None or existing.get("executor") != "unknown":
+            raise FileExistsError(f"Run index already contains run ID {job_id}: {path}")
+        # A synchronous local worker finishes before submit() returns to the
+        # CLI. It therefore creates the lifecycle record first. Attach the
+        # submission identity without erasing its completed/failed state.
+        existing.update(
+            {
+                "executor": executor,
+                "submission_directory": str(
+                    Path(submission_directory).expanduser().resolve()
+                ),
+                "updated_at": _now(),
+            }
         )
+        _atomic_write(path, existing)
+        return path
     payload = {
         "schema_version": SCHEMA_VERSION,
         "job_id": _validate_job_id(job_id),
@@ -88,9 +108,7 @@ def record_submission(
         "created_at": _now(),
         "updated_at": _now(),
         "run_directory": str(Path(run_directory).expanduser().resolve()),
-        "submission_directory": str(
-            Path(submission_directory).expanduser().resolve()
-        ),
+        "submission_directory": str(Path(submission_directory).expanduser().resolve()),
     }
     _atomic_write(path, payload)
     return path
@@ -164,14 +182,11 @@ def rebuild_run_index(root: str | Path) -> dict[str, Any]:
     failures: list[dict[str, str]] = []
     for summary_path in root_path.rglob("experiment_summary.json"):
         run_directory = summary_path.parent.resolve()
-        if (
-            INDEX_DIRECTORY in run_directory.parts
-            or "software" in run_directory.parts
-        ):
+        if INDEX_DIRECTORY in run_directory.parts or "software" in run_directory.parts:
             skipped += 1
             continue
         job_id = run_directory.name
-        if not re.fullmatch(r"[0-9]+(?:_[0-9]+)?", job_id):
+        if not valid_run_id(job_id):
             skipped += 1
             continue
         try:
@@ -185,9 +200,7 @@ def rebuild_run_index(root: str | Path) -> dict[str, Any]:
             resolved: dict[str, Any] = {}
             if resolved_path.is_file():
                 try:
-                    loaded = yaml.safe_load(
-                        resolved_path.read_text(encoding="utf-8")
-                    )
+                    loaded = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
                     if isinstance(loaded, dict):
                         resolved = loaded
                 except (OSError, ValueError, yaml.YAMLError):
@@ -211,9 +224,7 @@ def rebuild_run_index(root: str | Path) -> dict[str, Any]:
                 campaign=campaign,
                 run_directory=run_directory,
                 error=(
-                    str(summary["error"])
-                    if summary.get("error") is not None
-                    else None
+                    str(summary["error"]) if summary.get("error") is not None else None
                 ),
                 observed_at=datetime.fromtimestamp(
                     summary_path.stat().st_mtime,
@@ -228,9 +239,7 @@ def rebuild_run_index(root: str | Path) -> dict[str, Any]:
             json.JSONDecodeError,
             yaml.YAMLError,
         ) as error:
-            failures.append(
-                {"path": str(summary_path.resolve()), "error": str(error)}
-            )
+            failures.append({"path": str(summary_path.resolve()), "error": str(error)})
     return {
         "schema_version": SCHEMA_VERSION,
         "root": str(root_path),

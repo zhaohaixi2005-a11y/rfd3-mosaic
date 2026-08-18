@@ -1,6 +1,11 @@
+from rfd3_mosaic.topology.component_incidence import (
+    BinaryInterfaceIncidencePlan,
+    ParticipantOrbitPlan,
+    enumerate_binary_interface_incidence_plans,
+)
 from rfd3_mosaic.topology.interface_seed_graph import (
-    InterfaceSeedSideRecord,
     InterfaceSeedPairRecord,
+    InterfaceSeedSideRecord,
     InterleavedInterfaceSeedTopology,
     PolymerUnitRecord,
     analyze_interleaved_interface_seed_topology,
@@ -19,13 +24,8 @@ from rfd3_mosaic.topology.polymer_path_solver import (
 from rfd3_mosaic.topology.scaffold_graph import (
     LengthRange,
     ScaffoldGraph,
-    compiled_scaffold_links,
     compile_scaffold_graph,
-)
-from rfd3_mosaic.topology.symmetry_connectivity import (
-    finite_symmetry_spec,
-    generated_transform_ids,
-    minimal_group_relations,
+    compiled_scaffold_links,
 )
 from rfd3_mosaic.topology.stabilizer_cosets import (
     StabilizerCosetHypothesis,
@@ -33,10 +33,10 @@ from rfd3_mosaic.topology.stabilizer_cosets import (
     subgroup_indices,
     supported_orbit_sizes,
 )
-from rfd3_mosaic.topology.component_incidence import (
-    BinaryInterfaceIncidencePlan,
-    ParticipantOrbitPlan,
-    enumerate_binary_interface_incidence_plans,
+from rfd3_mosaic.topology.symmetry_connectivity import (
+    finite_symmetry_spec,
+    generated_transform_ids,
+    minimal_group_relations,
 )
 
 __all__ = [

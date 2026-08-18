@@ -12,6 +12,20 @@ The currently usable product path is:
 short user YAML -> AssemblySpecification -> Mosaic-RFD3 -> audited run
 ```
 
+Install the maintained Mosaic branch with Python 3.12:
+
+```bash
+python -m pip install \
+  "rfd3-mosaic[rfd3] @ git+https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git@refactor/product-core-v1"
+rfd3-mosaic doctor --profile local
+```
+
+See [installation and release verification](docs/rfd3_mosaic/INSTALLATION.md)
+for local GPU and Slurm use. The release scope is the Cn/Dn fixed-motif,
+supplied-interface, generated-interface packing and bounded-mobility product
+path; O/I and advanced automatic cage solving are explicitly non-blocking
+experimental extensions.
+
 Two ordinary motif-scaffolding templates are executable today. The
 input-driven workflow accepts only interface seeds supplied by the user,
 preserves each seed's exact internal interface geometry, accepts physical
@@ -29,6 +43,7 @@ component/port/interface/connection graph; both routes use the same compiler
 and sampler.
 
 - [User CLI and examples](docs/rfd3_mosaic/USER_CLI.md)
+- [Installation and release verification](docs/rfd3_mosaic/INSTALLATION.md)
 - [Current implementation status](DEVELOPMENT_STATUS.md)
 - [Concise product maturity report](docs/rfd3_mosaic/CURRENT_PRODUCT_STATUS.md)
 - [Productization and upgrade plan](docs/rfd3_mosaic/RFD3_MOSAIC_PRODUCTIZATION_PLAN.md)

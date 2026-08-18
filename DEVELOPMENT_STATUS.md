@@ -9,6 +9,47 @@ Scope decision (2026-08-18): helical/screw symmetry is not part of the Mosaic
 product plan. It is excluded from capability maturity, release milestones and
 completion estimates. The supported symmetry roadmap is Cn, Dn and T/O/I.
 
+## 2026-08-18 downloadable product and local execution closeout
+
+The supported Cn/Dn product spine is now distributable as the
+`rfd3-mosaic` Python project rather than only usable from one mutable research
+checkout. The wheel contains Mosaic execution profiles, compatibility metadata
+and examples. Runtime resource discovery works in both editable/source and
+installed-wheel layouts. `rfd3-mosaic doctor` checks Python, PyTorch/CUDA,
+RFD3, packaged metadata, the selected executor and checkpoint without running
+inference.
+
+A synchronous `local` executor now runs the same frozen experiment worker,
+compiler, sampler and result-audit gate on an ordinary GPU workstation.
+Existing Slurm profiles and immutable source-snapshot execution are unchanged.
+Installed-wheel renders record package/repository provenance and do not pretend
+that a source checkout exists. The release smoke builds a real wheel, installs
+it outside the checkout, resolves packaged resources and renders a local job.
+
+The final complete CPU regression gate is **833 tests in 95.491s, OK**. The
+wheel/source distribution build and checkout-independent wheel smoke both pass.
+This closes clean installation, package resources, CLI entry points and local
+execution implementation. It does not replace the remaining CUDA/scientific
+quality gates for generated-interface packing, and it does not promote O/I or
+advanced cage solving into this release's supported scope.
+
+## 2026-08-18 repository-wide CPU gap closeout
+
+A full implementation-boundary audit closed four previously stale CPU gaps:
+atom-anchored and principal-axis-plus-anchor port frames, executable
+rotation-only `tilt_only` mobility, quotient interface-edge incidence in the
+ordinary mixed-component resolver, and independent preservation of constrained
+motif fragments that do not serve as generated linker endpoints. Ordinary
+supplied interface seeds are now unambiguously exact rigid hyperedges; only
+their complete pose may be solved, never their internal natural geometry.
+
+The full local CPU regression gate is **833 tests**. Existing C3/D3/T/O/I,
+fixed/mobile, packing, cylindrical, quotient, strict-replay and PyMOL paths
+remain green. The one large mathematical CPU boundary is stabilizer-aware
+unknown-pose initialization: components with a non-trivial finite orbit action
+must be placed in a compatible local stabilizer frame, not moved by arbitrary
+world-frame SE(3). Dynamic/GPU evidence is tracked separately.
+
 ## 2026-08-18 quotient interface-edge stabilizers
 
 Cross-orbit interface expansion now supports a nontrivial interface-edge
@@ -23,8 +64,8 @@ post-run interface audit separately reports unique physical edge instances,
 equivalent group actions and quotient-edge instances. A tetrahedral C2--C2
 regression proves that 12 T actions lower to six physical interfaces with an
 edge stabilizer of order two, then passes native RFD3 feature prevalidation.
-The focused expansion, adapter and audit suites pass; the complete local CPU
-gate passes **817 tests**.
+The focused expansion, adapter and audit suites pass; that milestone's local
+CPU gate passed **817 tests** (the current complete gate is 833).
 
 This closes static, pre-positioned quotient interface-edge execution. It does
 not yet claim unknown-pose stabilizer-frame optimization, dynamic quotient
@@ -593,7 +634,7 @@ Current delivery view:
 | Release layer | Current state | Remaining gate |
 |---|---|---|
 | v0.1 supported exact runtime | Core implementation complete for audited C3 central/interface scope | preserve the existing golden behavior |
-| v0.1 product/release hardening | 80--85% | clean-checkout installation, freeze two GPU golden replays, concise tutorial |
+| v0.1 product/release hardening | 90--95% | freeze two supported-scope GPU golden replays and tag the release |
 | v0.2 generated-interface packing | 45--55% | packing-v4 LRZ suite, repeated 50/200-step GPU evidence, all-atom output metrics |
 | v0.3 multi-face cage graphs | 35--45% | continuous joint pose refinement, three-plus-interface GPU campaigns, stabilizer/coset IR |
 | v0.4 O/I/high-order | 20--30% | O/I GPU closure and bounded neighbourhood equivalence |

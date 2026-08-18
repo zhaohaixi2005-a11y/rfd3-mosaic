@@ -6,6 +6,32 @@ Project scope explicitly excludes helical/screw symmetry. It is not a planned
 capability, release milestone or completion criterion. The supported symmetry
 roadmap is limited to Cn, Dn and the finite point groups T/O/I.
 
+The current downloadable release scope is intentionally narrower: Cn/Dn
+fixed motifs, supplied interfaces, generated-interface packing, bounded
+component mobility, the shared CLI and required audits. O/I and advanced cage
+solving remain experimental extensions and are not blockers for making this
+supported core installable and usable.
+
+## Download/install status
+
+The project now builds as `rfd3-mosaic`, packages its execution profiles,
+compatibility manifest and examples, and exposes `rfd3-mosaic doctor` for
+read-only installation checks. Source checkouts retain immutable Slurm source
+snapshots. Wheel installs use packaged resources and can execute synchronously
+through the new `local` backend on a workstation GPU; both paths call the same
+frozen worker and audits.
+
+The final release-engineering gate passes **833 CPU tests**, builds both wheel
+and source distribution, and passes a wheel smoke outside the repository that
+checks `capabilities`, `doctor` and installed-mode rendering. Installation and
+release commands are in `docs/rfd3_mosaic/INSTALLATION.md`.
+
+The dedicated GitHub release workflow runs this CPU contract suite on the
+active product branch, reports coverage for `src/rfd3_mosaic`, builds the
+distribution and repeats the checkout-independent wheel smoke. Coverage is
+reported as engineering evidence but is not yet converted into an arbitrary
+pass threshold; future ratcheting must start from a measured baseline.
+
 ## Local development continuity
 
 Cluster availability is no longer a blocker for CPU engineering. A repository-
@@ -15,6 +41,36 @@ is `make local-test`; GPU and scientific-quality claims still require frozen
 cluster canaries and are not inferred from local CPU success.
 
 ## Current implementation checkpoint
+
+### 2026-08-18 complete CPU gap audit
+
+The repository-wide CPU audit removed four stale implementation boundaries
+without changing any previously validated scientific contract:
+
+- explicit `anchors` and `principal_axis_with_anchor` port frames are now
+  resolved from real selected atoms, with deterministic right-handed frames
+  and degenerate-anchor rejection;
+- `tilt_only` is an executable rotation-only orbit-mobility subspace: it has
+  no translational or axial-twist leakage and uses the same transactional
+  exact-symmetry rollback path as other component motion;
+- mixed-component incidence now supports quotient interface-edge orbits, so
+  equivalent group actions may describe one physical interface without
+  forcing every interface type to appear `|G|` times;
+- fixed or cylindrical motif fragments that are not linker endpoints are
+  preserved as independent ASU polymer paths instead of being rejected or
+  silently connected.
+
+Ordinary supplied interfaces are now schema-level exact objects:
+`geometry: preserve_exact` is the only ordinary contract. The resolver may
+translate or rotate the complete multi-participant seed while solving the
+assembly, but cannot deform the natural interface inside that seed. Expert
+component mobility remains available for explicitly authored graphs.
+
+The complete local Python 3.12 CPU gate passes **833 tests**. The remaining
+major CPU mathematics is unknown-pose placement of components that already
+carry a non-trivial stabilizer/coset action; arbitrary SE(3) motion there
+would break the declared local symmetry, so this remains an explicit rather
+than bypassed boundary.
 
 ### Quotient interface-edge orbits: static CPU path closed
 
@@ -29,9 +85,9 @@ Native RFD3 constraint groups and relation audits use the deduplicated physical
 edge orbit. Reports distinguish the number of unique physical interfaces from
 the number of group actions they represent. The executable tetrahedral C2--C2
 regression lowers 12 T actions to six physical interfaces, each with stabilizer
-order two, and passes RFD3 runtime-feature prevalidation. The complete local
-CPU suite passes 817 tests. Unknown-pose stabilizer placement, dynamic quotient
-motion and GPU quality evidence remain separate open gates.
+order two, and passes RFD3 runtime-feature prevalidation. The current complete
+local CPU suite passes 833 tests. Unknown-pose stabilizer placement, dynamic
+quotient motion and GPU quality evidence remain separate open gates.
 
 ### Unified native polymer paths: CPU closed
 
@@ -47,7 +103,8 @@ also remain as independent ASU paths when no user connection uses their chain
 termini; Mosaic does not invent a linker for them. Equivalent fragments
 already represented through a cross-copy path are not duplicated. The
 complete local CPU checkpoint for that slice passed 815 tests; the subsequent
-quotient-edge milestone raises the current gate to 817 tests.
+quotient-edge milestone originally raised that gate to 817 tests; the current
+repository-wide CPU gate is 829 tests.
 
 ### Ordinary-user execution spine: CPU closed
 
@@ -134,8 +191,8 @@ The latest compatibility-preserving pass closes three CPU execution gaps:
 - ordinary diameter/cavity ranges now drive pose ranking and are checked
   again on the final RFD3 structure.
 
-These changes retain all existing C3/D3/T/O, static quotient, fixed/mobile and
-packing paths. The Python 3.12 CPU gate now passes 800 tests.
+These changes retain all existing C3/D3/T/O/I, static quotient, fixed/mobile
+and packing paths. The current Python 3.12 CPU gate passes 833 tests.
 The three-user-seed T resolver now accepts user-authoritative finite-group
 relations on polymer connections. The reference intent freezes `T:g01` and
 `T:g03`, produces one topology rather than eight equivalent generator
@@ -516,8 +573,9 @@ gate are now complete.
   local-neighbourhood GPU equivalence.
 - ProteinMPNN, multimer refolding, interface-energy/designability ranking and
   a single downstream acceptance gate.
-- Clean-checkout release packaging, CPU/GPU CI, schema migration and automated
-  upstream Foundry compatibility replay.
+- Schema migration, GPU CI and automated upstream Foundry compatibility
+  replay. Clean wheel/source packaging and a dedicated CPU release CI gate are
+  implemented.
 
 ## Evidence-gated maturity
 

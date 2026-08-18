@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import hashlib
-from importlib import metadata
 import os
-from pathlib import Path
 import platform
 import subprocess
 import sys
+from importlib import metadata
+from pathlib import Path
 from typing import Any
 
 import yaml
-
 
 PROVENANCE_SCHEMA_VERSION = 1
 
@@ -233,6 +232,7 @@ def collect_runtime_provenance(
             "machine": platform.machine(),
         },
         "packages": {
+            "rfd3-mosaic": _package_version("rfd3-mosaic"),
             "rc-foundry": _package_version("rc-foundry"),
             "torch": _package_version("torch"),
             "pydantic": _package_version("pydantic"),

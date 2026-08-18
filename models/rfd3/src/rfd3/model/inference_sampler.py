@@ -6,21 +6,12 @@ from typing import Any, Literal
 
 import torch
 from jaxtyping import Float
-from rfd3.inference.symmetry.motif_mobility import (
-    OrbitRigidMotifController,
+from rfd3.inference.symmetry.constraint_runtime import (
+    ConstraintProposalResult,
+    MosaicConstraintRuntime,
 )
-from rfd3.inference.symmetry.local_neighbourhood import (
-    LocalSymmetryRuntimeContext,
-    build_local_symmetry_neighbourhood,
-    crop_features_to_local_neighbourhood,
-    expand_local_prediction_to_full_orbit,
-    expand_local_token_prediction_to_full_orbit,
-)
-from rfd3.inference.symmetry.scaffold_guidance import (
-    ScaffoldGuidanceConfig,
-    build_boundary_topology,
-    extract_symmetry_primary_axis,
-    principal_axis_from_points,
+from rfd3.inference.symmetry.cylindrical_projector import (
+    CylindricalCoordinateProjector,
 )
 from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceGuidanceConfig,
@@ -32,6 +23,23 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     graph_interface_quality_satisfied,
     resolve_graph_interface_patch_assignments,
 )
+from rfd3.inference.symmetry.joint_projector import UnifiedJointProjector
+from rfd3.inference.symmetry.local_neighbourhood import (
+    LocalSymmetryRuntimeContext,
+    build_local_symmetry_neighbourhood,
+    crop_features_to_local_neighbourhood,
+    expand_local_prediction_to_full_orbit,
+    expand_local_token_prediction_to_full_orbit,
+)
+from rfd3.inference.symmetry.motif_mobility import (
+    OrbitRigidMotifController,
+)
+from rfd3.inference.symmetry.scaffold_guidance import (
+    ScaffoldGuidanceConfig,
+    build_boundary_topology,
+    extract_symmetry_primary_axis,
+    principal_axis_from_points,
+)
 from rfd3.inference.symmetry.symmetry_utils import (
     apply_symmetry_to_xyz_atomwise,
     build_symmetry_orbit_layout,
@@ -40,14 +48,6 @@ from rfd3.inference.symmetry.symmetry_utils import (
     symmetry_orbit_mask_mismatch_count,
     symmetry_orbit_residual,
     symmetry_orbit_tolerance,
-)
-from rfd3.inference.symmetry.joint_projector import UnifiedJointProjector
-from rfd3.inference.symmetry.constraint_runtime import (
-    ConstraintProposalResult,
-    MosaicConstraintRuntime,
-)
-from rfd3.inference.symmetry.cylindrical_projector import (
-    CylindricalCoordinateProjector,
 )
 from rfd3.model.cfg_utils import strip_X
 
@@ -146,9 +146,9 @@ class SampleDiffusionConfig:
     ] = "motif_precedence"
     symmetry_state_mode: Literal["legacy_asu", "orbit_average"] = "legacy_asu"
     symmetry_noise_mode: Literal["independent", "coupled"] = "independent"
-    symmetry_execution_backend: Literal[
-        "explicit_all_copy", "local_neighbourhood"
-    ] = "explicit_all_copy"
+    symmetry_execution_backend: Literal["explicit_all_copy", "local_neighbourhood"] = (
+        "explicit_all_copy"
+    )
     symmetry_neighbour_radius: int = 1
     symmetry_include_dihedral_mate: bool = True
     symmetry_orbit_max_error: float = 1e-3
@@ -160,9 +160,9 @@ class SampleDiffusionConfig:
     motif_mobility_response: float = 0.25
     motif_mobility_per_step_translation: float = 0.25
     motif_mobility_per_step_rotation_degrees: float = 1.0
-    motif_mobility_proposal_source: Literal[
-        "denoiser", "scaffold_boundary"
-    ] = "denoiser"
+    motif_mobility_proposal_source: Literal["denoiser", "scaffold_boundary"] = (
+        "denoiser"
+    )
     motif_mobility_apply_updates: bool = True
     motif_mobility_update_interval: int = 5
     motif_mobility_target_max_tilt_degrees: float = 20.0
@@ -502,8 +502,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         valid_state_modes = {"legacy_asu", "orbit_average"}
         if self.symmetry_state_mode not in valid_state_modes:
             raise ValueError(
-                "symmetry_state_mode must be one of "
-                f"{sorted(valid_state_modes)}"
+                "symmetry_state_mode must be one of " f"{sorted(valid_state_modes)}"
             )
         valid_finalization_modes = {
             "official_reinsert_then_project",
@@ -517,8 +516,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         valid_noise_modes = {"independent", "coupled"}
         if self.symmetry_noise_mode not in valid_noise_modes:
             raise ValueError(
-                "symmetry_noise_mode must be one of "
-                f"{sorted(valid_noise_modes)}"
+                "symmetry_noise_mode must be one of " f"{sorted(valid_noise_modes)}"
             )
         exact_state = self.symmetry_state_mode == "orbit_average"
         coupled_noise = self.symmetry_noise_mode == "coupled"
@@ -567,21 +565,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             <= 1.0
         ):
             raise ValueError(
-                "Motif mobility fractions must satisfy "
-                "0 <= start < end <= 1"
+                "Motif mobility fractions must satisfy " "0 <= start < end <= 1"
             )
         if not 0.0 < float(self.motif_mobility_response) <= 1.0:
-            raise ValueError(
-                "motif_mobility_response must be in (0, 1]"
-            )
+            raise ValueError("motif_mobility_response must be in (0, 1]")
         if float(self.motif_mobility_per_step_translation) <= 0.0:
-            raise ValueError(
-                "motif_mobility_per_step_translation must be positive"
-            )
-        if (
-            float(self.motif_mobility_per_step_rotation_degrees)
-            <= 0.0
-        ):
+            raise ValueError("motif_mobility_per_step_translation must be positive")
+        if float(self.motif_mobility_per_step_rotation_degrees) <= 0.0:
             raise ValueError(
                 "motif_mobility_per_step_rotation_degrees must be positive"
             )
@@ -592,13 +582,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f"{sorted(valid_proposal_sources)}"
             )
         if int(self.motif_mobility_update_interval) <= 0:
-            raise ValueError(
-                "motif_mobility_update_interval must be positive"
-            )
+            raise ValueError("motif_mobility_update_interval must be positive")
         if (
             self.enable_orbit_rigid_motif_mobility
-            and self.motif_mobility_proposal_source
-            == "scaffold_boundary"
+            and self.motif_mobility_proposal_source == "scaffold_boundary"
             and float(self.interface_seed_compactness_weight) > 0.0
         ):
             raise ValueError(
@@ -624,18 +611,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         if float(self.symmetry_orbit_max_error) <= 0.0:
             raise ValueError("symmetry_orbit_max_error must be positive")
         if float(self.fixed_target_symmetry_rmsd_tolerance) < 0.0:
-            raise ValueError(
-                "fixed_target_symmetry_rmsd_tolerance cannot be negative"
-            )
+            raise ValueError("fixed_target_symmetry_rmsd_tolerance cannot be negative")
         if float(self.fixed_target_symmetry_max_tolerance) < 0.0:
-            raise ValueError(
-                "fixed_target_symmetry_max_tolerance cannot be negative"
-            )
+            raise ValueError("fixed_target_symmetry_max_tolerance cannot be negative")
         valid_backends = {"explicit_all_copy", "local_neighbourhood"}
         if self.symmetry_execution_backend not in valid_backends:
             raise ValueError(
-                "symmetry_execution_backend must be one of "
-                f"{sorted(valid_backends)}"
+                "symmetry_execution_backend must be one of " f"{sorted(valid_backends)}"
             )
         if int(self.symmetry_neighbour_radius) < 0:
             raise ValueError("symmetry_neighbour_radius cannot be negative")
@@ -652,8 +634,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )
             if self.enable_orbit_rigid_motif_mobility:
                 raise ValueError(
-                    "local_neighbourhood does not yet support dynamic motif "
-                    "mobility"
+                    "local_neighbourhood does not yet support dynamic motif " "mobility"
                 )
 
     @property
@@ -687,9 +668,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             symmetry_id,
             like=coordinates,
             neighbour_radius=int(self.symmetry_neighbour_radius),
-            include_dihedral_mate=bool(
-                self.symmetry_include_dihedral_mate
-            ),
+            include_dihedral_mate=bool(self.symmetry_include_dihedral_mate),
             layout=layout,
         )
         feature_view = crop_features_to_local_neighbourhood(
@@ -712,9 +691,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
     def _scaffold_guidance_config(self) -> ScaffoldGuidanceConfig:
         return ScaffoldGuidanceConfig(
-            junction_weight=float(
-                self.motif_mobility_junction_weight
-            ),
+            junction_weight=float(self.motif_mobility_junction_weight),
             clash_weight=float(self.motif_mobility_clash_weight),
             tilt_weight=float(self.motif_mobility_tilt_weight),
             prior_weight=float(self.motif_mobility_prior_weight),
@@ -722,9 +699,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 self.motif_mobility_junction_target_distance
             ),
             clash_distance=float(self.motif_mobility_clash_distance),
-            maximum_tilt_degrees=float(
-                self.motif_mobility_target_max_tilt_degrees
-            ),
+            maximum_tilt_degrees=float(self.motif_mobility_target_max_tilt_degrees),
         )
 
     def _graph_interface_guidance_config(
@@ -732,60 +707,32 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
     ) -> GraphInterfaceGuidanceConfig:
         return GraphInterfaceGuidanceConfig(
             weight=float(self.graph_interface_guidance_weight),
-            coverage_weight=float(
-                self.graph_interface_guidance_coverage_weight
-            ),
-            continuity_weight=float(
-                self.graph_interface_guidance_continuity_weight
-            ),
-            orientation_weight=float(
-                self.graph_interface_guidance_orientation_weight
-            ),
-            shape_weight=float(
-                self.graph_interface_guidance_shape_weight
-            ),
-            backbone_weight=float(
-                self.graph_interface_guidance_backbone_weight
-            ),
+            coverage_weight=float(self.graph_interface_guidance_coverage_weight),
+            continuity_weight=float(self.graph_interface_guidance_continuity_weight),
+            orientation_weight=float(self.graph_interface_guidance_orientation_weight),
+            shape_weight=float(self.graph_interface_guidance_shape_weight),
+            backbone_weight=float(self.graph_interface_guidance_backbone_weight),
             interface_balance_weight=float(
                 self.graph_interface_guidance_interface_balance_weight
             ),
             patch_exclusivity_weight=float(
                 self.graph_interface_guidance_patch_exclusivity_weight
             ),
-            clash_weight=float(
-                self.graph_interface_guidance_clash_weight
-            ),
-            distance_weight=float(
-                self.graph_interface_guidance_distance_weight
-            ),
-            target_ca_distance=float(
-                self.graph_interface_guidance_target_ca_distance
-            ),
-            clash_ca_distance=float(
-                self.graph_interface_guidance_clash_ca_distance
-            ),
-            pairs_per_edge=int(
-                self.graph_interface_guidance_pairs_per_edge
-            ),
-            start_fraction=float(
-                self.graph_interface_guidance_start_fraction
-            ),
-            end_fraction=float(
-                self.graph_interface_guidance_end_fraction
-            ),
+            clash_weight=float(self.graph_interface_guidance_clash_weight),
+            distance_weight=float(self.graph_interface_guidance_distance_weight),
+            target_ca_distance=float(self.graph_interface_guidance_target_ca_distance),
+            clash_ca_distance=float(self.graph_interface_guidance_clash_ca_distance),
+            pairs_per_edge=int(self.graph_interface_guidance_pairs_per_edge),
+            start_fraction=float(self.graph_interface_guidance_start_fraction),
+            end_fraction=float(self.graph_interface_guidance_end_fraction),
             terminal_weight_floor=float(
                 self.graph_interface_guidance_terminal_weight_floor
             ),
-            maximum_token_step=float(
-                self.graph_interface_guidance_maximum_token_step
-            ),
+            maximum_token_step=float(self.graph_interface_guidance_maximum_token_step),
             unsatisfied_step_fraction=float(
                 self.graph_interface_guidance_unsatisfied_step_fraction
             ),
-            final_polish_steps=int(
-                self.graph_interface_guidance_final_polish_steps
-            ),
+            final_polish_steps=int(self.graph_interface_guidance_final_polish_steps),
             token_smoothing_weight=float(
                 self.graph_interface_guidance_token_smoothing_weight
             ),
@@ -804,21 +751,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             backbone_ca_tolerance=float(
                 self.graph_interface_guidance_backbone_ca_tolerance
             ),
-            patch_rigid_weight=float(
-                self.graph_interface_guidance_patch_rigid_weight
-            ),
-            patch_blend_radius=int(
-                self.graph_interface_guidance_patch_blend_radius
-            ),
+            patch_rigid_weight=float(self.graph_interface_guidance_patch_rigid_weight),
+            patch_blend_radius=int(self.graph_interface_guidance_patch_blend_radius),
             maximum_patch_rotation_degrees=float(
                 self.graph_interface_guidance_maximum_patch_rotation_degrees
             ),
             patch_lock_fraction=float(
                 self.graph_interface_guidance_patch_lock_fraction
             ),
-            line_search_steps=int(
-                self.graph_interface_guidance_line_search_steps
-            ),
+            line_search_steps=int(self.graph_interface_guidance_line_search_steps),
             line_search_contraction=float(
                 self.graph_interface_guidance_line_search_contraction
             ),
@@ -828,9 +769,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             maximum_orientation_loss=float(
                 self.graph_interface_guidance_maximum_orientation_loss
             ),
-            maximum_shape_loss=float(
-                self.graph_interface_guidance_maximum_shape_loss
-            ),
+            maximum_shape_loss=float(self.graph_interface_guidance_maximum_shape_loss),
             maximum_backbone_loss=float(
                 self.graph_interface_guidance_maximum_backbone_loss
             ),
@@ -891,8 +830,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
         if self.symmetry_noise_mode != "coupled":
             raise ValueError(
-                "Dynamic motif conditioning requires "
-                "symmetry_noise_mode=coupled"
+                "Dynamic motif conditioning requires " "symmetry_noise_mode=coupled"
             )
         if not self.preserve_fixed_motif_during_symmetry:
             raise ValueError(
@@ -921,9 +859,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         """Detach mutable runtime conditioning from the input feature mapping."""
 
         if "motif_pos" not in f:
-            raise ValueError(
-                "Dynamic motif conditioning requires f['motif_pos']"
-            )
+            raise ValueError("Dynamic motif conditioning requires f['motif_pos']")
         runtime_f = dict(f)
         runtime_f["motif_pos"] = torch.as_tensor(f["motif_pos"]).clone()
         return runtime_f
@@ -937,22 +873,16 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         """Synchronize pair conditioning and hard group targets to one pose."""
 
         if fixed_target.ndim != 3 or fixed_target.shape[0] != 1:
-            raise ValueError(
-                "Dynamic motif target must have shape [1, L, 3]"
-            )
+            raise ValueError("Dynamic motif target must have shape [1, L, 3]")
         if not torch.isfinite(fixed_target).all():
-            raise ValueError(
-                "Dynamic motif target contains NaN or Inf"
-            )
+            raise ValueError("Dynamic motif target contains NaN or Inf")
         fixed = torch.as_tensor(
             fixed_mask,
             dtype=torch.bool,
             device=fixed_target.device,
         )
         if fixed.ndim != 1 or fixed.shape[0] != fixed_target.shape[1]:
-            raise ValueError(
-                "Dynamic motif fixed mask must have shape [L]"
-            )
+            raise ValueError("Dynamic motif fixed mask must have shape [L]")
         motif_pos = torch.as_tensor(
             f["motif_pos"],
             device=fixed_target.device,
@@ -977,17 +907,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             dtype=torch.bool,
             device=fixed_target.device,
         )
-        if (
-            membership.ndim != 2
-            or membership.shape[1] != fixed_target.shape[1]
-        ):
-            raise ValueError(
-                "motif_constraint_group_membership must have shape [G, L]"
-            )
+        if membership.ndim != 2 or membership.shape[1] != fixed_target.shape[1]:
+            raise ValueError("motif_constraint_group_membership must have shape [G, L]")
         f["motif_constraint_target_coordinates"] = (
-            fixed_target[:, None, :, :]
-            .expand(-1, membership.shape[0], -1, -1)
-            .clone()
+            fixed_target[:, None, :, :].expand(-1, membership.shape[0], -1, -1).clone()
         )
 
     @staticmethod
@@ -1000,9 +923,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         }
         missing = required - set(f)
         if missing:
-            raise ValueError(
-                f"Symmetry sampling requires features {sorted(missing)}"
-            )
+            raise ValueError(f"Symmetry sampling requires features {sorted(missing)}")
         return {
             key: value
             for key, value in f.items()
@@ -1094,8 +1015,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         ]
         if not translations:
             raise ValueError(
-                "Cylindrical hard projection requires runtime symmetry "
-                "transforms"
+                "Cylindrical hard projection requires runtime symmetry " "transforms"
             )
         # For a finite affine group the barycentre of the orbit of the
         # origin is a group-fixed point.  Its component along the axis is a
@@ -1128,21 +1048,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         if not self._uses_exact_symmetry_orbits:
             return
         if not torch.isfinite(X_L).all():
-            raise ValueError(
-                f"{label} contains NaN or Inf coordinates"
-            )
+            raise ValueError(f"{label} contains NaN or Inf coordinates")
         rms, maximum = symmetry_orbit_residual(
             X_L,
             self._symmetry_features(f),
             layout=self._exact_symmetry_orbit_layout,
         )
-        if not (
-            torch.isfinite(rms).all()
-            and torch.isfinite(maximum).all()
-        ):
-            raise ValueError(
-                f"{label} produced a non-finite symmetry residual"
-            )
+        if not (torch.isfinite(rms).all() and torch.isfinite(maximum).all()):
+            raise ValueError(f"{label} produced a non-finite symmetry residual")
         # A fixed 1e-3 A gate is appropriate once coordinates return to
         # molecular scale, but float32 cannot represent an exactly idempotent
         # rotation round-trip at the initial EDM noise scale (~2560 A).
@@ -1186,9 +1099,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "diffusion_batch_size"
             )
         if not torch.isfinite(coordinates).all():
-            raise ValueError(
-                "Fixed motif target contains NaN or Inf coordinates"
-            )
+            raise ValueError("Fixed motif target contains NaN or Inf coordinates")
         symmetry_feats = self._symmetry_features(f)
         mismatch_count = symmetry_orbit_mask_mismatch_count(
             fixed_mask,
@@ -1207,23 +1118,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             atom_mask=fixed_mask,
             layout=self._exact_symmetry_orbit_layout,
         )
-        if not (
-            torch.isfinite(rms).all()
-            and torch.isfinite(maximum).all()
-        ):
+        if not (torch.isfinite(rms).all() and torch.isfinite(maximum).all()):
             raise ValueError(
                 "Fixed motif target produced a non-finite symmetry residual"
             )
-        rms_tolerance = float(
-            self.fixed_target_symmetry_rmsd_tolerance
-        )
-        max_tolerance = float(
-            self.fixed_target_symmetry_max_tolerance
-        )
-        if (
-            torch.any(rms > rms_tolerance)
-            or torch.any(maximum > max_tolerance)
-        ):
+        rms_tolerance = float(self.fixed_target_symmetry_rmsd_tolerance)
+        max_tolerance = float(self.fixed_target_symmetry_max_tolerance)
+        if torch.any(rms > rms_tolerance) or torch.any(maximum > max_tolerance):
             raise ValueError(
                 "Fixed motif target is incompatible with the runtime "
                 "symmetry operators: "
@@ -1243,9 +1144,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             layout=self._exact_symmetry_orbit_layout,
         )
         if not torch.isfinite(projected).all():
-            raise ValueError(
-                "Projected fixed motif target contains NaN or Inf"
-            )
+            raise ValueError("Projected fixed motif target contains NaN or Inf")
         return projected
 
     def _get_exact_symmetric_initial_structure(
@@ -1353,18 +1252,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             device=X_L.device,
         )
         if membership.ndim != 2 or membership.shape[1] != X_L.shape[-2]:
-            raise ValueError(
-                "motif_constraint_group_membership must have shape [G, L]"
-            )
+            raise ValueError("motif_constraint_group_membership must have shape [G, L]")
         assigned = membership.any(dim=0)
         if torch.any(assigned & ~fixed):
             raise ValueError(
                 "Motif constraint groups may contain only fixed motif atoms"
             )
         if torch.any(fixed & ~assigned):
-            raise ValueError(
-                "Every fixed motif atom must belong to a constraint group"
-            )
+            raise ValueError("Every fixed motif atom must belong to a constraint group")
 
         group_targets = f.get("motif_constraint_target_coordinates")
         if group_targets is None:
@@ -1392,9 +1287,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f"{expected_shape}"
             )
         if not torch.isfinite(group_targets).all():
-            raise ValueError(
-                "motif_constraint_target_coordinates contains NaN or Inf"
-            )
+            raise ValueError("motif_constraint_target_coordinates contains NaN or Inf")
 
         weights = membership.to(dtype=X_L.dtype)[None, :, :, None]
         counts = weights.sum(dim=1)
@@ -1408,13 +1301,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         ]
         tolerance = float(self.motif_constraint_conflict_tolerance)
         if tolerance < 0.0:
-            raise ValueError(
-                "motif_constraint_conflict_tolerance cannot be negative"
-            )
-        if (
-            relevant_deviations.numel()
-            and torch.any(relevant_deviations > tolerance)
-        ):
+            raise ValueError("motif_constraint_conflict_tolerance cannot be negative")
+        if relevant_deviations.numel() and torch.any(relevant_deviations > tolerance):
             maximum = float(relevant_deviations.max().item())
             raise ValueError(
                 "Overlapping motif constraint groups disagree: maximum "
@@ -1445,14 +1333,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             return X_L
         end_frac = float(self.interface_seed_compactness_end_frac)
         if not 0.0 < end_frac <= 1.0:
-            raise ValueError(
-                "interface_seed_compactness_end_frac must be in (0, 1]"
-            )
+            raise ValueError("interface_seed_compactness_end_frac must be in (0, 1]")
         max_step = float(self.interface_seed_compactness_max_step)
         if max_step <= 0.0:
-            raise ValueError(
-                "interface_seed_compactness_max_step must be positive"
-            )
+            raise ValueError("interface_seed_compactness_max_step must be positive")
         required = {"atom_to_token_map", "asym_id"}
         missing = required - set(f)
         if missing:
@@ -1482,18 +1366,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             for token_id in generated_tokens:
                 token_mask = generated_mask & (atom_to_token == token_id)
                 token_center = X_L[:, token_mask, :].mean(dim=1)
-                displacement = (
-                    anchor_center - token_center
-                ) * (weight * schedule)
-                norm = torch.linalg.vector_norm(
-                    displacement, dim=-1, keepdim=True
-                )
-                scale = torch.clamp(
-                    max_step / torch.clamp(norm, min=1e-8), max=1.0
-                )
-                guided[:, token_mask, :] += (
-                    displacement * scale
-                )[:, None, :]
+                displacement = (anchor_center - token_center) * (weight * schedule)
+                norm = torch.linalg.vector_norm(displacement, dim=-1, keepdim=True)
+                scale = torch.clamp(max_step / torch.clamp(norm, min=1e-8), max=1.0)
+                guided[:, token_mask, :] += (displacement * scale)[:, None, :]
         return guided
 
     def _project_stepwise_updated_coordinates(
@@ -1545,10 +1421,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         insert and align the complete motif as one coordinate set.
         """
 
-        if (
-            self.fixed_motif_finalization_mode
-            == "official_reinsert_then_project"
-        ):
+        if self.fixed_motif_finalization_mode == "official_reinsert_then_project":
             X_L, _ = centre_random_augment_around_motif(
                 X_L,
                 coord_atom_lvl_to_be_noised,
@@ -1616,9 +1489,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     "local_neighbourhood currently requires low_memory_mode=True"
                 )
         elif local_symmetry_context is not None or network_f is not None:
-            raise ValueError(
-                "A local network view was supplied to explicit_all_copy"
-            )
+            raise ValueError("A local network view was supplied to explicit_all_copy")
         mobile_orbit_count = self._validate_motif_mobility_runtime(
             f,
             diffusion_batch_size=D,
@@ -1648,12 +1519,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     "Graph interface guidance was enabled but the input "
                     "declares no required output-stage contact relation"
                 )
-            graph_interface_guidance_config = (
-                self._graph_interface_guidance_config()
-            )
-            graph_interface_patch_state = GraphInterfacePatchState(
-                assignments={}
-            )
+            graph_interface_guidance_config = self._graph_interface_guidance_config()
+            graph_interface_patch_state = GraphInterfacePatchState(assignments={})
             ranked_logger.info(
                 "Graph interface guidance initialized: "
                 f"edges={len(graph_interface_topology.edges)}"
@@ -1688,41 +1555,28 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     "dynamic motif conditioning and a scaffold-derived "
                     "pose signal are validated"
                 )
-                motif_mobility_controller = (
-                    OrbitRigidMotifController.from_features(
-                        f,
-                        fixed_target,
-                        start_fraction=float(
-                            self.motif_mobility_start_fraction
-                        ),
-                        end_fraction=float(
-                            self.motif_mobility_end_fraction
-                        ),
-                        response=float(
-                            self.motif_mobility_response
-                        ),
-                        per_step_translation=float(
-                            self.motif_mobility_per_step_translation
-                        ),
-                        per_step_rotation_degrees=float(
-                            self.motif_mobility_per_step_rotation_degrees
-                        ),
-                    )
+                motif_mobility_controller = OrbitRigidMotifController.from_features(
+                    f,
+                    fixed_target,
+                    start_fraction=float(self.motif_mobility_start_fraction),
+                    end_fraction=float(self.motif_mobility_end_fraction),
+                    response=float(self.motif_mobility_response),
+                    per_step_translation=float(
+                        self.motif_mobility_per_step_translation
+                    ),
+                    per_step_rotation_degrees=float(
+                        self.motif_mobility_per_step_rotation_degrees
+                    ),
                 )
                 if motif_mobility_controller is None:
                     raise ValueError(
                         "Orbit-rigid motif mobility was enabled but the "
                         "input declares no mobile motif constraint orbit"
                     )
-                if (
-                    self.motif_mobility_proposal_source
-                    == "scaffold_boundary"
-                ):
-                    scaffold_guidance_topology = (
-                        build_boundary_topology(
-                            f,
-                            is_motif_atom_with_fixed_coord,
-                        )
+                if self.motif_mobility_proposal_source == "scaffold_boundary":
+                    scaffold_guidance_topology = build_boundary_topology(
+                        f,
+                        is_motif_atom_with_fixed_coord,
                     )
                     scaffold_guidance_axis = extract_symmetry_primary_axis(
                         f["sym_transform"],
@@ -1740,13 +1594,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 is_ca[mobile_motif.master_atom_indices],
                             ]
                         )
-                        for mobile_motif in (
-                            motif_mobility_controller.motifs
-                        )
+                        for mobile_motif in (motif_mobility_controller.motifs)
                     )
-                    scaffold_guidance_config = (
-                        self._scaffold_guidance_config()
-                    )
+                    scaffold_guidance_config = self._scaffold_guidance_config()
                     ranked_logger.info(
                         "Scaffold-derived motif guidance initialized: "
                         f"junctions={len(scaffold_guidance_topology.junction_pairs)}, "
@@ -1755,9 +1605,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         "update_interval="
                         f"{self.motif_mobility_update_interval}"
                     )
-                    joint_packing_mobility = bool(
-                        graph_interface_topology is not None
-                    )
+                    joint_packing_mobility = bool(graph_interface_topology is not None)
                     if joint_packing_mobility:
                         ranked_logger.info(
                             "Unified packing-aware motif mobility enabled: "
@@ -1771,19 +1619,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     proposal_coordinates: torch.Tensor,
                     progress: float,
                 ) -> ConstraintProposalResult:
-                    if (
-                        self.motif_mobility_proposal_source
-                        == "scaffold_boundary"
-                    ):
+                    if self.motif_mobility_proposal_source == "scaffold_boundary":
                         if (
                             scaffold_guidance_topology is None
                             or scaffold_guidance_axis is None
                             or scaffold_guidance_principal_axes is None
                             or scaffold_guidance_config is None
                         ):
-                            raise RuntimeError(
-                                "Scaffold guidance was not initialized"
-                            )
+                            raise RuntimeError("Scaffold guidance was not initialized")
                         if joint_packing_mobility:
                             if (
                                 graph_interface_topology is None
@@ -1795,25 +1638,17 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                     "Unified packing mobility was not fully "
                                     "initialized"
                                 )
+
                             def joint_projector(candidate: torch.Tensor):
                                 return self._joint_projector(f).project(
                                     candidate,
-                                    constraint_target=(
-                                        constraint_runtime.fixed_target
-                                    ),
-                                    constraint_mask=(
-                                        is_motif_atom_with_fixed_coord
-                                    ),
+                                    constraint_target=(constraint_runtime.fixed_target),
+                                    constraint_mask=(is_motif_atom_with_fixed_coord),
                                     restore=True,
-                                    label=(
-                                        "Unified packing mobility proposal"
-                                    ),
+                                    label=("Unified packing mobility proposal"),
                                 )
 
-                            joint_update = (
-                                motif_mobility_controller
-                                .update_orbits_with_interface_packing
-                            )
+                            joint_update = motif_mobility_controller.update_orbits_with_interface_packing
                             (
                                 target,
                                 proposed_coordinates,
@@ -1824,25 +1659,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 progress=progress,
                                 topology=scaffold_guidance_topology,
                                 axis=scaffold_guidance_axis,
-                                principal_axes=(
-                                    scaffold_guidance_principal_axes
-                                ),
+                                principal_axes=(scaffold_guidance_principal_axes),
                                 scaffold_config=scaffold_guidance_config,
-                                interface_topology=(
-                                    graph_interface_topology
-                                ),
-                                interface_config=(
-                                    graph_interface_guidance_config
-                                ),
+                                interface_topology=(graph_interface_topology),
+                                interface_config=(graph_interface_guidance_config),
                                 patch_state=graph_interface_patch_state,
                                 projector=joint_projector,
-                                apply_update=bool(
-                                    self.motif_mobility_apply_updates
-                                ),
+                                apply_update=bool(self.motif_mobility_apply_updates),
                             )
-                            packing_step = dict(
-                                joint_diagnostics["packing_step"]
-                            )
+                            packing_step = dict(joint_diagnostics["packing_step"])
                             packing_step.update(
                                 {
                                     "phase": "joint_packing_mobility",
@@ -1859,8 +1684,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                             return ConstraintProposalResult(
                                 target=target,
                                 applied=bool(
-                                    motif_mobility_controller
-                                    .last_joint_transaction_applied
+                                    motif_mobility_controller.last_joint_transaction_applied
                                 ),
                                 coordinates=proposed_coordinates,
                             )
@@ -1869,13 +1693,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                             progress=progress,
                             topology=scaffold_guidance_topology,
                             axis=scaffold_guidance_axis,
-                            principal_axes=(
-                                scaffold_guidance_principal_axes
-                            ),
+                            principal_axes=(scaffold_guidance_principal_axes),
                             config=scaffold_guidance_config,
-                            apply_update=bool(
-                                self.motif_mobility_apply_updates
-                            ),
+                            apply_update=bool(self.motif_mobility_apply_updates),
                         )
                     else:
                         target = motif_mobility_controller.update(
@@ -1884,20 +1704,19 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         )
                     return ConstraintProposalResult(
                         target=target,
-                        applied=bool(
-                            motif_mobility_controller.last_update_applied
-                        ),
+                        applied=bool(motif_mobility_controller.last_update_applied),
                     )
 
             conditioning_synchronizer = None
             if motif_mobility_controller is not None:
-                conditioning_synchronizer = (
-                    lambda target: self._synchronize_mobile_motif_conditioning(
+
+                def conditioning_synchronizer(target):
+                    return self._synchronize_mobile_motif_conditioning(
                         f,
                         target,
                         is_motif_atom_with_fixed_coord,
                     )
-                )
+
             constraint_runtime = MosaicConstraintRuntime(
                 projector=self._joint_projector(f),
                 fixed_target=fixed_target,
@@ -1907,9 +1726,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     fixed_target,
                 ),
                 proposal_source=self.motif_mobility_proposal_source,
-                proposal_interval=int(
-                    self.motif_mobility_update_interval
-                ),
+                proposal_interval=int(self.motif_mobility_update_interval),
                 proposal_hook=proposal_hook,
                 synchronize_conditioning=conditioning_synchronizer,
             )
@@ -1931,9 +1748,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 D=D,
                 L=L,
                 coord_atom_lvl_to_be_noised=fixed_target,
-                is_motif_atom_with_fixed_coord=(
-                    is_motif_atom_with_fixed_coord
-                ),
+                is_motif_atom_with_fixed_coord=(is_motif_atom_with_fixed_coord),
             )  # (D, L, 3)
 
         X_noisy_L_traj = []
@@ -2057,10 +1872,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                             local_symmetry_context.feature_view,
                         )
                     )
-                    outs["sequence_indices_I"] = (
-                        diffusion_module.sequence_head.decode(
-                            outs["sequence_logits_I"]
-                        )
+                    outs["sequence_indices_I"] = diffusion_module.sequence_head.decode(
+                        outs["sequence_logits_I"]
                     )
             if "X_L" in outs and constraint_runtime is not None:
                 outs["X_L"] = constraint_runtime.process_model_prediction(
@@ -2137,30 +1950,36 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         f,
                         is_motif_atom_with_fixed_coord,
                     )
-            if (
-                graph_interface_topology is not None
-                and not joint_packing_mobility
-            ):
+            if graph_interface_topology is not None and not joint_packing_mobility:
                 if graph_interface_guidance_config is None:
                     raise RuntimeError(
                         "Graph interface guidance config was not initialized"
                     )
                 if constraint_runtime is not None:
-                    graph_projector = lambda candidate: (
-                        constraint_runtime.project_post_guidance(
+
+                    def graph_projector(
+                        candidate,
+                        *,
+                        active_step_num=step_num,
+                    ):
+                        return constraint_runtime.project_post_guidance(
                             candidate,
-                            step_num=step_num,
+                            step_num=active_step_num,
                         )
-                    )
                 else:
-                    graph_projector = lambda candidate: (
-                        self._project_stepwise_updated_coordinates(
+
+                    def graph_projector(
+                        candidate,
+                        *,
+                        active_fixed_target=fixed_target,
+                    ):
+                        return self._project_stepwise_updated_coordinates(
                             candidate,
                             f,
                             is_motif_atom_with_fixed_coord,
-                            fixed_target,
+                            active_fixed_target,
                         )
-                    )
+
                 if graph_interface_patch_state is None:
                     raise RuntimeError(
                         "Graph interface patch state was not initialized"
@@ -2237,25 +2056,32 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     config=graph_interface_guidance_config,
                 ):
                     break
-                polish_step_num = (
-                    len(noise_schedule) - 1 + polish_index
-                )
+                polish_step_num = len(noise_schedule) - 1 + polish_index
                 if constraint_runtime is not None:
-                    graph_projector = lambda candidate: (
-                        constraint_runtime.project_post_guidance(
+
+                    def graph_projector(
+                        candidate,
+                        *,
+                        active_step_num=polish_step_num,
+                    ):
+                        return constraint_runtime.project_post_guidance(
                             candidate,
-                            step_num=polish_step_num,
+                            step_num=active_step_num,
                         )
-                    )
                 else:
-                    graph_projector = lambda candidate: (
-                        self._project_stepwise_updated_coordinates(
+
+                    def graph_projector(
+                        candidate,
+                        *,
+                        active_fixed_target=fixed_target,
+                    ):
+                        return self._project_stepwise_updated_coordinates(
                             candidate,
                             f,
                             is_motif_atom_with_fixed_coord,
-                            fixed_target,
+                            active_fixed_target,
                         )
-                    )
+
                 X_L, interface_step = apply_graph_interface_guidance(
                     X_L,
                     f,
@@ -2276,10 +2102,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         if constraint_runtime is not None:
             X_L = constraint_runtime.finalize(X_L)
-        elif (
-            torch.any(is_motif_atom_with_fixed_coord)
-            and self.allow_realignment
-        ):
+        elif torch.any(is_motif_atom_with_fixed_coord) and self.allow_realignment:
             X_L = self._finalize_with_fixed_motif(
                 X_L,
                 coord_atom_lvl_to_be_noised,
@@ -2302,14 +2125,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     else None
                 ),
             )
-            final_graph_interface_quality_satisfied = (
-                graph_interface_quality_satisfied(
-                    final_graph_interface_energy,
-                    clash_ca_distance=(
-                        graph_interface_guidance_config.clash_ca_distance
-                    ),
-                    config=graph_interface_guidance_config,
-                )
+            final_graph_interface_quality_satisfied = graph_interface_quality_satisfied(
+                final_graph_interface_energy,
+                clash_ca_distance=(graph_interface_guidance_config.clash_ca_distance),
+                config=graph_interface_guidance_config,
             )
 
         result = dict(
@@ -2322,18 +2141,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             sequence_entropy_traj=sequence_entropy_traj,  # list[Tensor[D, I]]
         )
         if constraint_runtime is not None:
-            result["constraint_runtime_diagnostics"] = (
-                constraint_runtime.diagnostics()
-            )
+            result["constraint_runtime_diagnostics"] = constraint_runtime.diagnostics()
         if motif_mobility_controller is not None:
             if constraint_runtime is None:
                 raise RuntimeError(
                     "Motif mobility completed without a constraint runtime"
                 )
             mobility_diagnostics = motif_mobility_controller.diagnostics()
-            mobility_diagnostics["symmetry_id"] = str(
-                f.get("symmetry_id") or ""
-            )
+            mobility_diagnostics["symmetry_id"] = str(f.get("symmetry_id") or "")
             mobility_diagnostics["runtime_group_action_count"] = len(
                 f.get("sym_transform") or {}
             )
@@ -2355,10 +2170,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
             if scaffold_guidance_config is not None:
                 mobility_diagnostics["scaffold_guidance_config"] = {
-                    key: value
-                    for key, value in vars(
-                        scaffold_guidance_config
-                    ).items()
+                    key: value for key, value in vars(scaffold_guidance_config).items()
                 }
             axis_point = getattr(scaffold_guidance_axis, "point", None)
             axis_direction = getattr(
@@ -2383,22 +2195,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 mobility_diagnostics["symmetry_axis"] = {
                     "point": [
                         float(value)
-                        for value in axis_point.detach()
-                        .cpu()
-                        .reshape(-1)
-                        .tolist()
+                        for value in axis_point.detach().cpu().reshape(-1).tolist()
                     ],
                     "direction": [
                         float(value)
-                        for value in axis_direction.detach()
-                        .cpu()
-                        .reshape(-1)
-                        .tolist()
+                        for value in axis_direction.detach().cpu().reshape(-1).tolist()
                     ],
-                    "transform_ids": [
-                        int(value)
-                        for value in axis_transform_ids
-                    ],
+                    "transform_ids": [int(value) for value in axis_transform_ids],
                 }
             result["motif_mobility_diagnostics"] = mobility_diagnostics
             final_orbits = mobility_diagnostics["orbits"]
@@ -2410,10 +2213,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 default=0.0,
             )
             maximum_rotation = max(
-                (
-                    max(orbit["rotation_degrees"], default=0.0)
-                    for orbit in final_orbits
-                ),
+                (max(orbit["rotation_degrees"], default=0.0) for orbit in final_orbits),
                 default=0.0,
             )
             ranked_logger.info(
@@ -2429,9 +2229,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
         if graph_interface_topology is not None:
             if final_graph_interface_energy is None:
-                raise RuntimeError(
-                    "Final graph interface energy was not evaluated"
-                )
+                raise RuntimeError("Final graph interface energy was not evaluated")
             final_proxy = graph_interface_energy_diagnostics(
                 final_graph_interface_energy
             )
@@ -2439,21 +2237,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "schema_version": 8,
                 "runtime_active": True,
                 "edge_count": len(graph_interface_topology.edges),
-                "edge_ids": [
-                    edge.edge_id for edge in graph_interface_topology.edges
-                ],
+                "edge_ids": [edge.edge_id for edge in graph_interface_topology.edges],
                 "source_interface_ids": [
-                    edge.source_interface_id
-                    for edge in graph_interface_topology.edges
+                    edge.source_interface_id for edge in graph_interface_topology.edges
                 ],
-                "capacity_preflight": list(
-                    graph_interface_topology.capacity_preflight
-                ),
+                "capacity_preflight": list(graph_interface_topology.capacity_preflight),
                 "config": vars(graph_interface_guidance_config),
                 "steps": graph_interface_diagnostics,
                 "applied_steps": sum(
-                    bool(step.get("applied"))
-                    for step in graph_interface_diagnostics
+                    bool(step.get("applied")) for step in graph_interface_diagnostics
                 ),
                 "final_polish_steps": sum(
                     step.get("phase") == "final_polish"
@@ -2506,15 +2298,12 @@ class ConditionalDiffusionSampler:
             ):
                 if kwargs.get(flag, False):
                     unsupported.append(flag)
-            if float(
-                kwargs.get("interface_seed_compactness_weight", 0.0)
-            ) > 0.0:
+            if float(kwargs.get("interface_seed_compactness_weight", 0.0)) > 0.0:
                 unsupported.append("interface_seed_compactness_weight")
             if unsupported:
                 raise ValueError(
                     "Symmetry-only inference options require "
-                    "inference_sampler.kind=symmetry: "
-                    + ", ".join(sorted(unsupported))
+                    "inference_sampler.kind=symmetry: " + ", ".join(sorted(unsupported))
                 )
         try:
             SamplerCls = self._registry[kind]

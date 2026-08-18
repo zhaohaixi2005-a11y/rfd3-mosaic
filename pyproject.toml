@@ -1,7 +1,7 @@
 [project]
-name = "rc-foundry"
+name = "rfd3-mosaic"
 dynamic = ["version"]
-description = "Shared utilities and training infrastructure for biomolecular structure prediction models."
+description = "Constraint-compiled symmetric protein assembly design on RFdiffusion3."
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
@@ -63,9 +63,9 @@ rf3 = [
     "cuequivariance_torch>=0.6.1; sys_platform == 'linux'",
 ]
 all = [
-    "rc-foundry[rfd3na]",
-    "rc-foundry[rfd3]",
-    "rc-foundry[rf3]",
+    "rfd3-mosaic[rfd3na]",
+    "rfd3-mosaic[rfd3]",
+    "rfd3-mosaic[rf3]",
 ]
 dev = [
     # Linters & formatters
@@ -130,6 +130,8 @@ packages = [
 "models/rfd3na/configs" = "rfd3na/configs"
 "models/rfd3/configs" = "rfd3/configs"
 "models/rf3/configs" = "rf3/configs"
+"configs/rfd3_mosaic" = "rfd3_mosaic/resources/configs/rfd3_mosaic"
+"examples/rfd3_mosaic" = "rfd3_mosaic/resources/examples/rfd3_mosaic"
 
 [tool.hatch.build.targets.sdist]
 exclude = [

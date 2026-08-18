@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
-from pathlib import Path
 import re
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
 import yaml
 
 from rfd3_mosaic.structure import AtomRecord, read_structure_atoms
-
 
 _ASSEMBLY_SELECTOR = re.compile(
     r"^(?P<chain>[^/,]+)/(?P<start>-?[0-9]+)"

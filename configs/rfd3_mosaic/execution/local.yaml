@@ -1,0 +1,10 @@
+schema_version: 1
+name: local
+executor: local
+
+# This profile intentionally uses the standard Foundry checkpoint location.
+# Copy this file and pass --profile /path/to/profile.yaml when the checkpoint
+# or environment activation command differs on your workstation.
+setup_commands: []
+checkpoint: ~/.foundry/checkpoints/rfd3_latest.ckpt
+foundry_checkpoint_dirs: ~/.foundry/checkpoints

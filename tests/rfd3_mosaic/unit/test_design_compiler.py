@@ -148,6 +148,38 @@ class DesignCompilerTestCase(unittest.TestCase):
             3,
         )
 
+    def test_preserves_fixed_fragment_not_used_as_linker_endpoint(
+        self,
+    ) -> None:
+        lowered = lower_user_design(
+            self._design(
+                generation=[
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "c",
+                        "length": 20,
+                    }
+                ],
+                constraints=[
+                    {"kind": "fixed_xyz", "selector": "A1-2"},
+                    {"kind": "fixed_xyz", "selector": "B1-2"},
+                ],
+            )
+        )
+
+        self.assertEqual(len(lowered.specification.fragments), 2)
+        self.assertEqual(
+            {
+                fragment.selection
+                for fragment in lowered.specification.fragments.values()
+            },
+            {"A/1-2/*", "B/1-2/*"},
+        )
+        self.assertEqual(len(lowered.specification.generated_segments), 1)
+        instances = expand_symmetry_instances(lowered.specification)
+        self.assertEqual(len(instances.fragments), 6)
+
     def test_lowers_assembly_size_intent_to_required_static_objectives(
         self,
     ) -> None:
@@ -647,6 +679,48 @@ class DesignCompilerTestCase(unittest.TestCase):
         )
         self.assertEqual(mobility.bounds.max_translation, 3.0)
         self.assertIsNone(mobility.bounds.max_rotation_deg)
+
+    def test_tilt_only_component_lowers_rotation_only_mobility(self) -> None:
+        lowered = lower_user_design(
+            self._design(
+                generation=[
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 30,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "tilting_component",
+                        "pose": {
+                            "mode": "bounded_mobile",
+                            "subspace": "tilt_only",
+                            "proposal": "scaffold_objectives",
+                            "max_rotation_deg": 12.0,
+                        },
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "fixed_component",
+                    },
+                ],
+            )
+        )
+
+        orbit = lowered.specification.symmetry.orbits["motif_orbit"]
+        mobility = orbit.component_mobility["fixed_component_001"]
+        self.assertEqual(mobility.effective_subspace.value, "tilt_only")
+        self.assertEqual(
+            mobility.effective_proposal.value,
+            "scaffold_objectives",
+        )
+        self.assertIsNone(mobility.bounds.max_translation)
+        self.assertEqual(mobility.bounds.max_rotation_deg, 12.0)
 
     def test_joint_mobile_interface_fragments_lower_as_one_orbit_component(
         self,

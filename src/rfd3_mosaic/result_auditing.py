@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import yaml
@@ -20,7 +20,6 @@ from rfd3_mosaic.assembly_compiler import (
 from rfd3_mosaic.assembly_frontends import AuditRequirement
 from rfd3_mosaic.rfd3_audit_gate import failed_audit_paths
 from rfd3_mosaic.rfd3_mobility_audit import write_mobility_trajectory
-
 
 CommandRunner = Callable[[list[str]], None]
 

@@ -1,8 +1,8 @@
 """Build a radius-by-tilt stratified shortlist from a pose ensemble."""
 
 import argparse
-from bisect import bisect_right
 import json
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any, Iterable
 

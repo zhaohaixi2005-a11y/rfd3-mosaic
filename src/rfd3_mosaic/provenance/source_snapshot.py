@@ -5,13 +5,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from pathlib import Path
 import subprocess
 import tarfile
+from pathlib import Path
 from typing import Any, Iterable
 
 from rfd3_mosaic.provenance.software import file_identity, sha256_file
-
 
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
 SOURCE_SNAPSHOT_MANIFEST = "source_snapshot_manifest.json"

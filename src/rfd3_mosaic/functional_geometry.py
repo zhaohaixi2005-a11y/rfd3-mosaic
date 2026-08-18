@@ -26,7 +26,6 @@ from rfd3_mosaic.schema.functional_geometry import (
 )
 from rfd3_mosaic.schema.specs import StrictModel
 
-
 FloatArray = NDArray[np.float64]
 
 

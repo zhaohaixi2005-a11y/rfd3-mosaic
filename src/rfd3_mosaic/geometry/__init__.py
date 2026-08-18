@@ -1,3 +1,8 @@
+from rfd3_mosaic.geometry.frames import (
+    anchor_interface_frame,
+    principal_axis_anchor_frame,
+    reference_interface_pca_frame,
+)
 from rfd3_mosaic.geometry.se3 import (
     apply_transform,
     axis_angle_rotation,
@@ -18,7 +23,6 @@ from rfd3_mosaic.geometry.symmetry_registry import (
     polyhedral_transform_id,
     validate_group_closure,
 )
-from rfd3_mosaic.geometry.frames import reference_interface_pca_frame
 
 __all__ = [
     "apply_transform",
@@ -37,5 +41,7 @@ __all__ = [
     "dihedral_transform_id",
     "polyhedral_transform_id",
     "validate_group_closure",
+    "anchor_interface_frame",
+    "principal_axis_anchor_frame",
     "reference_interface_pca_frame",
 ]

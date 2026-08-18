@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -30,7 +30,6 @@ from rfd3_mosaic.result_auditing import (
     run_result_audits,
 )
 from rfd3_mosaic.run_index import update_run_state
-
 
 _AUTHORING_SOURCE_ROLES = frozenset(
     {

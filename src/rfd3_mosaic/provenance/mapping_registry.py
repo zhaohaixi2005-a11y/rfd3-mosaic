@@ -9,7 +9,6 @@ from pydantic import Field, model_validator
 from rfd3_mosaic.schema import AssemblySpecification, CompiledInstanceSet
 from rfd3_mosaic.schema.specs import Identifier, StrictModel
 
-
 NonNegativeIndex = Annotated[int, Field(ge=0)]
 
 

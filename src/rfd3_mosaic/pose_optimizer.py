@@ -15,12 +15,12 @@ useful than pretending that a smooth gradient exists.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import itertools
 import json
 import math
-from pathlib import Path
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np

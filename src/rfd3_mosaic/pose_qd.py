@@ -14,7 +14,6 @@ from rfd3_mosaic.pose_select import (
 )
 from rfd3_mosaic.pose_stratify import _bin_index, _parse_edges
 
-
 DEFAULT_DESCRIPTORS = {
     "minimum_axis_clearance_fraction_of_sampled_radius": [
         0.0,

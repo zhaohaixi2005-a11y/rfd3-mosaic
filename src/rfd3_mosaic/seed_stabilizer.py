@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from itertools import permutations, product
-import math
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -18,7 +17,6 @@ from rfd3_mosaic.topology.stabilizer_cosets import (
     stabilizer_coset_hypotheses,
 )
 from rfd3_mosaic.topology.symmetry_connectivity import finite_symmetry_spec
-
 
 _BACKBONE = frozenset({"N", "CA", "C", "O"})
 

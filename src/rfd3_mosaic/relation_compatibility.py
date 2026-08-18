@@ -17,7 +17,6 @@ from pydantic import Field, field_validator
 from rfd3_mosaic.geometry.se3 import validate_transform
 from rfd3_mosaic.schema.specs import StrictModel
 
-
 FloatArray = NDArray[np.float64]
 
 

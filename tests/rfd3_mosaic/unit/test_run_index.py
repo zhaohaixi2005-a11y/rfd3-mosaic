@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from rfd3_mosaic.run_index import (
     list_run_records,
@@ -14,6 +14,31 @@ from rfd3_mosaic.run_reporting import resolve_run_reference
 
 
 class RunIndexTestCase(unittest.TestCase):
+    def test_local_executor_identity_is_indexed(self) -> None:
+        run = self.root / "local-run"
+        update_run_state(
+            root=self.root,
+            job_id="local-20260818T120000Z-42",
+            state="completed",
+            experiment="local-test",
+            campaign="local",
+            run_directory=run,
+        )
+        path = record_submission(
+            root=self.root,
+            job_id="local-20260818T120000Z-42",
+            experiment="local-test",
+            campaign="local",
+            run_directory=run,
+            submission_directory=self.root / "submission",
+            executor="local",
+        )
+
+        self.assertTrue(path.is_file())
+        record = read_run_record(self.root, "local-20260818T120000Z-42")
+        self.assertEqual(record["executor"], "local")
+        self.assertEqual(record["state"], "completed")
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

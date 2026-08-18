@@ -1,19 +1,24 @@
 from pathlib import Path
+import re
 from typing import Any, TypeAlias
 
 import numpy as np
 import yaml
 
-from rfd3_mosaic.geometry.symmetry_registry import (
-    SymmetryTransformRegistry,
-    build_transform_registry,
+from rfd3_mosaic.geometry.frames import (
+    anchor_interface_frame,
+    principal_axis_anchor_frame,
+    reference_interface_pca_frame,
 )
-from rfd3_mosaic.geometry.frames import reference_interface_pca_frame
-from rfd3_mosaic.geometry.se3 import validate_transform
 from rfd3_mosaic.geometry.se3 import (
     axis_angle_rotation,
     compose_transforms,
     make_transform,
+    validate_transform,
+)
+from rfd3_mosaic.geometry.symmetry_registry import (
+    SymmetryTransformRegistry,
+    build_transform_registry,
 )
 from rfd3_mosaic.schema import (
     AssemblySpecification,
@@ -39,7 +44,6 @@ from rfd3_mosaic.structure import (
     load_selected_atoms,
     select_atom_subset,
 )
-
 
 ExpansionRecord: TypeAlias = tuple[
     str | None,
@@ -71,6 +75,59 @@ def _atom_coordinates(atoms: tuple[AtomRecord, ...]) -> np.ndarray:
         [atom.coordinate for atom in atoms],
         dtype=np.float64,
     )
+
+
+def _frame_atom_coordinate(
+    reference: str,
+    fragment_atoms: dict[str, tuple[AtomRecord, ...]],
+) -> np.ndarray:
+    """Resolve ``fragment:chainResidue:atom`` frame-anchor syntax."""
+
+    fields = reference.split(":")
+    if len(fields) == 3:
+        fragment_id, compact_residue, atom_name = fields
+        match = re.fullmatch(r"(.+?)(-?[0-9]+)([A-Za-z]?)", compact_residue)
+        if match is None:
+            raise ValueError(
+                f"Invalid frame atom reference {reference!r}; expected "
+                "fragment:chainResidue:atom"
+            )
+        chain_id, residue_text, insertion_code = match.groups()
+    elif len(fields) == 4:
+        fragment_id, chain_id, residue_token, atom_name = fields
+        match = re.fullmatch(r"(-?[0-9]+)([A-Za-z]?)", residue_token)
+        if match is None:
+            raise ValueError(
+                f"Invalid frame atom reference {reference!r}; expected "
+                "fragment:chain:residue:atom"
+            )
+        residue_text, insertion_code = match.groups()
+    else:
+        raise ValueError(
+            f"Invalid frame atom reference {reference!r}; expected "
+            "fragment:chainResidue:atom"
+        )
+    atoms = fragment_atoms.get(fragment_id)
+    if atoms is None:
+        raise ValueError(
+            f"Frame atom reference {reference!r} names unknown fragment "
+            f"{fragment_id!r}"
+        )
+    residue_number = int(residue_text)
+    matches = tuple(
+        atom
+        for atom in atoms
+        if atom.chain_id == chain_id
+        and atom.residue_number == residue_number
+        and atom.insertion_code == insertion_code
+        and atom.atom_name == atom_name
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            f"Frame atom reference {reference!r} matched {len(matches)} "
+            "selected atoms; expected exactly one"
+        )
+    return np.asarray(matches[0].coordinate, dtype=np.float64)
 
 
 def load_assembly_config(
@@ -1087,6 +1144,39 @@ def resolve_reference_port_frames(
         frame_spec = port_spec.frame
         if frame_spec.method == FrameMethod.PRECOMPUTED:
             transform = validate_transform(frame_spec.transform)
+        elif frame_spec.method == FrameMethod.ANCHORS:
+            assert frame_spec.origin_atoms is not None
+            assert frame_spec.x_axis_atoms is not None
+            assert frame_spec.xy_plane_atoms is not None
+            transform = anchor_interface_frame(
+                origin_coordinates=np.stack(
+                    [
+                        _frame_atom_coordinate(reference, fragment_atoms)
+                        for reference in frame_spec.origin_atoms
+                    ]
+                ),
+                x_axis_coordinates=np.stack(
+                    [
+                        _frame_atom_coordinate(reference, fragment_atoms)
+                        for reference in frame_spec.x_axis_atoms
+                    ]
+                ),
+                xy_plane_coordinates=np.stack(
+                    [
+                        _frame_atom_coordinate(reference, fragment_atoms)
+                        for reference in frame_spec.xy_plane_atoms
+                    ]
+                ),
+            )
+        elif frame_spec.method == FrameMethod.PRINCIPAL_AXIS_WITH_ANCHOR:
+            assert frame_spec.anchor_atom is not None
+            transform = principal_axis_anchor_frame(
+                _atom_coordinates(port_atoms[port_id]),
+                anchor_coordinate=_frame_atom_coordinate(
+                    frame_spec.anchor_atom,
+                    fragment_atoms,
+                ),
+            )
         elif frame_spec.method == FrameMethod.REFERENCE_INTERFACE_PCA:
             partner_ids = partners[port_id]
             if len(partner_ids) > 1:

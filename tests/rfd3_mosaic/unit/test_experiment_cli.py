@@ -1,8 +1,8 @@
 import json
-from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from pathlib import Path
 
 import yaml
 
@@ -66,9 +66,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
                     {
                         "example": {
                             "extra": {
-                                "motif_constraint_orbits": [
-                                    {"mobility_mode": "fixed"}
-                                ],
+                                "motif_constraint_orbits": [{"mobility_mode": "fixed"}],
                                 "assembly_interface_relations": [
                                     {
                                         "required": True,
@@ -103,15 +101,11 @@ class ExperimentConfigTestCase(unittest.TestCase):
                                 "motif_constraint_orbits": [
                                     {
                                         "mobility_mode": "orbit_rigid",
-                                        "mobility_proposal": (
-                                            "scaffold_objectives"
-                                        ),
+                                        "mobility_proposal": ("scaffold_objectives"),
                                     },
                                     {
                                         "mobility_mode": "orbit_rigid",
-                                        "mobility_proposal": (
-                                            "scaffold_objectives"
-                                        ),
+                                        "mobility_proposal": ("scaffold_objectives"),
                                     },
                                 ]
                             }
@@ -267,9 +261,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertIn('SOURCE_ROOT="$RUN_DIR/software"', text)
         self.assertIn('--source-root "$SOURCE_ROOT"', text)
         resolved_payload = yaml.safe_load(
-            (script.parent / "resolved_config.yaml").read_text(
-                encoding="utf-8"
-            )
+            (script.parent / "resolved_config.yaml").read_text(encoding="utf-8")
         )
         identity = resolved_payload["provenance"]["render_identity"]
         self.assertGreater(identity["source_snapshot"]["file_count"], 0)
@@ -345,15 +337,11 @@ class ExperimentConfigTestCase(unittest.TestCase):
             output_directory=self.root / "interface-rendered",
         )
         resolved_payload = yaml.safe_load(
-            (script.parent / "resolved_config.yaml").read_text(
-                encoding="utf-8"
-            )
+            (script.parent / "resolved_config.yaml").read_text(encoding="utf-8")
         )
         roles = {
             record["role"]
-            for record in resolved_payload["provenance"][
-                "render_identity"
-            ]["files"]
+            for record in resolved_payload["provenance"]["render_identity"]["files"]
         }
         self.assertIn("assembly specification", roles)
         self.assertIn("fragment source left", roles)
@@ -377,9 +365,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
             output_directory=self.root / "input-mutation-rendered",
         )
         resolved_payload = yaml.safe_load(
-            (script.parent / "resolved_config.yaml").read_text(
-                encoding="utf-8"
-            )
+            (script.parent / "resolved_config.yaml").read_text(encoding="utf-8")
         )
         source_root = self.root / "extracted-source"
         source_root.mkdir()
@@ -520,9 +506,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
             output_directory=self.root / "public-rendered",
         )
         resolved_payload = yaml.safe_load(
-            (script.parent / "resolved_config.yaml").read_text(
-                encoding="utf-8"
-            )
+            (script.parent / "resolved_config.yaml").read_text(encoding="utf-8")
         )
         frozen_design = script.parent / "public_user_design.yaml"
         self.assertEqual(
@@ -530,9 +514,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
             frozen_design,
         )
         self.assertEqual(
-            resolved_payload["provenance"]["public_user_design_source"][
-                "path"
-            ],
+            resolved_payload["provenance"]["public_user_design_source"]["path"],
             str(public.resolve()),
         )
 
@@ -553,12 +535,17 @@ class ExperimentConfigTestCase(unittest.TestCase):
             _verify_render_identity(resolved_payload, source_root=source_root)
 
     def test_plan_command_supports_machine_readable_output(self) -> None:
-        arguments = _parser().parse_args(
-            ["plan", "design.yaml", "--format", "json"]
-        )
+        arguments = _parser().parse_args(["plan", "design.yaml", "--format", "json"])
 
         self.assertEqual(arguments.command, "plan")
         self.assertEqual(arguments.format, "json")
+
+    def test_doctor_command_has_downloaded_install_defaults(self) -> None:
+        arguments = _parser().parse_args(["doctor"])
+
+        self.assertEqual(arguments.command, "doctor")
+        self.assertEqual(arguments.profile, "local")
+        self.assertIsNone(arguments.checkpoint)
 
     def test_product_commands_have_stable_public_arguments(self) -> None:
         run = _parser().parse_args(

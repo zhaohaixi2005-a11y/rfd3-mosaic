@@ -4,7 +4,6 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 Identifier = Annotated[
     str,
     Field(
@@ -485,6 +484,19 @@ class OrbitMobilitySpec(StrictModel):
     def effective_proposal(self) -> MobilityProposal | None:
         if self.mode == OrbitMobilityMode.FIXED:
             return None
+        if self.proposal is not None:
+            return self.proposal
+        if self.effective_subspace in {
+            MobilitySubspace.RADIAL,
+            MobilitySubspace.RADIAL_AXIAL,
+            MobilitySubspace.TILT_ONLY,
+            MobilitySubspace.RADIAL_ROTATION,
+            MobilitySubspace.RADIAL_AXIAL_ROTATION,
+        }:
+            # Axis-constrained motion cannot be inferred from a denoiser-only
+            # rigid fit.  It needs the compiler/runtime symmetry axis and the
+            # scaffold objective that defines a physical descent direction.
+            return MobilityProposal.SCAFFOLD_OBJECTIVES
         return self.proposal or MobilityProposal.DENOISER_FIT
 
     @property

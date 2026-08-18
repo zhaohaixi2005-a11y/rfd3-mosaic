@@ -10,8 +10,8 @@ unrelated protomers through an all-to-all compactness force.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import math
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import torch

@@ -12,7 +12,6 @@ from rfd3_mosaic.schema.specs import (
     Terminus,
 )
 
-
 TransformRow = tuple[float, float, float, float]
 TransformMatrix = tuple[
     TransformRow,
