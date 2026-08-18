@@ -31,7 +31,23 @@ if tar -tzf "$SDIST" | grep -E \
     echo "Source distribution contains internal deployment material" >&2
     exit 1
 fi
-uv pip install --no-deps --target "$SMOKE_ROOT/site-packages" "$WHEEL"
+# Use the selected interpreter's standard installer when it is available.
+# GitHub-hosted runners provide ``pip`` with setup-python but do not promise
+# the optional ``uv`` executable.  Local Mosaic development environments are
+# intentionally allowed to be uv-created, pip-less environments, so retain a
+# guarded uv fallback instead of requiring either installer everywhere.
+if "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+    "$PYTHON_BIN" -m pip install \
+        --disable-pip-version-check \
+        --no-deps \
+        --target "$SMOKE_ROOT/site-packages" \
+        "$WHEEL"
+elif command -v uv >/dev/null 2>&1; then
+    uv pip install --no-deps --target "$SMOKE_ROOT/site-packages" "$WHEEL"
+else
+    echo "Wheel smoke requires pip for $PYTHON_BIN or the uv executable" >&2
+    exit 1
+fi
 
 PROFILE_ROOT="$SMOKE_ROOT/site-packages/rfd3_mosaic/resources/configs/rfd3_mosaic/execution"
 test -f "$PROFILE_ROOT/local.yaml"
