@@ -70,6 +70,7 @@ def initialize_design(
     linker_minimum: int = 70,
     linker_maximum: int = 100,
     timesteps: int = 200,
+    designs: int = 1,
     seed: int = 42,
     packing: str = "balanced",
     cavity: str = "auto",
@@ -85,6 +86,8 @@ def initialize_design(
         raise FileNotFoundError(f"Input structure does not exist: {source}")
     if timesteps < 2 or timesteps > 200:
         raise ValueError("timesteps must be between 2 and 200")
+    if designs < 1 or designs > 10000:
+        raise ValueError("designs must be between 1 and 10000")
     if n_length < 1 or c_length < 1:
         raise ValueError("terminal generation lengths must be positive")
     if linker_minimum < 1 or linker_maximum < linker_minimum:
@@ -169,7 +172,11 @@ def initialize_design(
 
     common.update(
         {
-            "sampling": {"timesteps": timesteps, "seed": seed},
+            "sampling": {
+                "timesteps": timesteps,
+                "designs": designs,
+                "seed": seed,
+            },
             "resources": {"profile": profile},
             "output": {
                 "root": str(run_root.expanduser().resolve()),

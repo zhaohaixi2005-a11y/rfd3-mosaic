@@ -324,6 +324,7 @@ def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
                 "topology_kind": topology.get("kind"),
                 "authoring_config": topology.get("config"),
                 "timesteps": sampling.get("timesteps"),
+                "requested_designs": sampling.get("designs"),
                 "seed": sampling.get("seed"),
                 "profile": resources.get("profile_name"),
             }
@@ -529,6 +530,10 @@ def collect_run_status(
 def format_status_text(status: dict[str, Any]) -> str:
     """Render a concise terminal view from the canonical status payload."""
 
+    worker = status.get("worker") or {}
+    produced = worker.get("produced_designs")
+    accepted = worker.get("accepted_designs")
+    rejected = worker.get("rejected_designs")
     verdict = (
         "PASSED"
         if status["passed"] is True
@@ -536,6 +541,13 @@ def format_status_text(status: dict[str, Any]) -> str:
         if status["passed"] is False
         else "PENDING"
     )
+    if status["state"] == "completed" and isinstance(produced, int):
+        if accepted == produced:
+            verdict = "PASSED"
+        elif isinstance(accepted, int) and accepted > 0:
+            verdict = "PARTIAL"
+        else:
+            verdict = "REJECTED"
     lines = [
         "RFD3-Mosaic run status",
         f"job:        {status['job_id'] or 'unknown'}",
@@ -553,6 +565,11 @@ def format_status_text(status: dict[str, Any]) -> str:
             f"elapsed={scheduler.get('elapsed') or '-'} "
             f"node={scheduler.get('node_list') or '-'}"
         )
+    if isinstance(produced, int):
+        lines.append(
+            "designs:    "
+            f"produced={produced} accepted={accepted} rejected={rejected}"
+        )
     design = status.get("design") or {}
     if design:
         lines.extend(
@@ -565,7 +582,8 @@ def format_status_text(status: dict[str, Any]) -> str:
                 "components: "
                 f"{design.get('fixed_component_count', 'unknown')} fixed; "
                 f"t={design.get('timesteps', 'unknown')} "
-                f"seed={design.get('seed', 'unknown')}",
+                f"seed={design.get('seed', 'unknown')} "
+                f"designs={design.get('requested_designs', 1)}",
             ]
         )
         compiled_input = design.get("compiled_input")
@@ -658,7 +676,6 @@ def format_status_text(status: dict[str, Any]) -> str:
     lines.append(f"structures:  {len(structures)}")
     for path in structures:
         lines.append(f"  - {path}")
-    worker = status.get("worker") or {}
     if worker.get("error"):
         lines.append(
             f"failure:     {worker.get('error_type', 'Error')}: " f"{worker['error']}"
@@ -669,6 +686,9 @@ def format_status_text(status: dict[str, Any]) -> str:
 def render_html_report(status: dict[str, Any]) -> str:
     """Create a dependency-free report that can be copied with the run."""
 
+    worker = status.get("worker") or {}
+    produced = worker.get("produced_designs")
+    accepted = worker.get("accepted_designs")
     verdict = (
         "passed"
         if status["passed"] is True
@@ -676,6 +696,17 @@ def render_html_report(status: dict[str, Any]) -> str:
         if status["passed"] is False
         else "pending"
     )
+    verdict_label = verdict.upper()
+    if status["state"] == "completed" and isinstance(produced, int):
+        if accepted == produced:
+            verdict = "passed"
+            verdict_label = "PASSED"
+        elif isinstance(accepted, int) and accepted > 0:
+            verdict = "pending"
+            verdict_label = "PARTIAL"
+        else:
+            verdict = "failed"
+            verdict_label = "REJECTED"
     audit_rows = []
     for audit in status["audits"]:
         summary = audit.get("summary")
@@ -699,7 +730,6 @@ def render_html_report(status: dict[str, Any]) -> str:
         or "<li>None available</li>"
     )
     scheduler = status.get("scheduler") or {}
-    worker = status.get("worker") or {}
     design = status.get("design") or {}
     design_text = (
         json.dumps(design, sort_keys=True, indent=2)
@@ -729,12 +759,13 @@ pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}}
 </style></head><body><main>
 <div class="muted">RFD3-MOSAIC / RUN REPORT</div>
 <h1>{escape(str(status['experiment'] or 'Unnamed experiment'))}</h1>
-<div><span class="badge {verdict}">{verdict.upper()}</span></div>
+<div><span class="badge {verdict}">{verdict_label}</span></div>
 <section class="grid">
 <div class="card"><div class="label">Job ID</div><div class="value">{escape(str(status['job_id'] or 'unknown'))}</div></div>
 <div class="card"><div class="label">Logical state</div><div class="value">{escape(status['state'])}</div></div>
 <div class="card"><div class="label">Scheduler</div><div class="value">{escape(str(scheduler.get('state') or 'unavailable'))}</div></div>
 <div class="card"><div class="label">Runtime</div><div class="value">{escape(str(scheduler.get('elapsed') or 'unknown'))}</div></div>
+<div class="card"><div class="label">Design yield</div><div class="value">{escape(str(accepted if isinstance(produced, int) else 'unknown'))}/{escape(str(produced if isinstance(produced, int) else 'unknown'))}</div></div>
 </section>
 <h2>Required audits</h2>
 <table><thead><tr><th>Report</th><th>Verdict</th><th>Summary</th></tr></thead>

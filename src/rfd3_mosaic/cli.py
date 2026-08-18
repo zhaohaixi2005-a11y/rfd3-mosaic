@@ -149,6 +149,12 @@ def _parser() -> argparse.ArgumentParser:
     initialize.add_argument("--linker-minimum", type=int, default=70)
     initialize.add_argument("--linker-maximum", type=int, default=100)
     initialize.add_argument("--timesteps", type=int, default=200)
+    initialize.add_argument(
+        "--designs",
+        type=int,
+        default=1,
+        help="Number of independently sampled designs to generate.",
+    )
     initialize.add_argument("--seed", type=int, default=42)
     initialize.add_argument(
         "--packing", choices=("loose", "balanced", "tight"), default="balanced"
@@ -738,6 +744,7 @@ def _print_execution_plan(plan: dict, *, output_format: str) -> None:
     print(f"name:       {plan['name']}")
     print(f"topology:   {design['topology']}")
     print(f"timesteps:  {sampling['timesteps']}")
+    print(f"designs:    {sampling['designs']}")
     print(f"seed:       {sampling['seed']}")
     print(f"preset:     {sampling['preset']}")
     print(f"backend:    {sampling['execution_backend']}")
@@ -1639,6 +1646,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 linker_minimum=arguments.linker_minimum,
                 linker_maximum=arguments.linker_maximum,
                 timesteps=arguments.timesteps,
+                designs=arguments.designs,
                 seed=arguments.seed,
                 packing=arguments.packing,
                 cavity=arguments.cavity,

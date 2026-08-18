@@ -15,6 +15,7 @@ class DiffusionSamplingPlan(StrictModel):
     """Randomness and execution choices inside the RFD3 timestep loop."""
 
     timesteps: int
+    designs: int
     seed: int
     preset: str
     low_memory_mode: bool
@@ -95,6 +96,7 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
         component_initial_poses=component_pose_plans,
         diffusion=DiffusionSamplingPlan(
             timesteps=sampling.timesteps,
+            designs=sampling.designs,
             seed=sampling.seed,
             preset=sampling.preset,
             low_memory_mode=sampling.low_memory_mode,

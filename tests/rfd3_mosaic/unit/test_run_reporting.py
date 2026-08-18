@@ -105,6 +105,28 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertFalse(status["passed"])
         self.assertIn("semantic gate failed", format_status_text(status))
 
+    def test_multi_design_run_reports_partial_scientific_yield(self) -> None:
+        run = self._completed_run("13579")
+        summary_path = run / "experiment_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary.update(
+            {
+                "requested_designs": 4,
+                "produced_designs": 4,
+                "accepted_designs": 3,
+                "rejected_designs": 1,
+            }
+        )
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+        status = collect_run_status(
+            RunReference(job_id="13579", run_directory=run),
+            include_scheduler=False,
+        )
+
+        text = format_status_text(status)
+        self.assertIn("verdict:    PARTIAL", text)
+        self.assertIn("produced=4 accepted=3 rejected=1", text)
+
     def test_numeric_job_id_resolves_completed_run(self) -> None:
         run = self._completed_run("24680")
 

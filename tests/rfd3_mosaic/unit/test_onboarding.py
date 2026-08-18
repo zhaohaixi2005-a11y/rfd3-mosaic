@@ -39,6 +39,7 @@ class OnboardingTestCase(unittest.TestCase):
             run_root=self.root / "runs",
             motif_selector="A12-20",
             component_motion="guided",
+            designs=24,
         )
 
         design = load_user_design(path)
@@ -48,6 +49,7 @@ class OnboardingTestCase(unittest.TestCase):
         self.assertEqual(design.task.value, "create_symmetric_interface")
         self.assertEqual(design.fixed_arrangement.value, "optimize_components")
         self.assertEqual(design.preferences.component_motion.value, "guided")
+        self.assertEqual(design.sampling.designs, 24)
         self.assertEqual(len(design.generation), 2)
         self.assertEqual(design.resources.profile, "local")
 
@@ -156,6 +158,7 @@ class OnboardingTestCase(unittest.TestCase):
         )
         self.assertEqual(arguments.profile, "local")
         self.assertEqual(arguments.component_motion, "guided")
+        self.assertEqual(arguments.designs, 1)
 
         output = StringIO()
         with redirect_stdout(output):

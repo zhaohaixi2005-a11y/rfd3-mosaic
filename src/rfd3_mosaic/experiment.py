@@ -477,6 +477,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
         "sampling": {
             "preset": sampling["preset"],
             "timesteps": sampling["timesteps"],
+            "designs": sampling["designs"],
             "seed": sampling["seed"],
             "execution_backend": sampling["execution_backend"],
             "neighbour_radius": sampling["neighbour_radius"],
@@ -648,6 +649,7 @@ def resolve_experiment(
         {
             "preset",
             "timesteps",
+            "designs",
             "seed",
             "low_memory_mode",
             "execution_backend",
@@ -675,6 +677,9 @@ def resolve_experiment(
     resolved_sampling = {
         "preset": preset,
         "timesteps": timesteps,
+        "designs": _positive_integer(
+            sampling.get("designs", 1), "sampling.designs"
+        ),
         "seed": _nonnegative_integer(sampling.get("seed", 42), "sampling.seed"),
         "low_memory_mode": _boolean(
             sampling.get("low_memory_mode", True),

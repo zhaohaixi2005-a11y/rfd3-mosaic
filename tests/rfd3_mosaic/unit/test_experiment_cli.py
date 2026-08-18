@@ -228,7 +228,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
                     "n_terminal_length": 20,
                     "c_terminal_length": 25,
                 },
-                "sampling": {"timesteps": 50, "seed": 7},
+                "sampling": {"timesteps": 50, "designs": 12, "seed": 7},
                 "resources": {"profile": self.profile.name},
                 "output": {"root": "runs", "campaign": "test"},
             }
@@ -238,6 +238,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
 
         self.assertEqual(resolved.payload["topology"]["kind"], "central_motif")
         self.assertEqual(resolved.payload["sampling"]["preset"], "exact_mosaic")
+        self.assertEqual(resolved.payload["sampling"]["designs"], 12)
         sampler = resolved.payload["sampling"]["sampler"]
         self.assertFalse(sampler["allow_realignment"])
         self.assertTrue(sampler["preserve_fixed_motif_during_symmetry"])

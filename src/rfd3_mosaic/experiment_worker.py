@@ -25,7 +25,7 @@ from rfd3_mosaic.provenance.source_snapshot import (
     verify_source_snapshot_tree,
 )
 from rfd3_mosaic.result_auditing import (
-    find_result_json,
+    find_result_jsons,
     gate_result_audits,
     run_result_audits,
 )
@@ -318,6 +318,7 @@ def execute(
     interface_guidance_enabled = _graph_interface_guidance_runtime(
         rfd3_input
     )
+    requested_designs = int(sampling.get("designs", 1))
     inference_command = [
         sys.executable,
         "-m",
@@ -329,7 +330,7 @@ def execute(
         f"json_keys_subset=[{example_id}]",
         f"seed={sampling['seed']}",
         "diffusion_batch_size=1",
-        "n_batches=1",
+        f"n_batches={requested_designs}",
         f"inference_sampler.num_timesteps={sampling['timesteps']}",
         "inference_sampler.allow_realignment="
         + str(sampler["allow_realignment"]),
@@ -365,41 +366,106 @@ def execute(
         )
     _run(inference_command)
 
-    result_json = find_result_json(run_dir)
-    audit_outcome = run_result_audits(
-        run_directory=run_dir,
-        rfd3_input=rfd3_input,
-        result_json=result_json,
-        semantic_audits=assembly.semantic_audits,
-        python=sys.executable,
-        command_runner=_run,
+    result_jsons = find_result_jsons(run_dir)
+    expected_designs = requested_designs
+    if len(result_jsons) != expected_designs:
+        raise RuntimeError(
+            "RFD3 output count does not match sampling.designs: "
+            f"expected={expected_designs}, observed={len(result_jsons)}"
+        )
+
+    design_results: list[dict[str, Any]] = []
+    all_reports: list[Path] = []
+    mobility_trajectories: list[Path] = []
+    for design_index, result_json in enumerate(result_jsons):
+        design_id = result_json.stem.removesuffix("_model_0")
+        audit_directory = run_dir / "audits" / design_id
+        audit_outcome = run_result_audits(
+            run_directory=run_dir,
+            rfd3_input=rfd3_input,
+            result_json=result_json,
+            semantic_audits=assembly.semantic_audits,
+            output_directory=audit_directory,
+            python=sys.executable,
+            command_runner=_run,
+        )
+        accepted = True
+        rejection_reason = None
+        try:
+            gate_result_audits(
+                audit_outcome.reports,
+                python=sys.executable,
+                command_runner=_run,
+            )
+        except RuntimeError as error:
+            accepted = False
+            rejection_reason = str(error)
+        all_reports.extend(audit_outcome.reports)
+        if audit_outcome.mobility_trajectory is not None:
+            mobility_trajectories.append(
+                audit_outcome.mobility_trajectory
+            )
+        design_results.append(
+            {
+                "design_index": design_index,
+                "design_id": design_id,
+                "result_json": str(result_json),
+                "accepted": accepted,
+                "rejection_reason": rejection_reason,
+                "reports": [str(path) for path in audit_outcome.reports],
+                "mobility_trajectory": (
+                    str(audit_outcome.mobility_trajectory)
+                    if audit_outcome.mobility_trajectory is not None
+                    else None
+                ),
+            }
+        )
+
+    accepted_count = sum(
+        bool(record["accepted"]) for record in design_results
     )
-    gate_result_audits(
-        audit_outcome.reports,
-        python=sys.executable,
-        command_runner=_run,
-    )
+    rejected_count = len(design_results) - accepted_count
 
     completion = {
         "status": "completed",
         "experiment": config["name"],
         "topology": kind,
         "resolved_config_sha256": _sha256(frozen),
-        "result_json": str(result_json),
-        "reports": [str(path) for path in audit_outcome.reports],
+        "requested_designs": expected_designs,
+        "produced_designs": len(design_results),
+        "accepted_designs": accepted_count,
+        "rejected_designs": rejected_count,
+        "design_results": design_results,
+        "result_json": (
+            str(result_jsons[0]) if len(result_jsons) == 1 else None
+        ),
+        "result_jsons": [str(path) for path in result_jsons],
+        "reports": [str(path) for path in all_reports],
         "runtime_provenance": str(runtime_provenance_path),
         "mobility_trajectory": (
-            str(audit_outcome.mobility_trajectory)
-            if audit_outcome.mobility_trajectory is not None
+            str(mobility_trajectories[0])
+            if len(mobility_trajectories) == 1
             else None
         ),
+        "mobility_trajectories": [
+            str(path) for path in mobility_trajectories
+        ],
     }
     summary_path.write_text(
         json.dumps(completion, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     _record_worker_state(config, run_dir, "completed")
-    print("RFD3-Mosaic experiment completed and passed all required audits")
+    if expected_designs == 1 and rejected_count:
+        raise RuntimeError(
+            "The generated design failed required result audits: "
+            + str(design_results[0]["rejection_reason"])
+        )
+    print(
+        "RFD3-Mosaic experiment completed: "
+        f"accepted={accepted_count}/{expected_designs}",
+        flush=True,
+    )
 
 
 def main() -> None:

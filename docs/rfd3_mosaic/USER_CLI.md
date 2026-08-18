@@ -35,7 +35,8 @@ rfd3-mosaic init design.yaml \
   --task central-motif \
   --input motif.pdb \
   --motif-selector A12-20 \
-  --symmetry C3
+  --symmetry C3 \
+  --designs 100
 ```
 
 Creates a schema-valid ordinary-user YAML and prints the exact `plan`,
@@ -54,6 +55,24 @@ the supplied arrangement stays fixed, moves in the calibrated constrained
 subspace, or uses bounded SE(3). High-level `--packing`, `--interface-area`,
 `--cavity` and `--diversity` preferences are also available. Hard symmetry,
 motif, continuity and clash contracts are never disabled by these options.
+
+`--designs N` controls how many independently sampled structures one run
+produces. The equivalent YAML field is:
+
+```yaml
+sampling:
+  timesteps: 200
+  designs: 100
+  seed: 42
+```
+
+Mosaic keeps `diffusion_batch_size=1` for predictable GPU memory use and asks
+RFD3 for `N` sequential stochastic batches. Every result has its own structure,
+metadata, semantic audits and scaffold audit below `audits/<design-id>/`.
+The run report records produced, accepted and rejected counts; one rejected
+design does not discard the remaining outputs of a multi-design screening run.
+For very large campaigns, choose a scheduler walltime that can accommodate the
+requested count or split the total across several seeds/jobs.
 
 ### `examples` and `profiles`
 

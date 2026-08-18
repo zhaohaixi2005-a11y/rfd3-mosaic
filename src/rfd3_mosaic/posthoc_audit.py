@@ -12,7 +12,7 @@ import yaml
 
 from rfd3_mosaic.result_auditing import (
     find_compiled_input,
-    find_result_json,
+    find_result_jsons,
     gate_result_audits,
     infer_existing_run_audits,
     run_result_audits,
@@ -27,6 +27,7 @@ class PosthocAuditResult:
     passed: bool
     reports: tuple[Path, ...]
     result_json: Path
+    result_jsons: tuple[Path, ...]
     error: str | None = None
 
 
@@ -93,14 +94,25 @@ def audit_existing_run(
         )
     input_path = find_compiled_input(root)
     config = _load_mapping(config_path)
-    result_json = find_result_json(root)
+    result_jsons = find_result_jsons(root)
     audits = infer_existing_run_audits(
         run_directory=root,
         rfd3_input=input_path,
         resolved_config=config,
     )
-    planned_reports = tuple(root / audit.report_name for audit in audits) + (
-        root / "scaffold_validity_audit.json",
+    def report_directory(result_json: Path) -> Path:
+        if len(result_jsons) == 1:
+            return root
+        design_id = result_json.stem.removesuffix("_model_0")
+        return root / "audits" / design_id
+
+    planned_reports = tuple(
+        report_directory(result_json) / report_name
+        for result_json in result_jsons
+        for report_name in (
+            *(audit.report_name for audit in audits),
+            "scaffold_validity_audit.json",
+        )
     )
     previous: dict[str, Any] = {}
     if summary_path.is_file():
@@ -114,22 +126,29 @@ def audit_existing_run(
             raise ValueError(f"Expected a JSON mapping in {summary_path}")
 
     started_at = utc_now()
-    outcome = None
-    failure: Exception | None = None
-    try:
-        outcome = run_result_audits(
-            run_directory=root,
-            rfd3_input=input_path,
-            result_json=result_json,
-            semantic_audits=audits,
-            python=python,
-        )
-        gate_result_audits(outcome.reports, python=python)
-    except Exception as error:  # Preserve a complete fail-closed run record.
-        failure = error
+    reports_list: list[Path] = []
+    mobility_paths: list[Path] = []
+    failures: list[Exception] = []
+    for result_json in result_jsons:
+        try:
+            outcome = run_result_audits(
+                run_directory=root,
+                rfd3_input=input_path,
+                result_json=result_json,
+                semantic_audits=audits,
+                output_directory=report_directory(result_json),
+                python=python,
+            )
+            reports_list.extend(outcome.reports)
+            if outcome.mobility_trajectory is not None:
+                mobility_paths.append(outcome.mobility_trajectory)
+            gate_result_audits(outcome.reports, python=python)
+        except Exception as error:  # Preserve a complete fail-closed record.
+            failures.append(error)
 
-    reports = outcome.reports if outcome is not None else planned_reports
-    mobility = outcome.mobility_trajectory if outcome is not None else None
+    reports = tuple(reports_list) if reports_list else planned_reports
+    mobility = mobility_paths[0] if len(mobility_paths) == 1 else None
+    failure = failures[0] if failures else None
     passed = failure is None
     summary = dict(previous)
     prior_status = previous.get("status")
@@ -141,9 +160,15 @@ def audit_existing_run(
             "experiment": config.get("name")
             or previous.get("experiment"),
             "topology": (config.get("topology") or {}).get("kind"),
-            "result_json": str(result_json),
+            "result_json": (
+                str(result_jsons[0]) if len(result_jsons) == 1 else None
+            ),
+            "result_jsons": [str(path) for path in result_jsons],
             "reports": [str(path) for path in reports],
             "mobility_trajectory": str(mobility) if mobility else None,
+            "mobility_trajectories": [
+                str(path) for path in mobility_paths
+            ],
             "posthoc_audit": {
                 "schema_version": 1,
                 "started_at": started_at,
@@ -151,6 +176,7 @@ def audit_existing_run(
                 "passed": passed,
                 "reports": [str(path) for path in reports],
                 "inference_rerun": False,
+                "result_count": len(result_jsons),
                 "previous_worker_status": prior_status,
                 "previous_error_type": prior_error_type,
                 "previous_error": prior_error,
@@ -174,7 +200,8 @@ def audit_existing_run(
         run_directory=root,
         passed=passed,
         reports=reports,
-        result_json=result_json,
+        result_json=result_jsons[0],
+        result_jsons=result_jsons,
         error=None if passed else str(failure),
     )
 

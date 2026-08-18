@@ -509,6 +509,7 @@ class UserSamplingSpec(StrictModel):
         default_factory=dict
     )
     timesteps: Annotated[int, Field(ge=2, le=200)] = 200
+    designs: Annotated[int, Field(ge=1, le=10000)] = 1
     seed: Annotated[int, Field(ge=0)] = 42
     preset: Literal["exact_mosaic"] = "exact_mosaic"
     low_memory_mode: bool = True

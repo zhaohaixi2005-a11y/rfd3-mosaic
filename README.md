@@ -72,7 +72,8 @@ rfd3-mosaic init my-design.yaml \
   --task central-motif \
   --input motif.pdb \
   --motif-selector A12-20 \
-  --symmetry C3
+  --symmetry C3 \
+  --designs 100
 ```
 
 For a complete two-sided interface seed that must remain unchanged:

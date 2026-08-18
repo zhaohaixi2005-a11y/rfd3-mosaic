@@ -39,11 +39,23 @@ def run_command(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
-def find_result_json(run_directory: str | Path) -> Path:
-    """Require the single result metadata file produced by a one-sample run."""
+def find_result_jsons(run_directory: str | Path) -> tuple[Path, ...]:
+    """Return every independently sampled result metadata file in order."""
 
     root = Path(run_directory)
-    candidates = sorted(root.glob("*model_0.json"))
+    candidates = tuple(sorted(root.glob("*model_0.json")))
+    if not candidates:
+        raise RuntimeError(
+            "Expected at least one model_0 metadata JSON, observed "
+            f"{[str(path) for path in candidates]}"
+        )
+    return candidates
+
+
+def find_result_json(run_directory: str | Path) -> Path:
+    """Require one result for compatibility with one-design callers."""
+
+    candidates = find_result_jsons(run_directory)
     if len(candidates) != 1:
         raise RuntimeError(
             "Expected exactly one model_0 metadata JSON, observed "
@@ -87,6 +99,7 @@ def run_result_audits(
     rfd3_input: str | Path,
     result_json: str | Path,
     semantic_audits: tuple[CompiledAudit, ...],
+    output_directory: str | Path | None = None,
     python: str = sys.executable,
     command_runner: CommandRunner = run_command,
 ) -> ResultAuditOutcome:
@@ -100,14 +113,25 @@ def run_result_audits(
             f"the run directory: {input_path}"
         )
     result_path = Path(result_json).resolve()
-    trajectory = root / "mobility_trajectory.json"
+    report_root = (
+        Path(output_directory).resolve()
+        if output_directory is not None
+        else root
+    )
+    if report_root != root and root not in report_root.parents:
+        raise ValueError(
+            "Result audit output must remain inside the frozen run directory: "
+            f"{report_root}"
+        )
+    report_root.mkdir(parents=True, exist_ok=True)
+    trajectory = report_root / "mobility_trajectory.json"
     has_trajectory = write_mobility_trajectory(
         result_json=result_path,
         output=trajectory,
     )
     reports: list[Path] = []
     for audit in semantic_audits:
-        report = root / audit.report_name
+        report = report_root / audit.report_name
         command_runner(
             audit.command(
                 python=python,
@@ -121,7 +145,7 @@ def run_result_audits(
             )
         reports.append(report)
 
-    scaffold_report = root / "scaffold_validity_audit.json"
+    scaffold_report = report_root / "scaffold_validity_audit.json"
     command_runner(
         [
             python,
@@ -323,6 +347,7 @@ __all__ = [
     "ResultAuditOutcome",
     "find_compiled_input",
     "find_result_json",
+    "find_result_jsons",
     "gate_result_audits",
     "infer_existing_run_audits",
     "run_result_audits",

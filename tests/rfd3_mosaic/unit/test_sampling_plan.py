@@ -27,7 +27,19 @@ class SamplingPlanTestCase(unittest.TestCase):
         self.assertIsNone(plan.initial_pose)
         self.assertEqual(plan.diffusion.seed, 17)
         self.assertEqual(plan.diffusion.timesteps, 50)
+        self.assertEqual(plan.diffusion.designs, 1)
         self.assertEqual(assembly_initialization_payload(plan), (None, {}))
+
+    def test_compiles_user_requested_design_count(self) -> None:
+        plan = compile_sampling_plan(
+            design(seed=17, timesteps=50, designs=1000)
+        )
+
+        self.assertEqual(plan.diffusion.designs, 1000)
+
+    def test_rejects_nonpositive_design_count(self) -> None:
+        with self.assertRaises(ValidationError):
+            design(designs=0)
 
     def test_compiles_static_radius_axial_and_uniform_so3(self) -> None:
         plan = compile_sampling_plan(

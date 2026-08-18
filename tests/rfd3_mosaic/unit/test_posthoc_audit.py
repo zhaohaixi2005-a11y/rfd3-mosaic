@@ -11,6 +11,8 @@ from rfd3_mosaic.cli import _parser
 from rfd3_mosaic.posthoc_audit import audit_existing_run
 from rfd3_mosaic.result_auditing import (
     ResultAuditOutcome,
+    find_result_json,
+    find_result_jsons,
     infer_existing_run_audits,
     run_result_audits,
 )
@@ -145,6 +147,48 @@ class PosthocAuditTestCase(unittest.TestCase):
         self.assertIn("rfd3_constraint_orbit_audit", rendered)
         self.assertIn("rfd3_scaffold_audit", rendered)
         self.assertNotIn("rfd3.run_inference", rendered)
+
+    def test_multi_design_results_are_discovered_and_audited_separately(
+        self,
+    ) -> None:
+        second = self.run / "result_1_model_0.json"
+        second.write_text("{}\n", encoding="utf-8")
+
+        results = find_result_jsons(self.run)
+
+        self.assertEqual(results, (second, self.result))
+        with self.assertRaisesRegex(RuntimeError, "exactly one"):
+            find_result_json(self.run)
+
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        commands: list[list[str]] = []
+
+        def fake_run(command: list[str]) -> None:
+            commands.append(command)
+            output = Path(command[command.index("--output") + 1])
+            output.write_text('{"passed": true}\n', encoding="utf-8")
+
+        audit = CompiledAudit(
+            module="rfd3_mosaic.rfd3_constraint_orbit_audit",
+            report_name="constraint_orbit_audit.json",
+            input_arguments=(("--compiled-input", str(self.input)),),
+        )
+        output = self.run / "audits" / "result_1"
+        with patch(
+            "rfd3_mosaic.result_auditing.write_mobility_trajectory",
+            return_value=False,
+        ):
+            outcome = run_result_audits(
+                run_directory=self.run,
+                rfd3_input=self.input,
+                result_json=second,
+                semantic_audits=(audit,),
+                output_directory=output,
+                python="python-test",
+                command_runner=fake_run,
+            )
+
+        self.assertTrue(all(path.parent == output for path in outcome.reports))
 
     def test_successful_reaudit_replaces_failed_worker_verdict(self) -> None:
         self._write_compiled_input(
