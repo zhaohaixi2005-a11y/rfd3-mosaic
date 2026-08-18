@@ -110,7 +110,7 @@ Product completion is incremental rather than all-or-nothing. Version 0.1 is
 the protected, normally usable exact motif-scaffolding product: simple
 supplied-interface and central-motif YAMLs, Cn execution, strict preflight,
 provenance, required audits and portable reporting. Complex cage discovery,
-new-interface packing, additional finite/infinite groups and sequence/fold
+new-interface packing, additional finite point groups and sequence/fold
 validation are versioned capability layers above this baseline. They do not
 block routine use and may not destabilize it.
 
@@ -122,8 +122,7 @@ The practical release train is:
    defaults and all-atom post-generation packing metrics;
 3. **v0.3 cage graphs** -- multi-face/multi-orbit Dn/T engineering support,
    continuous graph-aware pose search and reproducible candidate replay;
-4. **v0.4 broader groups** -- O/I and bounded high-order execution, followed
-   separately by helical semantics;
+4. **v0.4 broader groups** -- O/I and bounded high-order execution;
 5. **v0.5 designability pipeline** -- sequence design, multimer refolding and
    unified final ranking.
 
@@ -531,8 +530,6 @@ schema/binding/audit, a rigid three-subunit functional-site GPU loop,
 single-orbit cylindrical projection, bounded orbit mobility, simultaneous
 multi-orbit control, then Cn relation compatibility plus topology/connectivity
 ranking. Dn and finite T/O/I groups follow demonstrated multi-orbit control.
-Helical symmetry is a separate finite-window backend and is not treated as a
-large cyclic group.
 
 ### Phase 2: unified ConstraintPlan
 

@@ -2109,7 +2109,7 @@ GPU 支持。显式 all-copy token-pair state 随
 assembly size 二次增长；checkpoint relative-chain encoding、超过单字符的
 chain-ID 路径、高阶 seed pairing 和 clash audit 也都尚未验证。C12/C20
 必须先通过 LRZ CPU construction，再进入小规模 bounded GPU probe；C20、
-O/I 与 helical neighbourhood 仍需要 local-neighborhood 高阶架构。
+O/I 与高阶 Cn/Dn 仍需要 local-neighborhood 高阶架构。
 
 local-neighbourhood 的数学内核与第一版实验性 sampler 接线已经落地：
 

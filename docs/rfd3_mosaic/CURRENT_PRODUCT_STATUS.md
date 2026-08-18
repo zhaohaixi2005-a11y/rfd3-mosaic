@@ -2,6 +2,10 @@
 
 Last updated: 2026-08-17
 
+Project scope explicitly excludes helical/screw symmetry. It is not a planned
+capability, release milestone or completion criterion. The supported symmetry
+roadmap is limited to Cn, Dn and the finite point groups T/O/I.
+
 ## Local development continuity
 
 Cluster availability is no longer a blocker for CPU engineering. A repository-
@@ -475,8 +479,8 @@ gate are now complete.
 - General vertex/edge/face combinations, several mixed-multiplicity interface
   types and unknown-pose stabilizer-frame optimization. The first static,
   pre-positioned T C2--C3 incidence is CPU closed.
-- Dynamic T production evidence; O and I GPU closure; helical semantics;
-  high-order local-neighbourhood GPU equivalence.
+- Dynamic T production evidence; O and I GPU closure; and high-order
+  local-neighbourhood GPU equivalence.
 - ProteinMPNN, multimer refolding, interface-energy/designability ranking and
   a single downstream acceptance gate.
 - Clean-checkout release packaging, CPU/GPU CI, schema migration and automated
@@ -493,7 +497,7 @@ gate are now complete.
 | New C3 generated interface | Run 5741271 completed; exact, interface-relation and scaffold audits passed | Final packing proxy and global pore/shape gate must pass on a new frozen run |
 | Pre-positioned two-seed C3 resolver | Run 5741324 completed inference; post-hoc multi-chain fixed audit recovered 273/273 atoms and all 6/6 supplied interface instances | Remove the six real CA clashes and obtain a newly frozen full PASS |
 | General multi-interface cage solver | User-only seed identity invariant, hyperedge/path-cover topology, atomic public multi-participant relations, binary compatibility lowering, finite-group relations, explicit seed-layout policy, global full-orbit Cn/Dn/T/O/I starts, continuous pose refinement, earlier full 754-test LRZ suite and real two-seed C3 strict replay pass | Re-run the expanded LRZ suite, representative full PASS GPU result, then stabilizer-aware poses and native variadic sampler tensors |
-| O, I and helical production workflows | Registry/compiler or planned pieces only | Dedicated end-to-end GPU gates; they are not demo claims |
+| O and I production workflows | Static representative CPU strict replay is complete | Dedicated end-to-end GPU gates; they are not yet production claims |
 
 Passing an earlier row must not be used as evidence for a later row. In
 particular, exact motif RMSD does not certify interface packing, and a static
@@ -554,7 +558,7 @@ T run does not certify an arbitrary tetrahedral cage design.
    and require both final all-atom interface and runtime proxy targets.
 4. Freeze one 200-step ordinary example for each of the two public tasks and
    generate its HTML report from the same source snapshot.
-5. Keep O/I/H, unknown-pose general cage solving and sequence/refolding out of
+5. Keep O/I GPU claims, unknown-pose general cage solving and sequence/refolding out of
    the three-day demo claim. Their schemas may remain visible only with their
    true capability levels.
 

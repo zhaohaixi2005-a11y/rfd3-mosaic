@@ -479,17 +479,6 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         ),
     ),
     CapabilityRecord(
-        id="helical_window",
-        title="Finite-window helical execution",
-        maturity=CapabilityMaturity.PLANNED,
-        public_interface=False,
-        summary=(
-            "Execute a bounded repeat window with explicit neighbours and "
-            "boundary semantics."
-        ),
-        dependencies=("local_neighbourhood",),
-    ),
-    CapabilityRecord(
         id="sequence_fold_validation",
         title="Sequence and fold validation pipeline",
         maturity=CapabilityMaturity.PLANNED,

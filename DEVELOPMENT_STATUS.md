@@ -5,6 +5,10 @@ Last updated: 2026-08-17
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
 
+Scope decision (2026-08-18): helical/screw symmetry is not part of the Mosaic
+product plan. It is excluded from capability maturity, release milestones and
+completion estimates. The supported symmetry roadmap is Cn, Dn and T/O/I.
+
 ## 2026-08-17 public cylindrical runtime and ordinary one-command spine
 
 The public `kind: cylindrical` operator now completes one honest Cn/Dn CPU
@@ -441,7 +445,7 @@ controller and is not a public `FixedComponentPoseSpec` option. Dynamic
 mobility currently requires one design per process, low-memory/chunked pair
 conditioning, exact orbit-average state and coupled symmetry noise.  The
 local-neighbourhood execution backend rejects dynamic mobility.  Cn and Dn
-have GPU evidence; dynamic T/O/I/H and dynamic quotient execution do not.
+have GPU evidence; dynamic T/O/I and dynamic quotient execution do not.
 
 The older C5 pilot scripts and configuration under
 `scripts/rfd3_mosaic/lhd101_c5_mobile_*` and
@@ -523,7 +527,7 @@ Use only as opt-in engineering/experimental functionality:
 
 Do not yet treat as routine product capabilities:
 
-- general O/I/helical generation, mixed stabilizer/coset cage components;
+- general O/I generation and mixed stabilizer/coset cage components;
 - automatic recovery of a globally optimal cage architecture from an
   arbitrary motif;
 - sequence design, multimer refolding or experimental designability claims.
@@ -538,7 +542,7 @@ packing and downstream validation improve incrementally.
 The v0.1 baseline is considered releasable when installation instructions,
 one simple supplied-interface example, one simple central-motif example,
 full CPU tests, two GPU golden replays, provenance capture and portable HTML
-reports all pass from a clean checkout. O/I/H and sequence design are not v0.1
+reports all pass from a clean checkout. O/I and sequence design are not v0.1
 release blockers.
 
 Current delivery view:
@@ -549,7 +553,7 @@ Current delivery view:
 | v0.1 product/release hardening | 80--85% | clean-checkout installation, freeze two GPU golden replays, concise tutorial |
 | v0.2 generated-interface packing | 45--55% | packing-v4 LRZ suite, repeated 50/200-step GPU evidence, all-atom output metrics |
 | v0.3 multi-face cage graphs | 35--45% | continuous joint pose refinement, three-plus-interface GPU campaigns, stabilizer/coset IR |
-| v0.4 O/I/high-order/helical | 20--30% | O/I GPU closure, bounded neighbourhood equivalence, separate helical semantics |
+| v0.4 O/I/high-order | 20--30% | O/I GPU closure and bounded neighbourhood equivalence |
 | v0.5 sequence/fold validation | 5--10% | ProteinMPNN/refolding adapters, provenance, ranking and failure gates |
 
 ### Queued-run input freezing correction (2026-08-10)
@@ -717,8 +721,7 @@ Major unfinished product/science layers:
 - calibration and GPU validation of joint continuous pose optimization for
   several seed/interface orbits;
 - vertex/edge/face stabilizers, cosets and mixed-multiplicity cage components;
-- dynamic T, O/I GPU closure, high-order local-neighbourhood execution and
-  helical symmetry;
+- dynamic T, O/I GPU closure and high-order local-neighbourhood execution;
 - integrated sequence design, multimer refolding and final candidate ranking;
 - packaged releases, GPU CI, schema migration and upstream Foundry upgrade
   automation.
@@ -1601,9 +1604,7 @@ are not the immediate construction priority.
 ### Target symmetry scope and scalable backends
 
 The target is not limited to C3--C7. The intended finite-group scope is
-`Cn`, `Dn`, `T`, `O`, and `I`; `H` is treated here as helical/screw symmetry
-and requires a finite runtime neighbourhood rather than a finite group
-multiplicity.
+`Cn`, `Dn`, `T`, `O`, and `I`.
 
 Current limitations are distinct and must not be treated as one unchecked
 constant change:
@@ -1618,7 +1619,7 @@ constant change:
   dihedral transform sets.
 - Explicit all-copy atom state grows linearly with copy count, while token
   pair state and several audits can grow quadratically; `O` (24 copies), `I`
-  (60 copies), high-order `Cn/Dn`, and long helical windows therefore cannot
+  (60 copies), and high-order `Cn/Dn` therefore cannot
   be enabled responsibly by deleting the guards.
 
 Development should separate two execution backends behind the same
@@ -1674,9 +1675,6 @@ The staged order is:
 4. validate the experimental local-neighbourhood sampler integration and
    demonstrate agreement with explicit all-copy results on small groups before
    using it for C12+, O or I;
-5. add helical screw transforms, a declared repeat window and boundary-aware
-   audits as a separate infinite-symmetry mode.
-
 The former `>10` guards have been removed locally, but production high-order
 submission remains blocked by staged CPU construction, bounded GPU memory and
 scientific audit gates rather than by a hard-coded order constant.
@@ -2761,7 +2759,7 @@ CPU pre-screening now goes beyond span/contour: every generated-protomer
 - Cyclic Cn and the proper rotational Dn registry are implemented and have
   passed the complete 127-test server suite. Dn has not yet passed native RFD3
   generation validation.
-- Polyhedral T/O/I, helical screw symmetry, and user-supplied explicit
+- Polyhedral T/O/I and user-supplied explicit
   transform sets are not implemented yet.
 - `schema/states.py` and `topology/pose_graph.py` remain placeholders for the
   later dynamic-guidance phase.
@@ -3146,8 +3144,7 @@ The successful whole-interface canary is still a **single mobile orbit**.  Its
 two selectors form one rigid component and its three C3 copies are one group
 orbit; it does not demonstrate several chemically or topologically distinct
 interfaces adapting together.  Static Dn compilation is CPU-validated, while
-native Dn GPU execution, finite T/O/I groups and finite-window helical
-execution remain incomplete.
+native Dn GPU execution and finite T/O/I groups remain incomplete.
 
 The next runtime slice therefore removes the scaffold-guidance single-orbit
 restriction.  Every mobile constraint orbit now derives a proposal from the
@@ -3167,10 +3164,8 @@ control is therefore `cpu_validated`, not merely `schema_only`.  It still
 requires a GPU canary with at least two disjoint interface orbits, both showing
 nonzero bounded motion, exact per-orbit reconstruction, atomic diagnostics,
 zero chain breaks and valid complete-assembly symmetry.  Only then should Dn
-GPU closure be used as the next group-level gate.  T/O/I require a finite-group
-registry and local-neighbourhood execution; H requires an explicit repeat
-window and boundary semantics rather than pretending that an infinite screw
-group is a finite point group.
+GPU closure be used as the next group-level gate. T/O/I require a finite-group
+registry and local-neighbourhood execution.
 
 The first two-orbit V100 execution, job `5733773`, is a **partial kernel
 result**, not an end-to-end pass.  The runtime recognized both declared mobile
@@ -3621,7 +3616,7 @@ six real CA clashes repeat under C3 (minimum 0.896 A). Its status is therefore
 The immediate demo gates are: correct the two-seed endpoint/linker clash, use
 the new morphology report, repeat both ordinary tasks from frozen P100/V100
 submissions, and retain only results whose task-specific audit set passes.
-O/I/H, unknown-pose general cage solving and downstream
+O/I GPU execution, unknown-pose general cage solving and downstream
 sequence/refolding remain outside the three-day claim.
 
 ### Fixed arrangement and generated guidance are orthogonal (2026-08-11)
