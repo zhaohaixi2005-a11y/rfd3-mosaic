@@ -1,0 +1,48 @@
+schema_version: 1
+name: public-o-static-short-t10-s960
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: O
+  axis: [0.0, 0.0, 1.0]
+  secondary_axis: [1.0, 0.0, 0.0]
+  center: [0.0, 0.0, 0.0]
+
+# Execution canary only: one complete rigid motif orbit plus short generated
+# termini through all 24 proper octahedral rotations. It does not claim that
+# this source motif is a biologically suitable octahedral building block.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 10
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 10
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: o_static_seed
+
+sampling:
+  initial_pose:
+    radius: {minimum: 110.0, maximum: 110.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    radial_direction: [0.8017837, 0.5345225, 0.2672612]
+    orientation: {method: fixed, rotation_deg: [17.0, 29.0, 11.0]}
+    seed: 96001
+  timesteps: 10
+  seed: 960
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+
+resources:
+  profile: large_gpu
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-o-static-short-canary

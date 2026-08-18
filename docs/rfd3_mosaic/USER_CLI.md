@@ -71,6 +71,9 @@ RFD3 for `N` sequential stochastic batches. Every result has its own structure,
 metadata, semantic audits and scaffold audit below `audits/<design-id>/`.
 The run report records produced, accepted and rejected counts; one rejected
 design does not discard the remaining outputs of a multi-design screening run.
+RFD3 seeds the engine once, so an output is reproducibly identified by the
+frozen source/input, the common base `seed` and its batch index; `seed` is not
+the number of designs.
 For very large campaigns, choose a scheduler walltime that can accommodate the
 requested count or split the total across several seeds/jobs.
 

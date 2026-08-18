@@ -1,0 +1,20 @@
+schema_version: 1
+name: lrz-any-gpu
+
+# Site-local convenience profile for small and medium validation gates. Slurm
+# chooses the first compatible partition that can schedule the request; this
+# does not duplicate one scientific sample across several accelerator types.
+slurm:
+  partition: lrz-hgx-h100-94x4,lrz-dgx-a100-80x8,lrz-dgx-1-v100x8,lrz-v100x2,lrz-dgx-1-p100x8,lrz-hpe-p100x4
+  gres: gpu:1
+  cpus: 8
+  memory: 120G
+  walltime: "04:00:00"
+
+setup_commands:
+  - source ~/software_paths.sh
+  - source "$SHARED_MAMBAFORGE/etc/profile.d/conda.sh"
+  - conda activate "$RC_FOUNDRY_ENV"
+
+checkpoint: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints/rfd3_latest.ckpt
+foundry_checkpoint_dirs: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints
