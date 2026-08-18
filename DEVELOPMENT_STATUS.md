@@ -21,10 +21,14 @@ closed.
 
 The executable regression case is one C3 path containing an N extension, two
 fixed interface fragments joined by an exact materialized linker, and a C
-extension in one native RFD3 contig. The focused adapter suite passes 35 tests;
-the complete CPU suite passes 814 tests. This closes the ordinary native-path
-mixing limitation. General multi-orbit path ownership and quotient interface
-edge stabilizers remain subsequent milestones.
+extension in one native RFD3 contig. The focused adapter suite passes 36 tests;
+the complete CPU suite passes 814 tests. A following adapter slice also keeps
+fixed component selectors that do not terminate a generated connection as
+explicit independent ASU polymer paths instead of rejecting them or inventing
+a covalent linker. Symmetry-equivalent copies already represented by a
+cross-copy path are deduplicated by source-fragment identity. That extension
+raises the complete CPU gate to 815 tests. General multi-orbit path ownership
+and quotient interface-edge stabilizers remain subsequent milestones.
 
 ## 2026-08-17 public cylindrical runtime and ordinary one-command spine
 

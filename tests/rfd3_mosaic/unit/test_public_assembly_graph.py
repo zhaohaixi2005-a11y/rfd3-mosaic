@@ -602,16 +602,19 @@ class PublicAssemblyGraphTestCase(unittest.TestCase):
         ):
             UserDesignSpec.model_validate(payload)
 
-    def test_lowering_rejects_unattached_component_fragment(self) -> None:
+    def test_lowering_preserves_unattached_component_fragment(self) -> None:
         payload = self._payload()
         payload["connections"] = payload["connections"][:-1]
         design = UserDesignSpec.model_validate(payload)
 
-        with self.assertRaisesRegex(
-            NotImplementedError,
-            "unattached selectors: A6",
-        ):
-            lower_user_design(design)
+        lowered = lower_user_design(design)
+
+        self.assertEqual(len(lowered.specification.fragments), 4)
+        self.assertEqual(len(lowered.specification.generated_segments), 2)
+        self.assertEqual(
+            len(lowered.specification.motion_groups["fixed_component_003"].members),
+            2,
+        )
 
     def test_rejects_mixing_graph_and_legacy_frontends(self) -> None:
         payload = self._payload()

@@ -25,7 +25,11 @@ rather than selecting a separate terminal-only backend. It rejects only
 nonlinear or chemically inconsistent cases such as branching, cycles,
 duplicate endpoint generators and extensions on occupied internal termini.
 Both terminal-only inputs and existing link-only C3/D3/T/O/I paths remain
-backward compatible. The complete local CPU suite passes 814 tests.
+backward compatible. Fixed selectors belonging to a declared component may
+also remain as independent ASU paths when no user connection uses their chain
+termini; Mosaic does not invent a linker for them. Equivalent fragments
+already represented through a cross-copy path are not duplicated. The
+complete local CPU suite passes 815 tests.
 
 ### Ordinary-user execution spine: CPU closed
 

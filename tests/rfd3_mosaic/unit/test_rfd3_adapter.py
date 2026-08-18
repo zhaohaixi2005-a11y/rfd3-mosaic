@@ -103,7 +103,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
             copy_index=0,
         )
 
-    def _compile(self, links, *, terminal_extensions=()):
+    def _compile(self, links, *, terminal_extensions=(), orphan_fragments=()):
         selectors = {
             "fragment_a": "A1-2",
             "fragment_b": "B1-2",
@@ -129,6 +129,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
             return _compile_asu_scaffold_segments(
                 links,
                 terminal_extensions=terminal_extensions,
+                orphan_fragments=orphan_fragments,
                 mapping={},
                 manifest_path=Path("unused-manifest.json"),
                 linker_length=None,
@@ -344,6 +345,27 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
                     ),
                 ),
             )
+
+    def test_fixed_component_fragment_without_link_is_an_independent_path(
+        self,
+    ) -> None:
+        segments = self._compile(
+            (self._link("link_ab", "fragment_a", "fragment_b"),),
+            orphan_fragments=(
+                SimpleNamespace(
+                    id="fragment_c",
+                    source_id="fragment_c",
+                    orbit_id="motif_orbit",
+                    copy_index=0,
+                ),
+            ),
+        )
+
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(
+            {segment.contig_chains for segment in segments},
+            {("A1-2,5-5,B1-2",), ("C1-2",)},
+        )
 
     def test_ordered_path_rejects_chain_branching(self) -> None:
         with self.assertRaisesRegex(

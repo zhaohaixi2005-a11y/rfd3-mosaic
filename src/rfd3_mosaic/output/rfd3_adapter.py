@@ -338,10 +338,19 @@ def _write_compact_mixed_standalone_artifacts(
     mapping: dict[str, Any],
     output_directory: Path,
     links,
+    additional_fragment_ids=(),
 ) -> tuple[Path, Path, dict[str, Any], tuple[tuple[str, ...], ...]]:
     """Write representative contig chains while retaining full provenance."""
 
-    paths = _ordered_fragment_paths(links)
+    paths = list(_ordered_fragment_paths(links))
+    represented = {
+        fragment_id for path in paths for fragment_id in path
+    }
+    paths.extend(
+        (fragment_id,)
+        for fragment_id in sorted(set(additional_fragment_ids) - represented)
+    )
+    paths = tuple(paths)
     if len(paths) > 52:
         raise NotImplementedError(
             "Compact mixed-entity ASU still requires more than 52 input "
@@ -1342,6 +1351,7 @@ def _compile_asu_scaffold_segments(
     links,
     *,
     terminal_extensions=(),
+    orphan_fragments=(),
     mapping: dict[str, Any],
     manifest_path: Path,
     linker_length: int | None,
@@ -1622,6 +1632,44 @@ def _compile_asu_scaffold_segments(
                 materialized_linker_length=None,
                 linker_length_policy="not_applicable",
                 contour_preflight=entry.contour_preflight,
+            )
+        )
+
+    represented_fragment_ids = {
+        fragment_id
+        for segment in segments
+        for fragment_id in segment.fragment_instance_ids
+    }
+    for fragment in sorted(orphan_fragments, key=lambda item: item.id):
+        if fragment.id in represented_fragment_ids:
+            continue
+        if fragment.orbit_id is None:
+            raise ValueError(
+                "Native symmetry requires every fixed-only ASU path to "
+                "belong to an expanded orbit"
+            )
+        selector = _fragment_selector(mapping, fragment.id)
+        segments.append(
+            _ASUScaffoldSegment(
+                links=(),
+                terminal_extensions=(),
+                fragment_instance_ids=(fragment.id,),
+                chain_fragment_instance_ids=((fragment.id,),),
+                selectors=(selector,),
+                from_selector=selector,
+                to_selector=selector,
+                contig_chains=(selector,),
+                orbit_id=fragment.orbit_id,
+                copy_index=fragment.copy_index,
+                path_id=f"fixed__{fragment.id}",
+                materialized_linker_length=None,
+                linker_length_policy="not_applicable",
+                contour_preflight={
+                    "status": "not_applicable",
+                    "passed": True,
+                    "materialized_linker_length": None,
+                    "evaluated_link_instances": [],
+                },
             )
         )
 
@@ -2159,6 +2207,11 @@ def compile_assembly_rfd3_input(
         for link in instances.scaffold_links.values()
         if link.orbit_id is not None
     )
+    generated_orbit_ids.update(
+        fragment.orbit_id
+        for fragment in instances.fragments.values()
+        if fragment.orbit_id is not None
+    )
     generated_action_payloads = {
         json.dumps(
             (
@@ -2207,18 +2260,6 @@ def compile_assembly_rfd3_input(
         ):
             link_by_id.setdefault(segment.id, segment)
     orbit_links = list(link_by_id.values())
-    if compact_mixed_runtime:
-        (
-            adapter_structure_path,
-            adapter_mapping_path,
-            mapping,
-            compact_paths,
-        ) = _write_compact_mixed_standalone_artifacts(
-            structure_path=standalone.structure_path,
-            mapping=mapping,
-            output_directory=output,
-            links=orbit_links,
-        )
     terminal_extensions = [
         segment
         for segment in instances.generated_segments.values()
@@ -2232,6 +2273,47 @@ def compile_assembly_rfd3_input(
         raise ValueError(
             "The native RFD3 adapter requires at least one copy-zero "
             "generated segment"
+        )
+
+    represented_fragment_ids = {
+        fragment_id
+        for link in orbit_links
+        for fragment_id in (
+            link.from_fragment_instance_id,
+            link.to_fragment_instance_id,
+        )
+    }
+    represented_fragment_ids.update(
+        extension.anchor_fragment_instance_id
+        for extension in terminal_extensions
+    )
+    represented_source_ids = {
+        instances.fragments[fragment_id].source_id
+        for fragment_id in represented_fragment_ids
+    }
+    orphan_fragments = [
+        fragment
+        for fragment in instances.fragments.values()
+        if fragment.source_id not in represented_source_ids
+        and (
+            (preexpanded_runtime_layout and not compact_mixed_runtime)
+            or fragment.copy_index == 0
+        )
+    ]
+    if compact_mixed_runtime:
+        (
+            adapter_structure_path,
+            adapter_mapping_path,
+            mapping,
+            compact_paths,
+        ) = _write_compact_mixed_standalone_artifacts(
+            structure_path=standalone.structure_path,
+            mapping=mapping,
+            output_directory=output,
+            links=orbit_links,
+            additional_fragment_ids=(
+                fragment.id for fragment in orphan_fragments
+            ),
         )
 
     transform_set_ids = set()
@@ -2249,6 +2331,15 @@ def compile_assembly_rfd3_input(
                 "belong to an expanded orbit"
             )
         transform_set_ids.add(spec.symmetry.orbits[extension.orbit_id].transform_set)
+    for fragment in orphan_fragments:
+        if fragment.orbit_id is None:
+            raise ValueError(
+                "Native symmetry requires every fixed-only ASU path to "
+                "belong to an expanded orbit"
+            )
+        transform_set_ids.add(
+            spec.symmetry.orbits[fragment.orbit_id].transform_set
+        )
     if len(transform_set_ids) != 1:
         raise ValueError(
             "All ASU scaffold relations must use one native symmetry "
@@ -2273,6 +2364,7 @@ def compile_assembly_rfd3_input(
         for orbit_id in (
             *(link.orbit_id for link in orbit_links),
             *(extension.orbit_id for extension in terminal_extensions),
+            *(fragment.orbit_id for fragment in orphan_fragments),
         )
         if orbit_id is not None
     }
@@ -2360,6 +2452,7 @@ def compile_assembly_rfd3_input(
     segments = _compile_asu_scaffold_segments(
         orbit_links,
         terminal_extensions=terminal_extensions,
+        orphan_fragments=orphan_fragments,
         mapping=mapping,
         manifest_path=standalone.manifest_path,
         linker_length=linker_length,
@@ -2423,6 +2516,7 @@ def compile_assembly_rfd3_input(
             orbit_id = segment.orbit_id
             orbit = instances.constraint_orbits[orbit_id]
             member_copy_indices = {
+                segment.copy_index,
                 *(entry.link.copy_index for entry in segment.links),
                 *(extension.copy_index for extension in segment.terminal_extensions),
             }
@@ -2438,6 +2532,11 @@ def compile_assembly_rfd3_input(
                 *(entry.link.source_id for entry in segment.links),
                 *(extension.source_id for extension in segment.terminal_extensions),
             )
+            if not source_path_key:
+                source_path_key = tuple(
+                    instances.fragments[fragment_id].source_id
+                    for fragment_id in segment.fragment_instance_ids
+                )
             for chain_offset, _ in enumerate(segment.contig_chains):
                 entity_key = (source_path_key, chain_offset)
                 entity_id = entity_ids.setdefault(

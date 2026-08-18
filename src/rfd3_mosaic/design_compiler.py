@@ -876,32 +876,6 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
 
     if not design.generation and not design.connections:
         raise ValueError("Executable user designs require generated regions")
-    if design.components:
-        connected_selectors = {
-            _graph_endpoint_segment(design, endpoint)
-            for connection in design.connections
-            for endpoint in (
-                connection.from_endpoint,
-                connection.to_endpoint,
-            )
-        }
-        unattached = [
-            selector
-            for component in design.components.values()
-            for selector in component.selectors
-            if _one_segment(
-                selector,
-                label="assembly component selector",
-            )
-            not in connected_selectors
-        ]
-        if unattached:
-            raise NotImplementedError(
-                "The current RFD3 graph backend requires every component "
-                "selector to participate in a generated connection; "
-                "unattached selectors: "
-                + ", ".join(unattached)
-            )
     plan = compile_constraint_plan(design)
     sampling_plan = compile_sampling_plan(design)
     plan.require_backend_support({"fixed_xyz", "cylindrical"})
