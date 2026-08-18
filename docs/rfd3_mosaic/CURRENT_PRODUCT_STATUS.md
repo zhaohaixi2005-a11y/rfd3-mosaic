@@ -1,6 +1,6 @@
 # RFD3-Mosaic Current Product Status
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 Project scope explicitly excludes helical/screw symmetry. It is not a planned
 capability, release milestone or completion criterion. The supported symmetry
@@ -15,6 +15,17 @@ is `make local-test`; GPU and scientific-quality claims still require frozen
 cluster canaries and are not inferred from local CPU success.
 
 ## Current implementation checkpoint
+
+### Unified native polymer paths: CPU closed
+
+One native RFD3 polymer path may now combine generated N/C terminal regions,
+an arbitrary ordered sequence of fixed fragments, and generated scaffold
+links. The compiler attaches extensions by actual fragment/terminus identity
+rather than selecting a separate terminal-only backend. It rejects only
+nonlinear or chemically inconsistent cases such as branching, cycles,
+duplicate endpoint generators and extensions on occupied internal termini.
+Both terminal-only inputs and existing link-only C3/D3/T/O/I paths remain
+backward compatible. The complete local CPU suite passes 814 tests.
 
 ### Ordinary-user execution spine: CPU closed
 

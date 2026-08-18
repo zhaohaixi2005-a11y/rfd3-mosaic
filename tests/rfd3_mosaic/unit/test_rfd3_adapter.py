@@ -20,38 +20,28 @@ from rfd3_mosaic.schema.specs import (
     SymmetryTransformSetSpec,
     SymmetryType,
 )
-from rfd3_mosaic.topology.stabilizer_cosets import (
-    stabilizer_coset_hypotheses,
-)
 from rfd3_mosaic.topology.component_incidence import (
     enumerate_binary_interface_incidence_plans,
 )
+from rfd3_mosaic.topology.stabilizer_cosets import (
+    stabilizer_coset_hypotheses,
+)
 from rfd3_mosaic.topology.symmetry_connectivity import finite_symmetry_spec
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-LHD101_CONFIG = (
-    REPOSITORY_ROOT
-    / "configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
-)
+LHD101_CONFIG = REPOSITORY_ROOT / "configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
 LHD101_D2_DRYRUN_CONFIG = (
-    REPOSITORY_ROOT
-    / "configs/rfd3_mosaic/dihedral/lhd101_d2_dryrun.yaml"
+    REPOSITORY_ROOT / "configs/rfd3_mosaic/dihedral/lhd101_d2_dryrun.yaml"
 )
 LHD101_D3_DRYRUN_CONFIG = (
-    REPOSITORY_ROOT
-    / "configs/rfd3_mosaic/dihedral/lhd101_d3_dryrun.yaml"
+    REPOSITORY_ROOT / "configs/rfd3_mosaic/dihedral/lhd101_d3_dryrun.yaml"
 )
 LHD101_D3_TWO_ORBIT_CONFIG = (
-    REPOSITORY_ROOT
-    / "configs/rfd3_mosaic/dihedral/"
+    REPOSITORY_ROOT / "configs/rfd3_mosaic/dihedral/"
     "lhd101_d3_two_orbit_engineering.yaml"
 )
 LHD101_CYCLIC_CONFIGS = {
-    order: (
-        REPOSITORY_ROOT
-        / f"configs/rfd3_mosaic/cyclic/lhd101_c{order}.yaml"
-    )
+    order: (REPOSITORY_ROOT / f"configs/rfd3_mosaic/cyclic/lhd101_c{order}.yaml")
     for order in (5, 6, 7)
 }
 
@@ -92,7 +82,28 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
             "evaluated_link_instances": [],
         }
 
-    def _compile(self, links):
+    @staticmethod
+    def _extension(
+        extension_id: str,
+        anchor: str,
+        terminus: str,
+        *,
+        minimum_length: int,
+        maximum_length: int,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=extension_id,
+            source_id=extension_id,
+            anchor_fragment_instance_id=anchor,
+            anchor_terminus=SimpleNamespace(value=terminus),
+            minimum_length=minimum_length,
+            maximum_length=maximum_length,
+            tie_group=None,
+            orbit_id="motif_orbit",
+            copy_index=0,
+        )
+
+    def _compile(self, links, *, terminal_extensions=()):
         selectors = {
             "fragment_a": "A1-2",
             "fragment_b": "B1-2",
@@ -102,9 +113,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
         with (
             patch(
                 "rfd3_mosaic.output.rfd3_adapter._fragment_selector",
-                side_effect=lambda _mapping, fragment_id: selectors[
-                    fragment_id
-                ],
+                side_effect=lambda _mapping, fragment_id: selectors[fragment_id],
             ),
             patch(
                 "rfd3_mosaic.output.rfd3_adapter."
@@ -119,6 +128,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
         ):
             return _compile_asu_scaffold_segments(
                 links,
+                terminal_extensions=terminal_extensions,
                 mapping={},
                 manifest_path=Path("unused-manifest.json"),
                 linker_length=None,
@@ -139,9 +149,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
         with (
             patch(
                 "rfd3_mosaic.output.rfd3_adapter._fragment_selector",
-                side_effect=lambda _mapping, fragment_id: selectors[
-                    fragment_id
-                ],
+                side_effect=lambda _mapping, fragment_id: selectors[fragment_id],
             ),
             patch(
                 "rfd3_mosaic.output.rfd3_adapter."
@@ -197,9 +205,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
         with (
             patch(
                 "rfd3_mosaic.output.rfd3_adapter._fragment_selector",
-                side_effect=lambda _mapping, fragment_id: selectors[
-                    fragment_id
-                ],
+                side_effect=lambda _mapping, fragment_id: selectors[fragment_id],
             ),
             patch(
                 "rfd3_mosaic.output.rfd3_adapter."
@@ -227,9 +233,7 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
             for link in segment.links
         }
         policies = {
-            link.linker_length_policy
-            for segment in segments
-            for link in segment.links
+            link.linker_length_policy for segment in segments for link in segment.links
         }
         self.assertEqual(lengths, {9})
         self.assertEqual(policies, {"tie_group_contour_sufficient"})
@@ -285,6 +289,62 @@ class OrderedASUScaffoldPathTestCase(unittest.TestCase):
         )
         self.assertEqual(len(segments[0].links), 3)
 
+    def test_ordered_path_accepts_terminal_extensions_at_both_ends(
+        self,
+    ) -> None:
+        segments = self._compile(
+            (self._link("link_ab", "fragment_a", "fragment_b"),),
+            terminal_extensions=(
+                self._extension(
+                    "n_flank",
+                    "fragment_a",
+                    "N",
+                    minimum_length=3,
+                    maximum_length=3,
+                ),
+                self._extension(
+                    "c_flank",
+                    "fragment_b",
+                    "C",
+                    minimum_length=4,
+                    maximum_length=4,
+                ),
+            ),
+        )
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(
+            segments[0].contig_chains,
+            ("3-3,A1-2,5-5,B1-2,4-4",),
+        )
+        self.assertEqual(
+            [extension.id for extension in segments[0].terminal_extensions],
+            ["c_flank", "n_flank"],
+        )
+
+    def test_ordered_path_rejects_extension_on_occupied_internal_end(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "terminus of an internal fixed fragment",
+        ):
+            self._compile(
+                (
+                    self._link("link_ab", "fragment_a", "fragment_b"),
+                    self._link("link_bc", "fragment_b", "fragment_c"),
+                ),
+                terminal_extensions=(
+                    self._extension(
+                        "invalid_n_flank",
+                        "fragment_b",
+                        "N",
+                        minimum_length=3,
+                        maximum_length=3,
+                    ),
+                ),
+            )
+
     def test_ordered_path_rejects_chain_branching(self) -> None:
         with self.assertRaisesRegex(
             NotImplementedError,
@@ -316,9 +376,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             self.output_directory,
             base_directory=REPOSITORY_ROOT,
         )
-        self.payload = json.loads(
-            self.outputs.input_path.read_text(encoding="utf-8")
-        )[self.outputs.example_id]
+        self.payload = json.loads(self.outputs.input_path.read_text(encoding="utf-8"))[
+            self.outputs.example_id
+        ]
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -410,9 +470,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
                             }
                         },
                         "symmetry": {
-                            "transform_sets": {
-                                "ring": {"type": "cyclic", "order": 3}
-                            },
+                            "transform_sets": {"ring": {"type": "cyclic", "order": 3}},
                             "orbits": {
                                 "motif_orbit": {
                                     "transform_set": "ring",
@@ -459,19 +517,67 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(
             {
                 group["constraint_kind"]
-                for group in emitted["extra"][
-                    "motif_constraint_groups"
-                ]
+                for group in emitted["extra"]["motif_constraint_groups"]
             },
             {"fixed_motif"},
         )
         self.assertEqual(
-            emitted["extra"]["motif_constraint_orbits"][0][
-                "group_transform_ids"
-            ],
+            emitted["extra"]["motif_constraint_orbits"][0]["group_transform_ids"],
             [0, 1, 2],
         )
         self.assertTrue(emitted["symmetry"]["use_declared_frames"])
+
+    def test_native_path_mixes_scaffold_link_and_terminal_extensions(
+        self,
+    ) -> None:
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        assembly = payload["interface_seed"]
+        assembly["scaffold_links"]["protomer"]["copy_relation"] = {"orbit_offset": 0}
+        assembly["generated_segments"] = {
+            "n_flank": {
+                "anchor": {"fragment": "right", "terminus": "N"},
+                "length": {"minimum": 3, "maximum": 3},
+            },
+            "c_flank": {
+                "anchor": {"fragment": "left", "terminus": "C"},
+                "length": {"minimum": 4, "maximum": 4},
+            },
+        }
+        config = self.output_directory / "mixed-polymer-path.yaml"
+        config.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "mixed-polymer-path-output",
+            base_directory=REPOSITORY_ROOT,
+            example_id="mixed-polymer-path-c3",
+            linker_length=80,
+        )
+        emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
+            "mixed-polymer-path-c3"
+        ]
+
+        self.assertEqual(
+            emitted["contig"],
+            "3-3,B1-31,80-80,A1-30,4-4",
+        )
+        self.assertEqual(
+            emitted["extra"]["scaffold_mode"],
+            "linker_with_terminal_extensions",
+        )
+        self.assertEqual(
+            len(emitted["extra"]["asu_terminal_extensions"]),
+            2,
+        )
+        self.assertEqual(
+            emitted["extra"]["asu_scaffold_segments"][0][
+                "terminal_extension_instance_ids"
+            ],
+            ["c_flank@primary_orbit[0]", "n_flank@primary_orbit[0]"],
+        )
 
     def test_compiles_finite_quotient_orbit_into_physical_frames(
         self,
@@ -521,9 +627,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
                             }
                         },
                         "symmetry": {
-                            "transform_sets": {
-                                "ring": {"type": "cyclic", "order": 4}
-                            },
+                            "transform_sets": {"ring": {"type": "cyclic", "order": 4}},
                             "orbits": {
                                 "motif_orbit": {
                                     "transform_set": "ring",
@@ -563,14 +667,10 @@ class RFD3AdapterTestCase(unittest.TestCase):
             self.output_directory / "quotient-output",
             example_id="quotient-c4-c2",
         )
-        emitted = json.loads(outputs.input_path.read_text())[
-            "quotient-c4-c2"
-        ]
+        emitted = json.loads(outputs.input_path.read_text())["quotient-c4-c2"]
 
         self.assertEqual(emitted["symmetry"]["id"], "C4")
-        self.assertTrue(
-            emitted["symmetry"]["declared_action_is_quotient"]
-        )
+        self.assertTrue(emitted["symmetry"]["declared_action_is_quotient"])
         self.assertEqual(
             emitted["symmetry"]["declared_transform_order"],
             list(action.coset_representative_ids),
@@ -586,9 +686,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
             "stabilizer_quotient",
         )
         self.assertEqual(
-            emitted["extra"]["motif_constraint_orbits"][0][
-                "group_transform_ids"
-            ],
+            emitted["extra"]["motif_constraint_orbits"][0]["group_transform_ids"],
             [0, 1],
         )
         report = prevalidate_rfd3_input(outputs.input_path)
@@ -637,10 +735,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
                         ("O", (0.80, -0.10, 0.75), "O"),
                     ):
                         coordinate = base_ca + np.asarray(offset)
-                        coordinate = (
-                            coordinate @ matrix[:3, :3].T
-                            + matrix[:3, 3]
-                        )
+                        coordinate = coordinate @ matrix[:3, :3].T + matrix[:3, 3]
                         lines.append(
                             f"ATOM  {serial:5d} {atom_name:>4s} ALA "
                             f"{chain:1s}{residue:4d}    "
@@ -666,20 +761,18 @@ class RFD3AdapterTestCase(unittest.TestCase):
         def action_payload(participant):
             action = participant.action
             return {
-                "coset_representative_ids": list(
-                    action.coset_representative_ids
-                ),
-                "stabilizer_transform_ids": list(
-                    action.stabilizer_transform_ids
-                ),
+                "coset_representative_ids": list(action.coset_representative_ids),
+                "stabilizer_transform_ids": list(action.stabilizer_transform_ids),
                 "transform_to_coset_representative": dict(
                     action.transform_to_coset_representative
                 ),
             }
 
         fragments = {}
-        groups = {"c2_component": {"members": [], "mode": "fixed"},
-                  "c3_component": {"members": [], "mode": "fixed"}}
+        groups = {
+            "c2_component": {"members": [], "mode": "fixed"},
+            "c3_component": {"members": [], "mode": "fixed"},
+        }
         links = {}
         component_fragments = {"c2_component": [], "c3_component": []}
         for component_id, chains in (
@@ -730,23 +823,15 @@ class RFD3AdapterTestCase(unittest.TestCase):
                         "ports": {
                             "c2_port": {
                                 "group": "c2_component",
-                                "fragments": component_fragments[
-                                    "c2_component"
-                                ],
+                                "fragments": component_fragments["c2_component"],
                                 "atoms": "heavy",
-                                "frame": {
-                                    "method": "reference_interface_pca"
-                                },
+                                "frame": {"method": "reference_interface_pca"},
                             },
                             "c3_port": {
                                 "group": "c3_component",
-                                "fragments": component_fragments[
-                                    "c3_component"
-                                ],
+                                "fragments": component_fragments["c3_component"],
                                 "atoms": "heavy",
-                                "frame": {
-                                    "method": "reference_interface_pca"
-                                },
+                                "frame": {"method": "reference_interface_pca"},
                             },
                         },
                         "symmetry": {
@@ -796,9 +881,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
             self.output_directory / "mixed-t-c2-c3-output",
             example_id="mixed-t-c2-c3",
         )
-        emitted = json.loads(outputs.input_path.read_text())[
-            "mixed-t-c2-c3"
-        ]
+        emitted = json.loads(outputs.input_path.read_text())["mixed-t-c2-c3"]
         extra = emitted["extra"]
         self.assertEqual(extra["symmetry_action_kind"], "mixed_stabilizer_quotients")
         self.assertEqual(len(extra["preexpanded_chain_layout"]), 24)
@@ -905,9 +988,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
             self.output_directory / "tetrahedral-output",
             example_id="tetrahedral-terminal",
         )
-        emitted = json.loads(outputs.input_path.read_text())[
-            "tetrahedral-terminal"
-        ]
+        emitted = json.loads(outputs.input_path.read_text())["tetrahedral-terminal"]
 
         self.assertEqual(emitted["symmetry"]["id"], "T")
         self.assertTrue(emitted["symmetry"]["use_declared_frames"])
@@ -920,9 +1001,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
             12,
         )
         self.assertEqual(
-            emitted["extra"]["motif_constraint_orbits"][0][
-                "group_transform_ids"
-            ],
+            emitted["extra"]["motif_constraint_orbits"][0]["group_transform_ids"],
             list(range(12)),
         )
 
@@ -980,9 +1059,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
                             }
                         },
                         "symmetry": {
-                            "transform_sets": {
-                                "ring": {"type": "cyclic", "order": 3}
-                            },
+                            "transform_sets": {"ring": {"type": "cyclic", "order": 3}},
                             "orbits": {
                                 "motif_orbit": {
                                     "transform_set": "ring",
@@ -1050,12 +1127,11 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 "mode": "fixed",
             },
         }
-        assembly["symmetry"]["orbits"]["motif_orbit"][
-            "master_groups"
-        ] = ["left_component", "right_component"]
-        assembly["symmetry"]["orbits"]["motif_orbit"][
-            "component_mobility"
-        ] = {
+        assembly["symmetry"]["orbits"]["motif_orbit"]["master_groups"] = [
+            "left_component",
+            "right_component",
+        ]
+        assembly["symmetry"]["orbits"]["motif_orbit"]["component_mobility"] = {
             "left_component": {
                 "mode": "orbit_rigid",
                 "bounds": {
@@ -1115,18 +1191,12 @@ class RFD3AdapterTestCase(unittest.TestCase):
             self.output_directory / "public-independent-output",
             example_id="public-independent-c3",
         )
-        independent_emitted = json.loads(
-            independent_outputs.input_path.read_text()
-        )["public-independent-c3"]
-        independent_groups = independent_emitted["extra"][
-            "motif_constraint_groups"
+        independent_emitted = json.loads(independent_outputs.input_path.read_text())[
+            "public-independent-c3"
         ]
-        independent_orbits = independent_emitted["extra"][
-            "motif_constraint_orbits"
-        ]
-        relation_plan = independent_emitted["extra"][
-            "assembly_interface_relations"
-        ]
+        independent_groups = independent_emitted["extra"]["motif_constraint_groups"]
+        independent_orbits = independent_emitted["extra"]["motif_constraint_orbits"]
+        relation_plan = independent_emitted["extra"]["assembly_interface_relations"]
 
         self.assertEqual(len(independent_groups), 6)
         self.assertEqual(len(independent_orbits), 2)
@@ -1243,9 +1313,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
                             }
                         },
                         "symmetry": {
-                            "transform_sets": {
-                                "ring": {"type": "cyclic", "order": 3}
-                            },
+                            "transform_sets": {"ring": {"type": "cyclic", "order": 3}},
                             "orbits": {
                                 "motif_orbit": {
                                     "transform_set": "ring",
@@ -1305,9 +1373,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(len(emitted["select_fixed_atoms"]), 3)
 
     def test_c12_compiles_to_a_native_input(self) -> None:
-        config = yaml.safe_load(
-            LHD101_CYCLIC_CONFIGS[5].read_text(encoding="utf-8")
-        )
+        config = yaml.safe_load(LHD101_CYCLIC_CONFIGS[5].read_text(encoding="utf-8"))
         interface_seed = config["interface_seed"]
         transform_set = next(
             iter(interface_seed["symmetry"]["transform_sets"].values())
@@ -1316,9 +1382,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
 
         # Preserve the configured C5 adjacent-copy chord length while
         # increasing the ring order.
-        interface_seed["initialization"]["primary_seed"]["placement"][
-            "radius"
-        ]["mean"] = 83.68
+        interface_seed["initialization"]["primary_seed"]["placement"]["radius"][
+            "mean"
+        ] = 83.68
 
         config_path = self.output_directory / "lhd101_c12.yaml"
         config_path.write_text(
@@ -1331,9 +1397,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             base_directory=REPOSITORY_ROOT,
             example_id="lhd101_c12_interface_seed",
         )
-        emitted = json.loads(
-            outputs.input_path.read_text(encoding="utf-8")
-        )[outputs.example_id]
+        emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
+            outputs.example_id
+        ]
 
         self.assertEqual(emitted["symmetry"]["id"], "C12")
         self.assertEqual(emitted["extra"]["symmetry_multiplicity"], 12)
@@ -1375,8 +1441,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                item["materialized_linker_length"] == 85
-                and item["passed"]
+                item["materialized_linker_length"] == 85 and item["passed"]
                 for item in contour["evaluated_link_instances"]
             )
         )
@@ -1390,9 +1455,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             base_directory=REPOSITORY_ROOT,
             linker_length=92,
         )
-        emitted = json.loads(
-            outputs.input_path.read_text(encoding="utf-8")
-        )[outputs.example_id]
+        emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
+            outputs.example_id
+        ]
 
         self.assertEqual(emitted["contig"], "B1-31,92-92,C1-30")
         self.assertEqual(
@@ -1474,12 +1539,8 @@ class RFD3AdapterTestCase(unittest.TestCase):
     def test_emits_bounded_orbit_rigid_metadata_when_requested(
         self,
     ) -> None:
-        payload = yaml.safe_load(
-            LHD101_CONFIG.read_text(encoding="utf-8")
-        )
-        payload["interface_seed"]["interfaces"]["ring_interface"][
-            "mobility"
-        ] = {
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        payload["interface_seed"]["interfaces"]["ring_interface"]["mobility"] = {
             "mode": "orbit_rigid",
             "bounds": {
                 "max_translation": 2.0,
@@ -1504,9 +1565,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             self.output_directory / "mobile",
             base_directory=REPOSITORY_ROOT,
         )
-        emitted = json.loads(
-            outputs.input_path.read_text(encoding="utf-8")
-        )[outputs.example_id]
+        emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
+            outputs.example_id
+        ]
         orbit = emitted["extra"]["motif_constraint_orbits"][0]
 
         self.assertEqual(orbit["mobility_mode"], "orbit_rigid")
@@ -1587,9 +1648,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             candidate.structure_path.read_bytes(),
             rebuilt.structure_path.read_bytes(),
         )
-        emitted = json.loads(
-            rebuilt.input_path.read_text(encoding="utf-8")
-        )[rebuilt.example_id]
+        emitted = json.loads(rebuilt.input_path.read_text(encoding="utf-8"))[
+            rebuilt.example_id
+        ]
         self.assertEqual(emitted["extra"]["pose_source"], "candidate_manifest")
         self.assertEqual(
             emitted["extra"]["pose_candidate_structure_sha256"],
@@ -1598,9 +1659,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
 
     def test_emits_native_d2_input_from_dihedral_config(self) -> None:
         payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
-        transform_set = payload["interface_seed"]["symmetry"][
-            "transform_sets"
-        ]["ring_c3"]
+        transform_set = payload["interface_seed"]["symmetry"]["transform_sets"][
+            "ring_c3"
+        ]
         transform_set.update(
             {
                 "type": "dihedral",
@@ -1608,9 +1669,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 "secondary_axis": [1.0, 0.0, 0.0],
             }
         )
-        payload["interface_seed"]["initialization"]["primary_seed"][
-            "placement"
-        ]["axial_offset"] = {"mean": 40.0, "range": 0.0}
+        payload["interface_seed"]["initialization"]["primary_seed"]["placement"][
+            "axial_offset"
+        ] = {"mean": 40.0, "range": 0.0}
         config = self.output_directory / "lhd101_d2.yaml"
         config.write_text(
             yaml.safe_dump(payload, sort_keys=False),
@@ -1666,17 +1727,13 @@ class RFD3AdapterTestCase(unittest.TestCase):
             "independent_chains",
         )
         self.assertEqual(emitted["extra"]["asu_chain_count"], 2)
-        self.assertIsNone(
-            emitted["extra"]["materialized_linker_length"]
-        )
+        self.assertIsNone(emitted["extra"]["materialized_linker_length"])
         self.assertEqual(
             emitted["extra"]["linker_length_policy"],
             "not_applicable",
         )
         self.assertEqual(
-            emitted["extra"]["materialized_linker_contour_preflight"][
-                "status"
-            ],
+            emitted["extra"]["materialized_linker_contour_preflight"]["status"],
             "not_applicable",
         )
 
@@ -1710,9 +1767,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
                     base_directory=REPOSITORY_ROOT,
                     example_id=f"tracked_{symmetry_id.lower()}_dryrun",
                 )
-                emitted = json.loads(
-                    outputs.input_path.read_text(encoding="utf-8")
-                )[outputs.example_id]
+                emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
+                    outputs.example_id
+                ]
                 self.assertEqual(emitted["symmetry"]["id"], symmetry_id)
                 self.assertEqual(
                     emitted["extra"]["symmetry_multiplicity"],
@@ -1732,9 +1789,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             base_directory=REPOSITORY_ROOT,
             example_id="lhd101_d3_two_orbit_engineering",
         )
-        emitted = json.loads(
-            outputs.input_path.read_text(encoding="utf-8")
-        )[outputs.example_id]
+        emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
+            outputs.example_id
+        ]
         extra = emitted["extra"]
 
         self.assertEqual(emitted["symmetry"]["id"], "D3")
@@ -1753,9 +1810,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(len(extra["asu_scaffold_segments"]), 2)
         self.assertEqual(len(extra["motif_constraint_orbits"]), 2)
         self.assertEqual(len(extra["motif_constraint_groups"]), 12)
-        self.assertTrue(
-            extra["materialized_linker_contour_preflight"]["passed"]
-        )
+        self.assertTrue(extra["materialized_linker_contour_preflight"]["passed"])
 
     def test_c5_c6_c7_compile_to_native_cyclic_inputs(self) -> None:
         for order, config in LHD101_CYCLIC_CONFIGS.items():
@@ -1766,9 +1821,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
                     base_directory=REPOSITORY_ROOT,
                     example_id=f"lhd101_c{order}_interface_seed",
                 )
-                emitted = json.loads(
-                    outputs.input_path.read_text(encoding="utf-8")
-                )[outputs.example_id]
+                emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
+                    outputs.example_id
+                ]
                 extra = emitted["extra"]
 
                 self.assertEqual(emitted["symmetry"]["id"], f"C{order}")
@@ -1780,10 +1835,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
                     extra["registry_transform_order"],
                     [
                         f"C{order}:e",
-                        *[
-                            f"C{order}:r{copy_index}"
-                            for copy_index in range(1, order)
-                        ],
+                        *[f"C{order}:r{copy_index}" for copy_index in range(1, order)],
                     ],
                 )
                 self.assertEqual(

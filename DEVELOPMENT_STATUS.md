@@ -1,6 +1,6 @@
 # RFD3 Mosaic Development Status
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
@@ -8,6 +8,23 @@ new login or a new Codex session. Update it whenever a milestone changes.
 Scope decision (2026-08-18): helical/screw symmetry is not part of the Mosaic
 product plan. It is excluded from capability maturity, release milestones and
 completion estimates. The supported symmetry roadmap is Cn, Dn and T/O/I.
+
+## 2026-08-18 unified native polymer paths
+
+The native RFD3 adapter no longer treats scaffold links and terminal
+extensions as mutually exclusive assembly modes. It now builds ordered linear
+polymer paths, attaches N/C generated regions only to exposed path termini,
+supports isolated motif-with-flanks paths, and preserves each path's orbit,
+copy and generated-segment provenance. Branching, cycles, duplicate terminal
+generators and extensions on already occupied internal termini still fail
+closed.
+
+The executable regression case is one C3 path containing an N extension, two
+fixed interface fragments joined by an exact materialized linker, and a C
+extension in one native RFD3 contig. The focused adapter suite passes 35 tests;
+the complete CPU suite passes 814 tests. This closes the ordinary native-path
+mixing limitation. General multi-orbit path ownership and quotient interface
+edge stabilizers remain subsequent milestones.
 
 ## 2026-08-17 public cylindrical runtime and ordinary one-command spine
 
