@@ -152,8 +152,8 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
                     {
                         "case": {
                             "extra": {
-                                "automatic_symmetric_scaffold_packing": {
-                                    "mode": "symmetric_generated",
+                                "scaffold_core_guidance": {
+                                    "mode": "intra_inter",
                                     "intra_chain_weight": 1.0,
                                     "inter_chain_weight": 0.1,
                                 }

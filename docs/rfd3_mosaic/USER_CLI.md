@@ -56,8 +56,9 @@ subspace, or uses bounded SE(3). High-level `--packing`, `--interface-area`,
 `--cavity` and `--diversity` preferences are also available. Hard symmetry,
 motif, continuity and clash contracts are never disabled by these options.
 
-`--designs N` controls how many independently sampled structures one run
-produces. The equivalent YAML field is:
+`--designs N` controls how many independent RFD3 diffusion samples one run
+produces **from one compiled initial pose**. It does not compile `N` different
+radius/orientation poses. The equivalent YAML field is:
 
 ```yaml
 sampling:
@@ -73,7 +74,8 @@ The run report records produced, accepted and rejected counts; one rejected
 design does not discard the remaining outputs of a multi-design screening run.
 RFD3 seeds the engine once, so an output is reproducibly identified by the
 frozen source/input, the common base `seed` and its batch index; `seed` is not
-the number of designs.
+the pre-RFD3 pose seed. Use `resolve`/`search`, or a campaign with an explicit
+pose-seed schedule, when each design should start from a different rigid pose.
 For very large campaigns, choose a scheduler walltime that can accommodate the
 requested count or split the total across several seeds/jobs.
 
@@ -181,21 +183,22 @@ Every supplied interface is preserved as a geometric entity. Generated
 regions connect user-declared endpoints without changing the internal seed
 geometry.
 
-For a cyclic interface-seeded oligomer whose generated scaffold should also
-pack across neighbouring protomers, opt in explicitly:
+The complete seed can still move as one rigid body relative to the symmetry
+axis. For example, add `--component-motion free` to `init`, or set:
 
 ```yaml
-sampling:
-  scaffold_packing: symmetric_generated
+preferences:
+  component_motion: free
 ```
 
-This does not redefine or deform the supplied interface. It builds one
-generated-residue packing edge for every unique cyclic neighbour pair and
-uses the normal coverage, continuity, orientation, shape, backbone and clash
-contracts. With a bounded-mobile seed, generated patches and complete rigid
-seed-orbit motion are accepted or rolled back jointly. The current automatic
-neighbour policy is Cn-only; other point groups should declare their physical
-interface edges explicitly.
+This compiles both sides into one coupling group with bounded full SE(3)
+motion; it never allows the two supplied interface sides to move independently.
+
+`task: preserve_supplied_geometry` never invents a second generated interface.
+The supplied interface remains the oligomeric contact; generated residues are
+shaped as a monomer scaffold. `sampling.scaffold_packing: symmetric_generated`
+is rejected for this task because it has the different meaning “create a new
+generated--generated symmetry-neighbour interface”.
 
 The same guidance path exposes an RFdiffusion-style intra/inter balance; this
 is a pair of weights, not another workflow mode:

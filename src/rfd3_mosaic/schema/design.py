@@ -921,8 +921,12 @@ class UserDesignSpec(StrictModel):
         if (
             not isinstance(value, dict)
             or "fixed_arrangement" in value
+            or bool(value.get("components"))
             or value.get("task")
-            != UserDesignTask.CREATE_SYMMETRIC_INTERFACE.value
+            not in {
+                UserDesignTask.CREATE_SYMMETRIC_INTERFACE.value,
+                UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY.value,
+            }
         ):
             return value
         preferences = value.get("preferences")
@@ -1067,6 +1071,13 @@ class UserDesignSpec(StrictModel):
 
         motion = self.preferences.component_motion
         if self.sampling.scaffold_packing == "symmetric_generated":
+            if self.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
+                raise ValueError(
+                    "sampling.scaffold_packing=symmetric_generated creates a "
+                    "new generated--generated interface and is incompatible "
+                    "with task=preserve_supplied_geometry; use intra/inter "
+                    "guidance alone to shape the generated monomer scaffold"
+                )
             symmetry_id = (
                 self.symmetry
                 if isinstance(self.symmetry, str)
@@ -1334,19 +1345,21 @@ class UserDesignSpec(StrictModel):
                     "controller requires a principal symmetry axis; locked "
                     "generated-interface guidance is topology-neutral"
                 )
-        elif self.fixed_arrangement != FixedArrangementPolicy.LOCKED:
-            raise ValueError(
-                "preserve_supplied_geometry requires "
-                "fixed_arrangement=locked"
-            )
-        if (
-            self.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
-            and motion not in {None, ComponentMotionPreference.LOCKED}
+        elif (
+            self.fixed_arrangement
+            == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
         ):
-            raise ValueError(
-                "preserve_supplied_geometry requires "
-                "preferences.component_motion=locked"
+            symmetry_id = (
+                self.symmetry
+                if isinstance(self.symmetry, str)
+                else self.symmetry.id
             )
+            if not symmetry_id.startswith(("C", "D")):
+                raise ValueError(
+                    "mobile preserve_supplied_geometry currently supports "
+                    "Cn and Dn; the complete supplied interface remains one "
+                    "joint-rigid body while its assembly pose is optimized"
+                )
         return self
 
 

@@ -534,7 +534,11 @@ def required_capabilities_for_design(
         raise TypeError("Expected a UserDesignSpec")
     identifiers: list[str] = []
     task_optimizes_fixed_components = bool(
-        design.task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE
+        design.task
+        in {
+            UserDesignTask.CREATE_SYMMETRIC_INTERFACE,
+            UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY,
+        }
         and design.fixed_arrangement
         == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
     )

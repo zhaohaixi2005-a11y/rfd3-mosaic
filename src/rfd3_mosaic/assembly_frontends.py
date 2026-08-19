@@ -402,27 +402,29 @@ def lower_experiment_topology(
             audit_requirements.append(
                 AuditRequirement.GRAPH_INTERFACE_GUIDANCE
             )
+        guidance = design.guidance
+        scaffold_core_requested = bool(
+            guidance is not None
+            and (
+                (guidance.intra_chain_weight or 0.0) > 0.0
+                or (
+                    guidance.inter_chain_weight is not None
+                    and guidance.inter_chain_weight < 1.0
+                )
+            )
+        )
+        if scaffold_core_requested:
+            audit_requirements.append(
+                AuditRequirement.SCAFFOLD_CORE_GUIDANCE
+            )
         if design.sampling.scaffold_packing == "symmetric_generated":
             if compiled_interfaces:
                 raise ValueError(
                     "sampling.scaffold_packing=symmetric_generated cannot be "
                     "combined with graph-declared output interfaces"
                 )
-            guidance = design.guidance
-            scaffold_core_requested = bool(
-                guidance is not None
-                and (
-                    (guidance.intra_chain_weight or 0.0) > 0.0
-                    or (
-                        guidance.inter_chain_weight is not None
-                        and guidance.inter_chain_weight < 1.0
-                    )
-                )
-            )
             audit_requirements.append(
-                AuditRequirement.SCAFFOLD_CORE_GUIDANCE
-                if scaffold_core_requested
-                else AuditRequirement.GRAPH_INTERFACE_GUIDANCE
+                AuditRequirement.GRAPH_INTERFACE_GUIDANCE
             )
         # Audit the effective lowered runtime contract.  Task presets may
         # derive mobility without mutating the user's fixed_xyz declaration,
@@ -480,6 +482,25 @@ def lower_experiment_topology(
                     }
                     if design.sampling.scaffold_packing
                     == "symmetric_generated"
+                    else None
+                ),
+                "scaffold_core_guidance": (
+                    {
+                        "mode": "intra_inter",
+                        "intra_chain_weight": (
+                            guidance.intra_chain_weight
+                            if guidance is not None
+                            and guidance.intra_chain_weight is not None
+                            else 0.0
+                        ),
+                        "inter_chain_weight": (
+                            guidance.inter_chain_weight
+                            if guidance is not None
+                            and guidance.inter_chain_weight is not None
+                            else 1.0
+                        ),
+                    }
+                    if scaffold_core_requested
                     else None
                 ),
                 **lowered.runtime_constraint_metadata,

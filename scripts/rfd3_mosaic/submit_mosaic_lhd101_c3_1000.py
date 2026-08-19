@@ -80,7 +80,16 @@ def main() -> None:
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--total-designs", type=int)
-    parser.add_argument("--designs-per-job", type=int, default=10)
+    parser.add_argument(
+        "--designs-per-job",
+        type=int,
+        default=1,
+        help=(
+            "Diffusion samples sharing one compiled pose in each job. The "
+            "scientific LHD101 comparison defaults to one so all 1000 "
+            "designs receive distinct pre-RFD3 poses."
+        ),
+    )
     parser.add_argument("--seed-start", type=int, default=10000)
     parser.add_argument(
         "--pose-seeds",
@@ -90,6 +99,15 @@ def main() -> None:
             "Explicit initial-pose seeds for a multi-pose pilot. Each seed "
             "is frozen into one independent one-design GPU job; diffusion "
             "seeds still start at --seed-start."
+        ),
+    )
+    parser.add_argument(
+        "--diffusion-seeds-per-pose",
+        type=int,
+        default=1,
+        help=(
+            "Number of independent one-design diffusion jobs emitted for "
+            "each explicit pilot pose seed."
         ),
     )
     arguments = parser.parse_args()
@@ -108,19 +126,34 @@ def main() -> None:
         raise ValueError("--pose-seeds cannot contain negative values")
     if len(set(pose_seeds)) != len(pose_seeds):
         raise ValueError("--pose-seeds must be unique")
+    if arguments.diffusion_seeds_per_pose < 1:
+        raise ValueError("--diffusion-seeds-per-pose must be positive")
     if pose_seeds and arguments.mode != "pilot":
         raise ValueError("--pose-seeds is reserved for independent pilot jobs")
     if (
-        pose_seeds
-        and arguments.total_designs is not None
-        and arguments.total_designs != len(pose_seeds)
+        arguments.diffusion_seeds_per_pose != 1
+        and not pose_seeds
     ):
         raise ValueError(
-            "--total-designs must equal the number of --pose-seeds"
+            "--diffusion-seeds-per-pose requires explicit --pose-seeds"
+        )
+    pilot_matrix_size = (
+        len(pose_seeds) * arguments.diffusion_seeds_per_pose
+        if pose_seeds
+        else 0
+    )
+    if (
+        pose_seeds
+        and arguments.total_designs is not None
+        and arguments.total_designs != pilot_matrix_size
+    ):
+        raise ValueError(
+            "--total-designs must equal pose seed count times "
+            "--diffusion-seeds-per-pose"
         )
 
     default_total = (
-        len(pose_seeds)
+        pilot_matrix_size
         if pose_seeds
         else (1 if arguments.mode == "pilot" else 1000)
     )
@@ -154,13 +187,20 @@ def main() -> None:
 
     shard_count = math.ceil(total / per_job)
     records: list[dict[str, Any]] = []
+    pilot_pose_schedule = [
+        pose_seed
+        for pose_seed in pose_seeds
+        for _ in range(arguments.diffusion_seeds_per_pose)
+    ]
     remaining = total
     for shard_index in range(shard_count):
         shard_designs = min(per_job, remaining)
         remaining -= shard_designs
         diffusion_seed = arguments.seed_start + shard_index
         pose_seed = (
-            pose_seeds[shard_index] if pose_seeds else diffusion_seed
+            pilot_pose_schedule[shard_index]
+            if pilot_pose_schedule
+            else diffusion_seed
         )
         payload = deepcopy(source)
         payload["name"] = (
@@ -230,8 +270,14 @@ def main() -> None:
         "total_designs": total,
         "designs_per_job": per_job,
         "shard_count": shard_count,
+        "compiled_pose_count": shard_count,
+        "pose_semantics": (
+            "one_compiled_pose_per_shard; all requested_designs in a shard "
+            "share that pre-RFD3 pose"
+        ),
         "seed_start": arguments.seed_start,
         "pose_seeds": pose_seeds,
+        "diffusion_seeds_per_pose": arguments.diffusion_seeds_per_pose,
         "submitted": arguments.submit,
         "records": records,
     }
@@ -245,6 +291,10 @@ def main() -> None:
     print(
         f"designs: {total} across {shard_count} shard(s), "
         f"up to {per_job} per GPU job"
+    )
+    print(
+        f"poses: {shard_count} compiled pose(s); samples within one shard "
+        "share its pre-RFD3 input"
     )
 
     failed = [

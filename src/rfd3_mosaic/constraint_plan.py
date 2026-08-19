@@ -109,6 +109,23 @@ _CREATE_INTERFACE_FREE_ORBIT_POSE = _CREATE_INTERFACE_ORBIT_POSE.model_copy(
     update={"subspace": "bounded_se3"}
 )
 
+_PRESERVE_INTERFACE_ORBIT_POSE = _CREATE_INTERFACE_ORBIT_POSE.model_copy(
+    update={
+        "max_translation": 15.0,
+        "max_rotation_deg": 45.0,
+        "end_fraction": 0.85,
+        "response": 0.4,
+        "max_step_translation": 0.5,
+        "max_step_rotation_deg": 2.5,
+    }
+)
+
+_PRESERVE_INTERFACE_FREE_ORBIT_POSE = (
+    _PRESERVE_INTERFACE_ORBIT_POSE.model_copy(
+        update={"subspace": "bounded_se3"}
+    )
+)
+
 
 def _parameters(
     constraint: ConstraintClause,
@@ -118,19 +135,23 @@ def _parameters(
     mobility_subspace: str | None = None,
 ) -> dict[str, object]:
     if isinstance(constraint, FixedXYZConstraint):
-        pose = (
-            (
-                _CREATE_INTERFACE_FREE_ORBIT_POSE
-                if mobility_subspace == "bounded_se3"
-                else _CREATE_INTERFACE_ORBIT_POSE
-            )
-            if (
-                task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE
-                and fixed_arrangement
-                == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
-            )
-            else constraint.pose
-        )
+        if fixed_arrangement == FixedArrangementPolicy.OPTIMIZE_COMPONENTS:
+            if task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE:
+                pose = (
+                    _CREATE_INTERFACE_FREE_ORBIT_POSE
+                    if mobility_subspace == "bounded_se3"
+                    else _CREATE_INTERFACE_ORBIT_POSE
+                )
+            elif task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
+                pose = (
+                    _PRESERVE_INTERFACE_FREE_ORBIT_POSE
+                    if mobility_subspace == "bounded_se3"
+                    else _PRESERVE_INTERFACE_ORBIT_POSE
+                )
+            else:
+                pose = constraint.pose
+        else:
+            pose = constraint.pose
         return {"pose": pose.model_dump(mode="json")}
     if isinstance(constraint, CylindricalConstraint):
         return {"axis": constraint.axis}

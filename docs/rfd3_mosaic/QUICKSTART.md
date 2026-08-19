@@ -31,6 +31,9 @@ rfd3-mosaic init my-design.yaml \
 
 Mosaic treats the complete supplied interface as one geometric object. It
 does not independently rearrange the two sides of that interface.
+Use `--component-motion free` when that complete object may translate and
+rotate relative to the symmetry axis while its internal interface remains
+exact.
 
 ### Create a new interface around a motif
 

@@ -114,10 +114,10 @@ def _symmetric_scaffold_packing_runtime(rfd3_input: Path) -> bool:
     return isinstance(plan, dict) and plan.get("mode") == "symmetric_generated"
 
 
-def _graph_interface_guidance_overrides(
+def _resolved_guidance_overrides(
     rfd3_input: Path,
 ) -> tuple[str, ...]:
-    """Read compiler-resolved safe preset values from the frozen input."""
+    """Read all compiler-resolved guidance values from the frozen input."""
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
@@ -381,10 +381,13 @@ def execute(
         "dump_trajectories=False",
         "prevalidate_inputs=True",
     ]
-    if interface_guidance_enabled or scaffold_packing_enabled:
-        inference_command.extend(
-            _graph_interface_guidance_overrides(rfd3_input)
-        )
+    # Resolved preferences also carry the independent intra/inter scaffold
+    # field.  Do not couple those overrides to graph-interface activation:
+    # supplied-interface jobs may legitimately request a compact monomer core
+    # while explicitly declining creation of a second generated interface.
+    inference_command.extend(
+        _resolved_guidance_overrides(rfd3_input)
+    )
     _run(inference_command)
 
     result_jsons = find_result_jsons(run_dir)

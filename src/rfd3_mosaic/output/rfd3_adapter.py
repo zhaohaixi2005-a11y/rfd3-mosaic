@@ -2189,6 +2189,14 @@ def compile_assembly_rfd3_input(
         random_seed=pose_seed,
         sample_overrides=sample_overrides,
     )
+    standalone_manifest = _load_json(standalone.manifest_path)
+    initialization_samples = standalone_manifest.get(
+        "initialization_samples", {}
+    )
+    if not isinstance(initialization_samples, dict):
+        raise ValueError(
+            "Standalone compilation emitted invalid initialization_samples"
+        )
     rebuilt_structure_sha = _sha256(standalone.structure_path)
     if (
         candidate_structure_sha is not None
@@ -2803,12 +2811,21 @@ def compile_assembly_rfd3_input(
     adapter_extra = {
         "compiler": "rfd3_mosaic.static_adapter",
         "native_compiler_path": "assembly_ir_to_rfd3_features",
-        "pose_seed": (spec.random_seed if pose_seed is None else pose_seed),
+        "pose_seed": (
+            (spec.random_seed if pose_seed is None else pose_seed)
+            if spec.initialization
+            else None
+        ),
         "pose_source": (
             "candidate_manifest"
             if candidate_manifest_path is not None
-            else "random_seed"
+            else (
+                "compiler_initialization"
+                if spec.initialization
+                else "input_coordinates"
+            )
         ),
+        "initialization_samples": initialization_samples,
         "pose_candidate_manifest": (
             str(candidate_manifest_path)
             if candidate_manifest_path is not None

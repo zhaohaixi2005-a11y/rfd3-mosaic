@@ -485,6 +485,11 @@ class ExperimentConfigTestCase(unittest.TestCase):
             "complete_symmetry_orbit",
         )
         self.assertEqual(plan["sampling"]["timesteps"], 50)
+        self.assertEqual(plan["sampling"]["compiled_pose_count"], 1)
+        self.assertEqual(
+            plan["sampling"]["design_semantics"],
+            "diffusion_samples_from_one_compiled_pose",
+        )
         self.assertEqual(plan["execution"]["profile"], "test-gpu")
         self.assertEqual(plan["software"]["compatibility_id"], "mosaic-rfd3")
 

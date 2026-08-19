@@ -133,11 +133,6 @@ def initialize_design(
     elif task == "supplied-interface":
         if not side_a or not side_b:
             raise ValueError("supplied-interface requires both --side-a and --side-b")
-        if component_motion != "locked":
-            raise ValueError(
-                "supplied-interface preserves the complete supplied geometry "
-                "and therefore requires --component-motion locked"
-            )
         common.update(
             {
                 "task": "preserve_supplied_geometry",

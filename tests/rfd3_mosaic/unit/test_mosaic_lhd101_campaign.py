@@ -15,6 +15,43 @@ SCRIPT = PROJECT / "scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py"
 
 
 class MosaicLHD101CampaignTestCase(unittest.TestCase):
+    def test_full_comparison_defaults_to_one_pose_per_design(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "campaign"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--mode",
+                    "full",
+                    "--output-dir",
+                    str(output),
+                    "--run-root",
+                    str(Path(directory) / "runs"),
+                    "--total-designs",
+                    "3",
+                    "--seed-start",
+                    "1200",
+                ],
+                cwd=PROJECT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            manifest = json.loads(
+                (output / "campaign_manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(manifest["total_designs"], 3)
+        self.assertEqual(manifest["designs_per_job"], 1)
+        self.assertEqual(manifest["compiled_pose_count"], 3)
+        self.assertEqual(
+            [record["pose_seed"] for record in manifest["records"]],
+            [1200, 1201, 1202],
+        )
+
     def test_full_campaign_is_exactly_sharded_and_seeded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "campaign"
@@ -51,6 +88,7 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         self.assertIn("designs: 23 across 3 shard(s)", completed.stdout)
         self.assertEqual(manifest["total_designs"], 23)
         self.assertEqual(manifest["shard_count"], 3)
+        self.assertEqual(manifest["compiled_pose_count"], 3)
         self.assertEqual(
             [record["requested_designs"] for record in manifest["records"]],
             [10, 10, 3],
@@ -70,7 +108,7 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         self.assertTrue(
             all(
                 design["sampling"]["scaffold_packing"]
-                == "symmetric_generated"
+                == "off"
                 for design in frozen
             )
         )
@@ -159,6 +197,48 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         self.assertEqual(
             [design["sampling"]["seed"] for design in designs],
             [20000, 20001, 20002, 20003],
+        )
+
+    def test_pilot_expands_pose_by_diffusion_seed_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "pilot"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--mode",
+                    "pilot",
+                    "--output-dir",
+                    str(output),
+                    "--run-root",
+                    str(Path(directory) / "runs"),
+                    "--seed-start",
+                    "30000",
+                    "--pose-seeds",
+                    "10063",
+                    "10039",
+                    "--diffusion-seeds-per-pose",
+                    "3",
+                ],
+                cwd=PROJECT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            manifest = json.loads(
+                (output / "campaign_manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(manifest["total_designs"], 6)
+        self.assertEqual(manifest["shard_count"], 6)
+        self.assertEqual(manifest["diffusion_seeds_per_pose"], 3)
+        self.assertEqual(
+            [record["pose_seed"] for record in manifest["records"]],
+            [10063, 10063, 10063, 10039, 10039, 10039],
+        )
+        self.assertEqual(
+            [record["diffusion_seed"] for record in manifest["records"]],
+            [30000, 30001, 30002, 30003, 30004, 30005],
         )
 
 

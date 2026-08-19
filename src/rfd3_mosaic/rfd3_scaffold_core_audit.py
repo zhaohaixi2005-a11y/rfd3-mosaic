@@ -37,11 +37,14 @@ def audit_scaffold_core_guidance(
     example = next(iter(compiled.values()))
     if not isinstance(example, dict):
         raise ValueError("Compiled example must be an object")
-    plan = (example.get("extra") or {}).get(
-        "automatic_symmetric_scaffold_packing"
-    )
+    extra = example.get("extra") or {}
+    plan = extra.get("scaffold_core_guidance")
     if not isinstance(plan, dict):
-        raise ValueError("Compiled input has no scaffold packing plan")
+        # Compatibility with inputs frozen before intra/inter guidance was
+        # separated from automatic generated-interface packing.
+        plan = extra.get("automatic_symmetric_scaffold_packing")
+    if not isinstance(plan, dict):
+        raise ValueError("Compiled input has no scaffold core guidance plan")
     expected_intra = float(plan.get("intra_chain_weight", 0.0))
     expected_inter = float(plan.get("inter_chain_weight", 1.0))
 
@@ -168,4 +171,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

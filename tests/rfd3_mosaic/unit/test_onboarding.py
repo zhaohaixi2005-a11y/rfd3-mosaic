@@ -99,19 +99,27 @@ class OnboardingTestCase(unittest.TestCase):
                 run_root=Path("runs"),
                 motif_selector="A1",
             )
-        with self.assertRaisesRegex(ValueError, "requires.*locked"):
-            initialize_design(
-                self.root / "unsafe.yaml",
-                task="supplied-interface",
-                input_path=self.structure,
-                symmetry="C3",
-                name=None,
-                profile="local",
-                run_root=Path("runs"),
-                side_a="A1",
-                side_b="B1",
-                component_motion="free",
-            )
+        mobile = initialize_design(
+            self.root / "mobile-interface.yaml",
+            task="supplied-interface",
+            input_path=self.structure,
+            symmetry="C3",
+            name=None,
+            profile="local",
+            run_root=Path("runs"),
+            side_a="A1",
+            side_b="B1",
+            component_motion="free",
+        )
+        mobile_design = load_user_design(mobile)
+        self.assertEqual(
+            mobile_design.fixed_arrangement.value,
+            "optimize_components",
+        )
+        self.assertEqual(
+            mobile_design.preferences.component_motion.value,
+            "free",
+        )
 
     def test_examples_are_listable_and_copied_portably(self) -> None:
         identifiers = {item["id"] for item in available_examples()}

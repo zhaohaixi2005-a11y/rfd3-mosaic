@@ -67,6 +67,37 @@ class SamplingPlanTestCase(unittest.TestCase):
             "symmetric_generated",
         )
 
+    def test_supplied_interface_cannot_invent_second_generated_interface(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValidationError,
+            "incompatible with task=preserve_supplied_geometry",
+        ):
+            UserDesignSpec.model_validate(
+                {
+                    "name": "supplied-interface",
+                    "task": "preserve_supplied_geometry",
+                    "input": "seed.pdb",
+                    "symmetry": "C3",
+                    "generation": [
+                        {
+                            "kind": "between",
+                            "from_selector": "A1",
+                            "to_selector": "B1",
+                            "length": 20,
+                        }
+                    ],
+                    "constraints": [
+                        {"kind": "fixed_xyz", "selector": "A1"},
+                        {"kind": "fixed_xyz", "selector": "B1"},
+                    ],
+                    "sampling": {
+                        "scaffold_packing": "symmetric_generated"
+                    },
+                }
+            )
+
     def test_rejects_nonpositive_design_count(self) -> None:
         with self.assertRaises(ValidationError):
             design(designs=0)

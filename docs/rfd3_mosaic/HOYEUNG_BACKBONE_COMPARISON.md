@@ -13,13 +13,13 @@ It does not execute the authors' RFdiffusion1 fork.
 - diffusion: 50 steps;
 - sample size: 1,000 independently sampled Mosaic backbones;
 - complete LHD101 interface geometry remains one joint rigid body;
-- Mosaic additionally allows bounded radial, axial and rotational motion of
-  that complete body while reconstructing exact C3 copies;
+- Mosaic additionally allows bounded full-SE(3) motion of that complete body
+  while reconstructing exact C3 copies;
 - the current LHD101 template uses `intra_chain_weight: 1.0` and
   `inter_chain_weight: 0.10`. It therefore prioritizes a supported compact
-  monomer scaffold while retaining only weak generated--generated attraction;
-  excessive cross-chain contacts receive a normalized soft penalty rather
-  than an absolute contact ban;
+  monomer scaffold while disabling automatic creation of a second generated
+  C3 interface; excessive incidental cross-chain contacts receive a
+  normalized soft penalty rather than an absolute contact ban;
 - the complete supplied interface seed may move only as one bounded rigid
   body. Every update is followed by the same exact C3/fixed-target projector.
 
@@ -86,10 +86,16 @@ the selected pose seeds and independent diffusion seeds explicit:
 ```bash
 python scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py \
   --mode pilot \
-  --seed-start 20000 \
+  --seed-start 30000 \
   --pose-seeds 10063 10039 10048 10027 \
+  --diffusion-seeds-per-pose 3 \
   --submit
 ```
+
+This freezes a 4-pose by 3-diffusion-seed matrix as twelve independent,
+replayable one-design jobs. Re-running one frozen YAML intentionally reproduces
+the same sample; scientific diversity comes from the explicit matrix rather
+than hidden automatic seed changes.
 
 The listed poses come from a 64-pose replayable random screen. They span
 different orientations and avoid the seed-10000 pathology where the straight
@@ -110,9 +116,14 @@ After its required audits pass, submit exactly 1,000 backbones:
 python scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py \
   --mode full \
   --total-designs 1000 \
-  --designs-per-job 10 \
   --submit
 ```
+
+The default is deliberately one design per compiled pose. Thus the 1,000
+backbones have 1,000 independently seeded rigid initial placements as well as
+independent RFD3 diffusion streams. Passing `--designs-per-job 10` is a cheaper
+diffusion-replicate experiment with only 100 compiled poses; it is not the
+pose-diverse Ho-Yeung comparison.
 
 The launcher prints the campaign directory. When every shard is complete,
 generate JSON, CSV and Markdown comparison artifacts:

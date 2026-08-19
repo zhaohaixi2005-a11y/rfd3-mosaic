@@ -1,5 +1,6 @@
 schema_version: 1
 name: lhd101-c3-guided-template
+task: preserve_supplied_geometry
 
 # Mosaic/RFD3 reproduction of the published Ho-Yeung interface-seed design
 # task.  The input and polymer construction match the 7mwr/LHD101 C3 task;
@@ -9,6 +10,9 @@ symmetry:
   id: C3
   axis: [0.0, 0.0, 1.0]
   center: [0.0, 0.0, 0.0]
+
+preferences:
+  component_motion: free
 
 # RFdiffusion-style intra/inter balance.  The supplied interface remains an
 # exact joint-rigid constraint.  Strong intra-chain guidance asks each
@@ -29,29 +33,17 @@ generation:
 constraints:
   # A and B are the two sides of one supplied natural interface.  Their
   # shared coupling group is one joint rigid body: no internal interface
-  # distance or angle is allowed to change.  Only the pose of the complete
-  # seed orbit can improve while all C3 copies are reconstructed exactly.
+  # distance or angle is allowed to change.  The complete seed can translate
+  # and rotate in full SE(3); all C3 copies are then reconstructed exactly.
   - kind: fixed_xyz
     selector: A165-194
     atoms: all
     coupling_group: supplied_interface_seed
-    pose: &guided_seed_pose
-      mode: bounded_mobile
-      subspace: radial_axial_rotation
-      proposal: scaffold_objectives
-      max_translation: 5.0
-      max_rotation_deg: 15.0
-      start_fraction: 0.05
-      end_fraction: 0.80
-      response: 0.20
-      max_step_translation: 0.25
-      max_step_rotation_deg: 1.0
 
   - kind: fixed_xyz
     selector: B211-241
     atoms: all
     coupling_group: supplied_interface_seed
-    pose: *guided_seed_pose
 
 sampling:
   # Match the published 50-step task while using Mosaic's exact-symmetry
@@ -71,7 +63,11 @@ sampling:
   # Preserve the natural LHD101 interface.  Intra-chain guidance supports a
   # compact monomer scaffold; low inter-chain weight avoids deliberately
   # creating a second broad generated interface between cyclic neighbours.
-  scaffold_packing: symmetric_generated
+  # The LHD101 input already supplies the oligomeric interface.  Do not ask
+  # generated residues to create a second cyclic-neighbour interface; the
+  # independent intra/inter field above only shapes the monomer scaffold and
+  # softly suppresses excessive incidental cross-chain contacts.
+  scaffold_packing: "off"
 
 resources:
   profile: any_gpu

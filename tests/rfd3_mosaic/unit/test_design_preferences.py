@@ -7,9 +7,7 @@ from pydantic import ValidationError
 
 from rfd3_mosaic.constraint_plan import compile_constraint_plan
 from rfd3_mosaic.design_preferences import compile_design_preferences
-from rfd3_mosaic.experiment_worker import (
-    _graph_interface_guidance_overrides,
-)
+from rfd3_mosaic.experiment_worker import _resolved_guidance_overrides
 from rfd3_mosaic.schema import UserDesignSpec
 
 
@@ -261,7 +259,7 @@ class DesignPreferencesTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rfd3_input.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
-            overrides = _graph_interface_guidance_overrides(path)
+            overrides = _resolved_guidance_overrides(path)
 
         self.assertIn(
             "++inference_sampler.graph_interface_guidance_pairs_per_edge=12",

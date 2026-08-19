@@ -1735,6 +1735,28 @@ class RFD3AdapterTestCase(unittest.TestCase):
             emitted["extra"]["adapter_structure_sha256"],
         )
 
+    def test_records_realized_compiler_pose_separately_from_diffusion(
+        self,
+    ) -> None:
+        compiled = compile_rfd3_input(
+            LHD101_CONFIG,
+            self.output_directory / "pose-provenance",
+            base_directory=REPOSITORY_ROOT,
+            pose_seed=10063,
+        )
+        emitted = json.loads(
+            compiled.input_path.read_text(encoding="utf-8")
+        )[compiled.example_id]
+        extra = emitted["extra"]
+
+        self.assertEqual(extra["pose_source"], "compiler_initialization")
+        self.assertEqual(extra["pose_seed"], 10063)
+        self.assertIn("primary_seed", extra["initialization_samples"])
+        sample = extra["initialization_samples"]["primary_seed"]
+        self.assertGreaterEqual(sample["sampled_radius"], 20.0)
+        self.assertLessEqual(sample["sampled_radius"], 30.0)
+        self.assertIsNotNone(sample["quaternion_xyzw"])
+
     def test_emits_native_d2_input_from_dihedral_config(self) -> None:
         payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
         transform_set = payload["interface_seed"]["symmetry"]["transform_sets"][

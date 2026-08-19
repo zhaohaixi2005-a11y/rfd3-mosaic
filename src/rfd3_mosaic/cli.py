@@ -153,7 +153,11 @@ def _parser() -> argparse.ArgumentParser:
         "--designs",
         type=int,
         default=1,
-        help="Number of independently sampled designs to generate.",
+        help=(
+            "Number of RFD3 diffusion samples generated from one compiled "
+            "initial pose. Use resolve/search or a campaign pose schedule "
+            "for multiple pre-RFD3 poses."
+        ),
     )
     initialize.add_argument("--seed", type=int, default=42)
     initialize.add_argument(
@@ -744,8 +748,12 @@ def _print_execution_plan(plan: dict, *, output_format: str) -> None:
     print(f"name:       {plan['name']}")
     print(f"topology:   {design['topology']}")
     print(f"timesteps:  {sampling['timesteps']}")
-    print(f"designs:    {sampling['designs']}")
-    print(f"seed:       {sampling['seed']}")
+    print(
+        "designs:    "
+        f"{sampling['designs']} diffusion sample(s) from one compiled pose"
+    )
+    print(f"diffusion seed: {sampling['seed']}")
+    print("pose count: 1 (direct run compiles one initial pose)")
     print(f"preset:     {sampling['preset']}")
     print(f"backend:    {sampling['execution_backend']}")
     print(f"profile:    {execution['profile']}")
@@ -1408,19 +1416,19 @@ def _print_public_design_plan(
     print(f"input:      {design.input}")
     print(f"symmetry:   {symmetry_id}")
     resolved_preferences = compile_design_preferences(design)
+    print(
+        "preferences: "
+        f"packing={resolved_preferences.packing.value} "
+        f"area={resolved_preferences.interface_area.value} "
+        f"cavity={resolved_preferences.cavity.value} "
+        f"diversity={resolved_preferences.diversity.value} "
+        f"motion={resolved_preferences.component_motion.value}"
+    )
     if design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
         print(
-            "packing guidance: inactive for supplied interfaces "
-            "(preserve_input is checked at the input stage)"
-        )
-    else:
-        print(
-            "preferences: "
-            f"packing={resolved_preferences.packing.value} "
-            f"area={resolved_preferences.interface_area.value} "
-            f"cavity={resolved_preferences.cavity.value} "
-            f"diversity={resolved_preferences.diversity.value} "
-            f"motion={resolved_preferences.component_motion.value}"
+            "new-interface guidance: off (the supplied interface is checked "
+            "at the input stage; intra/inter scaffold guidance remains "
+            "independent)"
         )
     print(
         "generation: " f"{len(design.generation) + len(design.connections)} region(s)"

@@ -309,6 +309,48 @@ class UserDesignConstraintTestCase(unittest.TestCase):
         self.assertEqual(declared.fixed_arrangement.value, "locked")
         self.assertEqual(plan.operators[0].parameters["pose"]["mode"], "fixed")
 
+    def test_preserve_task_moves_complete_joint_seed_without_deformation(
+        self,
+    ) -> None:
+        declared = design(
+            task="preserve_supplied_geometry",
+            preferences={"component_motion": "free"},
+            symmetry="C3",
+            generation=[
+                {
+                    "kind": "between",
+                    "from_selector": "B1-2",
+                    "to_selector": "A1-2",
+                    "length": 30,
+                }
+            ],
+            constraints=[
+                {
+                    "kind": "fixed_xyz",
+                    "selector": "A1-2",
+                    "coupling_group": "supplied_interface",
+                },
+                {
+                    "kind": "fixed_xyz",
+                    "selector": "B1-2",
+                    "coupling_group": "supplied_interface",
+                },
+            ],
+        )
+
+        plan = compile_constraint_plan(declared)
+        self.assertEqual(
+            declared.fixed_arrangement.value,
+            "optimize_components",
+        )
+        for operator in plan.operators:
+            pose = operator.parameters["pose"]
+            self.assertEqual(pose["mode"], "bounded_mobile")
+            self.assertEqual(pose["subspace"], "bounded_se3")
+            self.assertEqual(pose["max_translation"], 15.0)
+            self.assertEqual(pose["max_rotation_deg"], 45.0)
+            self.assertEqual(operator.coupling_group, "supplied_interface")
+
     def test_locked_create_interface_is_topology_neutral(self) -> None:
         declared = design(
             task="create_symmetric_interface",
