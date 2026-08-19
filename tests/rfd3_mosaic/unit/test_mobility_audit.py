@@ -1,8 +1,8 @@
 import json
 import math
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from rfd3_mosaic.rfd3_mobility_audit import (
     audit_component_mobility,
@@ -79,9 +79,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                             "direction": [0.0, 0.0, 1.0],
                             "transform_ids": list(range(group_action_count)),
                         },
-                        "runtime_group_action_count": (
-                            observed_group_action_count
-                        ),
+                        "runtime_group_action_count": (observed_group_action_count),
                         "proposal_source": "scaffold_boundary",
                         "update_interval": 1,
                         "constraint_runtime": {
@@ -89,9 +87,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                             "state": "finalized",
                             "proposal_source": "scaffold_boundary",
                             "proposal_interval": 1,
-                            "conditioning_refresh_count": (
-                                3 if active else 1
-                            ),
+                            "conditioning_refresh_count": (3 if active else 1),
                             "phase_counts": {
                                 "initialize": 1,
                                 "model_prediction": 5,
@@ -104,21 +100,13 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                         },
                         "orbits": [
                             {
-                                "constraint_orbit_id": (
-                                    f"mobile_orbit_{index}"
-                                ),
+                                "constraint_orbit_id": (f"mobile_orbit_{index}"),
                                 "component_id": f"mobile_component_{index}",
                                 "translation_norms": [translation],
-                                "translation_vectors": [
-                                    list(translation_vector)
-                                ],
-                                "template_master_centers": [
-                                    [10.0, 0.0, 0.0]
-                                ],
+                                "translation_vectors": [list(translation_vector)],
+                                "template_master_centers": [[10.0, 0.0, 0.0]],
                                 "rotation_degrees": [rotation],
-                                "group_action_count": (
-                                    observed_group_action_count
-                                ),
+                                "group_action_count": (observed_group_action_count),
                                 "group_transform_ids": list(
                                     range(observed_group_action_count)
                                 ),
@@ -161,9 +149,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                                                 0.0,
                                                 0.0,
                                             ],
-                                            "proposed_delta_rotation_degrees": (
-                                                0.5
-                                            ),
+                                            "proposed_delta_rotation_degrees": (0.5),
                                             "objective": {
                                                 "initial": {
                                                     "total": 2.0,
@@ -215,6 +201,30 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
         self.assertEqual(
             report["summary"]["components"][0]["component_id"],
             "mobile_component_0",
+        )
+        self.assertTrue(report["summary"]["nonzero_motion_observed"])
+        self.assertEqual(report["summary"]["applied_proposal_count"], 2)
+        component = report["summary"]["components"][0]
+        self.assertEqual(component["translation_fraction_of_bound"], 0.5)
+        self.assertEqual(component["rotation_fraction_of_bound"], 0.4)
+
+    def test_zero_motion_is_reported_without_falsely_failing_safety(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            compiled, result = self._write_inputs(
+                Path(temporary),
+                translation=0.0,
+                rotation=0.0,
+            )
+            report = audit_component_mobility(
+                compiled_input=compiled,
+                result_json=result,
+            )
+
+        self.assertTrue(report["passed"])
+        self.assertFalse(report["summary"]["nonzero_motion_observed"])
+        self.assertEqual(
+            report["summary"]["components"][0]["translation_fraction_of_bound"],
+            0.0,
         )
 
     def test_rejects_runtime_motion_beyond_declared_bounds(self) -> None:
@@ -333,9 +343,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             compiled, result = self._write_inputs(Path(temporary))
             payload = json.loads(result.read_text(encoding="utf-8"))
-            del payload["motif_mobility_diagnostics"][
-                "constraint_runtime"
-            ]
+            del payload["motif_mobility_diagnostics"]["constraint_runtime"]
             result.write_text(json.dumps(payload), encoding="utf-8")
 
             report = audit_component_mobility(
@@ -344,9 +352,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
             )
 
         self.assertFalse(report["passed"])
-        self.assertFalse(
-            report["summary"]["constraint_runtime_valid"]
-        )
+        self.assertFalse(report["summary"]["constraint_runtime_valid"])
 
     def test_requires_atomic_joint_diagnostics_for_multiple_orbits(
         self,
@@ -400,9 +406,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
             )
 
         self.assertTrue(report["passed"])
-        self.assertTrue(
-            report["summary"]["complete_group_action_orbits"]
-        )
+        self.assertTrue(report["summary"]["complete_group_action_orbits"])
         self.assertEqual(
             report["summary"]["runtime_group_action_count"],
             6,
@@ -429,9 +433,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
             )
 
         self.assertFalse(report["passed"])
-        self.assertFalse(
-            report["summary"]["complete_group_action_orbits"]
-        )
+        self.assertFalse(report["summary"]["complete_group_action_orbits"])
 
     def test_rejects_nonfinite_multi_orbit_objective_trace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -440,9 +442,9 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                 mobile_count=2,
             )
             payload = json.loads(result.read_text(encoding="utf-8"))
-            payload["motif_mobility_diagnostics"]["trajectory"][0][
-                "orbit_proposals"
-            ][0]["objective"]["delta"]["clash"] = float("nan")
+            payload["motif_mobility_diagnostics"]["trajectory"][0]["orbit_proposals"][
+                0
+            ]["objective"]["delta"]["clash"] = float("nan")
             result.write_text(json.dumps(payload), encoding="utf-8")
 
             report = audit_component_mobility(
@@ -482,9 +484,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
             artifact["constraint_runtime"]["phase_counts"]["finalize"],
             1,
         )
-        self.assertIsNone(
-            artifact["trajectory"][0]["minimum_distance"]
-        )
+        self.assertIsNone(artifact["trajectory"][0]["minimum_distance"])
 
 
 if __name__ == "__main__":

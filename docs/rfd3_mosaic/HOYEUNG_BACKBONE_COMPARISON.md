@@ -18,10 +18,17 @@ It does not execute the authors' RFdiffusion1 fork.
 - the current LHD101 template uses `intra_chain_weight: 1.0` and
   `inter_chain_weight: 0.10`. It therefore prioritizes a supported compact
   monomer scaffold while disabling automatic creation of a second generated
-  C3 interface; excessive incidental cross-chain contacts receive a
-  normalized soft penalty rather than an absolute contact ban;
+  C3 interface. The inter value is retained as matched-protocol provenance,
+  but is inactive because this task declares no generated-interface edge; it
+  is not reinterpreted as repulsion;
 - the complete supplied interface seed may move only as one bounded rigid
   body. Every update is followed by the same exact C3/fixed-target projector.
+
+Mosaic deliberately retains bounded full-SE(3) optimization here. It does not
+replace that controller with the paper's center-of-mass drag proposal. This is
+an algorithmic distinction in the comparison: the complete A/B interface seed
+may translate and rotate, while its internal geometry and all exact C3 copies
+remain constrained.
 
 Bare RFD3 is not the scientific comparator because it does not implement the
 published interface-seed assembly mechanism. The primary comparison is the
@@ -108,7 +115,12 @@ Do not scale an older pilot that lacks
 `scaffold_core_guidance_audit.json`: it tested exact motif mobility and
 scaffold validity only, not the current intra/inter scaffold objective.
 Scale-up requires all constraint, mobility, scaffold and core-guidance audits
-to pass.
+to pass. The pilot reports explicit final compactness/support targets without
+making their uncalibrated values a hard gate; promote `required` to `true`
+only after the multi-pose pilot establishes a distribution. Mobility PASS
+still means the controller ran within bounds; inspect `translation_fraction_of_bound`,
+`rotation_fraction_of_bound`, and `applied_proposal_count` to see how much pose
+correction actually occurred.
 
 After its required audits pass, submit exactly 1,000 backbones:
 

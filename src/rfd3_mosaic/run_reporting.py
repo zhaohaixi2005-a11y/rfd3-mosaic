@@ -647,6 +647,39 @@ def format_status_text(status: dict[str, Any]) -> str:
                     f"shape={metrics.get('shape', 'NA')} "
                     f"min_edge={metrics.get('minimum_edge_distance', 'NA')}"
                 )
+        if audit["name"] == "scaffold_core_guidance_audit.json":
+            summary = audit.get("summary") or {}
+            metrics = summary.get("final_metrics") or {}
+            if metrics:
+                lines.append(
+                    "         monomer core "
+                    f"normalized_rg={metrics.get('mean_normalized_rg', 'NA')} "
+                    "tertiary_support="
+                    f"{metrics.get('mean_tertiary_support_fraction', 'NA')} "
+                    "long_range_deficit="
+                    f"{metrics.get('long_range_contacts', 'NA')} "
+                    "target_met="
+                    f"{summary.get('scientific_quality_satisfied', 'NA')}"
+                )
+        if audit["name"] == "component_mobility_audit.json":
+            summary = audit.get("summary") or {}
+            components = summary.get("components") or []
+            if components:
+                maximum_translation_fraction = max(
+                    float(item.get("translation_fraction_of_bound", 0.0))
+                    for item in components
+                )
+                maximum_rotation_fraction = max(
+                    float(item.get("rotation_fraction_of_bound", 0.0))
+                    for item in components
+                )
+                lines.append(
+                    "         mobility "
+                    f"applied={summary.get('applied_proposal_count', 'NA')} "
+                    f"moved={summary.get('nonzero_motion_observed', 'NA')} "
+                    f"translation_bound_used={maximum_translation_fraction} "
+                    f"rotation_bound_used={maximum_rotation_fraction}"
+                )
         if audit["name"] == "assembly_interface_relation_audit.json":
             metrics = audit.get("summary") or {}
             if metrics.get("output_packing_edge_count", 0):

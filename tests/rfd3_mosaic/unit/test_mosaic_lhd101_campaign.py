@@ -9,7 +9,6 @@ from pathlib import Path
 
 import yaml
 
-
 PROJECT = Path(__file__).resolve().parents[3]
 SCRIPT = PROJECT / "scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py"
 
@@ -39,9 +38,7 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
                 text=True,
             )
             manifest = json.loads(
-                (output / "campaign_manifest.json").read_text(
-                    encoding="utf-8"
-                )
+                (output / "campaign_manifest.json").read_text(encoding="utf-8")
             )
 
         self.assertEqual(manifest["total_designs"], 3)
@@ -106,9 +103,17 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
             [1200, 1201, 1202],
         )
         self.assertTrue(
+            all(design["sampling"]["scaffold_packing"] == "off" for design in frozen)
+        )
+        self.assertTrue(
             all(
-                design["sampling"]["scaffold_packing"]
-                == "off"
+                design["sampling"]["scaffold_core_quality"]["required"] is False
+                for design in frozen
+            )
+        )
+        self.assertTrue(
+            all(
+                "inter_chain_excess_penalty" not in design["guidance"]
                 for design in frozen
             )
         )
@@ -174,9 +179,7 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
                 (output / "campaign_manifest.json").read_text(encoding="utf-8")
             )
             designs = [
-                yaml.safe_load(
-                    Path(record["design"]).read_text(encoding="utf-8")
-                )
+                yaml.safe_load(Path(record["design"]).read_text(encoding="utf-8"))
                 for record in manifest["records"]
             ]
 

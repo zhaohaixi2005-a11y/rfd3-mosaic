@@ -1,4 +1,4 @@
-"""Differentiable intra-chain scaffold packing with soft inter-chain control.
+"""Differentiable intra-chain scaffold packing with explicit safety control.
 
 This objective complements, rather than replaces, graph interface guidance.
 The fixed motif projector remains authoritative.  Only generated tokens are
@@ -8,10 +8,11 @@ constraint/symmetry runtime before it can be accepted.
 ``intra_chain_weight`` rewards a supported monomer core.  The three first
 version terms deliberately stay small and interpretable: long-range contacts,
 an upper hinge on length-normalized radius of gyration, and per-residue
-tertiary-contact support.  ``inter_chain_weight`` is consumed by the existing
-graph interface field.  This module supplies a soft *excess* penalty so that
-isolated incidental inter-chain contacts remain possible while a second broad
-generated interface is disfavoured when inter-chain attraction is low.
+tertiary-contact support.  ``inter_chain_weight`` follows RFdiffusion's
+contact-map semantics and is consumed only by declared graph-interface edges;
+it does not implicitly become a repulsive core term when no such edge exists.
+An expert may independently request a soft *excess* penalty through
+``inter_chain_excess_penalty``.  Its default is zero.
 """
 
 from __future__ import annotations
@@ -36,12 +37,14 @@ class ScaffoldCoreTopology:
     atom_to_token: torch.Tensor
     generated_token_mask: torch.Tensor
     generated_atom_mask: torch.Tensor
+    adjacent_token_pairs: torch.Tensor
 
 
 @dataclass(frozen=True)
 class ScaffoldCoreGuidanceConfig:
     intra_chain_weight: float = 0.0
     inter_chain_weight: float = 1.0
+    inter_chain_excess_penalty: float = 0.0
     long_range_contact_weight: float = 0.75
     normalized_rg_weight: float = 0.35
     tertiary_support_weight: float = 1.0
@@ -61,6 +64,7 @@ class ScaffoldCoreGuidanceConfig:
     start_fraction: float = 0.05
     end_fraction: float = 0.90
     maximum_token_step: float = 0.20
+    maximum_adjacent_token_step_difference: float = 0.08
     line_search_steps: int = 5
     line_search_contraction: float = 0.5
 
@@ -68,6 +72,7 @@ class ScaffoldCoreGuidanceConfig:
         for name in (
             "intra_chain_weight",
             "inter_chain_weight",
+            "inter_chain_excess_penalty",
             "long_range_contact_weight",
             "normalized_rg_weight",
             "tertiary_support_weight",
@@ -87,15 +92,14 @@ class ScaffoldCoreGuidanceConfig:
             "backbone_distance",
             "backbone_tolerance",
             "maximum_token_step",
+            "maximum_adjacent_token_step_difference",
         ):
             if getattr(self, name) <= 0.0:
                 raise ValueError(f"{name} must be positive")
         if self.sequence_separation < 2:
             raise ValueError("sequence_separation must be at least two")
         if not 0.0 <= self.incidental_inter_chain_fraction < 1.0:
-            raise ValueError(
-                "incidental_inter_chain_fraction must be in [0, 1)"
-            )
+            raise ValueError("incidental_inter_chain_fraction must be in [0, 1)")
         if not 0.0 <= self.start_fraction < self.end_fraction <= 1.0:
             raise ValueError("Scaffold core guidance requires 0 <= start < end <= 1")
         if self.line_search_steps < 1:
@@ -157,9 +161,7 @@ def build_scaffold_core_topology(
     required = {"atom_to_token_map", "asym_id", "is_ca"}
     missing = required - set(f)
     if missing:
-        raise ValueError(
-            f"Scaffold core guidance requires features {sorted(missing)}"
-        )
+        raise ValueError(f"Scaffold core guidance requires features {sorted(missing)}")
     fixed = _tensor(fixed_atom_mask, dtype=torch.bool)
     if fixed.ndim != 1:
         raise ValueError("fixed_atom_mask must have shape [L]")
@@ -200,6 +202,7 @@ def build_scaffold_core_topology(
     ca_atom_indices = torch.nonzero(is_ca, as_tuple=False).reshape(-1)
     ca_tokens = atom_to_token[ca_atom_indices]
     chains: list[ScaffoldCoreChain] = []
+    adjacent_token_pairs: list[tuple[int, int]] = []
     for chain_id in torch.unique(asym_id[ca_tokens], sorted=True).tolist():
         select = asym_id[ca_tokens] == int(chain_id)
         selected_atoms = ca_atom_indices[select]
@@ -209,6 +212,24 @@ def build_scaffold_core_topology(
         selected_tokens = selected_tokens[protein]
         if len(selected_atoms) < 2:
             continue
+        consecutive = (
+            residue_index[selected_tokens][1:] - residue_index[selected_tokens][:-1]
+        ) == 1
+        for pair_index in (
+            torch.nonzero(
+                consecutive,
+                as_tuple=False,
+            )
+            .reshape(-1)
+            .tolist()
+        ):
+            left_token = int(selected_tokens[pair_index].item())
+            right_token = int(selected_tokens[pair_index + 1].item())
+            if bool(
+                token_generated[left_token].item()
+                or token_generated[right_token].item()
+            ):
+                adjacent_token_pairs.append((left_token, right_token))
         chains.append(
             ScaffoldCoreChain(
                 asym_id=int(chain_id),
@@ -226,12 +247,30 @@ def build_scaffold_core_topology(
         atom_to_token=atom_to_token,
         generated_token_mask=token_generated,
         generated_atom_mask=generated_atom_mask,
+        adjacent_token_pairs=torch.tensor(
+            adjacent_token_pairs,
+            dtype=torch.long,
+            device=device,
+        ).reshape(-1, 2),
     )
 
 
 def _soft_contacts(distances: torch.Tensor, config: ScaffoldCoreGuidanceConfig):
     return torch.sigmoid(
         (config.contact_distance - distances) / config.contact_softness
+    )
+
+
+def _clamp_step(vector: torch.Tensor, maximum_norm: float) -> torch.Tensor:
+    norm = torch.linalg.vector_norm(vector)
+    return vector * torch.clamp(
+        torch.as_tensor(
+            maximum_norm,
+            dtype=vector.dtype,
+            device=vector.device,
+        )
+        / torch.clamp(norm, min=1e-8),
+        max=1.0,
     )
 
 
@@ -259,10 +298,14 @@ def scaffold_core_energy(
         generated = chain.generated_ca_mask
         generated_count = torch.clamp(generated.sum(), min=1).to(xyz.dtype)
         center = xyz.mean(dim=0)
-        rg = torch.sqrt(torch.mean(torch.sum(torch.square(xyz - center), dim=-1)) + 1e-8)
+        rg = torch.sqrt(
+            torch.mean(torch.sum(torch.square(xyz - center), dim=-1)) + 1e-8
+        )
         normalized = rg / (float(count) ** 0.38)
         normalized_rgs.append(normalized)
-        rg_terms.append(torch.square(torch.relu(normalized - config.target_normalized_rg)))
+        rg_terms.append(
+            torch.square(torch.relu(normalized - config.target_normalized_rg))
+        )
 
         distances = torch.cdist(xyz, xyz)
         sequence_gap = torch.abs(
@@ -303,23 +346,21 @@ def scaffold_core_energy(
             support_terms.append(
                 torch.mean(
                     torch.square(
-                        torch.relu(
-                            config.target_supported_contacts - generated_support
-                        )
+                        torch.relu(config.target_supported_contacts - generated_support)
                     )
                 )
             )
             support_fractions.append(
                 torch.mean(
-                    (generated_support >= config.target_supported_contacts).to(xyz.dtype)
+                    (generated_support >= config.target_supported_contacts).to(
+                        xyz.dtype
+                    )
                 )
             )
 
         if count > 1:
             adjacent = sequence_gap == 1
-            adjacent = adjacent & torch.triu(
-                torch.ones_like(adjacent), diagonal=1
-            )
+            adjacent = adjacent & torch.triu(torch.ones_like(adjacent), diagonal=1)
             adjacent = adjacent & (generated[:, None] | generated[None, :])
             a_left, a_right = torch.nonzero(adjacent, as_tuple=True)
             if len(a_left):
@@ -328,7 +369,9 @@ def scaffold_core_energy(
                     - config.backbone_tolerance
                 )
                 continuity_terms.append(torch.mean(torch.square(errors)))
-        clash_mask = upper & (sequence_gap > 1) & (generated[:, None] | generated[None, :])
+        clash_mask = (
+            upper & (sequence_gap > 1) & (generated[:, None] | generated[None, :])
+        )
         c_left, c_right = torch.nonzero(clash_mask, as_tuple=True)
         if len(c_left):
             clash_terms.append(
@@ -351,9 +394,7 @@ def scaffold_core_energy(
             right_atoms = right_chain.ca_atom_indices[right_chain.generated_ca_mask]
             if not len(right_atoms):
                 continue
-            distances = torch.cdist(
-                coordinates[left_atoms], coordinates[right_atoms]
-            )
+            distances = torch.cdist(coordinates[left_atoms], coordinates[right_atoms])
             soft = _soft_contacts(distances, config)
             scale = float(min(len(left_atoms), len(right_atoms)))
             allowance = config.incidental_inter_chain_fraction * scale
@@ -369,9 +410,7 @@ def scaffold_core_energy(
             # Hard safety rejects atomically overlapping generated chains,
             # while ordinary interface-distance contacts remain soft.
             clash_terms.append(
-                torch.mean(
-                    torch.square(torch.relu(config.clash_distance - distances))
-                )
+                torch.mean(torch.square(torch.relu(config.clash_distance - distances)))
             )
 
     def mean(items: list[torch.Tensor], default: torch.Tensor = zero):
@@ -383,10 +422,6 @@ def scaffold_core_energy(
     inter_excess = mean(inter_terms)
     clash = mean(clash_terms)
     continuity = mean(continuity_terms)
-    # Low inter-chain attraction automatically makes broad accidental patches
-    # more expensive.  At inter=1 the established graph-interface objective
-    # is authoritative and only clash safety remains here.
-    excess_scale = max(0.0, 1.0 - config.inter_chain_weight)
     total = (
         config.intra_chain_weight
         * (
@@ -394,11 +429,15 @@ def scaffold_core_energy(
             + config.normalized_rg_weight * normalized_rg
             + config.tertiary_support_weight * tertiary_support
         )
-        + excess_scale * config.inter_chain_excess_weight * inter_excess
+        + config.inter_chain_excess_penalty
+        * config.inter_chain_excess_weight
+        * inter_excess
         + config.clash_weight * clash
         + config.continuity_weight * continuity
     )
-    inf = torch.full((), float("inf"), dtype=coordinates.dtype, device=coordinates.device)
+    inf = torch.full(
+        (), float("inf"), dtype=coordinates.dtype, device=coordinates.device
+    )
     return ScaffoldCoreEnergy(
         total=total,
         long_range_contacts=long_range,
@@ -473,7 +512,9 @@ def apply_scaffold_core_guidance(
             tokens = topology.atom_to_token[atoms]
             ca_gradient_by_token.index_add_(0, tokens, gradient[atoms])
             ca_count_by_token.index_add_(
-                0, tokens, torch.ones(len(tokens), dtype=gradient.dtype, device=gradient.device)
+                0,
+                tokens,
+                torch.ones(len(tokens), dtype=gradient.dtype, device=gradient.device),
             )
         ca_gradient_by_token = ca_gradient_by_token / torch.clamp(
             ca_count_by_token[:, None], min=1.0
@@ -485,6 +526,72 @@ def apply_scaffold_core_guidance(
             max=1.0,
         )
         token_step[~topology.generated_token_mask] = 0.0
+        # Adjacent residues cannot receive unrelated translations: their
+        # difference is exactly the perturbation applied to every inter-token
+        # peptide-bond vector.  Smooth first, then enforce a hard per-step
+        # bound while keeping fixed tokens immobile.
+        for _ in range(2):
+            if not len(topology.adjacent_token_pairs):
+                break
+            accumulated = token_step.clone()
+            counts = torch.ones(
+                len(token_step),
+                dtype=token_step.dtype,
+                device=token_step.device,
+            )
+            left = topology.adjacent_token_pairs[:, 0]
+            right = topology.adjacent_token_pairs[:, 1]
+            accumulated.index_add_(0, left, token_step[right])
+            accumulated.index_add_(0, right, token_step[left])
+            counts.index_add_(0, left, torch.ones_like(left, dtype=token_step.dtype))
+            counts.index_add_(0, right, torch.ones_like(right, dtype=token_step.dtype))
+            token_step = 0.5 * token_step + 0.5 * (accumulated / counts[:, None])
+            token_step[~topology.generated_token_mask] = 0.0
+        maximum_adjacent_difference = 0.0
+        if len(topology.adjacent_token_pairs):
+            for _ in range(3):
+                for left_value, right_value in topology.adjacent_token_pairs.tolist():
+                    left_index = int(left_value)
+                    right_index = int(right_value)
+                    left_generated = bool(
+                        topology.generated_token_mask[left_index].item()
+                    )
+                    right_generated = bool(
+                        topology.generated_token_mask[right_index].item()
+                    )
+                    if left_generated and right_generated:
+                        midpoint = 0.5 * (
+                            token_step[left_index] + token_step[right_index]
+                        )
+                        difference = _clamp_step(
+                            token_step[left_index] - token_step[right_index],
+                            config.maximum_adjacent_token_step_difference,
+                        )
+                        token_step[left_index] = midpoint + 0.5 * difference
+                        token_step[right_index] = midpoint - 0.5 * difference
+                    elif left_generated:
+                        token_step[left_index] = _clamp_step(
+                            token_step[left_index],
+                            config.maximum_adjacent_token_step_difference,
+                        )
+                    elif right_generated:
+                        token_step[right_index] = _clamp_step(
+                            token_step[right_index],
+                            config.maximum_adjacent_token_step_difference,
+                        )
+                token_step[~topology.generated_token_mask] = 0.0
+            left = topology.adjacent_token_pairs[:, 0]
+            right = topology.adjacent_token_pairs[:, 1]
+            maximum_adjacent_difference = float(
+                torch.linalg.vector_norm(
+                    token_step[left] - token_step[right],
+                    dim=-1,
+                )
+                .max()
+                .detach()
+                .cpu()
+                .item()
+            )
         atom_step = token_step[topology.atom_to_token][None, ...]
 
     accepted = False
@@ -502,7 +609,8 @@ def apply_scaffold_core_guidance(
             continue
         safety_ok = (
             float(trial.clash.item()) <= float(initial.clash.item()) + 1e-7
-            and float(trial.continuity.item()) <= float(initial.continuity.item()) + 1e-7
+            and float(trial.continuity.item())
+            <= float(initial.continuity.item()) + 1e-7
         )
         if safety_ok and float(trial.total.item()) < float(initial.total.item()) - 1e-8:
             result = candidate.detach()
@@ -519,6 +627,7 @@ def apply_scaffold_core_guidance(
         "maximum_token_step": float(
             torch.linalg.vector_norm(token_step, dim=-1).max().detach().cpu().item()
         ),
+        "maximum_adjacent_token_step_difference": (maximum_adjacent_difference),
         "initial": initial.detached_dict(),
         "final": final.detached_dict(),
     }

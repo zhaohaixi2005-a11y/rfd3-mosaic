@@ -47,10 +47,14 @@ def audit_scaffold_core_guidance(
         raise ValueError("Compiled input has no scaffold core guidance plan")
     expected_intra = float(plan.get("intra_chain_weight", 0.0))
     expected_inter = float(plan.get("inter_chain_weight", 1.0))
+    expected_excess_penalty = float(plan.get("inter_chain_excess_penalty", 0.0))
+    quality_contract = plan.get("quality_contract")
+    if quality_contract is None:
+        quality_contract = {"required": False}
+    if not isinstance(quality_contract, dict):
+        raise ValueError("scaffold core quality_contract must be an object")
 
-    diagnostics = _object(result_path).get(
-        "scaffold_core_guidance_diagnostics"
-    )
+    diagnostics = _object(result_path).get("scaffold_core_guidance_diagnostics")
     if not isinstance(diagnostics, dict):
         diagnostics = {}
     config = diagnostics.get("config")
@@ -71,6 +75,12 @@ def audit_scaffold_core_guidance(
         )
         and math.isclose(
             float(config["inter_chain_weight"]), expected_inter, abs_tol=1e-8
+        )
+        and _finite(config.get("inter_chain_excess_penalty", 0.0))
+        and math.isclose(
+            float(config.get("inter_chain_excess_penalty", 0.0)),
+            expected_excess_penalty,
+            abs_tol=1e-8,
         )
     )
     metric_names = (
@@ -101,19 +111,35 @@ def audit_scaffold_core_guidance(
             and isinstance(step.get("final"), dict)
             and _finite(step["initial"].get("total"))
             and _finite(step["final"].get("total"))
-            and float(step["final"]["total"])
-            <= float(step["initial"]["total"]) + 1e-7
+            and float(step["final"]["total"]) <= float(step["initial"]["total"]) + 1e-7
             for step in applied
         )
     )
-    # These are geometry safety checks, not calibrated scientific-quality
-    # cutoffs.  Compactness and support metrics are reported for pilot
-    # comparison instead of being hard-coded to one LHD101 example.
+    # Geometry safety remains mandatory.  Scientific-quality thresholds are
+    # a separate, explicitly enabled contract so older designs do not acquire
+    # a new calibrated gate merely by being replayed with newer software.
     safety_contract = bool(
         final_metric_contract
         and float(final_metrics["clash"]) <= 1e-4
         and float(final_metrics["continuity"]) <= 0.05
     )
+    quality_required = quality_contract.get("required") is True
+    quality_thresholds_valid = bool(
+        _finite(quality_contract.get("maximum_mean_normalized_rg"))
+        and _finite(quality_contract.get("minimum_mean_tertiary_support_fraction"))
+        and _finite(quality_contract.get("maximum_long_range_contact_deficit"))
+    )
+    scientific_quality_satisfied = bool(
+        final_metric_contract
+        and quality_thresholds_valid
+        and float(final_metrics["mean_normalized_rg"])
+        <= float(quality_contract["maximum_mean_normalized_rg"])
+        and float(final_metrics["mean_tertiary_support_fraction"])
+        >= float(quality_contract["minimum_mean_tertiary_support_fraction"])
+        and float(final_metrics["long_range_contacts"])
+        <= float(quality_contract["maximum_long_range_contact_deficit"])
+    )
+    quality_gate_satisfied = bool(not quality_required or scientific_quality_satisfied)
     passed = bool(
         diagnostics.get("runtime_active") is True
         and int(diagnostics.get("chain_count", 0)) >= 1
@@ -121,6 +147,7 @@ def audit_scaffold_core_guidance(
         and step_contract
         and final_metric_contract
         and safety_contract
+        and quality_gate_satisfied
     )
     return {
         "audit": "rfd3_mosaic.scaffold_core_guidance",
@@ -139,6 +166,11 @@ def audit_scaffold_core_guidance(
             "step_contract_valid": step_contract,
             "final_metric_contract_valid": final_metric_contract,
             "safety_contract_valid": safety_contract,
+            "quality_required": quality_required,
+            "quality_thresholds_valid": quality_thresholds_valid,
+            "scientific_quality_satisfied": (scientific_quality_satisfied),
+            "quality_gate_satisfied": quality_gate_satisfied,
+            "quality_contract": quality_contract,
             "final_metrics": final_metrics,
         },
     }
@@ -162,8 +194,7 @@ def main() -> None:
         encoding="utf-8",
     )
     print(
-        "Scaffold core guidance audit: "
-        + ("PASSED" if report["passed"] else "FAILED")
+        "Scaffold core guidance audit: " + ("PASSED" if report["passed"] else "FAILED")
     )
     if not report["passed"] and not arguments.report_only:
         raise SystemExit(1)

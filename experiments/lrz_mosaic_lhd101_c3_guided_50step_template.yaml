@@ -14,11 +14,11 @@ symmetry:
 preferences:
   component_motion: free
 
-# RFdiffusion-style intra/inter balance.  The supplied interface remains an
-# exact joint-rigid constraint.  Strong intra-chain guidance asks each
-# generated scaffold to form a supported monomer core; weak inter-chain
-# attraction permits incidental contacts without deliberately building a
-# second interface comparable to the supplied one.
+# RFdiffusion contact-map semantics.  The supplied interface remains an exact
+# joint-rigid constraint.  Strong intra-chain guidance asks each generated
+# scaffold to form a supported monomer core.  inter_chain_weight scales only
+# declared generated-interface edges; because this task declares none, 0.10
+# is retained for protocol provenance but is intentionally inactive.
 guidance:
   intra_chain_weight: 1.0
   inter_chain_weight: 0.10
@@ -61,13 +61,16 @@ sampling:
   low_memory_mode: true
   execution_backend: explicit_all_copy
   # Preserve the natural LHD101 interface.  Intra-chain guidance supports a
-  # compact monomer scaffold; low inter-chain weight avoids deliberately
-  # creating a second broad generated interface between cyclic neighbours.
-  # The LHD101 input already supplies the oligomeric interface.  Do not ask
-  # generated residues to create a second cyclic-neighbour interface; the
-  # independent intra/inter field above only shapes the monomer scaffold and
-  # softly suppresses excessive incidental cross-chain contacts.
+  # compact monomer scaffold.  No generated-interface graph and no implicit
+  # generated--generated repulsion are active in this supplied-interface job.
   scaffold_packing: "off"
+  scaffold_core_quality:
+    # Report these scale-normalized targets in the pilot.  Promote them to a
+    # hard gate only after the multi-pose cohort establishes a distribution.
+    required: false
+    maximum_mean_normalized_rg: 2.60
+    minimum_mean_tertiary_support_fraction: 0.50
+    maximum_long_range_contact_deficit: 0.25
 
 resources:
   profile: any_gpu

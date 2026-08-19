@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 
 import torch
-
 from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
@@ -12,6 +11,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     scaffold_core_energy,
 )
 from rfd3.trainer.rfd3 import _copy_sampler_diagnostics
+
 from rfd3_mosaic.rfd3_scaffold_core_audit import (
     audit_scaffold_core_guidance,
 )
@@ -21,12 +21,8 @@ def features(tokens_per_chain: int = 8):
     count = 2 * tokens_per_chain
     return {
         "atom_to_token_map": torch.arange(count),
-        "asym_id": torch.tensor(
-            [0] * tokens_per_chain + [1] * tokens_per_chain
-        ),
-        "residue_index": torch.tensor(
-            list(range(tokens_per_chain)) * 2
-        ),
+        "asym_id": torch.tensor([0] * tokens_per_chain + [1] * tokens_per_chain),
+        "residue_index": torch.tensor(list(range(tokens_per_chain)) * 2),
         "is_ca": torch.ones(count, dtype=torch.bool),
         "is_protein": torch.ones(count, dtype=torch.bool),
     }
@@ -52,7 +48,7 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
                 payload["scaffold_core_guidance_diagnostics"],
             )
 
-    def test_soft_inter_penalty_distinguishes_incidental_from_broad_contact(
+    def test_explicit_soft_inter_penalty_distinguishes_broad_contact(
         self,
     ) -> None:
         f = features()
@@ -61,6 +57,9 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
         config = ScaffoldCoreGuidanceConfig(
             intra_chain_weight=0.0,
             inter_chain_weight=0.0,
+            inter_chain_excess_penalty=1.0,
+            clash_weight=0.0,
+            continuity_weight=0.0,
             sequence_separation=2,
         )
         left = torch.stack(
@@ -74,9 +73,7 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
         scattered = scaffold_core_energy(
             torch.cat((left, scattered_right)), topology, config
         )
-        broad = scaffold_core_energy(
-            torch.cat((left, broad_right)), topology, config
-        )
+        broad = scaffold_core_energy(torch.cat((left, broad_right)), topology, config)
 
         self.assertGreater(
             broad.inter_chain_excess.item(),
@@ -86,6 +83,40 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
             broad.generated_inter_chain_contact_coverage.item(),
             scattered.generated_inter_chain_contact_coverage.item(),
         )
+        self.assertGreater(broad.total.item(), scattered.total.item())
+
+    def test_inter_weight_has_no_implicit_repulsive_core_energy(self) -> None:
+        f = features()
+        topology = build_scaffold_core_topology(
+            f,
+            torch.zeros(16, dtype=torch.bool),
+        )
+        chain = torch.stack(
+            (torch.arange(8.0) * 4.0, torch.zeros(8), torch.zeros(8)),
+            dim=-1,
+        )
+        coordinates = torch.cat((chain, chain + torch.tensor([0.0, 7.0, 0.0])))
+        low_inter = scaffold_core_energy(
+            coordinates,
+            topology,
+            ScaffoldCoreGuidanceConfig(
+                intra_chain_weight=1.0,
+                inter_chain_weight=0.1,
+                sequence_separation=2,
+            ),
+        )
+        high_inter = scaffold_core_energy(
+            coordinates,
+            topology,
+            ScaffoldCoreGuidanceConfig(
+                intra_chain_weight=1.0,
+                inter_chain_weight=1.0,
+                sequence_separation=2,
+            ),
+        )
+
+        self.assertGreater(low_inter.inter_chain_excess.item(), 0.0)
+        self.assertAlmostEqual(low_inter.total.item(), high_inter.total.item())
 
     def test_intra_guidance_moves_only_generated_tokens_and_lowers_energy(
         self,
@@ -106,9 +137,9 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
             (torch.arange(8.0) * 6.0, torch.zeros(8), torch.zeros(8)),
             dim=-1,
         )
-        coordinates = torch.cat(
-            (chain, chain + torch.tensor([0.0, 40.0, 0.0]))
-        )[None, ...]
+        coordinates = torch.cat((chain, chain + torch.tensor([0.0, 40.0, 0.0])))[
+            None, ...
+        ]
 
         guided, diagnostics = apply_scaffold_core_guidance(
             coordinates,
@@ -125,6 +156,10 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
         )
         self.assertTrue(torch.equal(guided[0, fixed], coordinates[0, fixed]))
         self.assertFalse(torch.equal(guided, coordinates))
+        self.assertLessEqual(
+            diagnostics["maximum_adjacent_token_step_difference"],
+            config.maximum_adjacent_token_step_difference + 1e-6,
+        )
 
     def test_audit_reports_metrics_without_hard_coding_lhd_contact_counts(
         self,
@@ -156,6 +191,13 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
                                     "mode": "intra_inter",
                                     "intra_chain_weight": 1.0,
                                     "inter_chain_weight": 0.1,
+                                    "inter_chain_excess_penalty": 0.0,
+                                    "quality_contract": {
+                                        "required": True,
+                                        "maximum_mean_normalized_rg": 2.6,
+                                        "minimum_mean_tertiary_support_fraction": 0.5,
+                                        "maximum_long_range_contact_deficit": 0.25,
+                                    },
                                 }
                             }
                         }
@@ -171,6 +213,7 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
                             "config": {
                                 "intra_chain_weight": 1.0,
                                 "inter_chain_weight": 0.1,
+                                "inter_chain_excess_penalty": 0.0,
                             },
                             "steps": [
                                 {
@@ -192,10 +235,96 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(
-            report["summary"]["final_metrics"]
-            ["generated_inter_chain_contact_pairs"],
+            report["summary"]["final_metrics"]["generated_inter_chain_contact_pairs"],
             4.0,
         )
+        self.assertTrue(report["summary"]["scientific_quality_satisfied"])
+
+    def test_audit_rejects_executed_but_open_scaffold(self) -> None:
+        metrics = {
+            "total": 1.0,
+            "long_range_contacts": 1.0,
+            "normalized_rg": 1.0,
+            "tertiary_support": 1.0,
+            "inter_chain_excess": 0.0,
+            "clash": 0.0,
+            "continuity": 0.0,
+            "mean_normalized_rg": 3.4,
+            "mean_tertiary_support_fraction": 0.1,
+            "generated_inter_chain_contact_pairs": 0.0,
+            "generated_inter_chain_contact_coverage": 0.0,
+            "minimum_generated_inter_chain_distance": 20.0,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiled = root / "input.json"
+            result = root / "result.json"
+            compiled.write_text(
+                json.dumps(
+                    {
+                        "case": {
+                            "extra": {
+                                "scaffold_core_guidance": {
+                                    "mode": "intra_inter",
+                                    "intra_chain_weight": 1.0,
+                                    "inter_chain_weight": 0.1,
+                                    "inter_chain_excess_penalty": 0.0,
+                                    "quality_contract": {
+                                        "required": True,
+                                        "maximum_mean_normalized_rg": 2.6,
+                                        "minimum_mean_tertiary_support_fraction": 0.5,
+                                        "maximum_long_range_contact_deficit": 0.25,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+            result.write_text(
+                json.dumps(
+                    {
+                        "scaffold_core_guidance_diagnostics": {
+                            "runtime_active": True,
+                            "chain_count": 3,
+                            "config": {
+                                "intra_chain_weight": 1.0,
+                                "inter_chain_weight": 0.1,
+                                "inter_chain_excess_penalty": 0.0,
+                            },
+                            "steps": [
+                                {
+                                    "applied": True,
+                                    "initial": {"total": 2.0},
+                                    "final": {"total": 1.0},
+                                }
+                            ],
+                            "applied_steps": 1,
+                            "final_metrics": metrics,
+                        }
+                    }
+                )
+            )
+            report = audit_scaffold_core_guidance(
+                compiled_input=compiled,
+                result_json=result,
+            )
+
+            report_only_payload = json.loads(compiled.read_text())
+            report_only_payload["case"]["extra"]["scaffold_core_guidance"][
+                "quality_contract"
+            ]["required"] = False
+            compiled.write_text(json.dumps(report_only_payload))
+            report_only = audit_scaffold_core_guidance(
+                compiled_input=compiled,
+                result_json=result,
+            )
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["summary"]["scientific_quality_satisfied"])
+        self.assertTrue(report_only["passed"])
+        self.assertFalse(report_only["summary"]["scientific_quality_satisfied"])
+        self.assertTrue(report_only["summary"]["quality_gate_satisfied"])
 
 
 if __name__ == "__main__":

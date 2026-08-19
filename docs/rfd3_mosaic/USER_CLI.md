@@ -211,12 +211,33 @@ guidance:
 
 `intra_chain_weight` rewards long-range contacts inside each generated
 monomer, a bounded length-normalized radius of gyration, and tertiary-contact
-support across generated residues. `inter_chain_weight` scales active
-generated--generated interface attraction. Setting it to zero does not ban
-all cross-chain contacts: isolated contacts remain legal, while a normalized
-soft excess penalty discourages a second broad generated interface. Exact
+support across generated residues. `inter_chain_weight` follows contact-map
+semantics: it scales only declared generated--generated interface edges. In a
+supplied-interface design with no generated interface edge it is intentionally
+inactive; a value below one is not silently converted into repulsion.
+
+Experts who deliberately need to discourage a second broad generated contact
+surface can independently set `guidance.inter_chain_excess_penalty`. It is
+zero by default and is not exposed as an ordinary-user shortcut. Exact
 supplied-seed geometry, symmetry, chain continuity and clash rejection remain
 hard contracts at every weight.
+
+Scientific compactness thresholds are also independent of runtime/safety
+validation. Existing designs remain report-only. A calibrated campaign may
+opt in explicitly:
+
+```yaml
+sampling:
+  scaffold_core_quality:
+    required: true
+    maximum_mean_normalized_rg: 2.60
+    minimum_mean_tertiary_support_fraction: 0.50
+    maximum_long_range_contact_deficit: 0.25
+```
+
+The mobility audit reports the observed translation and rotation as fractions
+of their declared full-SE(3) bounds. Nonzero movement is evidence, not a hard
+acceptance condition: an already-good initial pose may correctly remain still.
 
 Existing YAMLs that omit these fields retain the original values
 `intra_chain_weight=0` and `inter_chain_weight=1`.

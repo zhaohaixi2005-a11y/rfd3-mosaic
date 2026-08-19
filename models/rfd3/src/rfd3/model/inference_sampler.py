@@ -35,17 +35,17 @@ from rfd3.inference.symmetry.local_neighbourhood import (
 from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
 )
-from rfd3.inference.symmetry.scaffold_guidance import (
-    ScaffoldGuidanceConfig,
-    build_boundary_topology,
-    extract_symmetry_primary_axis,
-    principal_axis_from_points,
-)
 from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
     scaffold_core_energy,
+)
+from rfd3.inference.symmetry.scaffold_guidance import (
+    ScaffoldGuidanceConfig,
+    build_boundary_topology,
+    extract_symmetry_primary_axis,
+    principal_axis_from_points,
 )
 from rfd3.inference.symmetry.symmetry_utils import (
     apply_symmetry_to_xyz_atomwise,
@@ -117,6 +117,7 @@ class SampleDiffusionConfig:
     # no monomer-core field and full generated inter-chain attraction.
     scaffold_core_intra_chain_weight: float = 0.0
     scaffold_core_inter_chain_weight: float = 1.0
+    scaffold_core_inter_chain_excess_penalty: float = 0.0
     graph_interface_guidance_weight: float = 1.0
     graph_interface_guidance_coverage_weight: float = 1.0
     graph_interface_guidance_continuity_weight: float = 1.0
@@ -564,7 +565,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
         scaffold_core_active = (
             float(self.scaffold_core_intra_chain_weight) > 0.0
-            or float(self.scaffold_core_inter_chain_weight) < 1.0
+            or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
         )
         if scaffold_core_active and not exact_state:
             raise ValueError(
@@ -572,12 +573,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "state and coupled-noise modes"
             )
         if float(self.scaffold_core_intra_chain_weight) < 0.0:
-            raise ValueError(
-                "scaffold_core_intra_chain_weight cannot be negative"
-            )
+            raise ValueError("scaffold_core_intra_chain_weight cannot be negative")
         if not 0.0 <= float(self.scaffold_core_inter_chain_weight) <= 2.0:
+            raise ValueError("scaffold_core_inter_chain_weight must be between 0 and 2")
+        if float(self.scaffold_core_inter_chain_excess_penalty) < 0.0:
             raise ValueError(
-                "scaffold_core_inter_chain_weight must be between 0 and 2"
+                "scaffold_core_inter_chain_excess_penalty cannot be negative"
             )
         if (
             self.enable_graph_interface_guidance
@@ -588,20 +589,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "scaffold packing, not both"
             )
         if (
-            (
-                self.enable_graph_interface_guidance
-                or self.enable_symmetric_scaffold_packing
-            )
-            and float(self.interface_seed_compactness_weight) > 0.0
-        ):
+            self.enable_graph_interface_guidance
+            or self.enable_symmetric_scaffold_packing
+        ) and float(self.interface_seed_compactness_weight) > 0.0:
             raise ValueError(
                 "Interface packing guidance cannot be combined with the "
                 "legacy all-chain interface_seed_compactness force"
             )
-        if (
-            scaffold_core_active
-            and float(self.interface_seed_compactness_weight) > 0.0
-        ):
+        if scaffold_core_active and float(self.interface_seed_compactness_weight) > 0.0:
             raise ValueError(
                 "Scaffold intra/inter guidance cannot be combined with the "
                 "legacy interface_seed_compactness force"
@@ -851,6 +846,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         return ScaffoldCoreGuidanceConfig(
             intra_chain_weight=float(self.scaffold_core_intra_chain_weight),
             inter_chain_weight=float(self.scaffold_core_inter_chain_weight),
+            inter_chain_excess_penalty=float(
+                self.scaffold_core_inter_chain_excess_penalty
+            ),
         )
 
     @staticmethod
@@ -1587,7 +1585,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         scaffold_core_diagnostics: list[dict[str, Any]] = []
         scaffold_core_active = (
             float(self.scaffold_core_intra_chain_weight) > 0.0
-            or float(self.scaffold_core_inter_chain_weight) < 1.0
+            or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
         )
         joint_packing_mobility = False
         constraint_runtime = None
@@ -1608,18 +1606,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f"edges={len(graph_interface_topology.edges)}"
             )
         elif self.enable_symmetric_scaffold_packing:
-            graph_interface_topology = (
-                build_symmetric_scaffold_interface_topology(
-                    f,
-                    is_motif_atom_with_fixed_coord,
-                )
+            graph_interface_topology = build_symmetric_scaffold_interface_topology(
+                f,
+                is_motif_atom_with_fixed_coord,
             )
-            graph_interface_guidance_config = (
-                self._graph_interface_guidance_config()
-            )
-            graph_interface_patch_state = GraphInterfacePatchState(
-                assignments={}
-            )
+            graph_interface_guidance_config = self._graph_interface_guidance_config()
+            graph_interface_patch_state = GraphInterfacePatchState(assignments={})
             ranked_logger.info(
                 "Automatic symmetric scaffold packing initialized: "
                 f"edges={len(graph_interface_topology.edges)}"
@@ -1629,9 +1621,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f,
                 is_motif_atom_with_fixed_coord,
             )
-            scaffold_core_guidance_config = (
-                self._scaffold_core_guidance_config()
-            )
+            scaffold_core_guidance_config = self._scaffold_core_guidance_config()
             ranked_logger.info(
                 "Scaffold intra/inter guidance initialized: "
                 f"chains={len(scaffold_core_topology.chains)}, "
@@ -1845,18 +1835,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                             "axis": scaffold_guidance_axis,
                             "principal_axes": scaffold_guidance_principal_axes,
                             "config": scaffold_guidance_config,
-                            "apply_update": bool(
-                                self.motif_mobility_apply_updates
-                            ),
+                            "apply_update": bool(self.motif_mobility_apply_updates),
                         }
                         # Preserve the exact legacy call signature when the
                         # new field is disabled.  Besides compatibility with
                         # external controllers, this proves that default-off
                         # intra guidance cannot alter established jobs.
                         if core_pose_energy is not None:
-                            scaffold_update_arguments["pose_energy"] = (
-                                core_pose_energy
-                            )
+                            scaffold_update_arguments["pose_energy"] = core_pose_energy
                         target = motif_mobility_controller.update_orbits_from_scaffold(
                             proposal_coordinates,
                             **scaffold_update_arguments,
@@ -2212,10 +2198,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         final_graph_interface_energy = None
         final_graph_interface_quality_satisfied = None
-        if (
-            graph_interface_topology is not None
-            and scaffold_core_topology is None
-        ):
+        if graph_interface_topology is not None and scaffold_core_topology is None:
             if graph_interface_guidance_config is None:
                 raise RuntimeError(
                     "Graph interface guidance config was not initialized"
@@ -2342,9 +2325,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         final_scaffold_core_energy = None
         if scaffold_core_topology is not None:
             if scaffold_core_guidance_config is None:
-                raise RuntimeError(
-                    "Scaffold core guidance config was not initialized"
-                )
+                raise RuntimeError("Scaffold core guidance config was not initialized")
             final_scaffold_core_energy = scaffold_core_energy(
                 X_L[0],
                 scaffold_core_topology,
@@ -2481,9 +2462,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 scaffold_core_guidance_config is None
                 or final_scaffold_core_energy is None
             ):
-                raise RuntimeError(
-                    "Final scaffold core energy was not evaluated"
-                )
+                raise RuntimeError("Final scaffold core energy was not evaluated")
             result["scaffold_core_guidance_diagnostics"] = {
                 "schema_version": 1,
                 "runtime_active": True,
@@ -2491,8 +2470,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "config": vars(scaffold_core_guidance_config),
                 "steps": scaffold_core_diagnostics,
                 "applied_steps": sum(
-                    bool(step.get("applied"))
-                    for step in scaffold_core_diagnostics
+                    bool(step.get("applied")) for step in scaffold_core_diagnostics
                 ),
                 "final_metrics": final_scaffold_core_energy.detached_dict(),
             }
@@ -2543,6 +2521,16 @@ class ConditionalDiffusionSampler:
                 unsupported.append("scaffold_core_intra_chain_weight")
             if float(kwargs.get("scaffold_core_inter_chain_weight", 1.0)) != 1.0:
                 unsupported.append("scaffold_core_inter_chain_weight")
+            if (
+                float(
+                    kwargs.get(
+                        "scaffold_core_inter_chain_excess_penalty",
+                        0.0,
+                    )
+                )
+                > 0.0
+            ):
+                unsupported.append("scaffold_core_inter_chain_excess_penalty")
             if float(kwargs.get("interface_seed_compactness_weight", 0.0)) > 0.0:
                 unsupported.append("interface_seed_compactness_weight")
             if unsupported:

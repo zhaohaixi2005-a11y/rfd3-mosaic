@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import yaml
 
@@ -212,6 +212,56 @@ class RunReportingTestCase(unittest.TestCase):
 
         self.assertIn("packing energy=1.25", text)
         self.assertIn("orientation=0.1", text)
+
+    def test_status_exposes_core_quality_and_actual_mobility(self) -> None:
+        run = self._completed_run("97532")
+        core = run / "scaffold_core_guidance_audit.json"
+        mobility = run / "component_mobility_audit.json"
+        self._write_json(
+            core,
+            {
+                "passed": True,
+                "summary": {
+                    "scientific_quality_satisfied": False,
+                    "final_metrics": {
+                        "mean_normalized_rg": 2.9,
+                        "mean_tertiary_support_fraction": 0.4,
+                        "long_range_contacts": 0.3,
+                    },
+                },
+            },
+        )
+        self._write_json(
+            mobility,
+            {
+                "passed": True,
+                "summary": {
+                    "applied_proposal_count": 7,
+                    "nonzero_motion_observed": True,
+                    "components": [
+                        {
+                            "translation_fraction_of_bound": 0.25,
+                            "rotation_fraction_of_bound": 0.5,
+                        }
+                    ],
+                },
+            },
+        )
+        summary_path = run / "experiment_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["reports"].extend([str(core), str(mobility)])
+        self._write_json(summary_path, summary)
+
+        status = collect_run_status(
+            RunReference(job_id="97532", run_directory=run),
+            include_scheduler=False,
+        )
+        text = format_status_text(status)
+
+        self.assertIn("normalized_rg=2.9", text)
+        self.assertIn("target_met=False", text)
+        self.assertIn("mobility applied=7 moved=True", text)
+        self.assertIn("rotation_bound_used=0.5", text)
 
     def test_copied_run_resolves_absolute_report_paths_by_name(self) -> None:
         run = self._completed_run("86420")

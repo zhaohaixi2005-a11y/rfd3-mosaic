@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from rfd3_mosaic.assembly_frontends import (
     AuditRequirement,
@@ -98,6 +98,8 @@ sampling:
         plan = request.audit_metadata["scaffold_core_guidance"]
         self.assertEqual(plan["intra_chain_weight"], 1.0)
         self.assertEqual(plan["inter_chain_weight"], 0.1)
+        self.assertEqual(plan["inter_chain_excess_penalty"], 0.0)
+        self.assertFalse(plan["quality_contract"]["required"])
 
     def test_generated_interface_plus_core_requires_both_runtime_audits(
         self,
@@ -315,10 +317,12 @@ constraints:
 
             locked_design = root / "locked-design.yaml"
             locked_design.write_text(
-                design.read_text(encoding="utf-8").replace(
+                design.read_text(encoding="utf-8")
+                .replace(
                     "name: public-c3\n",
                     "name: public-c3-locked\n",
-                ).replace(
+                )
+                .replace(
                     "fixed_arrangement: optimize_components\n",
                     "",
                 ),
@@ -334,9 +338,7 @@ constraints:
                 project_directory=root,
                 experiment_name="public-c3-locked",
             )
-            locked_spec = load_assembly_config(
-                locked_request.specification_path
-            )
+            locked_spec = load_assembly_config(locked_request.specification_path)
 
         self.assertEqual(
             request.audit_requirements,
@@ -384,9 +386,7 @@ constraints:
             "create_symmetric_interface",
         )
         self.assertEqual(
-            request.audit_metadata["constraint_plan"]["operators"][0][
-                "operator"
-            ],
+            request.audit_metadata["constraint_plan"]["operators"][0]["operator"],
             "fixed_xyz",
         )
         self.assertEqual(
@@ -398,9 +398,7 @@ constraints:
             ),
         )
         self.assertGreater(
-            locked_spec.initialization[
-                "fixed_component_001"
-            ].placement.radius.mean,
+            locked_spec.initialization["fixed_component_001"].placement.radius.mean,
             0.0,
         )
         self.assertEqual(

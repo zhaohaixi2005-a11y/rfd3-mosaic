@@ -25,18 +25,14 @@ from rfd3_mosaic.schema.specs import StrictModel
 
 class ResolvedDiversityPlan(StrictModel):
     global_pose_samples: int
-    scope: Literal["independent_seed_pose_search"] = (
-        "independent_seed_pose_search"
-    )
+    scope: Literal["independent_seed_pose_search"] = "independent_seed_pose_search"
 
 
 class ResolvedDesignPreferences(StrictModel):
     """Frozen values consumed by search, sampler, provenance and reports."""
 
     schema_version: Literal[1] = 1
-    preset_version: Literal["packing_preferences_v1"] = (
-        "packing_preferences_v1"
-    )
+    preset_version: Literal["packing_preferences_v1"] = "packing_preferences_v1"
     packing: PackingPreference
     cavity: CavityPreference
     diversity: DiversityPreference
@@ -159,17 +155,11 @@ def compile_design_preferences(
         ComponentMotionPreference.FREE: "bounded_se3",
     }[motion]
 
-    overrides: dict[str, float | int] = dict(
-        _PACKING[preferences.packing]
-    )
-    pairs, coverage_scale, continuity_scale = _AREA[
-        preferences.interface_area
-    ]
+    overrides: dict[str, float | int] = dict(_PACKING[preferences.packing])
+    pairs, coverage_scale, continuity_scale = _AREA[preferences.interface_area]
     overrides["graph_interface_guidance_pairs_per_edge"] = pairs
     overrides["graph_interface_guidance_coverage_weight"] *= coverage_scale
-    overrides[
-        "graph_interface_guidance_continuity_weight"
-    ] *= continuity_scale
+    overrides["graph_interface_guidance_continuity_weight"] *= continuity_scale
 
     # Safety terms are compiler-owned and never reduced by a public preset.
     overrides.update(
@@ -183,6 +173,10 @@ def compile_design_preferences(
         expert = design.guidance.model_dump(exclude_none=True)
         intra_chain_weight = expert.pop("intra_chain_weight", None)
         inter_chain_weight = expert.pop("inter_chain_weight", None)
+        inter_chain_excess_penalty = expert.pop(
+            "inter_chain_excess_penalty",
+            None,
+        )
         overrides.update(
             {
                 f"graph_interface_guidance_{name}": value
@@ -190,12 +184,12 @@ def compile_design_preferences(
             }
         )
         if intra_chain_weight is not None:
-            overrides["scaffold_core_intra_chain_weight"] = (
-                intra_chain_weight
-            )
+            overrides["scaffold_core_intra_chain_weight"] = intra_chain_weight
         if inter_chain_weight is not None:
-            overrides["scaffold_core_inter_chain_weight"] = (
-                inter_chain_weight
+            overrides["scaffold_core_inter_chain_weight"] = inter_chain_weight
+        if inter_chain_excess_penalty is not None:
+            overrides["scaffold_core_inter_chain_excess_penalty"] = (
+                inter_chain_excess_penalty
             )
     return ResolvedDesignPreferences(
         packing=preferences.packing,

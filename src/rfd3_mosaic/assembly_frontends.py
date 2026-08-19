@@ -55,14 +55,11 @@ class AssemblyCompilationRequest:
 
     def __post_init__(self) -> None:
         if not self.audit_requirements:
-            raise ValueError(
-                "Every assembly compilation request requires an audit"
-            )
+            raise ValueError("Every assembly compilation request requires an audit")
         if len(self.audit_requirements) != len(set(self.audit_requirements)):
             raise ValueError("Audit requirements cannot repeat")
         if any(
-            not isinstance(item, AuditRequirement)
-            for item in self.audit_requirements
+            not isinstance(item, AuditRequirement) for item in self.audit_requirements
         ):
             raise TypeError("Audit requirements must use AuditRequirement")
 
@@ -80,9 +77,7 @@ def _single_rfd3_example(path: Path) -> dict[str, Any]:
 def _parse_rfd3_selector(selector: str) -> tuple[str, int, int]:
     match = _RFD3_SELECTOR.fullmatch(selector)
     if match is None:
-        raise ValueError(
-            "fixed_selector must be one contiguous range such as B1-31"
-        )
+        raise ValueError("fixed_selector must be one contiguous range such as B1-31")
     chain, start_text, end_text = match.groups()
     start, end = int(start_text), int(end_text)
     if end < start:
@@ -141,9 +136,7 @@ def _transform_set_from_template(
     if prefix == "D":
         secondary_id = f"{symmetry_id}:s0"
         try:
-            secondary = np.asarray(
-                declared_matrices[secondary_id], dtype=float
-            )
+            secondary = np.asarray(declared_matrices[secondary_id], dtype=float)
         except KeyError as error:
             raise ValueError(
                 f"Declared registry lacks dihedral generator {secondary_id!r}"
@@ -165,9 +158,7 @@ def _transform_set_from_template(
                     "role": "functional_motif",
                 }
             },
-            "motion_groups": {
-                "probe_group": {"members": ["probe"], "mode": "fixed"}
-            },
+            "motion_groups": {"probe_group": {"members": ["probe"], "mode": "fixed"}},
             "symmetry": {
                 "transform_sets": {"native": transform_set},
                 "orbits": {
@@ -179,9 +170,7 @@ def _transform_set_from_template(
             },
         }
     )
-    registry = build_transform_registry(
-        probe.symmetry.transform_sets["native"]
-    )
+    registry = build_transform_registry(probe.symmetry.transform_sets["native"])
     if list(registry.transform_ids) != list(declared_order):
         raise ValueError(
             "Template declared transform order does not match Mosaic registry"
@@ -207,9 +196,7 @@ def lower_central_motif_topology(
 
     template_path = Path(str(topology["template_input"])).resolve()
     template = _single_rfd3_example(template_path)
-    chain, start, end = _parse_rfd3_selector(
-        str(topology["fixed_selector"])
-    )
+    chain, start, end = _parse_rfd3_selector(str(topology["fixed_selector"]))
     source = Path(str(template["input"]))
     if not source.is_absolute():
         source = (template_path.parent / source).resolve()
@@ -222,12 +209,10 @@ def lower_central_motif_topology(
     declared_order = symmetry.get("declared_transform_order") or extra.get(
         "registry_transform_order"
     )
-    declared_matrices = symmetry.get(
-        "declared_transform_matrices"
-    ) or extra.get("registry_transform_matrices")
-    if not isinstance(declared_order, list) or not isinstance(
-        declared_matrices, dict
-    ):
+    declared_matrices = symmetry.get("declared_transform_matrices") or extra.get(
+        "registry_transform_matrices"
+    )
+    if not isinstance(declared_order, list) or not isinstance(declared_matrices, dict):
         raise ValueError(
             "Central motif lowering requires a compiler-validated declared "
             "symmetry registry in the template input"
@@ -356,11 +341,7 @@ def lower_experiment_topology(
         specification_path = output / "assembly_specification.yaml"
         specification_path.write_text(
             yaml.safe_dump(
-                {
-                    "assembly": lowered.specification.model_dump(
-                        mode="json"
-                    )
-                },
+                {"assembly": lowered.specification.model_dump(mode="json")},
                 sort_keys=False,
             ),
             encoding="utf-8",
@@ -371,61 +352,44 @@ def lower_experiment_topology(
             operator.operator == "fixed_xyz"
             for operator in lowered.constraint_plan.operators
         ):
-            audit_requirements.append(
-                AuditRequirement.EXACT_CONSTRAINT_ORBIT
-            )
+            audit_requirements.append(AuditRequirement.EXACT_CONSTRAINT_ORBIT)
         if any(
             operator.operator == "cylindrical"
             for operator in lowered.constraint_plan.operators
         ):
-            audit_requirements.append(
-                AuditRequirement.CYLINDRICAL_COORDINATES
-            )
+            audit_requirements.append(AuditRequirement.CYLINDRICAL_COORDINATES)
         # Semantic audits must follow the lowered Assembly IR, not only the
         # fields written explicitly in the public YAML.  Simple terminal
         # designs acquire an output-stage symmetry-neighbour interface during
         # lowering, so consulting ``design.interfaces`` here would enable the
         # sampler guidance while silently omitting both interface audits.
-        compiled_interfaces = tuple(
-            lowered.specification.interfaces.values()
-        )
+        compiled_interfaces = tuple(lowered.specification.interfaces.values())
         if compiled_interfaces:
-            audit_requirements.append(
-                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS
-            )
+            audit_requirements.append(AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS)
         if any(
             interface.required
             and interface.satisfaction_stage == "output"
             and interface.target_geometry.mode == "geometric_constraints"
             for interface in compiled_interfaces
         ):
-            audit_requirements.append(
-                AuditRequirement.GRAPH_INTERFACE_GUIDANCE
-            )
+            audit_requirements.append(AuditRequirement.GRAPH_INTERFACE_GUIDANCE)
         guidance = design.guidance
         scaffold_core_requested = bool(
             guidance is not None
             and (
                 (guidance.intra_chain_weight or 0.0) > 0.0
-                or (
-                    guidance.inter_chain_weight is not None
-                    and guidance.inter_chain_weight < 1.0
-                )
+                or (guidance.inter_chain_excess_penalty or 0.0) > 0.0
             )
         )
         if scaffold_core_requested:
-            audit_requirements.append(
-                AuditRequirement.SCAFFOLD_CORE_GUIDANCE
-            )
+            audit_requirements.append(AuditRequirement.SCAFFOLD_CORE_GUIDANCE)
         if design.sampling.scaffold_packing == "symmetric_generated":
             if compiled_interfaces:
                 raise ValueError(
                     "sampling.scaffold_packing=symmetric_generated cannot be "
                     "combined with graph-declared output interfaces"
                 )
-            audit_requirements.append(
-                AuditRequirement.GRAPH_INTERFACE_GUIDANCE
-            )
+            audit_requirements.append(AuditRequirement.GRAPH_INTERFACE_GUIDANCE)
         # Audit the effective lowered runtime contract.  Task presets may
         # derive mobility without mutating the user's fixed_xyz declaration,
         # so checking only the public YAML would let a moving component run
@@ -434,35 +398,23 @@ def lower_experiment_topology(
             bool(orbit.component_mobility)
             for orbit in lowered.specification.symmetry.orbits.values()
         ):
-            audit_requirements.append(
-                AuditRequirement.BOUNDED_COMPONENT_MOBILITY
-            )
+            audit_requirements.append(AuditRequirement.BOUNDED_COMPONENT_MOBILITY)
         return AssemblyCompilationRequest(
             specification_path=specification_path,
             example_id=str(topology["example_id"]),
             audit_requirements=tuple(audit_requirements),
             audit_metadata={
                 "public_design": str(design_path),
-                "public_task": (
-                    design.task.value
-                    if design.task is not None
-                    else None
-                ),
+                "public_task": (design.task.value if design.task is not None else None),
                 "fixed_arrangement": design.fixed_arrangement.value,
                 "assembly_shape": (
                     design.assembly_shape.model_dump(mode="json")
                     if design.assembly_shape is not None
                     else None
                 ),
-                "resolved_design_preferences": (
-                    resolved_preferences_payload(design)
-                ),
-                "constraint_plan": lowered.constraint_plan.model_dump(
-                    mode="json"
-                ),
-                "sampling_plan": lowered.sampling_plan.model_dump(
-                    mode="json"
-                ),
+                "resolved_design_preferences": (resolved_preferences_payload(design)),
+                "constraint_plan": lowered.constraint_plan.model_dump(mode="json"),
+                "sampling_plan": lowered.sampling_plan.model_dump(mode="json"),
                 "automatic_symmetric_scaffold_packing": (
                     {
                         "mode": "symmetric_generated",
@@ -479,9 +431,19 @@ def lower_experiment_topology(
                             and design.guidance.inter_chain_weight is not None
                             else 1.0
                         ),
+                        "inter_chain_excess_penalty": (
+                            guidance.inter_chain_excess_penalty
+                            if guidance is not None
+                            and guidance.inter_chain_excess_penalty is not None
+                            else 0.0
+                        ),
+                        "quality_contract": (
+                            design.sampling.scaffold_core_quality.model_dump(
+                                mode="json"
+                            )
+                        ),
                     }
-                    if design.sampling.scaffold_packing
-                    == "symmetric_generated"
+                    if design.sampling.scaffold_packing == "symmetric_generated"
                     else None
                 ),
                 "scaffold_core_guidance": (
@@ -498,6 +460,17 @@ def lower_experiment_topology(
                             if guidance is not None
                             and guidance.inter_chain_weight is not None
                             else 1.0
+                        ),
+                        "inter_chain_excess_penalty": (
+                            guidance.inter_chain_excess_penalty
+                            if guidance is not None
+                            and guidance.inter_chain_excess_penalty is not None
+                            else 0.0
+                        ),
+                        "quality_contract": (
+                            design.sampling.scaffold_core_quality.model_dump(
+                                mode="json"
+                            )
                         ),
                     }
                     if scaffold_core_requested

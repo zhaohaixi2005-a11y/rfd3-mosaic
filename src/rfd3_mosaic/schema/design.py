@@ -117,13 +117,22 @@ class ExpertPackingGuidanceSpec(StrictModel):
     """Optional raw controls for packing guidance.
 
     ``intra_chain_weight`` and ``inter_chain_weight`` are intentionally also
-    available on the short ordinary-user surface.  They mirror the familiar
-    RFdiffusion intra/inter balance without weakening exact motif, symmetry,
-    continuity or clash contracts.  The remaining fields stay expert-only.
+    available on the short ordinary-user surface.  They retain familiar
+    contact-map roles without claiming numerical equivalence to RFdiffusion1:
+    intra shapes the monomer core and inter scales declared interface edges.
+    Exact motif, symmetry, continuity and clash contracts remain hard.  The
+    remaining fields stay expert-only.
     """
 
     intra_chain_weight: Annotated[float, Field(ge=0.0)] | None = None
     inter_chain_weight: Annotated[float, Field(ge=0.0, le=2.0)] | None = None
+    inter_chain_excess_penalty: (
+        Annotated[
+            float,
+            Field(ge=0.0),
+        ]
+        | None
+    ) = None
 
     weight: Annotated[float, Field(ge=0.0)] | None = None
     coverage_weight: Annotated[float, Field(ge=0.0)] | None = None
@@ -147,9 +156,7 @@ class ExpertPackingGuidanceSpec(StrictModel):
             and self.end_fraction is not None
             and self.start_fraction >= self.end_fraction
         ):
-            raise ValueError(
-                "expert guidance requires start_fraction < end_fraction"
-            )
+            raise ValueError("expert guidance requires start_fraction < end_fraction")
         return self
 
 
@@ -163,22 +170,26 @@ class FixedComponentPoseSpec(StrictModel):
     """Choose whether one rigid geometry component may move as a whole."""
 
     mode: Literal["fixed", "bounded_mobile"] = "fixed"
-    subspace: Literal[
-        "bounded_se3",
-        "radial",
-        "radial_axial",
-        "tilt_only",
-        "radial_rotation",
-        "radial_axial_rotation",
-    ] | None = None
-    proposal: Literal["denoiser_fit", "scaffold_objectives"] = (
-        "denoiser_fit"
-    )
+    subspace: (
+        Literal[
+            "bounded_se3",
+            "radial",
+            "radial_axial",
+            "tilt_only",
+            "radial_rotation",
+            "radial_axial_rotation",
+        ]
+        | None
+    ) = None
+    proposal: Literal["denoiser_fit", "scaffold_objectives"] = "denoiser_fit"
     max_translation: Annotated[float, Field(gt=0.0)] | None = None
-    max_rotation_deg: Annotated[
-        float,
-        Field(gt=0.0, le=180.0),
-    ] | None = None
+    max_rotation_deg: (
+        Annotated[
+            float,
+            Field(gt=0.0, le=180.0),
+        ]
+        | None
+    ) = None
     start_fraction: Annotated[float, Field(ge=0.0, le=1.0)] = 0.05
     end_fraction: Annotated[float, Field(ge=0.0, le=1.0)] = 0.75
     response: Annotated[float, Field(gt=0.0, le=1.0)] = 0.2
@@ -192,13 +203,11 @@ class FixedComponentPoseSpec(StrictModel):
     def validate_pose_mode(self) -> "FixedComponentPoseSpec":
         if self.start_fraction >= self.end_fraction:
             raise ValueError(
-                "fixed component pose requires start_fraction < "
-                "end_fraction"
+                "fixed component pose requires start_fraction < " "end_fraction"
             )
         bounds = (self.max_translation, self.max_rotation_deg)
         if self.mode == "fixed" and (
-            any(value is not None for value in bounds)
-            or self.subspace is not None
+            any(value is not None for value in bounds) or self.subspace is not None
         ):
             raise ValueError(
                 "pose.mode=fixed cannot define a mobility subspace or "
@@ -206,33 +215,23 @@ class FixedComponentPoseSpec(StrictModel):
             )
         if self.mode == "fixed" and self.proposal != "denoiser_fit":
             raise ValueError(
-                "pose.proposal is only meaningful when "
-                "pose.mode=bounded_mobile"
+                "pose.proposal is only meaningful when " "pose.mode=bounded_mobile"
             )
         if self.mode == "bounded_mobile":
             subspace = self.subspace or "bounded_se3"
             if subspace != "tilt_only" and self.max_translation is None:
-                raise ValueError(
-                    "pose.mode=bounded_mobile requires max_translation"
-                )
+                raise ValueError("pose.mode=bounded_mobile requires max_translation")
             if subspace == "tilt_only":
                 if self.max_translation is not None:
-                    raise ValueError(
-                        "tilt_only mobility cannot define max_translation"
-                    )
+                    raise ValueError("tilt_only mobility cannot define max_translation")
                 if self.max_rotation_deg is None:
-                    raise ValueError(
-                        "tilt_only mobility requires max_rotation_deg"
-                    )
+                    raise ValueError("tilt_only mobility requires max_rotation_deg")
                 if self.proposal != "scaffold_objectives":
                     raise ValueError(
-                        "tilt_only mobility requires "
-                        "proposal=scaffold_objectives"
+                        "tilt_only mobility requires " "proposal=scaffold_objectives"
                     )
             if subspace == "bounded_se3" and self.max_rotation_deg is None:
-                raise ValueError(
-                    "bounded_se3 mobility requires max_rotation_deg"
-                )
+                raise ValueError("bounded_se3 mobility requires max_rotation_deg")
             radial_subspaces = {
                 "radial",
                 "radial_axial",
@@ -245,17 +244,13 @@ class FixedComponentPoseSpec(StrictModel):
                     and self.max_rotation_deg is not None
                 ):
                     raise ValueError(
-                        f"{subspace} mobility cannot define "
-                        "max_rotation_deg"
+                        f"{subspace} mobility cannot define " "max_rotation_deg"
                     )
                 if (
-                    subspace
-                    in {"radial_rotation", "radial_axial_rotation"}
+                    subspace in {"radial_rotation", "radial_axial_rotation"}
                     and self.max_rotation_deg is None
                 ):
-                    raise ValueError(
-                        f"{subspace} mobility requires max_rotation_deg"
-                    )
+                    raise ValueError(f"{subspace} mobility requires max_rotation_deg")
                 if self.proposal != "scaffold_objectives":
                     raise ValueError(
                         f"{subspace} mobility currently requires "
@@ -277,13 +272,9 @@ class FixedXYZConstraint(StrictModel):
     kind: Literal["fixed_xyz", "full_xyz_fixed"] = "fixed_xyz"
     selector: Selector
     atoms: AtomScope = AtomScope.ALL
-    orbit_scope: ConstraintOrbitScope = (
-        ConstraintOrbitScope.COMPLETE_SYMMETRY_ORBIT
-    )
+    orbit_scope: ConstraintOrbitScope = ConstraintOrbitScope.COMPLETE_SYMMETRY_ORBIT
     coupling_group: Identifier | None = None
-    pose: FixedComponentPoseSpec = Field(
-        default_factory=FixedComponentPoseSpec
-    )
+    pose: FixedComponentPoseSpec = Field(default_factory=FixedComponentPoseSpec)
 
 
 class CylindricalConstraint(StrictModel):
@@ -294,9 +285,7 @@ class CylindricalConstraint(StrictModel):
     atoms: AtomScope = AtomScope.CA
     axis: Literal["symmetry"] = "symmetry"
     keep: tuple[CylindricalDegreeOfFreedom, ...]
-    orbit_scope: ConstraintOrbitScope = (
-        ConstraintOrbitScope.COMPLETE_SYMMETRY_ORBIT
-    )
+    orbit_scope: ConstraintOrbitScope = ConstraintOrbitScope.COMPLETE_SYMMETRY_ORBIT
 
     @field_validator("keep")
     @classmethod
@@ -330,13 +319,8 @@ class UserAssemblyShapeSpec(StrictModel):
 
     @model_validator(mode="after")
     def require_positive_shape_bounds(self) -> "UserAssemblyShapeSpec":
-        if (
-            self.diameter_angstrom is None
-            and self.cavity_diameter_angstrom is None
-        ):
-            raise ValueError(
-                "assembly_shape requires diameter and/or cavity diameter"
-            )
+        if self.diameter_angstrom is None and self.cavity_diameter_angstrom is None:
+            raise ValueError("assembly_shape requires diameter and/or cavity diameter")
         for name, bounds in (
             ("diameter_angstrom", self.diameter_angstrom),
             ("cavity_diameter_angstrom", self.cavity_diameter_angstrom),
@@ -354,9 +338,7 @@ class BoundedMobileConstraint(StrictModel):
     spelling, not as a separate topology or sampler.
     """
 
-    kind: Literal["bounded_mobile", "bounded_mobile_interface"] = (
-        "bounded_mobile"
-    )
+    kind: Literal["bounded_mobile", "bounded_mobile_interface"] = "bounded_mobile"
     selector: Selector
     atoms: AtomScope = AtomScope.ALL
     radial: NumericRange | None = None
@@ -364,9 +346,7 @@ class BoundedMobileConstraint(StrictModel):
     azimuth_deg: NumericRange | None = None
     tilt_deg: NumericRange | None = None
     twist_deg: NumericRange | None = None
-    orbit_scope: ConstraintOrbitScope = (
-        ConstraintOrbitScope.COMPLETE_SYMMETRY_ORBIT
-    )
+    orbit_scope: ConstraintOrbitScope = ConstraintOrbitScope.COMPLETE_SYMMETRY_ORBIT
 
     @model_validator(mode="after")
     def require_a_bound(self) -> "BoundedMobileConstraint":
@@ -378,9 +358,7 @@ class BoundedMobileConstraint(StrictModel):
             self.twist_deg,
         )
         if all(value is None for value in bounds):
-            raise ValueError(
-                "bounded_mobile requires at least one explicit pose bound"
-            )
+            raise ValueError("bounded_mobile requires at least one explicit pose bound")
         return self
 
 
@@ -444,19 +422,13 @@ class UserSymmetrySpec(StrictModel):
         if self.id.startswith("C") and self.secondary_axis is not None:
             raise ValueError("secondary_axis is not valid for Cn symmetry")
         if self.secondary_axis is not None:
-            if (
-                sum(value * value for value in self.secondary_axis)
-                <= 1e-12
-            ):
+            if sum(value * value for value in self.secondary_axis) <= 1e-12:
                 raise ValueError("secondary symmetry axis cannot be zero")
             dot = sum(
-                left * right
-                for left, right in zip(self.axis, self.secondary_axis)
+                left * right for left, right in zip(self.axis, self.secondary_axis)
             )
             if abs(dot) > 1e-6:
-                raise ValueError(
-                    "secondary symmetry axis must be perpendicular"
-                )
+                raise ValueError("secondary symmetry axis must be perpendicular")
         return self
 
 
@@ -510,13 +482,33 @@ class UserInitialPoseSpec(StrictModel):
         return self
 
 
+class ScaffoldCoreQualitySpec(StrictModel):
+    """Scale-normalized final scaffold-core acceptance targets.
+
+    These targets distinguish a sampler that merely executed from one that
+    produced a supported compact monomer.  They are independent of exact
+    motif, symmetry, clash and continuity hard contracts.
+    """
+
+    # Keep existing designs report-only unless the author explicitly opts in
+    # to a calibrated scientific gate.  Safety contracts remain mandatory.
+    required: bool = False
+    maximum_mean_normalized_rg: Annotated[float, Field(gt=0.0)] = 2.60
+    minimum_mean_tertiary_support_fraction: Annotated[
+        float,
+        Field(ge=0.0, le=1.0),
+    ] = 0.50
+    maximum_long_range_contact_deficit: Annotated[
+        float,
+        Field(ge=0.0),
+    ] = 0.25
+
+
 class UserSamplingSpec(StrictModel):
     """Separate pre-diffusion pose choice from RFD3 diffusion sampling."""
 
     initial_pose: UserInitialPoseSpec | None = None
-    initial_poses: dict[Identifier, UserInitialPoseSpec] = Field(
-        default_factory=dict
-    )
+    initial_poses: dict[Identifier, UserInitialPoseSpec] = Field(default_factory=dict)
     timesteps: Annotated[int, Field(ge=2, le=200)] = 200
     designs: Annotated[int, Field(ge=1, le=10000)] = 1
     seed: Annotated[int, Field(ge=0)] = 42
@@ -528,13 +520,15 @@ class UserSamplingSpec(StrictModel):
     ] = "explicit_all_copy"
     neighbour_radius: Annotated[int, Field(ge=0)] = 1
     scaffold_packing: Literal["off", "symmetric_generated"] = "off"
+    scaffold_core_quality: ScaffoldCoreQualitySpec = Field(
+        default_factory=ScaffoldCoreQualitySpec
+    )
 
     @model_validator(mode="after")
     def reject_ambiguous_pose_declarations(self) -> "UserSamplingSpec":
         if self.initial_pose is not None and self.initial_poses:
             raise ValueError(
-                "sampling cannot define both initial_pose and "
-                "initial_poses"
+                "sampling cannot define both initial_pose and " "initial_poses"
             )
         return self
 
@@ -558,9 +552,7 @@ class UserAssemblyComponentSpec(StrictModel):
     selectors: Annotated[tuple[Selector, ...], Field(min_length=1)]
     geometry: Literal["rigid", "joint_rigid"] = "rigid"
     finite_orbit_action: FiniteOrbitActionSpec | None = None
-    pose: FixedComponentPoseSpec = Field(
-        default_factory=FixedComponentPoseSpec
-    )
+    pose: FixedComponentPoseSpec = Field(default_factory=FixedComponentPoseSpec)
 
     @model_validator(mode="after")
     def require_unique_selectors(self) -> "UserAssemblyComponentSpec":
@@ -619,10 +611,13 @@ class UserContactRelationSpec(StrictModel):
 
     mode: Literal["contact"] = "contact"
     distance: NumericRange | None = None
-    minimum_heavy_atom_contacts: Annotated[
-        int,
-        Field(ge=1),
-    ] | None = None
+    minimum_heavy_atom_contacts: (
+        Annotated[
+            int,
+            Field(ge=1),
+        ]
+        | None
+    ) = None
     # This is a heavy-atom contact cutoff.  Eight angstrom is useful for a
     # coarse CA neighbourhood, but is far too permissive for claiming a
     # physical all-atom interface: unrelated surface atoms can satisfy it.
@@ -664,9 +659,7 @@ class UserInterfaceUsageSpec(StrictModel):
             if not normalized:
                 return {"mode": "auto"}
             if "mode" not in normalized:
-                normalized["mode"] = (
-                    "exact" if "exact" in normalized else "range"
-                )
+                normalized["mode"] = "exact" if "exact" in normalized else "range"
             return normalized
         return value
 
@@ -674,8 +667,7 @@ class UserInterfaceUsageSpec(StrictModel):
     def validate_usage(self) -> "UserInterfaceUsageSpec":
         if self.mode == "auto":
             if any(
-                value is not None
-                for value in (self.exact, self.minimum, self.maximum)
+                value is not None for value in (self.exact, self.minimum, self.maximum)
             ):
                 raise ValueError("use=auto cannot define multiplicity bounds")
             return self
@@ -683,24 +675,18 @@ class UserInterfaceUsageSpec(StrictModel):
             if self.exact is None:
                 raise ValueError("exact interface use requires exact")
             if self.minimum is not None or self.maximum is not None:
-                raise ValueError(
-                    "exact interface use cannot define minimum/maximum"
-                )
+                raise ValueError("exact interface use cannot define minimum/maximum")
             return self
         if self.exact is not None:
             raise ValueError("range interface use cannot define exact")
         if self.minimum is None and self.maximum is None:
-            raise ValueError(
-                "range interface use requires minimum and/or maximum"
-            )
+            raise ValueError("range interface use requires minimum and/or maximum")
         if (
             self.minimum is not None
             and self.maximum is not None
             and self.minimum > self.maximum
         ):
-            raise ValueError(
-                "interface use minimum cannot exceed maximum"
-            )
+            raise ValueError("interface use minimum cannot exceed maximum")
         return self
 
     def accepts(self, observed: int) -> bool:
@@ -708,9 +694,8 @@ class UserInterfaceUsageSpec(StrictModel):
             return True
         if self.mode == "exact":
             return observed == self.exact
-        return (
-            (self.minimum is None or observed >= self.minimum)
-            and (self.maximum is None or observed <= self.maximum)
+        return (self.minimum is None or observed >= self.minimum) and (
+            self.maximum is None or observed <= self.maximum
         )
 
     @property
@@ -745,9 +730,7 @@ class UserAssemblyInterfaceSpec(StrictModel):
     relation: UserInterfaceRelationSpec = Field(
         default_factory=UserPreserveInputRelationSpec
     )
-    use: UserInterfaceUsageSpec = Field(
-        default_factory=UserInterfaceUsageSpec
-    )
+    use: UserInterfaceUsageSpec = Field(default_factory=UserInterfaceUsageSpec)
     copy_relation: CopyRelationSpec = Field(
         default_factory=lambda: CopyRelationSpec(orbit_offset=0)
     )
@@ -758,24 +741,19 @@ class UserAssemblyInterfaceSpec(StrictModel):
         if len(self.between) == 2 and self.between[0] == self.between[1]:
             relation = self.copy_relation
             if relation.orbit_offset == 0 or (
-                relation.transform is not None
-                and relation.transform.endswith(":e")
+                relation.transform is not None and relation.transform.endswith(":e")
             ):
                 raise ValueError(
-                    "A self-interface must target a non-identity symmetry "
-                    "copy"
+                    "A self-interface must target a non-identity symmetry " "copy"
                 )
             if self.contact_pairs:
                 raise ValueError(
-                    "A symmetry-neighbour self-interface does not use "
-                    "contact_pairs"
+                    "A symmetry-neighbour self-interface does not use " "contact_pairs"
                 )
             return self
 
         if len(set(self.between)) != len(self.between):
-            raise ValueError(
-                "Multi-participant interface ports must be unique"
-            )
+            raise ValueError("Multi-participant interface ports must be unique")
         if len(self.between) == 2:
             allowed = {frozenset(self.between)}
             declared = {frozenset(pair) for pair in self.contact_pairs}
@@ -820,9 +798,7 @@ class UserAssemblyInterfaceSpec(StrictModel):
                     reached.add(neighbour)
                     pending.append(neighbour)
         if reached != node_set:
-            raise ValueError(
-                "Interface contact_pairs must connect every participant"
-            )
+            raise ValueError("Interface contact_pairs must connect every participant")
         return self
 
     @property
@@ -849,8 +825,7 @@ class UserComponentEndpointSpec(StrictModel):
         component, separator, terminus = value.rpartition(".")
         if not separator or not component or terminus.lower() not in {"n", "c"}:
             raise ValueError(
-                "Compact connection endpoints must use component.N or "
-                "component.C"
+                "Compact connection endpoints must use component.N or " "component.C"
             )
         return {"component": component, "terminus": terminus.lower()}
 
@@ -891,12 +866,8 @@ class UserDesignSpec(StrictModel):
     symmetry: SymmetryRequest
     finite_orbit_action: FiniteOrbitActionSpec | None = None
     task: UserDesignTask | None = None
-    fixed_arrangement: FixedArrangementPolicy = (
-        FixedArrangementPolicy.LOCKED
-    )
-    preferences: UserDesignPreferences = Field(
-        default_factory=UserDesignPreferences
-    )
+    fixed_arrangement: FixedArrangementPolicy = FixedArrangementPolicy.LOCKED
+    preferences: UserDesignPreferences = Field(default_factory=UserDesignPreferences)
     guidance: ExpertPackingGuidanceSpec | None = None
     assembly_shape: UserAssemblyShapeSpec | None = None
     generation: tuple[GenerationClause, ...] = ()
@@ -904,9 +875,7 @@ class UserDesignSpec(StrictModel):
     components: dict[Identifier, UserAssemblyComponentSpec] = Field(
         default_factory=dict
     )
-    ports: dict[Identifier, UserAssemblyPortSpec] = Field(
-        default_factory=dict
-    )
+    ports: dict[Identifier, UserAssemblyPortSpec] = Field(default_factory=dict)
     interfaces: tuple[UserAssemblyInterfaceSpec, ...] = ()
     connections: tuple[UserAssemblyConnectionSpec, ...] = ()
     sampling: UserSamplingSpec = Field(default_factory=UserSamplingSpec)
@@ -955,27 +924,19 @@ class UserDesignSpec(StrictModel):
 
         return (
             "expert"
-            if self.components
-            or self.ports
-            or self.interfaces
-            or self.connections
+            if self.components or self.ports or self.interfaces or self.connections
             else "simple"
         )
 
     @model_validator(mode="after")
     def validate_assembly_graph_mode(self) -> "UserDesignSpec":
         graph_declared = bool(
-            self.components
-            or self.ports
-            or self.interfaces
-            or self.connections
+            self.components or self.ports or self.interfaces or self.connections
         )
         if not graph_declared:
             return self
         if not self.components:
-            raise ValueError(
-                "interfaces/connections require assembly components"
-            )
+            raise ValueError("interfaces/connections require assembly components")
         if self.generation or self.constraints:
             raise ValueError(
                 "components/ports/interfaces/connections cannot be mixed "
@@ -999,9 +960,7 @@ class UserDesignSpec(StrictModel):
                     f"Port {port_id!r} references unknown component "
                     f"{port.component!r}"
                 )
-            unknown_selectors = sorted(
-                set(port.selectors) - set(component.selectors)
-            )
+            unknown_selectors = sorted(set(port.selectors) - set(component.selectors))
             if unknown_selectors:
                 raise ValueError(
                     f"Port {port_id!r} selectors do not belong to "
@@ -1013,9 +972,7 @@ class UserDesignSpec(StrictModel):
         interface_node_kind = "ports" if self.ports else "components"
         for interface in self.interfaces:
             if interface.id in interface_ids:
-                raise ValueError(
-                    f"Duplicate assembly interface id {interface.id!r}"
-                )
+                raise ValueError(f"Duplicate assembly interface id {interface.id!r}")
             interface_ids.add(interface.id)
             unknown = sorted(set(interface.between) - set(interface_nodes))
             if unknown:
@@ -1027,9 +984,7 @@ class UserDesignSpec(StrictModel):
         connection_ids: set[str] = set()
         for connection in self.connections:
             if connection.id in connection_ids:
-                raise ValueError(
-                    f"Duplicate assembly connection id {connection.id!r}"
-                )
+                raise ValueError(f"Duplicate assembly connection id {connection.id!r}")
             connection_ids.add(connection.id)
             for endpoint in (
                 connection.from_endpoint,
@@ -1079,9 +1034,7 @@ class UserDesignSpec(StrictModel):
                     "guidance alone to shape the generated monomer scaffold"
                 )
             symmetry_id = (
-                self.symmetry
-                if isinstance(self.symmetry, str)
-                else self.symmetry.id
+                self.symmetry if isinstance(self.symmetry, str) else self.symmetry.id
             )
             if not symmetry_id.startswith("C"):
                 raise ValueError(
@@ -1089,8 +1042,7 @@ class UserDesignSpec(StrictModel):
                     "requires Cn symmetry"
                 )
             if not any(
-                getattr(region, "kind", None) == "between"
-                for region in self.generation
+                getattr(region, "kind", None) == "between" for region in self.generation
             ):
                 raise ValueError(
                     "sampling.scaffold_packing=symmetric_generated requires "
@@ -1118,11 +1070,7 @@ class UserDesignSpec(StrictModel):
                     "inter_chain_weight; raw expert guidance fields require "
                     "assembly components: " + ", ".join(sorted(unsupported))
                 )
-        if (
-            motion is not None
-            and self.task is not None
-            and self.user_mode == "simple"
-        ):
+        if motion is not None and self.task is not None and self.user_mode == "simple":
             expected = (
                 FixedArrangementPolicy.LOCKED
                 if motion == ComponentMotionPreference.LOCKED
@@ -1130,8 +1078,7 @@ class UserDesignSpec(StrictModel):
             )
             if self.fixed_arrangement != expected:
                 raise ValueError(
-                    "preferences.component_motion conflicts with "
-                    "fixed_arrangement"
+                    "preferences.component_motion conflicts with " "fixed_arrangement"
                 )
 
         if self.task is None:
@@ -1160,8 +1107,7 @@ class UserDesignSpec(StrictModel):
                 if wrong_modes:
                     raise ValueError(
                         "preferences.component_motion does not match "
-                        "component pose declarations: "
-                        + ", ".join(wrong_modes)
+                        "component pose declarations: " + ", ".join(wrong_modes)
                     )
                 if motion != ComponentMotionPreference.LOCKED:
                     expected_subspace = (
@@ -1224,18 +1170,13 @@ class UserDesignSpec(StrictModel):
             independently_mobile_interfaces: list[str] = []
             for interface in self.interfaces:
                 participant_components = {
-                    (
-                        self.ports[participant].component
-                        if self.ports
-                        else participant
-                    )
+                    (self.ports[participant].component if self.ports else participant)
                     for participant in interface.between
                 }
                 if len(participant_components) == 1:
                     continue
                 if any(
-                    self.components[component_id].pose.mode
-                    == "bounded_mobile"
+                    self.components[component_id].pose.mode == "bounded_mobile"
                     for component_id in participant_components
                 ):
                     independently_mobile_interfaces.append(interface.id)
@@ -1264,8 +1205,7 @@ class UserDesignSpec(StrictModel):
                 if wrong_modes:
                     raise ValueError(
                         "preferences.component_motion does not match "
-                        "supplied-interface component poses: "
-                        + ", ".join(wrong_modes)
+                        "supplied-interface component poses: " + ", ".join(wrong_modes)
                     )
                 if motion != ComponentMotionPreference.LOCKED:
                     expected_subspace = (
@@ -1320,8 +1260,7 @@ class UserDesignSpec(StrictModel):
             )
         if self.task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE:
             if not self.generation or not all(
-                isinstance(clause, TerminalGeneration)
-                for clause in self.generation
+                isinstance(clause, TerminalGeneration) for clause in self.generation
             ):
                 raise ValueError(
                     "task=create_symmetric_interface requires terminal "
@@ -1330,13 +1269,10 @@ class UserDesignSpec(StrictModel):
                     "task=preserve_supplied_geometry"
                 )
             symmetry_id = (
-                self.symmetry
-                if isinstance(self.symmetry, str)
-                else self.symmetry.id
+                self.symmetry if isinstance(self.symmetry, str) else self.symmetry.id
             )
             if (
-                self.fixed_arrangement
-                == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
+                self.fixed_arrangement == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
                 and not symmetry_id.startswith(("C", "D"))
             ):
                 raise ValueError(
@@ -1345,14 +1281,9 @@ class UserDesignSpec(StrictModel):
                     "controller requires a principal symmetry axis; locked "
                     "generated-interface guidance is topology-neutral"
                 )
-        elif (
-            self.fixed_arrangement
-            == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
-        ):
+        elif self.fixed_arrangement == FixedArrangementPolicy.OPTIMIZE_COMPONENTS:
             symmetry_id = (
-                self.symmetry
-                if isinstance(self.symmetry, str)
-                else self.symmetry.id
+                self.symmetry if isinstance(self.symmetry, str) else self.symmetry.id
             )
             if not symmetry_id.startswith(("C", "D")):
                 raise ValueError(

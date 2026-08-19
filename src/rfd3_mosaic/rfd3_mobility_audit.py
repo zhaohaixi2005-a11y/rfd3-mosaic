@@ -204,10 +204,7 @@ def _strict_json_value(value: Any) -> Any:
     """Replace non-finite diagnostic sentinels with JSON null."""
 
     if isinstance(value, dict):
-        return {
-            str(key): _strict_json_value(child)
-            for key, child in value.items()
-        }
+        return {str(key): _strict_json_value(child) for key, child in value.items()}
     if isinstance(value, list):
         return [_strict_json_value(child) for child in value]
     if isinstance(value, tuple):
@@ -242,9 +239,7 @@ def write_mobility_trajectory(
             "proposal_source": diagnostics.get("proposal_source"),
             "mobile_orbit_count": diagnostics.get("mobile_orbit_count"),
             "constraint_runtime": diagnostics.get("constraint_runtime"),
-            "scaffold_guidance_config": diagnostics.get(
-                "scaffold_guidance_config"
-            ),
+            "scaffold_guidance_config": diagnostics.get("scaffold_guidance_config"),
             "final_orbits": diagnostics.get("orbits", []),
             "trajectory": trajectory,
         }
@@ -267,9 +262,7 @@ def audit_component_mobility(
     example = _single_example(input_path)
     declared = [
         orbit
-        for orbit in (example.get("extra") or {}).get(
-            "motif_constraint_orbits", []
-        )
+        for orbit in (example.get("extra") or {}).get("motif_constraint_orbits", [])
         if orbit.get("mobility_mode") == "orbit_rigid"
     ]
     if not declared:
@@ -289,9 +282,7 @@ def audit_component_mobility(
         if isinstance(constraint_runtime, dict)
         else None
     )
-    expected_refreshes = int(
-        diagnostics.get("conditioning_refresh_count", 0)
-    )
+    expected_refreshes = int(diagnostics.get("conditioning_refresh_count", 0))
     expected_proposals = int(diagnostics.get("update_calls", 0))
     constraint_runtime_valid = bool(
         isinstance(constraint_runtime, dict)
@@ -302,13 +293,10 @@ def audit_component_mobility(
         and int(runtime_counts.get("model_prediction", 0)) > 0
         and int(runtime_counts.get("state_update", -1))
         == int(runtime_counts.get("model_prediction", -2))
-        and int(runtime_counts.get("proposal", -1))
-        == expected_proposals
+        and int(runtime_counts.get("proposal", -1)) == expected_proposals
         and int(runtime_counts.get("proposal_applied", -1))
         == max(expected_refreshes - 1, 0)
-        and int(
-            constraint_runtime.get("conditioning_refresh_count", -1)
-        )
+        and int(constraint_runtime.get("conditioning_refresh_count", -1))
         == expected_refreshes
         and str(constraint_runtime.get("proposal_source"))
         == str(diagnostics.get("proposal_source"))
@@ -317,17 +305,11 @@ def audit_component_mobility(
     )
 
     declared_ids = [
-        str(
-            declaration.get("constraint_orbit_id")
-            or f"orbit_{index}"
-        )
+        str(declaration.get("constraint_orbit_id") or f"orbit_{index}")
         for index, declaration in enumerate(declared)
     ]
     declared_component_ids = [
-        str(
-            declaration.get("coupling_group_id")
-            or declared_ids[index]
-        )
+        str(declaration.get("coupling_group_id") or declared_ids[index])
         for index, declaration in enumerate(declared)
     ]
     identifier_contract_valid = bool(
@@ -359,25 +341,15 @@ def audit_component_mobility(
                 }
             )
             continue
-        translations = [
-            float(value) for value in record.get("translation_norms", [])
-        ]
-        rotations = [
-            float(value) for value in record.get("rotation_degrees", [])
-        ]
-        maximum_translation = float(
-            declaration.get("max_translation") or 0.0
-        )
-        maximum_rotation = float(
-            declaration.get("max_rotation_deg") or 0.0
-        )
+        translations = [float(value) for value in record.get("translation_norms", [])]
+        rotations = [float(value) for value in record.get("rotation_degrees", [])]
+        maximum_translation = float(declaration.get("max_translation") or 0.0)
+        maximum_rotation = float(declaration.get("max_rotation_deg") or 0.0)
         declared_transform_ids = [
-            int(value)
-            for value in declaration.get("group_transform_ids", [])
+            int(value) for value in declaration.get("group_transform_ids", [])
         ]
         observed_transform_ids = [
-            int(value)
-            for value in record.get("group_transform_ids", [])
+            int(value) for value in record.get("group_transform_ids", [])
         ]
         observed_action_count = int(
             record.get("group_action_count", len(observed_transform_ids))
@@ -385,18 +357,28 @@ def audit_component_mobility(
         group_action_contract = bool(
             not declared_transform_ids
             or (
-                len(set(declared_transform_ids))
-                == len(declared_transform_ids)
+                len(set(declared_transform_ids)) == len(declared_transform_ids)
                 and observed_action_count == len(declared_transform_ids)
                 and observed_transform_ids == declared_transform_ids
             )
         )
         group_action_contracts.append(group_action_contract)
-        finite = all(
-            math.isfinite(value) for value in translations + rotations
-        )
+        finite = all(math.isfinite(value) for value in translations + rotations)
         translation_observed = max(translations, default=float("inf"))
         rotation_observed = max(rotations, default=float("inf"))
+        translation_fraction = (
+            translation_observed / maximum_translation
+            if maximum_translation > tolerance
+            else 0.0
+        )
+        rotation_fraction = (
+            rotation_observed / maximum_rotation
+            if maximum_rotation > tolerance
+            else 0.0
+        )
+        nonzero_motion_observed = bool(
+            translation_observed > tolerance or rotation_observed > tolerance
+        )
         subspace = declaration.get("mobility_subspace")
         directional = _directional_motion_metrics(
             record=record,
@@ -416,20 +398,19 @@ def audit_component_mobility(
         component_reports.append(
             {
                 "component_id": declaration.get("coupling_group_id"),
-                "constraint_orbit_id": declaration.get(
-                    "constraint_orbit_id"
-                ),
+                "constraint_orbit_id": declaration.get("constraint_orbit_id"),
                 "mobility_subspace": subspace,
-                "declared_group_action_count": len(
-                    declared_transform_ids
-                ),
+                "declared_group_action_count": len(declared_transform_ids),
                 "runtime_group_action_count": observed_action_count,
                 "group_action_contract_valid": group_action_contract,
                 "passed": passed,
                 "maximum_translation_allowed": maximum_translation,
                 "maximum_translation_observed": translation_observed,
+                "translation_fraction_of_bound": translation_fraction,
                 "maximum_rotation_deg_allowed": maximum_rotation,
                 "maximum_rotation_deg_observed": rotation_observed,
+                "rotation_fraction_of_bound": rotation_fraction,
+                "nonzero_motion_observed": nonzero_motion_observed,
                 **directional,
             }
         )
@@ -437,13 +418,10 @@ def audit_component_mobility(
     scaffold_steps = [
         step
         for step in trajectory
-        if isinstance(step, dict)
-        and step.get("proposal_source") == "scaffold_boundary"
+        if isinstance(step, dict) and step.get("proposal_source") == "scaffold_boundary"
     ]
     active_scaffold_steps = [
-        step
-        for step in scaffold_steps
-        if float(step.get("window_weight", 0.0)) > 0.0
+        step for step in scaffold_steps if float(step.get("window_weight", 0.0)) > 0.0
     ]
 
     def valid_joint_step(step: dict[str, Any]) -> bool:
@@ -459,10 +437,7 @@ def audit_component_mobility(
             for proposal in proposals
             if isinstance(proposal, dict)
         ]
-        if (
-            len(proposal_ids) != len(declared)
-            or set(proposal_ids) != set(declared_ids)
-        ):
+        if len(proposal_ids) != len(declared) or set(proposal_ids) != set(declared_ids):
             return False
         applied = bool(step.get("applied"))
         accepted = bool(step.get("accepted"))
@@ -491,14 +466,10 @@ def audit_component_mobility(
                 _objective_record_is_finite(proposal.get("objective"))
                 and all(
                     _finite_number(value)
-                    for value in proposal.get(
-                        "proposed_delta_translation", []
-                    )
+                    for value in proposal.get("proposed_delta_translation", [])
                 )
                 and len(proposal.get("proposed_delta_translation", [])) == 3
-                and _finite_number(
-                    proposal.get("proposed_delta_rotation_degrees")
-                )
+                and _finite_number(proposal.get("proposed_delta_rotation_degrees"))
             ):
                 return False
         return True
@@ -515,9 +486,7 @@ def audit_component_mobility(
             and any(bool(step.get("applied")) for step in active_scaffold_steps)
         )
     )
-    runtime_group_action_count = int(
-        diagnostics.get("runtime_group_action_count", 0)
-    )
+    runtime_group_action_count = int(diagnostics.get("runtime_group_action_count", 0))
     declared_action_counts = {
         len(declaration.get("group_transform_ids", []))
         for declaration in declared
@@ -529,8 +498,7 @@ def audit_component_mobility(
             not declared_action_counts
             or (
                 len(declared_action_counts) == 1
-                and runtime_group_action_count
-                == next(iter(declared_action_counts))
+                and runtime_group_action_count == next(iter(declared_action_counts))
             )
         )
     )
@@ -548,6 +516,11 @@ def audit_component_mobility(
     passed = runtime_active and all(
         component["passed"] for component in component_reports
     )
+    nonzero_motion_components = [
+        str(component.get("component_id"))
+        for component in component_reports
+        if component.get("nonzero_motion_observed") is True
+    ]
     return {
         "audit": "rfd3_mosaic.bounded_component_mobility",
         "schema_version": 1,
@@ -562,20 +535,26 @@ def audit_component_mobility(
             "runtime_mobile_components": len(observed),
             "runtime_active": runtime_active,
             "update_calls": int(diagnostics.get("update_calls", 0)),
-            "active_window_calls": int(
-                diagnostics.get("active_window_calls", 0)
-            ),
+            "active_window_calls": int(diagnostics.get("active_window_calls", 0)),
             "conditioning_refresh_count": int(
                 diagnostics.get("conditioning_refresh_count", 0)
             ),
+            "applied_proposal_count": int(
+                runtime_counts.get("proposal_applied", 0)
+                if isinstance(runtime_counts, dict)
+                else 0
+            ),
+            # Movement is evidence, not a pass condition: a good initial pose
+            # may legitimately require no correction.  Report it explicitly
+            # so PASS is never mistaken for proof of large SE(3) motion.
+            "nonzero_motion_observed": bool(nonzero_motion_components),
+            "components_with_nonzero_motion": nonzero_motion_components,
             "atomic_joint_runtime": atomic_joint_runtime,
             "symmetry_id": diagnostics.get("symmetry_id"),
             "runtime_group_action_count": runtime_group_action_count,
             "complete_group_action_orbits": complete_group_action_orbits,
             "scaffold_trajectory_steps": len(scaffold_steps),
-            "active_scaffold_trajectory_steps": len(
-                active_scaffold_steps
-            ),
+            "active_scaffold_trajectory_steps": len(active_scaffold_steps),
             "valid_joint_trajectory_steps": len(valid_joint_steps),
             "identifier_contract_valid": identifier_contract_valid,
             "constraint_runtime_valid": constraint_runtime_valid,
@@ -604,10 +583,7 @@ def main() -> None:
         encoding="utf-8",
     )
     summary = report["summary"]
-    print(
-        "Component mobility audit: "
-        + ("PASSED" if report["passed"] else "FAILED")
-    )
+    print("Component mobility audit: " + ("PASSED" if report["passed"] else "FAILED"))
     print(
         "mobile components: "
         f"{summary['runtime_mobile_components']}/"

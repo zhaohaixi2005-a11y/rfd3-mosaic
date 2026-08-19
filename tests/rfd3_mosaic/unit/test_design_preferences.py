@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -32,6 +32,52 @@ def create_interface_design(**updates: object) -> UserDesignSpec:
     return UserDesignSpec.model_validate(payload)
 
 
+def create_expert_design(**updates: object) -> UserDesignSpec:
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "name": "expert-preference-test",
+        "input": "/tmp/motif.pdb",
+        "symmetry": "C3",
+        "components": {
+            "seed": {
+                "selectors": ["A1", "A2"],
+                "geometry": "joint_rigid",
+            }
+        },
+        "ports": {
+            "left": {"component": "seed", "selectors": ["A1"]},
+            "right": {"component": "seed", "selectors": ["A2"]},
+        },
+        "interfaces": [
+            {
+                "id": "designed",
+                "between": ["left", "right"],
+                "copy_relation": {"orbit_offset": 1},
+                "relation": {"mode": "contact"},
+            }
+        ],
+        "connections": [
+            {
+                "id": "polymer",
+                "from": {
+                    "component": "seed",
+                    "selector": "A1",
+                    "terminus": "c",
+                },
+                "to": {
+                    "component": "seed",
+                    "selector": "A2",
+                    "terminus": "n",
+                },
+                "length": 20,
+                "copy_relation": {"orbit_offset": 1},
+            }
+        ],
+    }
+    payload.update(updates)
+    return UserDesignSpec.model_validate(payload)
+
+
 class DesignPreferencesTestCase(unittest.TestCase):
     def test_defaults_keep_arrangement_locked_and_safety_weights(self) -> None:
         design = create_interface_design()
@@ -41,17 +87,13 @@ class DesignPreferencesTestCase(unittest.TestCase):
         self.assertEqual(resolved.component_motion.value, "locked")
         self.assertIsNone(resolved.mobility_subspace)
         self.assertEqual(
-            resolved.sampler_overrides[
-                "graph_interface_guidance_clash_weight"
-            ],
+            resolved.sampler_overrides["graph_interface_guidance_clash_weight"],
             8.0,
         )
         self.assertIn("exact_fixed_geometry", resolved.hard_contracts)
 
     def test_guided_motion_infers_arrangement_and_axis_subspace(self) -> None:
-        design = create_interface_design(
-            preferences={"component_motion": "guided"}
-        )
+        design = create_interface_design(preferences={"component_motion": "guided"})
         pose = compile_constraint_plan(design).operators[0].parameters["pose"]
 
         self.assertEqual(
@@ -61,9 +103,7 @@ class DesignPreferencesTestCase(unittest.TestCase):
         self.assertEqual(pose["subspace"], "radial_axial_rotation")
 
     def test_free_motion_uses_bounded_se3(self) -> None:
-        design = create_interface_design(
-            preferences={"component_motion": "free"}
-        )
+        design = create_interface_design(preferences={"component_motion": "free"})
         pose = compile_constraint_plan(design).operators[0].parameters["pose"]
 
         self.assertEqual(pose["subspace"], "bounded_se3")
@@ -137,9 +177,7 @@ class DesignPreferencesTestCase(unittest.TestCase):
             )
         )
         open_high = compile_design_preferences(
-            create_interface_design(
-                preferences={"cavity": "open", "diversity": "high"}
-            )
+            create_interface_design(preferences={"cavity": "open", "diversity": "high"})
         )
 
         self.assertLess(
@@ -166,51 +204,10 @@ class DesignPreferencesTestCase(unittest.TestCase):
         ):
             create_interface_design(guidance={"shape_weight": 0.9})
 
-        expert = UserDesignSpec.model_validate(
-            {
-                "schema_version": 1,
-                "name": "expert-preference-test",
-                "input": "/tmp/motif.pdb",
-                "symmetry": "C3",
-                "components": {
-                    "seed": {
-                        "selectors": ["A1", "A2"],
-                        "geometry": "joint_rigid",
-                    }
-                },
-                "ports": {
-                    "left": {"component": "seed", "selectors": ["A1"]},
-                    "right": {"component": "seed", "selectors": ["A2"]},
-                },
-                "interfaces": [
-                    {
-                        "id": "designed",
-                        "between": ["left", "right"],
-                        "copy_relation": {"orbit_offset": 1},
-                        "relation": {"mode": "contact"},
-                    }
-                ],
-                "connections": [
-                    {
-                        "id": "polymer",
-                        "from": {
-                            "component": "seed",
-                            "selector": "A1",
-                            "terminus": "c",
-                        },
-                        "to": {
-                            "component": "seed",
-                            "selector": "A2",
-                            "terminus": "n",
-                        },
-                        "length": 20,
-                        "copy_relation": {"orbit_offset": 1},
-                    }
-                ],
-                "guidance": {
-                    "shape_weight": 0.9,
-                    "clash_weight": 12.0,
-                },
+        expert = create_expert_design(
+            guidance={
+                "shape_weight": 0.9,
+                "clash_weight": 12.0,
             }
         )
         overrides = compile_design_preferences(expert).sampler_overrides
@@ -234,8 +231,22 @@ class DesignPreferencesTestCase(unittest.TestCase):
 
         self.assertEqual(overrides["scaffold_core_intra_chain_weight"], 1.0)
         self.assertEqual(overrides["scaffold_core_inter_chain_weight"], 0.1)
-        self.assertNotIn(
-            "graph_interface_guidance_intra_chain_weight", overrides
+        self.assertNotIn("graph_interface_guidance_intra_chain_weight", overrides)
+
+    def test_expert_inter_repulsion_is_independent_from_inter_weight(self) -> None:
+        expert = create_expert_design(
+            guidance={
+                "intra_chain_weight": 1.0,
+                "inter_chain_weight": 0.1,
+                "inter_chain_excess_penalty": 0.7,
+            },
+        )
+        overrides = compile_design_preferences(expert).sampler_overrides
+
+        self.assertEqual(overrides["scaffold_core_inter_chain_weight"], 0.1)
+        self.assertEqual(
+            overrides["scaffold_core_inter_chain_excess_penalty"],
+            0.7,
         )
 
     def test_worker_reads_only_frozen_sampler_overrides(self) -> None:
@@ -250,9 +261,7 @@ class DesignPreferencesTestCase(unittest.TestCase):
         payload = {
             "example": {
                 "extra": {
-                    "resolved_design_preferences": resolved.model_dump(
-                        mode="json"
-                    )
+                    "resolved_design_preferences": resolved.model_dump(mode="json")
                 }
             }
         }
