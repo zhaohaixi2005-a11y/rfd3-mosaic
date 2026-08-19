@@ -318,6 +318,14 @@ class ExperimentConfigTestCase(unittest.TestCase):
         )
         resolved = resolve_experiment(config)
 
+        run_day = resolved.payload["output"]["run_date"]
+        self.assertEqual(
+            resolved.run_root,
+            Path(resolved.payload["output"]["root"])
+            / run_day
+            / "render-test",
+        )
+
         script = render_submission(resolved, output_directory=self.root / "rendered")
         text = script.read_text(encoding="utf-8")
 
@@ -329,6 +337,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertTrue((script.parent / "source_snapshot.tar.gz").is_file())
         self.assertIn('SOURCE_ROOT="$RUN_DIR/software"', text)
         self.assertIn('--source-root "$SOURCE_ROOT"', text)
+        self.assertIn(f"RUN_ROOT={resolved.run_root}", text)
         resolved_payload = yaml.safe_load(
             (script.parent / "resolved_config.yaml").read_text(encoding="utf-8")
         )

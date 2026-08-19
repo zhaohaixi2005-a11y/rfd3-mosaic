@@ -187,6 +187,42 @@ snapshots remain in place and are not copied or deleted.
 Retained job IDs are carried forward automatically when the catalog is
 refreshed.
 
+New executions use a date-first physical layout directly:
+
+```text
+RUN_ROOT/
+└── YYYY-MM-DD/
+    ├── _requests/
+    ├── _submissions/
+    └── EXPERIMENT/
+        └── JOB_ID/
+            ├── input/
+            ├── audits/
+            ├── software/
+            └── experiment_summary.json
+```
+
+Historical indexed runs can be physically migrated into the same layout. Run
+the read-only plan first:
+
+```bash
+rfd3-mosaic runs --root /path/to/runs --rebuild \
+  --reorganize-by-date plan --limit 20
+```
+
+After reviewing every `MOVE` and `SKIP`, apply exactly that policy with:
+
+```bash
+rfd3-mosaic runs --root /path/to/runs \
+  --reorganize-by-date apply --limit 20
+```
+
+Only `completed` and `failed` runs are moved. Running and submitted jobs are
+never touched. The operation refuses collisions, updates the persistent job
+index and submission receipt, records every completed move under
+`RUN_ROOT/_migrations/`, and removes only parent directories that become
+completely empty.
+
 ## Design workflows
 
 ### Preserve supplied geometry

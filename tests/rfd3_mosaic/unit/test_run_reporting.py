@@ -83,6 +83,25 @@ class RunReportingTestCase(unittest.TestCase):
         )
         self.assertFalse(failed["passed"])
 
+    def test_relocated_run_resolves_frozen_absolute_audit_paths(self) -> None:
+        source = self._completed_run("24681")
+        target = self.root / "2026-08-19" / "design" / "24681"
+        target.parent.mkdir(parents=True)
+        source.rename(target)
+
+        status = collect_run_status(
+            RunReference(job_id="24681", run_directory=target),
+            include_scheduler=False,
+        )
+
+        self.assertTrue(status["passed"])
+        self.assertTrue(
+            all(
+                Path(audit["path"]).is_relative_to(target)
+                for audit in status["audits"]
+            )
+        )
+
     def test_failed_worker_reports_failure_without_scheduler(self) -> None:
         run = self.root / "campaign" / "design" / "999"
         run.mkdir(parents=True)

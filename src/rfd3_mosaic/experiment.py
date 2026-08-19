@@ -27,6 +27,7 @@ from rfd3_mosaic.provenance.software import (
     load_compatibility_manifest,
 )
 from rfd3_mosaic.provenance.source_snapshot import create_source_snapshot
+from rfd3_mosaic.run_layout import dated_experiment_root, utc_run_day
 from rfd3_mosaic.schema import load_user_design
 
 SCHEMA_VERSION = 1
@@ -393,7 +394,14 @@ class ResolvedExperiment:
     @property
     def run_root(self) -> Path:
         output = self.payload["output"]
-        return Path(output["root"]) / output["campaign"] / self.name
+        run_day = output.get("run_date")
+        if run_day is None:
+            return Path(output["root"]) / output["campaign"] / self.name
+        return dated_experiment_root(
+            output["root"],
+            run_day=str(run_day),
+            experiment=self.name,
+        )
 
 
 def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
@@ -833,6 +841,7 @@ def resolve_experiment(
             output.get("campaign", "rfd3_mosaic"),
             "output.campaign",
         ),
+        "run_date": utc_run_day(),
     }
 
     payload = {

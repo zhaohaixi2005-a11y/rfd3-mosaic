@@ -48,6 +48,11 @@ from rfd3_mosaic.run_index import (
     rebuild_run_index,
     record_submission,
 )
+from rfd3_mosaic.run_layout import utc_run_day
+from rfd3_mosaic.run_reorganization import (
+    apply_date_reorganization,
+    plan_date_reorganization,
+)
 from rfd3_mosaic.run_reporting import (
     collect_run_status,
     format_status_text,
@@ -550,6 +555,15 @@ def _parser() -> argparse.ArgumentParser:
         metavar="JOB_ID",
         help="Expose an important run in the generated catalog's retained view.",
     )
+    runs.add_argument(
+        "--reorganize-by-date",
+        choices=("plan", "apply"),
+        help=(
+            "Physically organize terminal runs as "
+            "ROOT/YYYY-MM-DD/EXPERIMENT/JOB_ID. 'plan' is read-only; "
+            "'apply' moves directories and updates the durable run index."
+        ),
+    )
 
     central = commands.add_parser(
         "central",
@@ -629,7 +643,9 @@ def _write_quick_experiment(arguments: argparse.Namespace) -> Path:
         },
     }
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    request_directory = output_root / campaign / "_requests" / name / timestamp
+    request_directory = (
+        output_root / utc_run_day() / "_requests" / name / timestamp
+    )
     request_directory.mkdir(parents=True, exist_ok=False)
     path = request_directory / "experiment.yaml"
     path.write_text(
@@ -677,7 +693,7 @@ def _write_public_experiment(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     request_directory = (
         design.output.root
-        / design.output.campaign
+        / utc_run_day()
         / "_requests"
         / design.name
         / timestamp
@@ -1830,6 +1846,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             if arguments.retain and not arguments.catalog:
                 raise ValueError("--retain requires --catalog")
             rebuild = rebuild_run_index(arguments.root) if arguments.rebuild else None
+            reorganization = None
+            if arguments.reorganize_by_date == "plan":
+                reorganization = plan_date_reorganization(arguments.root)
+            elif arguments.reorganize_by_date == "apply":
+                reorganization = apply_date_reorganization(arguments.root)
             records = list_run_records(arguments.root)[: arguments.limit]
             catalog = (
                 write_run_catalog(
@@ -1847,9 +1868,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                     "schema_version": 1,
                     "rebuild": rebuild,
                     "catalog": catalog,
+                    "reorganization": reorganization,
                     "runs": records,
                 }
-                if rebuild is not None or catalog is not None
+                if (
+                    rebuild is not None
+                    or catalog is not None
+                    or reorganization is not None
+                )
                 else records
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1865,6 +1891,24 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             for failure in rebuild["failures"]:
                 print(f"  WARNING {failure['path']}: {failure['error']}")
+        if reorganization is not None:
+            print(
+                "reorganization: "
+                f"mode={arguments.reorganize_by_date} "
+                f"ready={reorganization['ready_count']} "
+                f"skipped={reorganization['skipped_count']} "
+                f"completed={reorganization.get('completed_count', 0)}"
+            )
+            if reorganization.get("manifest"):
+                print(f"migration log: {reorganization['manifest']}")
+            for entry in reorganization["entries"]:
+                marker = "MOVE" if entry["ready"] else "SKIP"
+                detail = (
+                    f" -> {entry['target']}"
+                    if entry["ready"]
+                    else f" ({entry['reason']})"
+                )
+                print(f"  {marker} {entry['job_id']}: {entry['source']}{detail}")
         if not records:
             print("  no indexed submissions")
         else:

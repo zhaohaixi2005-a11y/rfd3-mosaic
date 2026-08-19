@@ -171,6 +171,58 @@ def list_run_records(root: str | Path) -> list[dict[str, Any]]:
     )
 
 
+def relocate_run_record(
+    root: str | Path,
+    job_id: str,
+    *,
+    run_directory: str | Path,
+    submission_directory: str | Path | None = None,
+) -> Path:
+    """Atomically record a verified physical run-directory relocation."""
+
+    root_path = Path(root).expanduser().resolve()
+    path = _index_path(root_path, job_id)
+    payload = read_run_record(root_path, job_id)
+    if payload is None:
+        raise FileNotFoundError(f"Run index does not contain run ID {job_id}")
+    old_run = payload.get("run_directory")
+    old_submission = payload.get("submission_directory")
+    new_run = Path(run_directory).expanduser().resolve()
+    if not new_run.is_dir():
+        raise FileNotFoundError(f"Relocated run directory does not exist: {new_run}")
+    new_submission = (
+        Path(submission_directory).expanduser().resolve()
+        if submission_directory is not None
+        else None
+    )
+    history = payload.get("relocation_history")
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "moved_at": _now(),
+            "old_run_directory": old_run,
+            "new_run_directory": str(new_run),
+            "old_submission_directory": old_submission,
+            "new_submission_directory": (
+                str(new_submission) if new_submission is not None else None
+            ),
+        }
+    )
+    payload.update(
+        {
+            "run_directory": str(new_run),
+            "submission_directory": (
+                str(new_submission) if new_submission is not None else None
+            ),
+            "relocation_history": history,
+            "updated_at": _now(),
+        }
+    )
+    _atomic_write(path, payload)
+    return path
+
+
 def rebuild_run_index(root: str | Path) -> dict[str, Any]:
     """Import historical worker summaries into the persistent job index."""
 

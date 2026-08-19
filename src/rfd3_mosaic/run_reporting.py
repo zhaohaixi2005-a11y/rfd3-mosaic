@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from rfd3_mosaic.run_index import read_run_record, valid_run_id
+from rfd3_mosaic.run_layout import dated_run_directory
 
 SCHEMA_VERSION = 1
 AUDIT_GLOBS = (
@@ -47,9 +48,23 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _run_directory_from_submission(directory: Path, job_id: str) -> Path:
+    receipt_path = directory / "submission.json"
+    if receipt_path.is_file():
+        receipt = _load_json(receipt_path)
+        expected = receipt.get("expected_run_directory")
+        if expected:
+            return Path(str(expected)).expanduser().resolve()
     resolved = _load_yaml(directory / "resolved_config.yaml")
     output = resolved.get("output") or {}
     root = Path(str(output["root"])).expanduser()
+    run_date = output.get("run_date")
+    if run_date:
+        return dated_run_directory(
+            root,
+            run_day=str(run_date),
+            experiment=str(resolved["name"]),
+            job_id=job_id,
+        )
     return (root / str(output["campaign"]) / str(resolved["name"]) / job_id).resolve()
 
 
@@ -236,15 +251,22 @@ def _audit_paths(run_directory: Path, worker: dict[str, Any]) -> list[Path]:
         path = Path(str(value)).expanduser()
         if not path.is_absolute():
             path = run_directory / path
-        elif not path.is_file() and (run_directory / path.name).is_file():
+        elif not path.is_file():
             # Worker summaries intentionally record absolute provenance paths.
-            # Prefer a same-named local artifact when a complete run directory
-            # has subsequently been copied to another machine.
-            path = run_directory / path.name
+            # Resolve a unique same-named artifact after a run has been copied
+            # or physically reorganized without mutating its frozen summary.
+            matches = [
+                candidate
+                for candidate in run_directory.rglob(path.name)
+                if candidate.is_file() and "software" not in candidate.parts
+            ]
+            if len(matches) == 1:
+                path = matches[0]
         paths[path.resolve()] = None
     for pattern in AUDIT_GLOBS:
-        for path in run_directory.glob(pattern):
-            paths[path.resolve()] = None
+        for path in run_directory.rglob(pattern):
+            if "software" not in path.parts:
+                paths[path.resolve()] = None
     return sorted(paths)
 
 
