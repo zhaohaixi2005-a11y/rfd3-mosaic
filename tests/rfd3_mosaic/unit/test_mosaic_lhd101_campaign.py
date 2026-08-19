@@ -113,7 +113,8 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                "inter_chain_excess_penalty" not in design["guidance"]
+                "inter_chain_weight" not in design["guidance"]
+                and "inter_chain_excess_penalty" not in design["guidance"]
                 for design in frozen
             )
         )

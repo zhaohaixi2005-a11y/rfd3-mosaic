@@ -15,12 +15,12 @@ It does not execute the authors' RFdiffusion1 fork.
 - complete LHD101 interface geometry remains one joint rigid body;
 - Mosaic additionally allows bounded full-SE(3) motion of that complete body
   while reconstructing exact C3 copies;
-- the current LHD101 template uses `intra_chain_weight: 1.0` and
-  `inter_chain_weight: 0.10`. It therefore prioritizes a supported compact
-  monomer scaffold while disabling automatic creation of a second generated
-  C3 interface. The inter value is retained as matched-protocol provenance,
-  but is inactive because this task declares no generated-interface edge; it
-  is not reinterpreted as repulsion;
+- the current LHD101 template uses `intra_chain_weight: 1.0` and omits
+  `inter_chain_weight`. It therefore prioritizes a supported compact monomer
+  scaffold without requesting a second generated C3 interface. The resolved
+  inter attraction remains at its neutral default (`1.0`) but is inactive
+  because this task declares no generated-interface edge; omission is never
+  reinterpreted as repulsion;
 - the complete supplied interface seed may move only as one bounded rigid
   body. Every update is followed by the same exact C3/fixed-target projector.
 

@@ -14,14 +14,12 @@ symmetry:
 preferences:
   component_motion: free
 
-# RFdiffusion contact-map semantics.  The supplied interface remains an exact
-# joint-rigid constraint.  Strong intra-chain guidance asks each generated
-# scaffold to form a supported monomer core.  inter_chain_weight scales only
-# declared generated-interface edges; because this task declares none, 0.10
-# is retained for protocol provenance but is intentionally inactive.
+# The supplied interface remains an exact joint-rigid constraint.  Strong
+# intra-chain guidance asks each generated scaffold to form a supported
+# monomer core.  This task declares no generated-interface edge, so it omits
+# inter_chain_weight rather than recording a misleading inactive value.
 guidance:
   intra_chain_weight: 1.0
-  inter_chain_weight: 0.10
 
 generation:
   - kind: between
