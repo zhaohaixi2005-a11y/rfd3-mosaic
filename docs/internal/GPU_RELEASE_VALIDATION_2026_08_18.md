@@ -50,6 +50,62 @@ Dynamic T/O/I mobility remains outside this campaign because the public
 compiler currently fails closed for polyhedral component optimization. It must
 not be represented as validated by a static canary.
 
+### Historical O/I result and required rerun
+
+The first extended jobs (`5752498` for O and `5752499` for I) are not valid
+negative scientific results.  Their public designs passed complete CPU
+geometry and RFD3-input prevalidation, but the frozen runtime failed before
+diffusion in AtomWorks `UnindexFlaggedTokens` with duplicate token indices.
+Consequently they produced no structures and say nothing about O/I backbone
+quality.  Job `5753687` was a later I resubmission, but no completed audited
+result was recorded in the evidence collected for this document.
+
+Current source revision `6b67605` again passes CPU construction for the full
+24-chain O input (4,560 atoms/696 residues) and 60-chain I input (11,400
+atoms/1,740 residues).  This is necessary but not sufficient: both still need
+one fresh 10-step A100/H100 execution gate from the current frozen source.
+These jobs are software transport/closure tests, not claims of biologically
+useful O/I cages.
+
+## Current distinct-pose C3 pilot (2026-08-19)
+
+A three-job local RTX 3070 campaign was launched from source revision
+`6b67605`.  It deliberately assigns one compiled pose and one diffusion stream
+to each job:
+
+| shard | initial-pose seed | diffusion seed |
+| --- | ---: | ---: |
+| 0 | 41001 | 51000 |
+| 1 | 41002 | 51001 |
+| 2 | 41003 | 51002 |
+
+Campaign directory:
+
+```text
+/scratch2/haixi/runs/rfd3-mosaic/_campaigns/lhd101-current-three-pose/20260819T160927Z
+```
+
+Live log:
+
+```text
+/scratch2/haixi/runs/rfd3-mosaic/_campaigns/lhd101-current-three-pose/20260819T160927Z/local_runs.log
+```
+
+Runs use the physical date-first layout introduced by `d3faa19`, below
+`/scratch2/haixi/runs/rfd3-mosaic/2026-08-19/`.  The effective first runtime
+has `scaffold_core_intra_chain_weight=1.0`, graph-interface guidance disabled,
+and symmetric generated-interface packing disabled.  Thus it tests compact
+monomer guidance around the supplied joint-rigid interface instead of asking
+generated residues to form a second interface.
+
+The initial launch exposed and then fixed a public-envelope conversion bug:
+`scaffold_core_quality`, which belongs to the frozen public design and final
+audit, was incorrectly forwarded into the generic internal diffusion sampling
+mapping.  Commit `6b67605` removes it from that envelope; the focused 42-test
+constraint suite and the LHD101 public prevalidation pass before GPU launch.
+Record final job IDs, audits, structure paths and quality measurements here
+after all three sequential runs finish.
+
 ## Supplied multi-interface gates
 
 Ordinary multi-seed intent files are not submitted directly. Each must first
