@@ -162,10 +162,16 @@ def convert_existing_annotations_to_bool(
         if annotation not in atom_array.get_annotation_categories():
             continue
         tmp = atom_array.get_annotation(annotation).copy()
-        if isinstance(tmp[0], (str, np.str_, np.dtypes.StrDType)):
+        if len(tmp) and isinstance(tmp[0], (str, np.str_, np.dtypes.StrDType)):
             tmp = np.array([ast.literal_eval(x) for x in tmp], dtype=bool)
         else:
             tmp = np.asarray(tmp, dtype=bool)
+        # Biotite's set_annotation() promotes the new dtype against an existing
+        # annotation.  Replacing an integer 0/1 CIF annotation with a boolean
+        # array therefore silently kept the integer dtype, which later made
+        # boolean masks behave as repeated positional indices.  Remove the old
+        # category first so the boolean dtype is installed exactly.
+        atom_array.del_annotation(annotation)
         atom_array.set_annotation(annotation, tmp)
     return atom_array
 
