@@ -1052,6 +1052,10 @@ constraints:
                     "sampling": {
                         "timesteps": 50,
                         "seed": 7,
+                        "scaffold_core_quality": {
+                            "required": False,
+                            "maximum_mean_normalized_rg": 2.5,
+                        },
                         "initial_pose": {
                             "radius": {
                                 "minimum": 24.0,
@@ -1077,6 +1081,7 @@ constraints:
         self.assertEqual(payload["topology"]["config"], str(source))
         self.assertEqual(payload["sampling"]["timesteps"], 50)
         self.assertNotIn("initial_pose", payload["sampling"])
+        self.assertNotIn("scaffold_core_quality", payload["sampling"])
         self.assertEqual(payload["resources"]["profile"], "h100")
 
 

@@ -676,7 +676,15 @@ def _write_public_experiment(
     # diffusion-loop settings.
     sampling = design.sampling.model_dump(
         mode="json",
-        exclude={"initial_pose", "initial_poses"},
+        # These fields are compiler/audit inputs carried by the frozen public
+        # design, not controls for the generic diffusion-loop envelope.  In
+        # particular, forwarding ``scaffold_core_quality`` here made a valid
+        # public design fail later as an unknown internal sampling field.
+        exclude={
+            "initial_pose",
+            "initial_poses",
+            "scaffold_core_quality",
+        },
     )
     payload = {
         "schema_version": 1,
