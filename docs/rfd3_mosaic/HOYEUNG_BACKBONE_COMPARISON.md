@@ -73,13 +73,25 @@ experiments are intentionally outside this backbone-only comparison.
 
 ## Run the experiment
 
-First submit one pilot:
+First CPU-screen initial poses, then submit a small multi-pose pilot. Keeping
+one diffusion seed and one initial pose fixed is useful for code debugging,
+but it is not evidence that the method is robust. The maintained pilot keeps
+the selected pose seeds and independent diffusion seeds explicit:
 
 ```bash
 python scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py \
   --mode pilot \
+  --seed-start 20000 \
+  --pose-seeds 10063 10039 10048 10027 \
   --submit
 ```
+
+The listed poses come from a 64-pose replayable random screen. They span
+different orientations and avoid the seed-10000 pathology where the straight
+scaffold corridor passes within 0.07 A of unrelated fixed atoms. Pilot pose
+selection is an engineering release gate; the formal 1,000-backbone cohort
+retains its declared random-pose protocol and is not cherry-picked from this
+list.
 
 Do not scale an older pilot that lacks
 `graph_interface_guidance_audit.json`: it tested exact motif mobility and

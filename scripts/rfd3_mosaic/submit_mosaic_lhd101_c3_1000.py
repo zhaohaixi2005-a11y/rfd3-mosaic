@@ -82,6 +82,16 @@ def main() -> None:
     parser.add_argument("--total-designs", type=int)
     parser.add_argument("--designs-per-job", type=int, default=10)
     parser.add_argument("--seed-start", type=int, default=10000)
+    parser.add_argument(
+        "--pose-seeds",
+        type=int,
+        nargs="+",
+        help=(
+            "Explicit initial-pose seeds for a multi-pose pilot. Each seed "
+            "is frozen into one independent one-design GPU job; diffusion "
+            "seeds still start at --seed-start."
+        ),
+    )
     arguments = parser.parse_args()
 
     project = Path.cwd().resolve()
@@ -93,8 +103,27 @@ def main() -> None:
         raise FileNotFoundError(f"Profile does not exist: {profile_path}")
     if arguments.seed_start < 0:
         raise ValueError("--seed-start cannot be negative")
+    pose_seeds = list(arguments.pose_seeds or [])
+    if any(seed < 0 for seed in pose_seeds):
+        raise ValueError("--pose-seeds cannot contain negative values")
+    if len(set(pose_seeds)) != len(pose_seeds):
+        raise ValueError("--pose-seeds must be unique")
+    if pose_seeds and arguments.mode != "pilot":
+        raise ValueError("--pose-seeds is reserved for independent pilot jobs")
+    if (
+        pose_seeds
+        and arguments.total_designs is not None
+        and arguments.total_designs != len(pose_seeds)
+    ):
+        raise ValueError(
+            "--total-designs must equal the number of --pose-seeds"
+        )
 
-    default_total = 1 if arguments.mode == "pilot" else 1000
+    default_total = (
+        len(pose_seeds)
+        if pose_seeds
+        else (1 if arguments.mode == "pilot" else 1000)
+    )
     total = arguments.total_designs or default_total
     per_job = 1 if arguments.mode == "pilot" else arguments.designs_per_job
     if total < 1 or total > 10000:
@@ -129,17 +158,23 @@ def main() -> None:
     for shard_index in range(shard_count):
         shard_designs = min(per_job, remaining)
         remaining -= shard_designs
-        shard_seed = arguments.seed_start + shard_index
+        diffusion_seed = arguments.seed_start + shard_index
+        pose_seed = (
+            pose_seeds[shard_index] if pose_seeds else diffusion_seed
+        )
         payload = deepcopy(source)
-        payload["name"] = f"lhd101-c3-guided-{shard_index:04d}-s{shard_seed}"
+        payload["name"] = (
+            f"lhd101-c3-guided-{shard_index:04d}"
+            f"-p{pose_seed}-s{diffusion_seed}"
+        )
         payload["input"] = str(source_input)
         payload["sampling"] = dict(payload["sampling"])
         payload["sampling"]["designs"] = shard_designs
-        payload["sampling"]["seed"] = shard_seed
+        payload["sampling"]["seed"] = diffusion_seed
         payload["sampling"]["initial_pose"] = dict(
             payload["sampling"]["initial_pose"]
         )
-        payload["sampling"]["initial_pose"]["seed"] = shard_seed
+        payload["sampling"]["initial_pose"]["seed"] = pose_seed
         payload["output"] = dict(payload["output"])
         payload["output"]["root"] = str(
             arguments.run_root.expanduser().resolve()
@@ -154,7 +189,12 @@ def main() -> None:
         record: dict[str, Any] = {
             "shard_index": shard_index,
             "design": str(frozen),
-            "seed": shard_seed,
+            # Keep seed for manifest compatibility; it is the RFD3 diffusion
+            # seed. Pose and diffusion randomness are also recorded
+            # separately so a multi-pose pilot is unambiguous.
+            "seed": diffusion_seed,
+            "diffusion_seed": diffusion_seed,
+            "pose_seed": pose_seed,
             "requested_designs": shard_designs,
             "submitted": False,
             "job_id": None,
@@ -191,6 +231,7 @@ def main() -> None:
         "designs_per_job": per_job,
         "shard_count": shard_count,
         "seed_start": arguments.seed_start,
+        "pose_seeds": pose_seeds,
         "submitted": arguments.submit,
         "records": records,
     }

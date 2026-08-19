@@ -106,6 +106,61 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         self.assertEqual(manifest["shard_count"], 1)
         self.assertEqual(design["sampling"]["designs"], 1)
 
+    def test_pilot_can_freeze_independent_screened_pose_seeds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "pilot"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--mode",
+                    "pilot",
+                    "--output-dir",
+                    str(output),
+                    "--run-root",
+                    str(Path(directory) / "runs"),
+                    "--seed-start",
+                    "20000",
+                    "--pose-seeds",
+                    "10063",
+                    "10039",
+                    "10048",
+                    "10027",
+                ],
+                cwd=PROJECT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            manifest = json.loads(
+                (output / "campaign_manifest.json").read_text(encoding="utf-8")
+            )
+            designs = [
+                yaml.safe_load(
+                    Path(record["design"]).read_text(encoding="utf-8")
+                )
+                for record in manifest["records"]
+            ]
+
+        self.assertEqual(manifest["total_designs"], 4)
+        self.assertEqual(manifest["shard_count"], 4)
+        self.assertEqual(
+            [record["pose_seed"] for record in manifest["records"]],
+            [10063, 10039, 10048, 10027],
+        )
+        self.assertEqual(
+            [record["diffusion_seed"] for record in manifest["records"]],
+            [20000, 20001, 20002, 20003],
+        )
+        self.assertEqual(
+            [design["sampling"]["initial_pose"]["seed"] for design in designs],
+            [10063, 10039, 10048, 10027],
+        )
+        self.assertEqual(
+            [design["sampling"]["seed"] for design in designs],
+            [20000, 20001, 20002, 20003],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
