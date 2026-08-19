@@ -181,12 +181,22 @@ def compile_design_preferences(
     )
     if design.guidance is not None:
         expert = design.guidance.model_dump(exclude_none=True)
+        intra_chain_weight = expert.pop("intra_chain_weight", None)
+        inter_chain_weight = expert.pop("inter_chain_weight", None)
         overrides.update(
             {
                 f"graph_interface_guidance_{name}": value
                 for name, value in expert.items()
             }
         )
+        if intra_chain_weight is not None:
+            overrides["scaffold_core_intra_chain_weight"] = (
+                intra_chain_weight
+            )
+        if inter_chain_weight is not None:
+            overrides["scaffold_core_inter_chain_weight"] = (
+                inter_chain_weight
+            )
     return ResolvedDesignPreferences(
         packing=preferences.packing,
         cavity=preferences.cavity,

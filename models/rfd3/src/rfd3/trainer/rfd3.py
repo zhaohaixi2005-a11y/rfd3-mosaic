@@ -30,6 +30,28 @@ from foundry.utils.torch import assert_no_nans, assert_same_shape
 global_logger = RankedLogger(__name__, rank_zero_only=False)
 
 
+_SAMPLER_DIAGNOSTIC_KEYS = (
+    "motif_mobility_diagnostics",
+    "graph_interface_guidance_diagnostics",
+    "scaffold_core_guidance_diagnostics",
+    "constraint_runtime_diagnostics",
+)
+
+
+def _copy_sampler_diagnostics(
+    network_output: dict[str, Any],
+    metadata_dict: dict[int, dict[str, Any]],
+) -> None:
+    """Preserve every sampler audit payload in each serialized design."""
+
+    for key in _SAMPLER_DIAGNOSTIC_KEYS:
+        diagnostics = network_output.get(key)
+        if diagnostics is None:
+            continue
+        for metadata in metadata_dict.values():
+            metadata[key] = diagnostics
+
+
 class AADesignTrainer(FabricTrainer):
     """Mostly for unique things like saving outputs and parsing inputs
 
@@ -364,33 +386,7 @@ class AADesignTrainer(FabricTrainer):
         metadata_dict: dict[int, dict[str, Any]] = {
             i: {"metrics": {}} for i in range(len(arrays))
         }
-
-        mobility_diagnostics = network_output.get(
-            "motif_mobility_diagnostics"
-        )
-        if mobility_diagnostics is not None:
-            for i in range(len(arrays)):
-                metadata_dict[i]["motif_mobility_diagnostics"] = (
-                    mobility_diagnostics
-                )
-
-        interface_guidance_diagnostics = network_output.get(
-            "graph_interface_guidance_diagnostics"
-        )
-        if interface_guidance_diagnostics is not None:
-            for i in range(len(arrays)):
-                metadata_dict[i][
-                    "graph_interface_guidance_diagnostics"
-                ] = interface_guidance_diagnostics
-
-        constraint_runtime_diagnostics = network_output.get(
-            "constraint_runtime_diagnostics"
-        )
-        if constraint_runtime_diagnostics is not None:
-            for i in range(len(arrays)):
-                metadata_dict[i]["constraint_runtime_diagnostics"] = (
-                    constraint_runtime_diagnostics
-                )
+        _copy_sampler_diagnostics(network_output, metadata_dict)
 
         # Add the seed to the metadata dictionary if provided
         if self.seed is not None:

@@ -36,6 +36,7 @@ class AuditRequirement(str, Enum):
     INTERFACE_GEOMETRY = "interface_geometry"
     ASSEMBLY_INTERFACE_RELATIONS = "assembly_interface_relations"
     GRAPH_INTERFACE_GUIDANCE = "graph_interface_guidance"
+    SCAFFOLD_CORE_GUIDANCE = "scaffold_core_guidance"
     BOUNDED_COMPONENT_MOBILITY = "bounded_component_mobility"
     CYLINDRICAL_COORDINATES = "cylindrical_coordinates"
 
@@ -407,8 +408,21 @@ def lower_experiment_topology(
                     "sampling.scaffold_packing=symmetric_generated cannot be "
                     "combined with graph-declared output interfaces"
                 )
+            guidance = design.guidance
+            scaffold_core_requested = bool(
+                guidance is not None
+                and (
+                    (guidance.intra_chain_weight or 0.0) > 0.0
+                    or (
+                        guidance.inter_chain_weight is not None
+                        and guidance.inter_chain_weight < 1.0
+                    )
+                )
+            )
             audit_requirements.append(
-                AuditRequirement.GRAPH_INTERFACE_GUIDANCE
+                AuditRequirement.SCAFFOLD_CORE_GUIDANCE
+                if scaffold_core_requested
+                else AuditRequirement.GRAPH_INTERFACE_GUIDANCE
             )
         # Audit the effective lowered runtime contract.  Task presets may
         # derive mobility without mutating the user's fixed_xyz declaration,
@@ -451,6 +465,18 @@ def lower_experiment_topology(
                     {
                         "mode": "symmetric_generated",
                         "neighbour_policy": "cyclic_adjacent",
+                        "intra_chain_weight": (
+                            design.guidance.intra_chain_weight
+                            if design.guidance is not None
+                            and design.guidance.intra_chain_weight is not None
+                            else 0.0
+                        ),
+                        "inter_chain_weight": (
+                            design.guidance.inter_chain_weight
+                            if design.guidance is not None
+                            and design.guidance.inter_chain_weight is not None
+                            else 1.0
+                        ),
                     }
                     if design.sampling.scaffold_packing
                     == "symmetric_generated"

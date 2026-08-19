@@ -225,6 +225,21 @@ class DesignPreferencesTestCase(unittest.TestCase):
             12.0,
         )
 
+    def test_ordinary_design_can_tune_only_intra_inter_balance(self) -> None:
+        ordinary = create_interface_design(
+            guidance={
+                "intra_chain_weight": 1.0,
+                "inter_chain_weight": 0.1,
+            }
+        )
+        overrides = compile_design_preferences(ordinary).sampler_overrides
+
+        self.assertEqual(overrides["scaffold_core_intra_chain_weight"], 1.0)
+        self.assertEqual(overrides["scaffold_core_inter_chain_weight"], 0.1)
+        self.assertNotIn(
+            "graph_interface_guidance_intra_chain_weight", overrides
+        )
+
     def test_worker_reads_only_frozen_sampler_overrides(self) -> None:
         resolved = compile_design_preferences(
             create_interface_design(

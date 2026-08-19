@@ -15,11 +15,13 @@ It does not execute the authors' RFdiffusion1 fork.
 - complete LHD101 interface geometry remains one joint rigid body;
 - Mosaic additionally allows bounded radial, axial and rotational motion of
   that complete body while reconstructing exact C3 copies;
-- `sampling.scaffold_packing: symmetric_generated` builds the three physical
-  C3 neighbour edges over generated residues and jointly optimizes reciprocal
-  contiguous patch coverage, orientation, shape, clashes and backbone
-  continuity. Generated patches and the complete mobile seed orbit are
-  accepted or rolled back as one transaction.
+- the current LHD101 template uses `intra_chain_weight: 1.0` and
+  `inter_chain_weight: 0.10`. It therefore prioritizes a supported compact
+  monomer scaffold while retaining only weak generated--generated attraction;
+  excessive cross-chain contacts receive a normalized soft penalty rather
+  than an absolute contact ban;
+- the complete supplied interface seed may move only as one bounded rigid
+  body. Every update is followed by the same exact C3/fixed-target projector.
 
 Bare RFD3 is not the scientific comparator because it does not implement the
 published interface-seed assembly mechanism. The primary comparison is the
@@ -61,9 +63,12 @@ For every backbone, the comparison records:
 - exact-symmetry coordinate RMSD;
 - chain breaks and CA clashes;
 - chain CA radius of gyration;
+- length-normalized chain CA radius of gyration;
+- intra-chain long-range contacts and generated-residue tertiary-support
+  coverage;
 - neighbouring-chain CA contacts and minimum distance;
-- final generated-patch coverage/continuity/orientation/shape evidence and
-  whether every packing target was satisfied;
+- generated--generated cross-chain contact count, coverage, and the soft
+  excess objective;
 - Flatness and Twist in a symmetry-aligned local ring frame;
 - optional STRIDE coil/turn percentage.
 
@@ -94,9 +99,10 @@ retains its declared random-pose protocol and is not cherry-picked from this
 list.
 
 Do not scale an older pilot that lacks
-`graph_interface_guidance_audit.json`: it tested exact motif mobility and
-scaffold validity only, not scientific interface packing. Scale-up requires
-all constraint, mobility, scaffold and packing audits to pass.
+`scaffold_core_guidance_audit.json`: it tested exact motif mobility and
+scaffold validity only, not the current intra/inter scaffold objective.
+Scale-up requires all constraint, mobility, scaffold and core-guidance audits
+to pass.
 
 After its required audits pass, submit exactly 1,000 backbones:
 

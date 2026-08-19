@@ -309,9 +309,18 @@ def infer_existing_run_audits(
         if (
             isinstance(automatic_packing, dict)
             and automatic_packing.get("mode") == "symmetric_generated"
-            and AuditRequirement.GRAPH_INTERFACE_GUIDANCE not in requirements
         ):
-            requirements.append(AuditRequirement.GRAPH_INTERFACE_GUIDANCE)
+            core_requested = bool(
+                float(automatic_packing.get("intra_chain_weight", 0.0)) > 0.0
+                or float(automatic_packing.get("inter_chain_weight", 1.0)) < 1.0
+            )
+            requirement = (
+                AuditRequirement.SCAFFOLD_CORE_GUIDANCE
+                if core_requested
+                else AuditRequirement.GRAPH_INTERFACE_GUIDANCE
+            )
+            if requirement not in requirements:
+                requirements.append(requirement)
         orbits = extra.get("motif_constraint_orbits") or []
         if not isinstance(orbits, list):
             raise ValueError("motif_constraint_orbits must be a frozen list")

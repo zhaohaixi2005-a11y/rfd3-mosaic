@@ -37,6 +37,67 @@ def _c3_registry() -> tuple[list[str], dict[str, list[list[float]]]]:
 
 
 class AssemblyFrontendTestCase(unittest.TestCase):
+    def test_scaffold_intra_inter_balance_requires_core_runtime_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "seed.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       0.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA B   1       8.000   0.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: supplied-interface-core
+input: seed.pdb
+symmetry: C3
+generation:
+  - kind: between
+    from_selector: A1
+    to_selector: B1
+    length: 20
+constraints:
+  - {kind: fixed_xyz, selector: A1}
+  - {kind: fixed_xyz, selector: B1}
+guidance:
+  intra_chain_weight: 1.0
+  inter_chain_weight: 0.1
+sampling:
+  scaffold_packing: symmetric_generated
+""",
+                encoding="utf-8",
+            )
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "supplied-interface-core",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="supplied-interface-core",
+            )
+
+        self.assertIn(
+            AuditRequirement.SCAFFOLD_CORE_GUIDANCE,
+            request.audit_requirements,
+        )
+        self.assertNotIn(
+            AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+            request.audit_requirements,
+        )
+        plan = request.audit_metadata[
+            "automatic_symmetric_scaffold_packing"
+        ]
+        self.assertEqual(plan["intra_chain_weight"], 1.0)
+        self.assertEqual(plan["inter_chain_weight"], 0.1)
+
     def test_central_frontend_writes_a_native_assembly_specification(
         self,
     ) -> None:

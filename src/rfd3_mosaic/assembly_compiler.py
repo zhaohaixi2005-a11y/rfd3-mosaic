@@ -125,6 +125,14 @@ def compile_audit_requirements(
                     input_arguments=(("--compiled-input", str(input_path)),),
                 )
             )
+        elif requirement == AuditRequirement.SCAFFOLD_CORE_GUIDANCE:
+            audits.append(
+                CompiledAudit(
+                    module="rfd3_mosaic.rfd3_scaffold_core_audit",
+                    report_name="scaffold_core_guidance_audit.json",
+                    input_arguments=(("--compiled-input", str(input_path)),),
+                )
+            )
         elif requirement == AuditRequirement.BOUNDED_COMPONENT_MOBILITY:
             audits.append(
                 CompiledAudit(

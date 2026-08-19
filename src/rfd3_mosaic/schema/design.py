@@ -114,7 +114,16 @@ class UserDesignPreferences(StrictModel):
 
 
 class ExpertPackingGuidanceSpec(StrictModel):
-    """Optional raw controls for expert assembly-graph authors only."""
+    """Optional raw controls for packing guidance.
+
+    ``intra_chain_weight`` and ``inter_chain_weight`` are intentionally also
+    available on the short ordinary-user surface.  They mirror the familiar
+    RFdiffusion intra/inter balance without weakening exact motif, symmetry,
+    continuity or clash contracts.  The remaining fields stay expert-only.
+    """
+
+    intra_chain_weight: Annotated[float, Field(ge=0.0)] | None = None
+    inter_chain_weight: Annotated[float, Field(ge=0.0, le=2.0)] | None = None
 
     weight: Annotated[float, Field(ge=0.0)] | None = None
     coverage_weight: Annotated[float, Field(ge=0.0)] | None = None
@@ -1082,10 +1091,22 @@ class UserDesignSpec(StrictModel):
                     "execution_backend=explicit_all_copy"
                 )
         if self.guidance is not None and self.user_mode != "expert":
-            raise ValueError(
-                "raw guidance weights require expert assembly components; "
-                "ordinary designs use preferences"
-            )
+            ordinary_fields = {
+                key
+                for key, value in self.guidance.model_dump().items()
+                if value is not None
+            }
+            unsupported = ordinary_fields - {
+                "intra_chain_weight",
+                "inter_chain_weight",
+            }
+            if unsupported:
+                raise ValueError(
+                    "raw guidance weights require expert assembly components; "
+                    "ordinary designs may tune only intra_chain_weight and "
+                    "inter_chain_weight; raw expert guidance fields require "
+                    "assembly components: " + ", ".join(sorted(unsupported))
+                )
         if (
             motion is not None
             and self.task is not None

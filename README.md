@@ -23,6 +23,8 @@ remaining protein scaffold under exact symmetry.
 - Cn and Dn symmetric assembly generation;
 - fixed, bounded-mobile and jointly guided rigid components;
 - generated-interface packing guidance with translation and rotation;
+- tunable intra-chain scaffold-core versus inter-chain packing guidance,
+  with soft suppression of unintended secondary interfaces;
 - multiple components, interface seeds and polymer connections;
 - deterministic configuration lowering and replayable RFD3 inputs;
 - post-generation audits for motif recovery, symmetry, interfaces, clashes

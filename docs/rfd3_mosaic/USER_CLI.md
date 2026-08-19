@@ -197,6 +197,27 @@ seed-orbit motion are accepted or rolled back jointly. The current automatic
 neighbour policy is Cn-only; other point groups should declare their physical
 interface edges explicitly.
 
+The same guidance path exposes an RFdiffusion-style intra/inter balance; this
+is a pair of weights, not another workflow mode:
+
+```yaml
+guidance:
+  intra_chain_weight: 1.0
+  inter_chain_weight: 0.10
+```
+
+`intra_chain_weight` rewards long-range contacts inside each generated
+monomer, a bounded length-normalized radius of gyration, and tertiary-contact
+support across generated residues. `inter_chain_weight` scales active
+generated--generated interface attraction. Setting it to zero does not ban
+all cross-chain contacts: isolated contacts remain legal, while a normalized
+soft excess penalty discourages a second broad generated interface. Exact
+supplied-seed geometry, symmetry, chain continuity and clash rejection remain
+hard contracts at every weight.
+
+Existing YAMLs that omit these fields retain the original values
+`intra_chain_weight=0` and `inter_chain_weight=1`.
+
 ### Create a symmetric interface
 
 Create it with:

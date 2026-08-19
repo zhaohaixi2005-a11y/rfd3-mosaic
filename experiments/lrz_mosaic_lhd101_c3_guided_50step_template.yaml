@@ -10,6 +10,15 @@ symmetry:
   axis: [0.0, 0.0, 1.0]
   center: [0.0, 0.0, 0.0]
 
+# RFdiffusion-style intra/inter balance.  The supplied interface remains an
+# exact joint-rigid constraint.  Strong intra-chain guidance asks each
+# generated scaffold to form a supported monomer core; weak inter-chain
+# attraction permits incidental contacts without deliberately building a
+# second interface comparable to the supplied one.
+guidance:
+  intra_chain_weight: 1.0
+  inter_chain_weight: 0.10
+
 generation:
   - kind: between
     from_selector: B211-241
@@ -59,8 +68,9 @@ sampling:
   preset: exact_mosaic
   low_memory_mode: true
   execution_backend: explicit_all_copy
-  # Preserve the natural LHD101 interface, while guiding the generated parts
-  # of cyclic neighbours into broad, continuous, clash-free contact patches.
+  # Preserve the natural LHD101 interface.  Intra-chain guidance supports a
+  # compact monomer scaffold; low inter-chain weight avoids deliberately
+  # creating a second broad generated interface between cyclic neighbours.
   scaffold_packing: symmetric_generated
 
 resources:

@@ -41,6 +41,12 @@ from rfd3.inference.symmetry.scaffold_guidance import (
     extract_symmetry_primary_axis,
     principal_axis_from_points,
 )
+from rfd3.inference.symmetry.scaffold_core_guidance import (
+    ScaffoldCoreGuidanceConfig,
+    apply_scaffold_core_guidance,
+    build_scaffold_core_topology,
+    scaffold_core_energy,
+)
 from rfd3.inference.symmetry.symmetry_utils import (
     apply_symmetry_to_xyz_atomwise,
     build_symmetry_orbit_layout,
@@ -107,6 +113,10 @@ class SampleDiffusionConfig:
     # exact; generated regions on cyclic neighbours receive the same mature
     # packing field used by graph-declared designed interfaces.
     enable_symmetric_scaffold_packing: bool = False
+    # RFdiffusion-style balance.  The historical defaults are preserved:
+    # no monomer-core field and full generated inter-chain attraction.
+    scaffold_core_intra_chain_weight: float = 0.0
+    scaffold_core_inter_chain_weight: float = 1.0
     graph_interface_guidance_weight: float = 1.0
     graph_interface_guidance_coverage_weight: float = 1.0
     graph_interface_guidance_continuity_weight: float = 1.0
@@ -552,6 +562,23 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Symmetric scaffold packing requires exact orbit-average "
                 "state and coupled-noise modes"
             )
+        scaffold_core_active = (
+            float(self.scaffold_core_intra_chain_weight) > 0.0
+            or float(self.scaffold_core_inter_chain_weight) < 1.0
+        )
+        if scaffold_core_active and not exact_state:
+            raise ValueError(
+                "Scaffold intra/inter guidance requires exact orbit-average "
+                "state and coupled-noise modes"
+            )
+        if float(self.scaffold_core_intra_chain_weight) < 0.0:
+            raise ValueError(
+                "scaffold_core_intra_chain_weight cannot be negative"
+            )
+        if not 0.0 <= float(self.scaffold_core_inter_chain_weight) <= 2.0:
+            raise ValueError(
+                "scaffold_core_inter_chain_weight must be between 0 and 2"
+            )
         if (
             self.enable_graph_interface_guidance
             and self.enable_symmetric_scaffold_packing
@@ -570,6 +597,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             raise ValueError(
                 "Interface packing guidance cannot be combined with the "
                 "legacy all-chain interface_seed_compactness force"
+            )
+        if (
+            scaffold_core_active
+            and float(self.interface_seed_compactness_weight) > 0.0
+        ):
+            raise ValueError(
+                "Scaffold intra/inter guidance cannot be combined with the "
+                "legacy interface_seed_compactness force"
             )
         if (
             self.enable_orbit_rigid_motif_mobility
@@ -622,6 +657,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or self.enable_symmetric_scaffold_packing
         ):
             self._graph_interface_guidance_config()
+        if scaffold_core_active:
+            self._scaffold_core_guidance_config()
         if (
             (
                 self.enable_graph_interface_guidance
@@ -733,7 +770,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         self,
     ) -> GraphInterfaceGuidanceConfig:
         return GraphInterfaceGuidanceConfig(
-            weight=float(self.graph_interface_guidance_weight),
+            weight=(
+                float(self.graph_interface_guidance_weight)
+                * float(self.scaffold_core_inter_chain_weight)
+            ),
             coverage_weight=float(self.graph_interface_guidance_coverage_weight),
             continuity_weight=float(self.graph_interface_guidance_continuity_weight),
             orientation_weight=float(self.graph_interface_guidance_orientation_weight),
@@ -803,6 +843,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             maximum_patch_exclusivity_loss=float(
                 self.graph_interface_guidance_maximum_patch_exclusivity_loss
             ),
+        )
+
+    def _scaffold_core_guidance_config(self) -> ScaffoldCoreGuidanceConfig:
+        """Resolve the two public intra/inter controls into safe defaults."""
+
+        return ScaffoldCoreGuidanceConfig(
+            intra_chain_weight=float(self.scaffold_core_intra_chain_weight),
+            inter_chain_weight=float(self.scaffold_core_inter_chain_weight),
         )
 
     @staticmethod
@@ -1534,6 +1582,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         graph_interface_guidance_config = None
         graph_interface_patch_state = None
         graph_interface_diagnostics: list[dict[str, Any]] = []
+        scaffold_core_topology = None
+        scaffold_core_guidance_config = None
+        scaffold_core_diagnostics: list[dict[str, Any]] = []
+        scaffold_core_active = (
+            float(self.scaffold_core_intra_chain_weight) > 0.0
+            or float(self.scaffold_core_inter_chain_weight) < 1.0
+        )
         joint_packing_mobility = False
         constraint_runtime = None
         if self.enable_graph_interface_guidance:
@@ -1568,6 +1623,22 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             ranked_logger.info(
                 "Automatic symmetric scaffold packing initialized: "
                 f"edges={len(graph_interface_topology.edges)}"
+            )
+        if scaffold_core_active:
+            scaffold_core_topology = build_scaffold_core_topology(
+                f,
+                is_motif_atom_with_fixed_coord,
+            )
+            scaffold_core_guidance_config = (
+                self._scaffold_core_guidance_config()
+            )
+            ranked_logger.info(
+                "Scaffold intra/inter guidance initialized: "
+                f"chains={len(scaffold_core_topology.chains)}, "
+                "intra="
+                f"{scaffold_core_guidance_config.intra_chain_weight}, "
+                "inter="
+                f"{scaffold_core_guidance_config.inter_chain_weight}"
             )
         if self._uses_exact_symmetry_orbits:
             self._exact_symmetry_orbit_layout = (
@@ -1649,7 +1720,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         "update_interval="
                         f"{self.motif_mobility_update_interval}"
                     )
-                    joint_packing_mobility = bool(graph_interface_topology is not None)
+                    # A monomer-core field must participate in the SE(3) pose
+                    # gradient.  Keep the existing atomic graph transaction
+                    # unchanged for legacy inter-only jobs; explicit intra
+                    # jobs use the established scaffold transaction with an
+                    # additional differentiable pose energy.
+                    joint_packing_mobility = bool(
+                        graph_interface_topology is not None
+                        and scaffold_core_topology is None
+                    )
                     if joint_packing_mobility:
                         ranked_logger.info(
                             "Unified packing-aware motif mobility enabled: "
@@ -1732,14 +1811,55 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 ),
                                 coordinates=proposed_coordinates,
                             )
+                        core_pose_energy = None
+                        if scaffold_core_topology is not None:
+                            if scaffold_core_guidance_config is None:
+                                raise RuntimeError(
+                                    "Scaffold core guidance config was not initialized"
+                                )
+
+                            def core_pose_energy(candidate_target):
+                                generated_mask = (
+                                    scaffold_core_topology.generated_atom_mask
+                                )
+                                # Candidate target contains the differentiable
+                                # mobile seed pose; the generated scaffold must
+                                # come from the current denoiser proposal.  A
+                                # target-only energy would optimize against
+                                # placeholder coordinates instead of the
+                                # structure being sampled.
+                                candidate_state = torch.where(
+                                    generated_mask[:, None],
+                                    proposal_coordinates[0],
+                                    candidate_target,
+                                )
+                                return scaffold_core_energy(
+                                    candidate_state,
+                                    scaffold_core_topology,
+                                    scaffold_core_guidance_config,
+                                ).total
+
+                        scaffold_update_arguments = {
+                            "progress": progress,
+                            "topology": scaffold_guidance_topology,
+                            "axis": scaffold_guidance_axis,
+                            "principal_axes": scaffold_guidance_principal_axes,
+                            "config": scaffold_guidance_config,
+                            "apply_update": bool(
+                                self.motif_mobility_apply_updates
+                            ),
+                        }
+                        # Preserve the exact legacy call signature when the
+                        # new field is disabled.  Besides compatibility with
+                        # external controllers, this proves that default-off
+                        # intra guidance cannot alter established jobs.
+                        if core_pose_energy is not None:
+                            scaffold_update_arguments["pose_energy"] = (
+                                core_pose_energy
+                            )
                         target = motif_mobility_controller.update_orbits_from_scaffold(
                             proposal_coordinates,
-                            progress=progress,
-                            topology=scaffold_guidance_topology,
-                            axis=scaffold_guidance_axis,
-                            principal_axes=(scaffold_guidance_principal_axes),
-                            config=scaffold_guidance_config,
-                            apply_update=bool(self.motif_mobility_apply_updates),
+                            **scaffold_update_arguments,
                         )
                     else:
                         target = motif_mobility_controller.update(
@@ -2041,6 +2161,47 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 interface_step["step_num"] = step_num
                 graph_interface_diagnostics.append(interface_step)
 
+            if scaffold_core_topology is not None:
+                if scaffold_core_guidance_config is None:
+                    raise RuntimeError(
+                        "Scaffold core guidance config was not initialized"
+                    )
+                if constraint_runtime is not None:
+
+                    def core_projector(
+                        candidate,
+                        *,
+                        active_step_num=step_num,
+                    ):
+                        return constraint_runtime.project_post_guidance(
+                            candidate,
+                            step_num=active_step_num,
+                        )
+                else:
+
+                    def core_projector(
+                        candidate,
+                        *,
+                        active_fixed_target=fixed_target,
+                    ):
+                        return self._project_stepwise_updated_coordinates(
+                            candidate,
+                            f,
+                            is_motif_atom_with_fixed_coord,
+                            active_fixed_target,
+                        )
+
+                progress = step_num / max(len(noise_schedule) - 2, 1)
+                X_L, core_step = apply_scaffold_core_guidance(
+                    X_L,
+                    scaffold_core_topology,
+                    progress=progress,
+                    config=scaffold_core_guidance_config,
+                    projector=core_projector,
+                )
+                core_step["step_num"] = step_num
+                scaffold_core_diagnostics.append(core_step)
+
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
                 self.sigma_data * X_noisy_L / torch.sqrt(t_hat**2 + self.sigma_data**2)
@@ -2051,7 +2212,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         final_graph_interface_energy = None
         final_graph_interface_quality_satisfied = None
-        if graph_interface_topology is not None:
+        if (
+            graph_interface_topology is not None
+            and scaffold_core_topology is None
+        ):
             if graph_interface_guidance_config is None:
                 raise RuntimeError(
                     "Graph interface guidance config was not initialized"
@@ -2173,6 +2337,18 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 final_graph_interface_energy,
                 clash_ca_distance=(graph_interface_guidance_config.clash_ca_distance),
                 config=graph_interface_guidance_config,
+            )
+
+        final_scaffold_core_energy = None
+        if scaffold_core_topology is not None:
+            if scaffold_core_guidance_config is None:
+                raise RuntimeError(
+                    "Scaffold core guidance config was not initialized"
+                )
+            final_scaffold_core_energy = scaffold_core_energy(
+                X_L[0],
+                scaffold_core_topology,
+                scaffold_core_guidance_config,
             )
 
         result = dict(
@@ -2300,6 +2476,26 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 ),
                 "final_proxy": final_proxy,
             }
+        if scaffold_core_topology is not None:
+            if (
+                scaffold_core_guidance_config is None
+                or final_scaffold_core_energy is None
+            ):
+                raise RuntimeError(
+                    "Final scaffold core energy was not evaluated"
+                )
+            result["scaffold_core_guidance_diagnostics"] = {
+                "schema_version": 1,
+                "runtime_active": True,
+                "chain_count": len(scaffold_core_topology.chains),
+                "config": vars(scaffold_core_guidance_config),
+                "steps": scaffold_core_diagnostics,
+                "applied_steps": sum(
+                    bool(step.get("applied"))
+                    for step in scaffold_core_diagnostics
+                ),
+                "final_metrics": final_scaffold_core_energy.detached_dict(),
+            }
         return result
 
 
@@ -2343,6 +2539,10 @@ class ConditionalDiffusionSampler:
             ):
                 if kwargs.get(flag, False):
                     unsupported.append(flag)
+            if float(kwargs.get("scaffold_core_intra_chain_weight", 0.0)) > 0.0:
+                unsupported.append("scaffold_core_intra_chain_weight")
+            if float(kwargs.get("scaffold_core_inter_chain_weight", 1.0)) != 1.0:
+                unsupported.append("scaffold_core_inter_chain_weight")
             if float(kwargs.get("interface_seed_compactness_weight", 0.0)) > 0.0:
                 unsupported.append("interface_seed_compactness_weight")
             if unsupported:
