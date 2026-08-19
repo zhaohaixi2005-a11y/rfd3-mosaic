@@ -24,6 +24,27 @@ from rfd3_mosaic.experiment_worker import (
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
+    def test_profile_path_survives_public_request_materialization(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as temporary:
+            resolved = _resolve_profile_path(
+                "configs/rfd3_mosaic/sites/lrz/a100_80g.yaml",
+                experiment_directory=Path(temporary) / "frozen-request",
+                repository_root=repository,
+            )
+
+        self.assertEqual(
+            resolved,
+            (
+                repository
+                / "configs"
+                / "rfd3_mosaic"
+                / "sites"
+                / "lrz"
+                / "a100_80g.yaml"
+            ).resolve(),
+        )
+
     def test_legacy_site_profile_alias_is_source_checkout_only(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         resolved = _resolve_profile_path(

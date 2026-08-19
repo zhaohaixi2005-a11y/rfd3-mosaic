@@ -158,10 +158,26 @@ def _resolve_profile_path(
         raise ValueError("resources.profile must be a profile name or path")
     requested = Path(value).expanduser()
     if requested.suffix in {".yaml", ".yml"} or requested.parent != Path("."):
-        return _resolve_existing_file(
-            value,
-            base=experiment_directory,
-            label="execution profile",
+        if requested.is_absolute():
+            return _resolve_existing_file(
+                requested,
+                base=experiment_directory,
+                label="execution profile",
+            )
+        # A public design is first frozen into a request directory.  CLI path
+        # overrides, however, are commonly written relative to the repository
+        # from which the command is invoked.  Preserve experiment-relative
+        # paths when they exist, then fall back to the repository checkout so
+        # freezing does not silently change the meaning of ``--profile``.
+        experiment_relative = (experiment_directory / requested).resolve()
+        if experiment_relative.is_file():
+            return experiment_relative
+        repository_relative = (repository_root / requested).resolve()
+        if repository_relative.is_file():
+            return repository_relative
+        raise FileNotFoundError(
+            f"execution profile does not exist: {experiment_relative} "
+            f"(also checked {repository_relative})"
         )
     profile = (
         repository_root / "configs" / "rfd3_mosaic" / "execution" / f"{value}.yaml"
