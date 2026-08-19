@@ -131,6 +131,17 @@ def compile_design_preferences(
             for component in design.components.values()
             if component.pose.mode == "bounded_mobile"
         }
+        # Legacy/simple fixed_xyz declarations may explicitly make one whole
+        # supplied seed orbit mobile without declaring expert components.
+        # Treat that as the same physical user intent for reporting and
+        # sampler preset resolution; the fixed atoms remain one rigid body.
+        mobile_subspaces.update(
+            str(constraint.pose.subspace or "bounded_se3")
+            for constraint in design.constraints
+            if getattr(constraint, "kind", None) == "fixed_xyz"
+            and getattr(constraint, "pose", None) is not None
+            and constraint.pose.mode == "bounded_mobile"
+        )
         if "bounded_se3" in mobile_subspaces:
             motion = ComponentMotionPreference.FREE
         elif mobile_subspaces:

@@ -518,6 +518,7 @@ class UserSamplingSpec(StrictModel):
         "local_neighbourhood",
     ] = "explicit_all_copy"
     neighbour_radius: Annotated[int, Field(ge=0)] = 1
+    scaffold_packing: Literal["off", "symmetric_generated"] = "off"
 
     @model_validator(mode="after")
     def reject_ambiguous_pose_declarations(self) -> "UserSamplingSpec":
@@ -1056,6 +1057,30 @@ class UserDesignSpec(StrictModel):
         """
 
         motion = self.preferences.component_motion
+        if self.sampling.scaffold_packing == "symmetric_generated":
+            symmetry_id = (
+                self.symmetry
+                if isinstance(self.symmetry, str)
+                else self.symmetry.id
+            )
+            if not symmetry_id.startswith("C"):
+                raise ValueError(
+                    "sampling.scaffold_packing=symmetric_generated currently "
+                    "requires Cn symmetry"
+                )
+            if not any(
+                getattr(region, "kind", None) == "between"
+                for region in self.generation
+            ):
+                raise ValueError(
+                    "sampling.scaffold_packing=symmetric_generated requires "
+                    "a between generation region"
+                )
+            if self.sampling.execution_backend != "explicit_all_copy":
+                raise ValueError(
+                    "sampling.scaffold_packing=symmetric_generated requires "
+                    "execution_backend=explicit_all_copy"
+                )
         if self.guidance is not None and self.user_mode != "expert":
             raise ValueError(
                 "raw guidance weights require expert assembly components; "

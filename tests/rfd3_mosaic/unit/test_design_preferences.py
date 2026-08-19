@@ -70,6 +70,45 @@ class DesignPreferencesTestCase(unittest.TestCase):
 
         self.assertEqual(pose["subspace"], "bounded_se3")
 
+    def test_legacy_mobile_seed_is_reported_as_guided_motion(self) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "schema_version": 1,
+                "name": "mobile-between-seed",
+                "input": "/tmp/motif.pdb",
+                "symmetry": "C3",
+                "generation": [
+                    {
+                        "kind": "between",
+                        "from_selector": "A1",
+                        "to_selector": "B2",
+                        "length": 20,
+                    }
+                ],
+                "constraints": [
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1",
+                        "pose": {
+                            "mode": "bounded_mobile",
+                            "subspace": "radial_axial_rotation",
+                            "proposal": "scaffold_objectives",
+                            "max_translation": 5.0,
+                            "max_rotation_deg": 15.0,
+                        },
+                    }
+                ],
+            }
+        )
+
+        resolved = compile_design_preferences(design)
+
+        self.assertEqual(resolved.component_motion.value, "guided")
+        self.assertEqual(
+            resolved.mobility_subspace,
+            "radial_axial_rotation",
+        )
+
     def test_tight_large_interface_changes_only_soft_preset(self) -> None:
         design = create_interface_design(
             preferences={

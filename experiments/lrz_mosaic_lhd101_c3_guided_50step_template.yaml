@@ -59,6 +59,9 @@ sampling:
   preset: exact_mosaic
   low_memory_mode: true
   execution_backend: explicit_all_copy
+  # Preserve the natural LHD101 interface, while guiding the generated parts
+  # of cyclic neighbours into broad, continuous, clash-free contact patches.
+  scaffold_packing: symmetric_generated
 
 resources:
   profile: any_gpu

@@ -37,6 +37,36 @@ class SamplingPlanTestCase(unittest.TestCase):
 
         self.assertEqual(plan.diffusion.designs, 1000)
 
+    def test_compiles_explicit_symmetric_scaffold_packing(self) -> None:
+        packed_design = UserDesignSpec.model_validate(
+            {
+                "name": "packed-sampling-plan",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "generation": [
+                    {
+                        "kind": "between",
+                        "from_selector": "A1",
+                        "to_selector": "B2",
+                        "length": 20,
+                    }
+                ],
+                "constraints": [
+                    {"kind": "fixed_xyz", "selector": "A1"},
+                    {"kind": "fixed_xyz", "selector": "B2"},
+                ],
+                "sampling": {
+                    "scaffold_packing": "symmetric_generated"
+                },
+            }
+        )
+        plan = compile_sampling_plan(packed_design)
+
+        self.assertEqual(
+            plan.diffusion.scaffold_packing,
+            "symmetric_generated",
+        )
+
     def test_rejects_nonpositive_design_count(self) -> None:
         with self.assertRaises(ValidationError):
             design(designs=0)

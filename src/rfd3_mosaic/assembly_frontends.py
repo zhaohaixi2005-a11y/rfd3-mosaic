@@ -401,6 +401,15 @@ def lower_experiment_topology(
             audit_requirements.append(
                 AuditRequirement.GRAPH_INTERFACE_GUIDANCE
             )
+        if design.sampling.scaffold_packing == "symmetric_generated":
+            if compiled_interfaces:
+                raise ValueError(
+                    "sampling.scaffold_packing=symmetric_generated cannot be "
+                    "combined with graph-declared output interfaces"
+                )
+            audit_requirements.append(
+                AuditRequirement.GRAPH_INTERFACE_GUIDANCE
+            )
         # Audit the effective lowered runtime contract.  Task presets may
         # derive mobility without mutating the user's fixed_xyz declaration,
         # so checking only the public YAML would let a moving component run
@@ -437,6 +446,15 @@ def lower_experiment_topology(
                 ),
                 "sampling_plan": lowered.sampling_plan.model_dump(
                     mode="json"
+                ),
+                "automatic_symmetric_scaffold_packing": (
+                    {
+                        "mode": "symmetric_generated",
+                        "neighbour_policy": "cyclic_adjacent",
+                    }
+                    if design.sampling.scaffold_packing
+                    == "symmetric_generated"
+                    else None
                 ),
                 **lowered.runtime_constraint_metadata,
             },

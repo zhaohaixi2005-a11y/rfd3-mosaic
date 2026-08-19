@@ -632,6 +632,143 @@ def build_graph_interface_topology(
     )
 
 
+def build_symmetric_scaffold_interface_topology(
+    features: dict[str, Any],
+    fixed_mask: torch.Tensor,
+) -> GraphInterfaceTopology:
+    """Create explicit Cn-neighbour edges for generated scaffold chains.
+
+    Interface-seeded oligomer scaffolding is different from inventing a new
+    supplied interface: the natural fixed interface remains authoritative,
+    while the generated parts of adjacent protomers still need a broad,
+    continuous and clash-free packing field.  This helper lowers that
+    *explicitly requested* runtime mode into the same edge representation as
+    graph-declared interface design.  Consequently both paths share patch
+    locking, exact projection, line search and final quality diagnostics.
+
+    The runtime chain order is the declared transform order.  A cyclic ring
+    therefore has physical neighbour pairs ``(i, i+1 mod n)``.  Undirected
+    deduplication avoids emitting the C2 contact twice.  Non-cyclic groups
+    require graph-declared neighbours and fail closed rather than guessing.
+    """
+
+    symmetry_id = str(features.get("symmetry_id") or "")
+    if not symmetry_id.startswith("C"):
+        raise NotImplementedError(
+            "Automatic symmetric scaffold packing currently requires Cn; "
+            "D/T/O/I designs must declare their physical interface edges"
+        )
+    device = fixed_mask.device
+    fixed = torch.as_tensor(fixed_mask, dtype=torch.bool, device=device)
+    atom_to_token = torch.as_tensor(
+        features["atom_to_token_map"], dtype=torch.long, device=device
+    )
+    asym_id = torch.as_tensor(
+        features["asym_id"], dtype=torch.long, device=device
+    )
+    is_virtual = torch.as_tensor(
+        features.get("is_virtual", torch.zeros_like(fixed)),
+        dtype=torch.bool,
+        device=device,
+    )
+    if atom_to_token.shape != fixed.shape or is_virtual.shape != fixed.shape:
+        raise ValueError(
+            "Automatic scaffold packing atom features must have shape [L]"
+        )
+    atom_chain = asym_id[atom_to_token]
+    generated = ~fixed & ~is_virtual
+    chain_ids = tuple(
+        int(value)
+        for value in torch.unique(atom_chain[generated], sorted=True)
+        .detach()
+        .cpu()
+        .tolist()
+    )
+    if len(chain_ids) < 2:
+        raise ValueError(
+            "Automatic symmetric scaffold packing requires generated atoms "
+            "on at least two physical chains"
+        )
+
+    neighbour_pairs: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for index, left_chain in enumerate(chain_ids):
+        right_chain = chain_ids[(index + 1) % len(chain_ids)]
+        key = tuple(sorted((left_chain, right_chain)))
+        if key in seen:
+            continue
+        seen.add(key)
+        neighbour_pairs.append((left_chain, right_chain))
+
+    edge_count = len(neighbour_pairs)
+    left = torch.zeros(
+        (edge_count, fixed.numel()), dtype=torch.bool, device=device
+    )
+    right = torch.zeros_like(left)
+    edge_ids: list[str] = []
+    for edge_index, (left_chain, right_chain) in enumerate(neighbour_pairs):
+        left[edge_index] = atom_chain == left_chain
+        right[edge_index] = atom_chain == right_chain
+        edge_ids.append(
+            "automatic_symmetric_scaffold_interface"
+            f"@chain_{left_chain}_chain_{right_chain}"
+        )
+
+    synthetic = dict(features)
+    synthetic.update(
+        {
+            "assembly_interface_left_membership": left,
+            "assembly_interface_right_membership": right,
+            "assembly_interface_mode": torch.ones(
+                edge_count, dtype=torch.long, device=device
+            ),
+            "assembly_interface_required": torch.ones(
+                edge_count, dtype=torch.bool, device=device
+            ),
+            "assembly_interface_minimum_contacts": torch.zeros(
+                edge_count, dtype=torch.long, device=device
+            ),
+            "assembly_interface_minimum_residues_per_side": torch.zeros(
+                edge_count, dtype=torch.long, device=device
+            ),
+            "assembly_interface_minimum_contiguous_residues_per_side": (
+                torch.zeros(edge_count, dtype=torch.long, device=device)
+            ),
+            "assembly_interface_automatic_quality": torch.ones(
+                edge_count, dtype=torch.bool, device=device
+            ),
+            # The final CA target is derived conservatively from this
+            # heavy-atom contact convention by _resolve_edge_patch().
+            "assembly_interface_contact_cutoff": torch.full(
+                (edge_count,), 4.5, dtype=torch.float32, device=device
+            ),
+            "assembly_interface_distance_target": torch.zeros(
+                edge_count, dtype=torch.float32, device=device
+            ),
+            "assembly_interface_distance_tolerance": torch.zeros(
+                edge_count, dtype=torch.float32, device=device
+            ),
+            "assembly_interface_has_distance_target": torch.zeros(
+                edge_count, dtype=torch.bool, device=device
+            ),
+            "assembly_interface_ids": tuple(edge_ids),
+            "assembly_interface_source_ids": tuple(
+                "automatic_symmetric_scaffold_interface"
+                for _ in range(edge_count)
+            ),
+            "assembly_interface_satisfaction_stages": tuple(
+                "output" for _ in range(edge_count)
+            ),
+        }
+    )
+    topology = build_graph_interface_topology(synthetic, fixed)
+    if topology is None:
+        raise RuntimeError(
+            "Automatic symmetric scaffold packing produced no runtime edges"
+        )
+    return topology
+
+
 def _contiguous_token_runs(token_ids: torch.Tensor) -> tuple[slice, ...]:
     """Return slices for monotonically adjacent token runs."""
 

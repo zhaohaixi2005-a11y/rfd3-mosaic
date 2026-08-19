@@ -67,6 +67,13 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
             [design["sampling"]["initial_pose"]["seed"] for design in frozen],
             [1200, 1201, 1202],
         )
+        self.assertTrue(
+            all(
+                design["sampling"]["scaffold_packing"]
+                == "symmetric_generated"
+                for design in frozen
+            )
+        )
         self.assertEqual(len({design["name"] for design in frozen}), 3)
 
     def test_pilot_always_freezes_one_design(self) -> None:

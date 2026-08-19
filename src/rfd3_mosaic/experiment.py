@@ -497,6 +497,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "seed": sampling["seed"],
             "execution_backend": sampling["execution_backend"],
             "neighbour_radius": sampling["neighbour_radius"],
+            "scaffold_packing": sampling["scaffold_packing"],
             "low_memory_mode": sampling["low_memory_mode"],
             "effective_sampler": sampling["sampler"],
         },
@@ -670,6 +671,7 @@ def resolve_experiment(
             "low_memory_mode",
             "execution_backend",
             "neighbour_radius",
+            "scaffold_packing",
         },
         "sampling",
     )
@@ -706,8 +708,18 @@ def resolve_experiment(
             sampling.get("neighbour_radius", 1),
             "sampling.neighbour_radius",
         ),
+        "scaffold_packing": str(
+            sampling.get("scaffold_packing", "off")
+        ),
         "sampler": dict(SAMPLER_PRESETS[preset]),
     }
+    if resolved_sampling["scaffold_packing"] not in {
+        "off",
+        "symmetric_generated",
+    }:
+        raise ValueError(
+            "sampling.scaffold_packing must be off or symmetric_generated"
+        )
 
     resources = raw.get("resources")
     if not isinstance(resources, dict):

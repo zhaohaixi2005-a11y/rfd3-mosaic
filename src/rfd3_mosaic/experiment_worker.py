@@ -103,6 +103,17 @@ def _graph_interface_guidance_runtime(rfd3_input: Path) -> bool:
     )
 
 
+def _symmetric_scaffold_packing_runtime(rfd3_input: Path) -> bool:
+    """Enable explicit generated-scaffold packing for cyclic seed designs."""
+
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    plan = (example.get("extra") or {}).get(
+        "automatic_symmetric_scaffold_packing"
+    )
+    return isinstance(plan, dict) and plan.get("mode") == "symmetric_generated"
+
+
 def _graph_interface_guidance_overrides(
     rfd3_input: Path,
 ) -> tuple[str, ...]:
@@ -318,6 +329,14 @@ def execute(
     interface_guidance_enabled = _graph_interface_guidance_runtime(
         rfd3_input
     )
+    scaffold_packing_enabled = _symmetric_scaffold_packing_runtime(
+        rfd3_input
+    )
+    if interface_guidance_enabled and scaffold_packing_enabled:
+        raise ValueError(
+            "Compiled input cannot enable graph interfaces and automatic "
+            "symmetric scaffold packing simultaneously"
+        )
     requested_designs = int(sampling.get("designs", 1))
     inference_command = [
         sys.executable,
@@ -355,12 +374,14 @@ def execute(
         "++inference_sampler.motif_mobility_apply_updates=True",
         "++inference_sampler.enable_graph_interface_guidance="
         + str(interface_guidance_enabled),
+        "++inference_sampler.enable_symmetric_scaffold_packing="
+        + str(scaffold_packing_enabled),
         f"low_memory_mode={sampling['low_memory_mode']}",
         "skip_existing=False",
         "dump_trajectories=False",
         "prevalidate_inputs=True",
     ]
-    if interface_guidance_enabled:
+    if interface_guidance_enabled or scaffold_packing_enabled:
         inference_command.extend(
             _graph_interface_guidance_overrides(rfd3_input)
         )

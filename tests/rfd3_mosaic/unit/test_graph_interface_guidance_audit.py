@@ -351,6 +351,52 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
 
         self.assertFalse(report["passed"])
 
+    def test_accepts_explicit_c2_automatic_scaffold_packing(self) -> None:
+        edge_id = (
+            "automatic_symmetric_scaffold_interface@chain_0_chain_1"
+        )
+        source_id = "automatic_symmetric_scaffold_interface"
+        self.compiled.write_text(
+            json.dumps(
+                {
+                    "example": {
+                        "symmetry": {"id": "C2"},
+                        "extra": {
+                            "assembly_interface_relations": [],
+                            "automatic_symmetric_scaffold_packing": {
+                                "mode": "symmetric_generated",
+                                "neighbour_policy": "cyclic_adjacent",
+                            },
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._write_result(edge_id=edge_id)
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        diagnostics = payload["graph_interface_guidance_diagnostics"]
+        diagnostics["source_interface_ids"] = [source_id]
+        diagnostics["capacity_preflight"][0]["edge_id"] = edge_id
+        diagnostics["capacity_preflight"][0]["source_interface_id"] = (
+            source_id
+        )
+        diagnostics["steps"][0]["patch_assignments"] = {
+            edge_id: {
+                "left_token_ids": [1, 2, 3],
+                "right_token_ids": [7, 8, 9],
+            }
+        }
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["summary"]["identifier_contract_valid"])
+
 
 if __name__ == "__main__":
     unittest.main()

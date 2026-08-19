@@ -576,6 +576,10 @@ def required_capabilities_for_design(
         require("graph_interface_guidance")
         if task_optimizes_fixed_components:
             require("joint_packing_mobility")
+    if design.sampling.scaffold_packing == "symmetric_generated":
+        require("graph_interface_guidance")
+        if has_mobile_constraint:
+            require("joint_packing_mobility")
     if design.assembly_shape is not None:
         require("assembly_shape_contract")
     if (

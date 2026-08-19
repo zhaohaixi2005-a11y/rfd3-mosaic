@@ -11,6 +11,7 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     adaptive_graph_interface_phase,
     apply_graph_interface_guidance,
     build_graph_interface_topology,
+    build_symmetric_scaffold_interface_topology,
     graph_interface_quality_satisfied,
     guidance_window_weight,
     graph_interface_energy,
@@ -86,6 +87,52 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
         topology = build_graph_interface_topology(self._features(), fixed)
         self.assertIsNotNone(topology)
         self.assertEqual(len(topology.edges), 1)
+
+    def test_c3_scaffold_packing_builds_three_cyclic_neighbour_edges(self) -> None:
+        atoms_per_chain = 7
+        atom_count = 3 * atoms_per_chain
+        features = {
+            "symmetry_id": "C3",
+            "atom_to_token_map": torch.arange(atom_count),
+            "asym_id": torch.repeat_interleave(
+                torch.arange(3), atoms_per_chain
+            ),
+            "is_ca": torch.ones(atom_count, dtype=torch.bool),
+            "is_virtual": torch.zeros(atom_count, dtype=torch.bool),
+            "token_bonds": torch.zeros(
+                (atom_count, atom_count), dtype=torch.bool
+            ),
+            "residue_index": torch.arange(atoms_per_chain).repeat(3),
+        }
+        fixed = torch.zeros(atom_count, dtype=torch.bool)
+        fixed[::atoms_per_chain] = True
+
+        topology = build_symmetric_scaffold_interface_topology(
+            features,
+            fixed,
+        )
+
+        self.assertEqual(len(topology.edges), 3)
+        self.assertEqual(
+            {edge.source_interface_id for edge in topology.edges},
+            {"automatic_symmetric_scaffold_interface"},
+        )
+        self.assertTrue(all(edge.automatic_quality for edge in topology.edges))
+        self.assertFalse(torch.any(topology.generated_atom_mask & fixed))
+
+    def test_scaffold_packing_rejects_noncyclic_group(self) -> None:
+        features = {
+            "symmetry_id": "T",
+            "atom_to_token_map": torch.arange(4),
+            "asym_id": torch.tensor([0, 0, 1, 1]),
+            "is_ca": torch.ones(4, dtype=torch.bool),
+            "is_virtual": torch.zeros(4, dtype=torch.bool),
+        }
+        with self.assertRaisesRegex(NotImplementedError, "requires Cn"):
+            build_symmetric_scaffold_interface_topology(
+                features,
+                torch.tensor([True, False, True, False]),
+            )
 
     def test_output_contact_rejects_same_chain_self_distances(self) -> None:
         features = self._features()

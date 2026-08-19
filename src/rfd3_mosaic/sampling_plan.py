@@ -21,6 +21,7 @@ class DiffusionSamplingPlan(StrictModel):
     low_memory_mode: bool
     execution_backend: str
     neighbour_radius: int
+    scaffold_packing: str
 
 
 class StaticPosePlan(StrictModel):
@@ -102,6 +103,7 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
             low_memory_mode=sampling.low_memory_mode,
             execution_backend=sampling.execution_backend,
             neighbour_radius=sampling.neighbour_radius,
+            scaffold_packing=sampling.scaffold_packing,
         ),
     )
 

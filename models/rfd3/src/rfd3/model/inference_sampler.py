@@ -18,6 +18,7 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfacePatchState,
     apply_graph_interface_guidance,
     build_graph_interface_topology,
+    build_symmetric_scaffold_interface_topology,
     graph_interface_energy,
     graph_interface_energy_diagnostics,
     graph_interface_quality_satisfied,
@@ -102,6 +103,10 @@ class SampleDiffusionConfig:
     # compactness option, this acts only across explicitly named neighbour
     # edges and applies a joint attractive/repulsive field to generated atoms.
     enable_graph_interface_guidance: bool = False
+    # Explicit interface-seeded oligomer mode.  The supplied interface stays
+    # exact; generated regions on cyclic neighbours receive the same mature
+    # packing field used by graph-declared designed interfaces.
+    enable_symmetric_scaffold_packing: bool = False
     graph_interface_guidance_weight: float = 1.0
     graph_interface_guidance_coverage_weight: float = 1.0
     graph_interface_guidance_continuity_weight: float = 1.0
@@ -542,12 +547,28 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Graph interface guidance requires exact orbit-average "
                 "state and coupled-noise modes"
             )
+        if self.enable_symmetric_scaffold_packing and not exact_state:
+            raise ValueError(
+                "Symmetric scaffold packing requires exact orbit-average "
+                "state and coupled-noise modes"
+            )
         if (
             self.enable_graph_interface_guidance
+            and self.enable_symmetric_scaffold_packing
+        ):
+            raise ValueError(
+                "Declare graph interface guidance or automatic symmetric "
+                "scaffold packing, not both"
+            )
+        if (
+            (
+                self.enable_graph_interface_guidance
+                or self.enable_symmetric_scaffold_packing
+            )
             and float(self.interface_seed_compactness_weight) > 0.0
         ):
             raise ValueError(
-                "Graph interface guidance cannot be combined with the "
+                "Interface packing guidance cannot be combined with the "
                 "legacy all-chain interface_seed_compactness force"
             )
         if (
@@ -596,10 +617,16 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             # Constructing the config here validates every user-controlled
             # weight and geometric target before model inference starts.
             self._scaffold_guidance_config()
-        if self.enable_graph_interface_guidance:
-            self._graph_interface_guidance_config()
         if (
             self.enable_graph_interface_guidance
+            or self.enable_symmetric_scaffold_packing
+        ):
+            self._graph_interface_guidance_config()
+        if (
+            (
+                self.enable_graph_interface_guidance
+                or self.enable_symmetric_scaffold_packing
+            )
             and self.enable_orbit_rigid_motif_mobility
             and self.motif_mobility_proposal_source != "scaffold_boundary"
         ):
@@ -1525,6 +1552,23 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Graph interface guidance initialized: "
                 f"edges={len(graph_interface_topology.edges)}"
             )
+        elif self.enable_symmetric_scaffold_packing:
+            graph_interface_topology = (
+                build_symmetric_scaffold_interface_topology(
+                    f,
+                    is_motif_atom_with_fixed_coord,
+                )
+            )
+            graph_interface_guidance_config = (
+                self._graph_interface_guidance_config()
+            )
+            graph_interface_patch_state = GraphInterfacePatchState(
+                assignments={}
+            )
+            ranked_logger.info(
+                "Automatic symmetric scaffold packing initialized: "
+                f"edges={len(graph_interface_topology.edges)}"
+            )
         if self._uses_exact_symmetry_orbits:
             self._exact_symmetry_orbit_layout = (
                 local_symmetry_context.layout
@@ -2295,6 +2339,7 @@ class ConditionalDiffusionSampler:
                 "require_motif_constraint_groups",
                 "enable_orbit_rigid_motif_mobility",
                 "enable_graph_interface_guidance",
+                "enable_symmetric_scaffold_packing",
             ):
                 if kwargs.get(flag, False):
                     unsupported.append(flag)

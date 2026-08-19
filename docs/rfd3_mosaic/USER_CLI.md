@@ -181,6 +181,22 @@ Every supplied interface is preserved as a geometric entity. Generated
 regions connect user-declared endpoints without changing the internal seed
 geometry.
 
+For a cyclic interface-seeded oligomer whose generated scaffold should also
+pack across neighbouring protomers, opt in explicitly:
+
+```yaml
+sampling:
+  scaffold_packing: symmetric_generated
+```
+
+This does not redefine or deform the supplied interface. It builds one
+generated-residue packing edge for every unique cyclic neighbour pair and
+uses the normal coverage, continuity, orientation, shape, backbone and clash
+contracts. With a bounded-mobile seed, generated patches and complete rigid
+seed-orbit motion are accepted or rolled back jointly. The current automatic
+neighbour policy is Cn-only; other point groups should declare their physical
+interface edges explicitly.
+
 ### Create a symmetric interface
 
 Create it with:

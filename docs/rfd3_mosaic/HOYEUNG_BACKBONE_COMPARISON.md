@@ -14,7 +14,18 @@ It does not execute the authors' RFdiffusion1 fork.
 - sample size: 1,000 independently sampled Mosaic backbones;
 - complete LHD101 interface geometry remains one joint rigid body;
 - Mosaic additionally allows bounded radial, axial and rotational motion of
-  that complete body while reconstructing exact C3 copies.
+  that complete body while reconstructing exact C3 copies;
+- `sampling.scaffold_packing: symmetric_generated` builds the three physical
+  C3 neighbour edges over generated residues and jointly optimizes reciprocal
+  contiguous patch coverage, orientation, shape, clashes and backbone
+  continuity. Generated patches and the complete mobile seed orbit are
+  accepted or rolled back as one transaction.
+
+Bare RFD3 is not the scientific comparator because it does not implement the
+published interface-seed assembly mechanism. The primary comparison is the
+matched published Ho-Yeung task/result protocol versus the complete
+RFD3-Mosaic method. An unguided RFD3 run may be retained only as an internal
+ablation and is not allocated the 1,000-backbone main budget.
 
 The experiment is frozen in
 `experiments/lrz_mosaic_lhd101_c3_guided_50step_template.yaml`. The launcher
@@ -51,6 +62,8 @@ For every backbone, the comparison records:
 - chain breaks and CA clashes;
 - chain CA radius of gyration;
 - neighbouring-chain CA contacts and minimum distance;
+- final generated-patch coverage/continuity/orientation/shape evidence and
+  whether every packing target was satisfied;
 - Flatness and Twist in a symmetry-aligned local ring frame;
 - optional STRIDE coil/turn percentage.
 
@@ -67,6 +80,11 @@ python scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py \
   --mode pilot \
   --submit
 ```
+
+Do not scale an older pilot that lacks
+`graph_interface_guidance_audit.json`: it tested exact motif mobility and
+scaffold validity only, not scientific interface packing. Scale-up requires
+all constraint, mobility, scaffold and packing audits to pass.
 
 After its required audits pass, submit exactly 1,000 backbones:
 

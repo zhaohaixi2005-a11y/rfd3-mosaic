@@ -1425,6 +1425,11 @@ def _print_public_design_plan(
     print(
         "generation: " f"{len(design.generation) + len(design.connections)} region(s)"
     )
+    if sampling.diffusion.scaffold_packing == "symmetric_generated":
+        print(
+            "scaffold packing: automatic cyclic-neighbour generated patches "
+            "(supplied interface geometry remains exact)"
+        )
     if inferred_interfaces:
         if (
             design.task is not None

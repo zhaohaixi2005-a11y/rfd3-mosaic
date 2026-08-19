@@ -19,6 +19,7 @@ from rfd3_mosaic.experiment import (
 from rfd3_mosaic.experiment_worker import (
     _graph_interface_guidance_runtime,
     _motif_mobility_runtime,
+    _symmetric_scaffold_packing_runtime,
     _verify_render_identity,
 )
 
@@ -131,6 +132,31 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertFalse(guidance_enabled)
         self.assertFalse(mobility_enabled)
         self.assertEqual(source, "denoiser")
+
+    def test_worker_enables_explicit_symmetric_scaffold_packing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "rfd3_input.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "example": {
+                            "extra": {
+                                "automatic_symmetric_scaffold_packing": {
+                                    "mode": "symmetric_generated",
+                                    "neighbour_policy": "cyclic_adjacent",
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            automatic = _symmetric_scaffold_packing_runtime(path)
+            declared = _graph_interface_guidance_runtime(path)
+
+        self.assertTrue(automatic)
+        self.assertFalse(declared)
 
     def test_worker_enables_multiple_scaffold_objective_orbits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

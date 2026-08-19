@@ -303,6 +303,15 @@ def infer_existing_run_audits(
             for relation in relations
         ):
             requirements.append(AuditRequirement.GRAPH_INTERFACE_GUIDANCE)
+        automatic_packing = extra.get(
+            "automatic_symmetric_scaffold_packing"
+        )
+        if (
+            isinstance(automatic_packing, dict)
+            and automatic_packing.get("mode") == "symmetric_generated"
+            and AuditRequirement.GRAPH_INTERFACE_GUIDANCE not in requirements
+        ):
+            requirements.append(AuditRequirement.GRAPH_INTERFACE_GUIDANCE)
         orbits = extra.get("motif_constraint_orbits") or []
         if not isinstance(orbits, list):
             raise ValueError("motif_constraint_orbits must be a frozen list")

@@ -44,9 +44,20 @@ def audit_graph_interface_guidance(
     input_path = Path(compiled_input).resolve()
     result_path = Path(result_json).resolve()
     example = _single_example(input_path)
+    extra = example.get("extra") or {}
+    diagnostics = _load(result_path).get(
+        "graph_interface_guidance_diagnostics"
+    )
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    observed_ids = [str(value) for value in diagnostics.get("edge_ids", [])]
+    observed_source_ids = [
+        str(value)
+        for value in diagnostics.get("source_interface_ids", [])
+    ]
     declared = [
         relation
-        for relation in (example.get("extra") or {}).get(
+        for relation in extra.get(
             "assembly_interface_relations", []
         )
         if bool(relation.get("required", True))
@@ -54,33 +65,52 @@ def audit_graph_interface_guidance(
         and (relation.get("target_geometry") or {}).get("mode")
         == "geometric_constraints"
     ]
-    if not declared:
+    automatic_plan = extra.get("automatic_symmetric_scaffold_packing")
+    automatic = bool(
+        isinstance(automatic_plan, dict)
+        and automatic_plan.get("mode") == "symmetric_generated"
+    )
+    if declared:
+        expected_ids = [str(edge["edge_instance_id"]) for edge in declared]
+        expected_source_ids = [
+            str(
+                edge.get("source_interface_id")
+                or str(edge["edge_instance_id"]).split("@", 1)[0]
+            )
+            for edge in declared
+        ]
+    elif automatic:
+        symmetry_id = str((example.get("symmetry") or {}).get("id") or "")
+        if not symmetry_id.startswith("C") or not symmetry_id[1:].isdigit():
+            raise ValueError(
+                "Automatic symmetric scaffold packing audit requires Cn"
+            )
+        order = int(symmetry_id[1:])
+        expected_count = 1 if order == 2 else order
+        prefix = "automatic_symmetric_scaffold_interface@"
+        if (
+            len(observed_ids) != expected_count
+            or any(not edge_id.startswith(prefix) for edge_id in observed_ids)
+        ):
+            raise ValueError(
+                "Automatic scaffold packing diagnostics do not contain the "
+                f"expected {expected_count} cyclic neighbour edges"
+            )
+        expected_ids = list(observed_ids)
+        expected_source_ids = [
+            "automatic_symmetric_scaffold_interface"
+            for _ in expected_ids
+        ]
+    else:
         raise ValueError(
-            "Compiled input declares no required output-stage contact edge"
+            "Compiled input declares neither output-stage contact edges nor "
+            "automatic symmetric scaffold packing"
         )
-    expected_ids = [str(edge["edge_instance_id"]) for edge in declared]
-    expected_source_ids = [
-        str(
-            edge.get("source_interface_id")
-            or str(edge["edge_instance_id"]).split("@", 1)[0]
-        )
-        for edge in declared
-    ]
     unique_expected_source_ids = list(dict.fromkeys(expected_source_ids))
     if len(expected_ids) != len(set(expected_ids)):
         raise ValueError("Compiled output-stage interface IDs are not unique")
 
-    diagnostics = _load(result_path).get(
-        "graph_interface_guidance_diagnostics"
-    )
-    if not isinstance(diagnostics, dict):
-        diagnostics = {}
     diagnostics_schema_version = int(diagnostics.get("schema_version", 1))
-    observed_ids = [str(value) for value in diagnostics.get("edge_ids", [])]
-    observed_source_ids = [
-        str(value)
-        for value in diagnostics.get("source_interface_ids", [])
-    ]
     steps = diagnostics.get("steps", [])
     if not isinstance(steps, list):
         steps = []

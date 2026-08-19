@@ -486,6 +486,12 @@ def _one_design(
         run_directory=run_directory,
     )
     scaffold_summary = (scaffold or {}).get("summary") or {}
+    guidance = _audit_payload(
+        design,
+        name="graph_interface_guidance_audit.json",
+        run_directory=run_directory,
+    )
+    guidance_summary = (guidance or {}).get("summary") or {}
     seed = _seed_metrics(design, run_directory)
     return {
         "job_id": run_directory.name,
@@ -498,6 +504,24 @@ def _one_design(
         "scaffold_audit_passed": (
             bool(scaffold.get("passed")) if scaffold is not None else None
         ),
+        "packing_guidance": {
+            "audit": (
+                "graph_interface_guidance_audit.json"
+                if guidance is not None
+                else None
+            ),
+            "passed": (
+                bool(guidance.get("passed"))
+                if guidance is not None
+                else None
+            ),
+            "final_targets_satisfied": guidance_summary.get(
+                "final_proxy_targets_satisfied"
+            ),
+            "final_metrics": guidance_summary.get(
+                "final_packing_metrics"
+            ),
+        },
         "chain_break_count": scaffold_summary.get("chain_break_count"),
         "ca_clash_count": scaffold_summary.get("ca_clash_count"),
         "symmetry_coordinate_rmsd": scaffold_summary.get(
@@ -597,6 +621,14 @@ def _summary(
         "scaffold_passed_count": sum(
             record["scaffold_audit_passed"] is True for record in records
         ),
+        "packing_guidance_passed_count": sum(
+            record["packing_guidance"]["passed"] is True
+            for record in records
+        ),
+        "packing_targets_satisfied_count": sum(
+            record["packing_guidance"]["final_targets_satisfied"] is True
+            for record in records
+        ),
         "continuous_count": sum(record["chain_break_count"] == 0 for record in records),
         "clash_free_count": sum(record["ca_clash_count"] == 0 for record in records),
         "radius_of_gyration": _quantiles(
@@ -674,6 +706,10 @@ def _markdown(payload: Mapping[str, Any]) -> str:
         f"- Analyzed: {summary['analyzed_designs']}",
         f"- Mosaic strict audit passes: {summary['worker_accepted_count']}",
         f"- Supplied seed preserved: {summary['seed_preserved_count']}",
+        "- Generated-scaffold packing audit passes: "
+        f"{summary['packing_guidance_passed_count']}",
+        "- Generated-scaffold final packing targets satisfied: "
+        f"{summary['packing_targets_satisfied_count']}",
         f"- Continuous backbones: {summary['continuous_count']}",
         f"- CA-clash-free backbones: {summary['clash_free_count']}",
         "",
