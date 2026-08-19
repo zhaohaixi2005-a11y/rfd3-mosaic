@@ -174,9 +174,10 @@ rfd3-mosaic runs \
   --retain IMPORTANT_JOB_ID
 ```
 
-The current catalog is available at `/path/to/runs/_catalog/CURRENT`. Catalog
-snapshots are themselves grouped under `snapshots/YYYYMMDD/`. The primary run
-view is `by-date/YYYY-MM-DD/`: every UTC day has one parent directory, a
+Open the current catalog through the stable `/path/to/runs/RUN_CATALOG` link
+(`/path/to/runs/_catalog/CURRENT` is the internal equivalent). Catalog snapshots
+are themselves grouped under `snapshots/YYYYMMDD/`. The primary run view is
+`by-date/YYYY-MM-DD/`: every UTC day has one parent directory, a
 human-readable `RUNS.md`, and links whose names record the job ID, experiment,
 state and source revision.
 Additional views group the same immutable runs by source version and state,

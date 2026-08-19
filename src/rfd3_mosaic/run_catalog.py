@@ -167,6 +167,11 @@ def write_run_catalog(
 
     catalog_root = root_path / "_catalog"
     automatic_output = output_directory is None
+    friendly_link = root_path / "RUN_CATALOG"
+    if automatic_output and friendly_link.exists() and not friendly_link.is_symlink():
+        raise FileExistsError(
+            f"Refusing to replace non-symbolic catalog entry: {friendly_link}"
+        )
     stamp = _stamp()
     output = (
         catalog_root / "snapshots" / stamp[:8] / stamp
@@ -268,4 +273,10 @@ def write_run_catalog(
             target_is_directory=True,
         )
         temporary.replace(catalog_root / "CURRENT")
+        friendly_temporary = root_path / f".RUN_CATALOG-{os.getpid()}"
+        friendly_temporary.symlink_to(
+            Path("_catalog") / "CURRENT",
+            target_is_directory=True,
+        )
+        friendly_temporary.replace(friendly_link)
     return payload

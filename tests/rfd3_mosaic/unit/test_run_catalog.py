@@ -49,6 +49,7 @@ class RunCatalogTestCase(unittest.TestCase):
         current = self.root / "_catalog" / "CURRENT"
         self.assertTrue(current.is_symlink())
         self.assertEqual(current.resolve(), catalog)
+        self.assertEqual((self.root / "RUN_CATALOG").resolve(), catalog)
         self.assertEqual(payload["run_count"], 2)
         self.assertEqual(payload["structure_count"], 2)
         self.assertEqual(

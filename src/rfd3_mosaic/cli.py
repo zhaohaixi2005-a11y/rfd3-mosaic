@@ -1879,7 +1879,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             print(f"catalog:      {catalog['catalog_directory']}")
             print(
                 "catalog view: "
-                f"{Path(catalog['catalog_directory']).parent / 'CURRENT'}"
+                f"{Path(catalog['run_root']) / 'RUN_CATALOG'}"
             )
             print(
                 f"cataloged:    {catalog['run_count']} run(s), "
