@@ -163,6 +163,29 @@ rfd3-mosaic audit RUN_ID_OR_DIRECTORY
 
 Use `rfd3-mosaic runs --root /path/to/runs` to list an indexed run root.
 
+For a large run root, create a non-destructive catalog instead of moving or
+deleting run directories:
+
+```bash
+rfd3-mosaic runs \
+  --root /path/to/runs \
+  --rebuild \
+  --catalog \
+  --retain IMPORTANT_JOB_ID
+```
+
+The current catalog is available at `/path/to/runs/_catalog/CURRENT`. Catalog
+snapshots are themselves grouped under `snapshots/YYYYMMDD/`. The primary run
+view is `by-date/YYYY-MM-DD/`: every UTC day has one parent directory, a
+human-readable `RUNS.md`, and links whose names record the job ID, experiment,
+state and source revision.
+Additional views group the same immutable runs by source version and state,
+provide direct structure links, and expose explicitly retained jobs. Catalog
+entries are symbolic links; original outputs and per-run `software/` source
+snapshots remain in place and are not copied or deleted.
+Retained job IDs are carried forward automatically when the catalog is
+refreshed.
+
 ## Design workflows
 
 ### Preserve supplied geometry

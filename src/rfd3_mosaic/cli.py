@@ -42,6 +42,7 @@ from rfd3_mosaic.onboarding import (
 )
 from rfd3_mosaic.posthoc_audit import audit_existing_run
 from rfd3_mosaic.rfd3_prevalidate import prevalidate_rfd3_input
+from rfd3_mosaic.run_catalog import write_run_catalog
 from rfd3_mosaic.run_index import (
     list_run_records,
     rebuild_run_index,
@@ -533,6 +534,21 @@ def _parser() -> argparse.ArgumentParser:
         "--format",
         choices=("text", "json"),
         default="text",
+    )
+    runs.add_argument(
+        "--catalog",
+        action="store_true",
+        help=(
+            "Create a non-destructive, version-aware catalog under "
+            "ROOT/_catalog and update ROOT/_catalog/CURRENT."
+        ),
+    )
+    runs.add_argument(
+        "--retain",
+        action="append",
+        default=[],
+        metavar="JOB_ID",
+        help="Expose an important run in the generated catalog's retained view.",
     )
 
     central = commands.add_parser(
@@ -1811,14 +1827,29 @@ def main(argv: Sequence[str] | None = None) -> None:
         try:
             if arguments.limit < 1:
                 raise ValueError("--limit must be a positive integer")
+            if arguments.retain and not arguments.catalog:
+                raise ValueError("--retain requires --catalog")
             rebuild = rebuild_run_index(arguments.root) if arguments.rebuild else None
             records = list_run_records(arguments.root)[: arguments.limit]
+            catalog = (
+                write_run_catalog(
+                    arguments.root,
+                    retained_job_ids=arguments.retain,
+                )
+                if arguments.catalog
+                else None
+            )
         except (OSError, TypeError, ValueError) as error:
             parser.error(str(error))
         if arguments.format == "json":
             payload = (
-                {"schema_version": 1, "rebuild": rebuild, "runs": records}
-                if rebuild is not None
+                {
+                    "schema_version": 1,
+                    "rebuild": rebuild,
+                    "catalog": catalog,
+                    "runs": records,
+                }
+                if rebuild is not None or catalog is not None
                 else records
             )
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1836,13 +1867,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                 print(f"  WARNING {failure['path']}: {failure['error']}")
         if not records:
             print("  no indexed submissions")
-            return
-        print("JOB ID       STATE       EXPERIMENT")
-        for record in records:
+        else:
+            print("JOB ID       STATE       EXPERIMENT")
+            for record in records:
+                print(
+                    f"{str(record['job_id']):<12} "
+                    f"{str(record.get('state') or 'unknown'):<11} "
+                    f"{record.get('experiment') or 'unknown'}"
+                )
+        if catalog is not None:
+            print(f"catalog:      {catalog['catalog_directory']}")
             print(
-                f"{str(record['job_id']):<12} "
-                f"{str(record.get('state') or 'unknown'):<11} "
-                f"{record.get('experiment') or 'unknown'}"
+                "catalog view: "
+                f"{Path(catalog['catalog_directory']).parent / 'CURRENT'}"
+            )
+            print(
+                f"cataloged:    {catalog['run_count']} run(s), "
+                f"{catalog['structure_count']} structure(s)"
             )
         return
     if arguments.command == "audit":
