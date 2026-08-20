@@ -56,26 +56,33 @@ subspace, or uses bounded SE(3). High-level `--packing`, `--interface-area`,
 `--cavity` and `--diversity` preferences are also available. Hard symmetry,
 motif, continuity and clash contracts are never disabled by these options.
 
-`--designs N` controls how many independent RFD3 diffusion samples one run
-produces **from one compiled initial pose**. It does not compile `N` different
-radius/orientation poses. The equivalent YAML field is:
+`--designs N` controls how many independently instantiated designs one run
+produces.  When the design declares a variable initial pose (for example a
+radius interval or `uniform_so3` orientation), every design receives its own
+feasible pre-diffusion pose and its own diffusion seed.  A fully fixed
+arrangement retains one exact pose and varies only diffusion.  The equivalent
+YAML fields are:
 
 ```yaml
 sampling:
   timesteps: 200
   designs: 100
+  replicates_per_pose: 1  # default: one trajectory per variable pose
   seed: 42
 ```
 
-Mosaic keeps `diffusion_batch_size=1` for predictable GPU memory use and asks
-RFD3 for `N` sequential stochastic batches. Every result has its own structure,
-metadata, semantic audits and scaffold audit below `audits/<design-id>/`.
+Set `replicates_per_pose` above one only when intentionally comparing several
+diffusion trajectories from the same assembly hypothesis. Mosaic samples pose
+coordinates from the declared radius/axial distribution and Haar-uniform
+SO(3), rejects geometrically invalid proposals, freezes the accepted inputs,
+and sends them to RFD3 as one multi-example input. The model/checkpoint is
+loaded once. Every result has its own structure, metadata, semantic audits and
+scaffold audit below `audits/<design-id>/`.
 The run report records produced, accepted and rejected counts; one rejected
 design does not discard the remaining outputs of a multi-design screening run.
-RFD3 seeds the engine once, so an output is reproducibly identified by the
-frozen source/input, the common base `seed` and its batch index; `seed` is not
-the pre-RFD3 pose seed. Use `resolve`/`search`, or a campaign with an explicit
-pose-seed schedule, when each design should start from a different rigid pose.
+`pose_manifest.json` records the exact pose seed, diffusion seed, compiled
+input and SHA256 for every output. The user supplies one YAML; Mosaic does not
+create one authoring YAML per design.
 For very large campaigns, choose a scheduler walltime that can accommodate the
 requested count or split the total across several seeds/jobs.
 
@@ -383,16 +390,19 @@ verdict.
 
 Every run keeps three artifact roles separate:
 
-- `input/presymmetrized_input.cif` is the compiled, pre-diffusion RFD3 input;
-  it is not a generated design;
+- `input/presymmetrized_input.cif` is the sole compiled input for one-pose
+  runs; a multi-pose run instead stores `input/pose_XXXXX/` inputs plus one
+  combined `input/rfd3_input.json`; none is a generated design;
 - each root-level `*_model_0.cif[.gz]` is one raw generated design, including
   outputs retained after a required audit rejects them;
 - a PyMOL `mosaic_aligned*` object is an in-memory visualization copy and is
   not an additional generated structure.
 
-Consequently, `sampling.designs: 2` produces two raw result CIFs (`_0` and
-`_1`) from the same compiled input. Always use the run verdict and per-design
-audits to decide whether either result is usable.
+Consequently, `sampling.designs: 2` with a variable initial pose produces two
+raw result CIFs from two independently compiled poses by default. With fixed
+geometry it produces two trajectories from the same exact input. Always use
+the run verdict and per-design audits to decide whether either result is
+usable.
 
 ## Advanced commands
 

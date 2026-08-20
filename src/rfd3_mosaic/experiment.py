@@ -28,6 +28,11 @@ from rfd3_mosaic.provenance.software import (
 )
 from rfd3_mosaic.provenance.source_snapshot import create_source_snapshot
 from rfd3_mosaic.run_layout import dated_experiment_root, utc_run_day
+from rfd3_mosaic.sampling_plan import (
+    compile_sampling_plan,
+    design_sampling_assignments,
+    pose_plan_is_stochastic,
+)
 from rfd3_mosaic.schema import load_user_design
 
 SCHEMA_VERSION = 1
@@ -411,6 +416,8 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
     topology = payload["topology"]
     sampling = payload["sampling"]
     resources = payload["resources"]
+    sampling_assignments = None
+    stochastic_pose_sampling = False
     if topology["kind"] == "central_motif":
         effective_constraints = [
             {
@@ -444,6 +451,9 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
         }
     else:
         declared = load_user_design(topology["config"])
+        sampling_plan = compile_sampling_plan(declared)
+        sampling_assignments = design_sampling_assignments(sampling_plan)
+        stochastic_pose_sampling = pose_plan_is_stochastic(sampling_plan)
         constraint_plan = compile_constraint_plan(declared)
         effective_constraints = [
             {
@@ -489,6 +499,18 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
 
     compatibility = payload["provenance"]["foundry_compatibility"]
     repository = payload["provenance"]["repository"]
+    compiled_pose_count = (
+        len({item.pose_index for item in sampling_assignments})
+        if sampling_assignments is not None
+        else 1
+    )
+    replicates_per_pose = int(sampling["replicates_per_pose"])
+    if not stochastic_pose_sampling:
+        diffusion_samples_per_pose: int | str = sampling["designs"]
+        design_semantics = "fixed_pose_independent_diffusion_samples"
+    else:
+        diffusion_samples_per_pose = replicates_per_pose
+        design_semantics = "independent_pose_and_diffusion_samples"
     return {
         "schema_version": 1,
         "name": experiment.name,
@@ -502,9 +524,10 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "preset": sampling["preset"],
             "timesteps": sampling["timesteps"],
             "designs": sampling["designs"],
-            "compiled_pose_count": 1,
-            "diffusion_samples_per_compiled_pose": sampling["designs"],
-            "design_semantics": "diffusion_samples_from_one_compiled_pose",
+            "compiled_pose_count": compiled_pose_count,
+            "diffusion_samples_per_compiled_pose": diffusion_samples_per_pose,
+            "replicates_per_pose": replicates_per_pose,
+            "design_semantics": design_semantics,
             "seed": sampling["seed"],
             "seed_role": "rfd3_diffusion_rng",
             "execution_backend": sampling["execution_backend"],
@@ -679,6 +702,7 @@ def resolve_experiment(
             "preset",
             "timesteps",
             "designs",
+            "replicates_per_pose",
             "seed",
             "low_memory_mode",
             "execution_backend",
@@ -710,6 +734,10 @@ def resolve_experiment(
         "designs": _positive_integer(
             sampling.get("designs", 1), "sampling.designs"
         ),
+        "replicates_per_pose": _positive_integer(
+            sampling.get("replicates_per_pose", 1),
+            "sampling.replicates_per_pose",
+        ),
         "seed": _nonnegative_integer(sampling.get("seed", 42), "sampling.seed"),
         "low_memory_mode": _boolean(
             sampling.get("low_memory_mode", True),
@@ -725,6 +753,10 @@ def resolve_experiment(
         ),
         "sampler": dict(SAMPLER_PRESETS[preset]),
     }
+    if resolved_sampling["replicates_per_pose"] > resolved_sampling["designs"]:
+        raise ValueError(
+            "sampling.replicates_per_pose cannot exceed sampling.designs"
+        )
     if resolved_sampling["scaffold_packing"] not in {
         "off",
         "symmetric_generated",

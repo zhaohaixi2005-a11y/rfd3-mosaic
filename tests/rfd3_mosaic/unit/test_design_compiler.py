@@ -14,8 +14,8 @@ from rfd3_mosaic.design_compiler import (
     lower_user_design,
     parse_public_selector,
 )
-from rfd3_mosaic.schema import AssemblySpecification, UserDesignSpec
 from rfd3_mosaic.geometry import build_transform_registry
+from rfd3_mosaic.schema import AssemblySpecification, UserDesignSpec
 from rfd3_mosaic.topology.component_incidence import (
     enumerate_binary_interface_incidence_plans,
 )
@@ -1325,6 +1325,33 @@ class DesignCompilerTestCase(unittest.TestCase):
             np.testing.assert_allclose(
                 transforms[group_id],
                 reversed_transforms[group_id],
+                atol=1e-12,
+            )
+
+        resampled_metadata: dict[str, object] = {}
+        resampled = build_master_group_transforms(
+            spec,
+            base_directory=self.root,
+            random_seed=303,
+            sample_metadata=resampled_metadata,
+        )
+        repeated_resample = build_master_group_transforms(
+            spec,
+            base_directory=self.root,
+            random_seed=303,
+        )
+        self.assertNotEqual(
+            resampled_metadata["fixed_component_001"]["random_seed"],
+            101,
+        )
+        self.assertNotEqual(
+            resampled_metadata["fixed_component_002"]["random_seed"],
+            202,
+        )
+        for group_id in resampled:
+            np.testing.assert_allclose(
+                resampled[group_id],
+                repeated_resample[group_id],
                 atol=1e-12,
             )
 

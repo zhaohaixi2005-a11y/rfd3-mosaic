@@ -511,6 +511,7 @@ class UserSamplingSpec(StrictModel):
     initial_poses: dict[Identifier, UserInitialPoseSpec] = Field(default_factory=dict)
     timesteps: Annotated[int, Field(ge=2, le=200)] = 200
     designs: Annotated[int, Field(ge=1, le=10000)] = 1
+    replicates_per_pose: Annotated[int, Field(ge=1, le=10000)] = 1
     seed: Annotated[int, Field(ge=0)] = 42
     preset: Literal["exact_mosaic"] = "exact_mosaic"
     low_memory_mode: bool = True
@@ -529,6 +530,11 @@ class UserSamplingSpec(StrictModel):
         if self.initial_pose is not None and self.initial_poses:
             raise ValueError(
                 "sampling cannot define both initial_pose and " "initial_poses"
+            )
+        if self.replicates_per_pose > self.designs:
+            raise ValueError(
+                "sampling.replicates_per_pose cannot exceed "
+                "sampling.designs"
             )
         return self
 

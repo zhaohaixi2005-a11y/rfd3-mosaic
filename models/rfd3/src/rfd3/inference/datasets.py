@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 import yaml
 from atomworks.ml.datasets import MolecularDataset
 from atomworks.ml.transforms.base import Compose, Transform
+from lightning.fabric import seed_everything
 from omegaconf import DictConfig, OmegaConf
 from rfd3.inference.input_parsing import (
     DesignInputSpecification,
@@ -158,6 +159,23 @@ class ContigJsonDataset(MolecularDataset):
         """Pass through the getitem method of the wrapped dataset."""
         example_id = self.idx_to_id(idx)
         spec = self.data[example_id]
+
+        # Mosaic can provide one explicit diffusion seed per independently
+        # instantiated assembly pose.  Seed before both input construction
+        # and transforms, because diffusion noise is created by the transform
+        # pipeline rather than inside the later model-forward call.
+        extra = (
+            spec.extra
+            if isinstance(spec, DesignInputSpecification)
+            else spec.get("extra", {})
+        )
+        mosaic_seed = (
+            extra.get("mosaic_diffusion_seed")
+            if isinstance(extra, dict)
+            else None
+        )
+        if mosaic_seed is not None:
+            seed_everything(int(mosaic_seed), workers=True, verbose=False)
 
         # if 'input' in metadata and not abspath, prepend the source json directory to the file path
         if not isinstance(spec, DesignInputSpecification):

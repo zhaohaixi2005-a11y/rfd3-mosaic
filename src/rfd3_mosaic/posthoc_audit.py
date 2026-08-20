@@ -92,28 +92,8 @@ def audit_existing_run(
         raise FileNotFoundError(
             f"Required frozen run artifact is missing: {config_path}"
         )
-    input_path = find_compiled_input(root)
     config = _load_mapping(config_path)
     result_jsons = find_result_jsons(root)
-    audits = infer_existing_run_audits(
-        run_directory=root,
-        rfd3_input=input_path,
-        resolved_config=config,
-    )
-    def report_directory(result_json: Path) -> Path:
-        if len(result_jsons) == 1:
-            return root
-        design_id = result_json.stem.removesuffix("_model_0")
-        return root / "audits" / design_id
-
-    planned_reports = tuple(
-        report_directory(result_json) / report_name
-        for result_json in result_jsons
-        for report_name in (
-            *(audit.report_name for audit in audits),
-            "scaffold_validity_audit.json",
-        )
-    )
     previous: dict[str, Any] = {}
     if summary_path.is_file():
         try:
@@ -125,12 +105,42 @@ def audit_existing_run(
         if not isinstance(previous, dict):
             raise ValueError(f"Expected a JSON mapping in {summary_path}")
 
+    compiled_by_result = {
+        str(record.get("result_json")): Path(str(record["compiled_input"]))
+        for record in previous.get("design_results", [])
+        if isinstance(record, dict) and record.get("compiled_input")
+    }
+    default_input = find_compiled_input(root)
+
+    def input_for_result(result_json: Path) -> Path:
+        return compiled_by_result.get(str(result_json), default_input)
+
+    def report_directory(result_json: Path) -> Path:
+        if len(result_jsons) == 1:
+            return root
+        design_id = result_json.stem.removesuffix("_model_0")
+        return root / "audits" / design_id
+
     started_at = utc_now()
     reports_list: list[Path] = []
+    planned_reports_list: list[Path] = []
     mobility_paths: list[Path] = []
     failures: list[Exception] = []
     for result_json in result_jsons:
         try:
+            input_path = input_for_result(result_json)
+            audits = infer_existing_run_audits(
+                run_directory=root,
+                rfd3_input=input_path,
+                resolved_config=config,
+            )
+            planned_reports_list.extend(
+                report_directory(result_json) / report_name
+                for report_name in (
+                    *(audit.report_name for audit in audits),
+                    "scaffold_validity_audit.json",
+                )
+            )
             outcome = run_result_audits(
                 run_directory=root,
                 rfd3_input=input_path,
@@ -146,7 +156,11 @@ def audit_existing_run(
         except Exception as error:  # Preserve a complete fail-closed record.
             failures.append(error)
 
-    reports = tuple(reports_list) if reports_list else planned_reports
+    reports = (
+        tuple(reports_list)
+        if reports_list
+        else tuple(planned_reports_list)
+    )
     mobility = mobility_paths[0] if len(mobility_paths) == 1 else None
     failure = failures[0] if failures else None
     passed = failure is None

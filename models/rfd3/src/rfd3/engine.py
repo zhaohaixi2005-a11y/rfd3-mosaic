@@ -11,6 +11,7 @@ import torch
 import yaml
 from atomworks.io.utils.io_utils import to_cif_file
 from biotite.structure import AtomArray, AtomArrayStack
+from lightning.fabric import seed_everything
 from toolz import merge_with
 
 from foundry.common import exists
@@ -382,6 +383,21 @@ class RFD3InferenceEngine(BaseInferenceEngine):
             pipeline_output = batch[0]
             example_id = pipeline_output["example_id"]
 
+            # The dataset seeded its stochastic transforms from this value.
+            # Reseed again before model execution so any sampler-side random
+            # draws belong to the same independently replayable design.
+            specification = pipeline_output.get("specification") or {}
+            extra = specification.get("extra", {})
+            example_seed = extra.get("mosaic_diffusion_seed")
+            if example_seed is not None:
+                example_seed = int(example_seed)
+                seed_everything(
+                    example_seed,
+                    workers=True,
+                    verbose=False,
+                )
+            self._active_example_seed = example_seed
+
             # Run model
             output_list = self._model_forward(pipeline_output)
             if self.out_dir:
@@ -436,7 +452,11 @@ class RFD3InferenceEngine(BaseInferenceEngine):
                 if ckpt.is_symlink():
                     ckpt = ckpt.resolve(strict=True)  # follow symlink to target
                 output_val["prediction_metadata"][idx]["ckpt_path"] = str(ckpt)
-                output_val["prediction_metadata"][idx]["seed"] = self.seed
+                output_val["prediction_metadata"][idx]["seed"] = (
+                    self._active_example_seed
+                    if getattr(self, "_active_example_seed", None) is not None
+                    else self.seed
+                )
 
             # Append to outputs
             if self.dump_trajectories:

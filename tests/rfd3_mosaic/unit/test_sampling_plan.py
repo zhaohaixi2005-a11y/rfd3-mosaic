@@ -5,6 +5,7 @@ from pydantic import ValidationError
 from rfd3_mosaic.sampling_plan import (
     assembly_initialization_payload,
     compile_sampling_plan,
+    design_sampling_assignments,
 )
 from rfd3_mosaic.schema import UserDesignSpec
 
@@ -36,6 +37,86 @@ class SamplingPlanTestCase(unittest.TestCase):
         )
 
         self.assertEqual(plan.diffusion.designs, 1000)
+        self.assertEqual(plan.diffusion.replicates_per_pose, 1)
+
+    def test_variable_pose_is_resampled_per_design_by_default(self) -> None:
+        plan = compile_sampling_plan(
+            design(
+                designs=3,
+                seed=200,
+                initial_pose={
+                    "radius": {"minimum": 20.0, "maximum": 30.0},
+                    "orientation": {"method": "uniform_so3"},
+                    "seed": 100,
+                },
+            )
+        )
+
+        assignments = design_sampling_assignments(plan)
+
+        self.assertEqual(
+            [item.pose_seed for item in assignments],
+            [100, 101, 102],
+        )
+        self.assertEqual(
+            [item.diffusion_seed for item in assignments],
+            [200, 201, 202],
+        )
+        self.assertEqual(
+            [item.pose_index for item in assignments],
+            [0, 1, 2],
+        )
+
+    def test_replicates_per_pose_is_an_explicit_expert_control(self) -> None:
+        plan = compile_sampling_plan(
+            design(
+                designs=5,
+                replicates_per_pose=2,
+                seed=200,
+                initial_pose={
+                    "radius": {"minimum": 20.0, "maximum": 30.0},
+                    "orientation": {"method": "uniform_so3"},
+                    "seed": 100,
+                },
+            )
+        )
+
+        assignments = design_sampling_assignments(plan)
+
+        self.assertEqual(
+            [item.pose_index for item in assignments],
+            [0, 0, 1, 1, 2],
+        )
+        self.assertEqual(
+            [item.pose_seed for item in assignments],
+            [100, 100, 101, 101, 102],
+        )
+
+    def test_fixed_pose_keeps_one_pose_and_varies_diffusion_only(self) -> None:
+        plan = compile_sampling_plan(
+            design(
+                designs=3,
+                seed=200,
+                initial_pose={
+                    "radius": {"minimum": 25.0, "maximum": 25.0},
+                    "axial_offset": {"minimum": 0.0, "maximum": 0.0},
+                    "orientation": {
+                        "method": "fixed",
+                        "rotation_deg": [0.0, 0.0, 0.0],
+                    },
+                    "seed": 100,
+                },
+            )
+        )
+
+        assignments = design_sampling_assignments(plan)
+
+        self.assertEqual({item.pose_index for item in assignments}, {0})
+        self.assertEqual({item.pose_seed for item in assignments}, {None})
+        self.assertEqual(
+            [item.diffusion_seed for item in assignments],
+            [200, 201, 202],
+        )
 
     def test_compiles_explicit_symmetric_scaffold_packing(self) -> None:
         packed_design = UserDesignSpec.model_validate(
@@ -101,6 +182,10 @@ class SamplingPlanTestCase(unittest.TestCase):
     def test_rejects_nonpositive_design_count(self) -> None:
         with self.assertRaises(ValidationError):
             design(designs=0)
+
+    def test_rejects_more_replicates_than_designs(self) -> None:
+        with self.assertRaises(ValidationError):
+            design(designs=2, replicates_per_pose=3)
 
     def test_compiles_static_radius_axial_and_uniform_so3(self) -> None:
         plan = compile_sampling_plan(

@@ -1,5 +1,6 @@
-from pathlib import Path
+import hashlib
 import re
+from pathlib import Path
 from typing import Any, TypeAlias
 
 import numpy as np
@@ -966,6 +967,21 @@ def build_master_group_transforms(
     transforms: dict[str, np.ndarray] = {}
     for group_id, initialization in spec.initialization.items():
         group_seed = initialization.random_seed
+        if random_seed is not None:
+            # A run-level pose override means "instantiate this complete
+            # assembly design again", including component-specific pose
+            # streams.  Preserve the intuitive one-group identity
+            # (pose_seed 103 really is seed 103), while deriving stable,
+            # order-independent substreams for multi-component designs.
+            if len(spec.initialization) == 1:
+                group_seed = random_seed
+            else:
+                group_digest = hashlib.sha256(
+                    f"{random_seed}:{group_id}".encode("utf-8")
+                ).digest()
+                group_seed = int.from_bytes(
+                    group_digest[:8], "big"
+                ) % (2**32)
         rng = (
             np.random.default_rng(group_seed)
             if group_seed is not None

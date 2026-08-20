@@ -497,7 +497,7 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertEqual(plan["sampling"]["compiled_pose_count"], 1)
         self.assertEqual(
             plan["sampling"]["design_semantics"],
-            "diffusion_samples_from_one_compiled_pose",
+            "fixed_pose_independent_diffusion_samples",
         )
         self.assertEqual(plan["execution"]["profile"], "test-gpu")
         self.assertEqual(plan["software"]["compatibility_id"], "mosaic-rfd3")
@@ -522,6 +522,13 @@ class ExperimentConfigTestCase(unittest.TestCase):
                     "constraints": [
                         {"kind": "fixed_xyz", "selector": "A1"},
                     ],
+                    "sampling": {
+                        "initial_pose": {
+                            "radius": {"minimum": 20.0, "maximum": 30.0},
+                            "orientation": {"method": "uniform_so3"},
+                            "seed": 100,
+                        }
+                    },
                 },
                 sort_keys=False,
             ),
@@ -548,6 +555,11 @@ class ExperimentConfigTestCase(unittest.TestCase):
         self.assertEqual(
             plan["design"]["effective_constraints"][0]["operator"],
             "fixed_xyz",
+        )
+        self.assertEqual(plan["sampling"]["compiled_pose_count"], 1)
+        self.assertEqual(
+            plan["sampling"]["design_semantics"],
+            "independent_pose_and_diffusion_samples",
         )
 
     def test_render_freezes_public_design_away_from_mutable_source(self) -> None:

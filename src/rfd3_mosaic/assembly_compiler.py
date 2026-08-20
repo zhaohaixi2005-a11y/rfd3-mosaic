@@ -164,6 +164,8 @@ def compile_experiment_assembly(
     *,
     project_directory: str | Path,
     experiment_name: str,
+    pose_seed: int | None = None,
+    example_id: str | None = None,
 ) -> CompiledAssembly:
     """Lower a user frontend, then compile one AssemblySpecification.
 
@@ -180,12 +182,16 @@ def compile_experiment_assembly(
         project_directory=project,
         experiment_name=experiment_name,
     )
+    effective_pose_seed = (
+        request.pose_seed if pose_seed is None else pose_seed
+    )
+    effective_example_id = example_id or request.example_id
     artifacts = compile_assembly_rfd3_input(
         request.specification_path,
         output,
         base_directory=project,
-        example_id=request.example_id,
-        pose_seed=request.pose_seed,
+        example_id=effective_example_id,
+        pose_seed=effective_pose_seed,
         pose_candidate_manifest=request.pose_candidate_manifest,
         linker_length=request.linker_length,
         extra_metadata=request.audit_metadata,
@@ -200,7 +206,7 @@ def compile_experiment_assembly(
     )
     return CompiledAssembly(
         input_path=artifacts.input_path,
-        example_id=request.example_id,
+        example_id=effective_example_id,
         semantic_audits=tuple(audits),
     )
 

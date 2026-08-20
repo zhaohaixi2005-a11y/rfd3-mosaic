@@ -160,9 +160,9 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help=(
-            "Number of RFD3 diffusion samples generated from one compiled "
-            "initial pose. Use resolve/search or a campaign pose schedule "
-            "for multiple pre-RFD3 poses."
+            "Number of independently instantiated designs. Variable-pose "
+            "tasks receive one feasible pose and diffusion seed per design; "
+            "fixed tasks retain their exact pose."
         ),
     )
     initialize.add_argument("--seed", type=int, default=42)
@@ -796,10 +796,18 @@ def _print_execution_plan(plan: dict, *, output_format: str) -> None:
     print(f"timesteps:  {sampling['timesteps']}")
     print(
         "designs:    "
-        f"{sampling['designs']} diffusion sample(s) from one compiled pose"
+        f"{sampling['designs']} independently seeded sample(s)"
     )
     print(f"diffusion seed: {sampling['seed']}")
-    print("pose count: 1 (direct run compiles one initial pose)")
+    print(
+        "pose count: "
+        f"{sampling['compiled_pose_count']} "
+        f"({sampling['design_semantics']})"
+    )
+    print(
+        "replicates/pose: "
+        f"{sampling['replicates_per_pose']} requested"
+    )
     print(f"preset:     {sampling['preset']}")
     print(f"backend:    {sampling['execution_backend']}")
     print(f"profile:    {execution['profile']}")

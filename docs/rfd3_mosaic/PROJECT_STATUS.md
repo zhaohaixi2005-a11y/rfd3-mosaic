@@ -21,6 +21,8 @@ The current supported target comprises:
 - deterministic lowering to RFD3 inputs;
 - strict replay and required post-generation audits;
 - guided configuration creation and portable packaged examples;
+- per-design assembly-pose instantiation with explicit pose/diffusion seed
+  provenance and one-load RFD3 multi-example execution;
 - local execution and configurable Slurm execution.
 
 These capabilities have extensive CPU regression coverage. Representative GPU
