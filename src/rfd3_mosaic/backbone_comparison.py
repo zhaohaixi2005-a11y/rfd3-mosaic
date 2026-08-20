@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import numpy as np
+import yaml
 
 from rfd3_mosaic.rfd3_batch_screen import (
     _ca_coordinates_by_chain,
@@ -136,14 +137,58 @@ def _run_directories(
             raise ValueError("Every campaign shard record must be a mapping")
         job_id = record.get("job_id")
         if job_id is None:
-            unavailable.append(
-                {
-                    "shard_index": record.get("shard_index"),
-                    "reason": "not submitted or no job ID recorded",
-                }
-            )
-            continue
-        indexed = read_run_record(run_root, str(job_id))
+            # A campaign may be materialized first and then executed through
+            # the local executor.  In that workflow the immutable campaign
+            # manifest cannot know the locally assigned run ID.  Recover it
+            # from the persistent index using the frozen design's unique
+            # experiment/campaign identity; fail closed on zero or multiple
+            # matches instead of silently choosing a run.
+            design_path = Path(str(record.get("design") or "")).expanduser()
+            identity: dict[str, Any] = {}
+            if design_path.is_file():
+                design = yaml.safe_load(design_path.read_text(encoding="utf-8"))
+                if isinstance(design, Mapping):
+                    identity = {
+                        "experiment": design.get("name"),
+                        "campaign": (
+                            design.get("output", {}).get("campaign")
+                            if isinstance(design.get("output"), Mapping)
+                            else None
+                        ),
+                    }
+            candidates: list[dict[str, Any]] = []
+            index_directory = run_root / ".rfd3-mosaic" / "jobs"
+            if identity.get("experiment") and index_directory.is_dir():
+                for index_path in sorted(index_directory.glob("*.json")):
+                    try:
+                        indexed_candidate = _load_mapping(index_path)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        continue
+                    if indexed_candidate.get("experiment") != identity["experiment"]:
+                        continue
+                    if (
+                        identity.get("campaign") is not None
+                        and indexed_candidate.get("campaign") != identity["campaign"]
+                    ):
+                        continue
+                    candidates.append(indexed_candidate)
+            if len(candidates) != 1:
+                unavailable.append(
+                    {
+                        "shard_index": record.get("shard_index"),
+                        "reason": (
+                            "no uniquely indexed local run for frozen design"
+                        ),
+                        "experiment": identity.get("experiment"),
+                        "campaign": identity.get("campaign"),
+                        "matching_run_count": len(candidates),
+                    }
+                )
+                continue
+            indexed = candidates[0]
+            job_id = indexed.get("job_id")
+        else:
+            indexed = read_run_record(run_root, str(job_id))
         if indexed is None:
             unavailable.append(
                 {"job_id": str(job_id), "reason": "run index is missing"}

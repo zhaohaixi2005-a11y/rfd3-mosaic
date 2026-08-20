@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from rfd3_mosaic.backbone_comparison import (
+    _run_directories,
     compare_hoyeung_backbone_campaign,
     flatness_twist_descriptors,
     paper_backbone_protocol,
@@ -47,6 +48,51 @@ def _write_c3(path: Path) -> None:
 
 
 class BackboneComparisonTestCase(unittest.TestCase):
+    def test_local_campaign_recovers_unique_run_from_frozen_design(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "runs"
+            run = run_root / "2026-08-20" / "local-design" / "local-123"
+            run.mkdir(parents=True)
+            index = run_root / ".rfd3-mosaic" / "jobs"
+            index.mkdir(parents=True)
+            (index / "local-123.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "job_id": "local-123",
+                        "experiment": "local-design",
+                        "campaign": "local-campaign",
+                        "run_directory": str(run),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            design = root / "shard.yaml"
+            design.write_text(
+                "name: local-design\n"
+                "output:\n"
+                "  root: /ignored\n"
+                "  campaign: local-campaign\n",
+                encoding="utf-8",
+            )
+
+            directories, unavailable = _run_directories(
+                {
+                    "records": [
+                        {
+                            "shard_index": 0,
+                            "job_id": None,
+                            "design": str(design),
+                        }
+                    ]
+                },
+                run_root=run_root,
+            )
+
+        self.assertEqual(directories, [run.resolve()])
+        self.assertEqual(unavailable, [])
+
     def test_protocol_records_only_reported_backbone_contract(self) -> None:
         protocol = paper_backbone_protocol()
         self.assertEqual(
