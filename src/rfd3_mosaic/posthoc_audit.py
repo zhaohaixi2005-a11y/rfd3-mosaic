@@ -38,6 +38,50 @@ def _load_mapping(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _materialize_result_compiled_input(
+    *,
+    merged_input: Path,
+    result_json: Path,
+    run_directory: Path,
+) -> Path:
+    """Return one exact compiled example for a multi-example result.
+
+    Early multi-input Mosaic runs retained only the merged engine input.  A
+    result filename embeds its RFD3 example id, so post-hoc audit can recover
+    the immutable one-example contract without rerunning inference.
+    """
+
+    payload = json.loads(merged_input.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(f"Expected compiled RFD3 examples in {merged_input}")
+    if len(payload) == 1:
+        return merged_input
+    matching = [
+        example_id
+        for example_id in payload
+        if example_id in result_json.stem
+    ]
+    if len(matching) != 1:
+        raise ValueError(
+            "Cannot map result to exactly one compiled RFD3 example: "
+            f"result={result_json.name}, matches={matching}"
+        )
+    example_id = matching[0]
+    example = payload[example_id]
+    if not isinstance(example, dict):
+        raise ValueError(
+            f"Compiled RFD3 example {example_id!r} is not an object"
+        )
+    destination_directory = run_directory / "input" / "posthoc_examples"
+    destination_directory.mkdir(parents=True, exist_ok=True)
+    destination = destination_directory / f"{example_id}.json"
+    destination.write_text(
+        json.dumps({example_id: example}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -113,7 +157,14 @@ def audit_existing_run(
     default_input = find_compiled_input(root)
 
     def input_for_result(result_json: Path) -> Path:
-        return compiled_by_result.get(str(result_json), default_input)
+        recorded = compiled_by_result.get(str(result_json))
+        if recorded is not None and recorded.is_file():
+            return recorded
+        return _materialize_result_compiled_input(
+            merged_input=default_input,
+            result_json=result_json,
+            run_directory=root,
+        )
 
     def report_directory(result_json: Path) -> Path:
         if len(result_jsons) == 1:

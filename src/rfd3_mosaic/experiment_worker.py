@@ -120,6 +120,18 @@ def _merged_rfd3_input(
 ) -> tuple[Path, dict[str, DesignSamplingAssignment]]:
     """Create one multi-example RFD3 input without duplicating user YAMLs."""
 
+    resolved_destination = destination.resolve()
+    colliding_inputs = [
+        assembly.input_path
+        for assembly in assemblies.values()
+        if assembly.input_path.resolve() == resolved_destination
+    ]
+    if len(assignments) > 1 and colliding_inputs:
+        raise ValueError(
+            "Merged RFD3 input must not overwrite a pose-specific compiled "
+            f"input: {resolved_destination}"
+        )
+
     merged: dict[str, Any] = {}
     by_example: dict[str, DesignSamplingAssignment] = {}
     for assignment in assignments:
@@ -414,9 +426,14 @@ def execute(
             item for item in assignments if item.pose_index == pose_index
         )
         maximum_attempts = 64 if assignment.pose_seed is not None else 1
+        # Even a completely fixed arrangement may have several diffusion
+        # replicates.  Keep its one-example compiler input separate from the
+        # merged multi-example engine input so every result audit can read
+        # the exact one-example contract it was compiled from.
+        isolate_compiled_pose = len(assignments) > 1
         pose_directory = (
             input_directory / f"pose_{pose_index:05d}"
-            if stochastic_pose_population
+            if stochastic_pose_population or isolate_compiled_pose
             else input_directory
         )
         for attempt in range(maximum_attempts):

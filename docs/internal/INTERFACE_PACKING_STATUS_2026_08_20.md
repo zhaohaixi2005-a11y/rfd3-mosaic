@@ -183,3 +183,19 @@ relations and scaffold validity all pass.
   increase the allowed motion blindly.
 - A zero-yield 12-output current-revision campaign is sufficient evidence for
   another algorithm change.  A zero-yield 2-output campaign is not.
+
+## Multi-design audit follow-up
+
+The first RTX 3070 `designs=2` run exposed an execution-layer regression after
+both CIFs had been generated: a fixed arrangement has one compiled pose, and
+the multi-example engine input overwrote that pose's one-example audit input.
+The constraint audit then correctly failed closed because it was handed two
+examples.  This was not a packing rejection and the generated structures were
+retained.
+
+The worker now keeps every pose-specific one-example compiler artifact under
+`input/pose_<index>/` whenever a run requests several designs, while the merged
+`input/rfd3_input.json` remains dedicated to the one-load multi-example RFD3
+engine call.  Each output is audited against its exact pose-specific input.
+Regression coverage explicitly checks that fixed-pose diffusion replicates do
+not overwrite the audit contract.

@@ -8,7 +8,10 @@ import yaml
 
 from rfd3_mosaic.assembly_compiler import CompiledAudit
 from rfd3_mosaic.cli import _parser
-from rfd3_mosaic.posthoc_audit import audit_existing_run
+from rfd3_mosaic.posthoc_audit import (
+    _materialize_result_compiled_input,
+    audit_existing_run,
+)
 from rfd3_mosaic.result_auditing import (
     ResultAuditOutcome,
     find_result_json,
@@ -189,6 +192,39 @@ class PosthocAuditTestCase(unittest.TestCase):
             )
 
         self.assertTrue(all(path.parent == output for path in outcome.reports))
+
+    def test_failed_early_multi_input_run_recovers_one_example_per_result(
+        self,
+    ) -> None:
+        example_zero = "design_00000_pose_00000_rep_000"
+        example_one = "design_00001_pose_00000_rep_001"
+        self.input.write_text(
+            json.dumps(
+                {
+                    example_zero: {
+                        "input": "/frozen/pose.cif",
+                        "extra": {"symmetry_multiplicity": 3},
+                    },
+                    example_one: {
+                        "input": "/frozen/pose.cif",
+                        "extra": {"symmetry_multiplicity": 3},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.run / f"rfd3_input_{example_one}_0_model_0.json"
+        result.write_text("{}\n", encoding="utf-8")
+
+        recovered = _materialize_result_compiled_input(
+            merged_input=self.input,
+            result_json=result,
+            run_directory=self.run,
+        )
+
+        payload = json.loads(recovered.read_text(encoding="utf-8"))
+        self.assertEqual(tuple(payload), (example_one,))
+        self.assertTrue(recovered.is_relative_to(self.run / "input"))
 
     def test_successful_reaudit_replaces_failed_worker_verdict(self) -> None:
         self._write_compiled_input(
