@@ -225,3 +225,39 @@ excess-contact penalty. Commits `ae33fb4` and `7a37bba` removed that coupling
 and made the LHD101 inter setting neutral. The retained historical run remains
 valuable for structural inspection and regression analysis, but a small pilot
 from `7a37bba` or later is required for the current scientific claim.
+
+## 2026-08-20 bounded-mobility pilot inspection
+
+The small-server run below was inspected from its complete copied run
+directory rather than from a PyMOL screenshot:
+
+```text
+/scratch2/haixi/runs/rfd3-mosaic/2026-08-20/
+  lhd101-c3-guided-0005-p10048-s41005/
+  local-20260820T103217853037Z-129800
+```
+
+It used source revision `958ef94796b1fe0244c2236eba287a85aeb3f153`,
+initial-pose seed `10048`, diffusion seed `41005`, 50 timesteps and one
+design. The supplied interface consists of `A165-194` and `B211-241` from
+`7mwr_interface.pdb`; both fragments are one joint-rigid component. The
+compiled input contains three exact C3 copies of those two fragments (183
+fixed residues total). The generated result contains three 146-residue chains
+because RFD3 connects each 61-residue supplied seed with an 85-residue
+generated scaffold. These files therefore have intentionally different chain
+and residue layouts and must be compared through the fixed-seed mapping, not
+by aligning every residue.
+
+The controller was active for 19 accepted pose proposals. The complete seed
+moved `1.105 A` and rotated `8.047 degrees`; supplied internal geometry was
+preserved to `3.28e-5 A` maximum per-copy RMSD. The output had zero CA clashes,
+zero chain breaks and exact C3 coordinate RMSD below `7.4e-5 A`.
+
+This result is a runtime success but not an open-ring scientific success. Its
+mean normalized chain Rg was `3.242`, tertiary-support fraction `0.459`,
+generated--generated cross-chain contacts `39`, minimum central-pore diameter
+`7.58 A` and fifth-percentile pore diameter `16.41 A`. The scaffold-core audit
+explicitly reported `scientific_quality_satisfied: false`. The run received
+`PASSED` only because those still-uncalibrated scientific targets were
+advisory (`quality_required: false`); required exact-geometry and safety
+contracts passed.

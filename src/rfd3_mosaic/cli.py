@@ -567,7 +567,10 @@ def _parser() -> argparse.ArgumentParser:
 
     central = commands.add_parser(
         "central",
-        help="Generate around one fixed central motif and submit.",
+        help=(
+            "Compatibility shortcut for central-motif generation; new "
+            "workflows should use init/validate/run."
+        ),
     )
     central.add_argument("--input", required=True, type=Path)
     central.add_argument("--motif", required=True)
@@ -578,7 +581,10 @@ def _parser() -> argparse.ArgumentParser:
 
     interface = commands.add_parser(
         "interface",
-        help="Generate between a fixed interface seed and submit.",
+        help=(
+            "Compatibility shortcut for supplied-interface generation; new "
+            "workflows should use init/validate/run."
+        ),
     )
     interface.add_argument("--config", required=True, type=Path)
     pose = interface.add_mutually_exclusive_group(required=True)

@@ -1714,11 +1714,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 diffusion_batch_size=D,
             )
             if self.enable_orbit_rigid_motif_mobility:
-                ranked_logger.warning(
-                    "Orbit-rigid motif mobility is experimental: the "
-                    "formal Mosaic baselines keep this disabled until "
-                    "dynamic motif conditioning and a scaffold-derived "
-                    "pose signal are validated"
+                ranked_logger.info(
+                    "Orbit-rigid motif mobility is active: Mosaic preserves "
+                    "the complete internal motif geometry and exact symmetry "
+                    "orbit while applying bounded master-pose updates"
                 )
                 motif_mobility_controller = OrbitRigidMotifController.from_features(
                     f,

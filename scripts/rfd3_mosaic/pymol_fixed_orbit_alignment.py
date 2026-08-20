@@ -1180,6 +1180,18 @@ def mosaic_align(
     cmd.disable(design_object)
     cmd.zoom(f"{reference_object} or {output_object}")
     print(f"mosaic_align source: {alignment_source}")
+    print(
+        f"mosaic_align reference (cyan, unchanged): {reference_object} "
+        "[compiled pre-diffusion input]"
+    )
+    print(
+        f"mosaic_align generated result (original object hidden): "
+        f"{design_object}"
+    )
+    print(
+        f"mosaic_align display copy (magenta): {output_object} "
+        "[alignment-only object; no new CIF was generated]"
+    )
 
 
 cmd.extend("mosaic_align_fixed", mosaic_align_fixed)
@@ -1187,6 +1199,7 @@ cmd.extend("mosaic_load_run", mosaic_load_run)
 cmd.extend("mosaic_align_cifs", mosaic_align_cifs)
 cmd.extend("mosaic_align", mosaic_align)
 print(
-    "Mosaic alignment loaded: drag the reference and design CIFs into PyMOL "
-    "and type mosaic_align"
+    "Mosaic alignment loaded: drag one compiled presymmetrized_input.cif "
+    "and one generated *model_0.cif into PyMOL, then type mosaic_align. "
+    "The command creates only a display copy, not another design."
 )

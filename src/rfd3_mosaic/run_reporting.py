@@ -610,7 +610,11 @@ def format_status_text(status: dict[str, Any]) -> str:
         )
         compiled_input = design.get("compiled_input")
         if compiled_input and compiled_input != design.get("structure_input"):
-            lines.append(f"compiled:   {compiled_input}")
+            lines.append(
+                "RFD3 input:  "
+                f"{compiled_input} "
+                "(compiled pre-diffusion structure; not a generated design)"
+            )
         preferences = design.get("resolved_preferences") or {}
         if preferences:
             lines.append(
@@ -683,6 +687,15 @@ def format_status_text(status: dict[str, Any]) -> str:
                     "target_met="
                     f"{summary.get('scientific_quality_satisfied', 'NA')}"
                 )
+                if (
+                    summary.get("scientific_quality_satisfied") is False
+                    and not summary.get("quality_required", False)
+                ):
+                    lines.append(
+                        "         advisory: scientific monomer-core targets "
+                        "were not met; PASSED covers required geometry and "
+                        "safety contracts only"
+                    )
         if audit["name"] == "component_mobility_audit.json":
             summary = audit.get("summary") or {}
             components = summary.get("components") or []
@@ -728,7 +741,11 @@ def format_status_text(status: dict[str, Any]) -> str:
                         f"{check.get('requested_maximum')} A"
                     )
     structures = status["artifacts"]["structures"]
-    lines.append(f"structures:  {len(structures)}")
+    lines.append(
+        "raw outputs: "
+        f"{len(structures)} "
+        "(one per produced design; rejected designs are retained for audit)"
+    )
     for path in structures:
         lines.append(f"  - {path}")
     if worker.get("error"):
@@ -827,7 +844,10 @@ pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}}
 <tbody>{''.join(audit_rows) or '<tr><td colspan="3">No audits available.</td></tr>'}</tbody></table>
 <h2>Design provenance</h2>
 <div class="card"><pre>{escape(design_text)}</pre></div>
-<h2>Output structures</h2><ul>{structure_items}</ul>
+<h2>Raw generated outputs</h2>
+<p class="muted">One file per produced design. Audit-rejected outputs are
+retained for diagnosis and are not accepted structures.</p>
+<ul>{structure_items}</ul>
 <h2>Execution details</h2>
 <div class="card"><div class="label">Run directory</div><code>{escape(str(status['run_directory'] or 'not created'))}</code>
 <div class="label" style="margin-top:14px">Failure</div><div>{escape(str(worker.get('error') or 'none'))}</div></div>

@@ -279,6 +279,7 @@ class RunReportingTestCase(unittest.TestCase):
 
         self.assertIn("normalized_rg=2.9", text)
         self.assertIn("target_met=False", text)
+        self.assertIn("scientific monomer-core targets were not met", text)
         self.assertIn("mobility applied=7 moved=True", text)
         self.assertIn("rotation_bound_used=0.5", text)
 
@@ -434,7 +435,8 @@ class RunReportingTestCase(unittest.TestCase):
         )
         text = format_status_text(status)
         self.assertIn(f"input:      {original}", text)
-        self.assertIn(f"compiled:   {compiled.resolve()}", text)
+        self.assertIn(f"RFD3 input:  {compiled.resolve()}", text)
+        self.assertIn("not a generated design", text)
         self.assertIn("interfaces: interface_alpha x2, interface_beta x1", text)
         self.assertIn(
             "- interface_alpha: A/186-189/* + B/238-240/*", text

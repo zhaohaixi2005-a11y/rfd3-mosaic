@@ -381,6 +381,19 @@ RFD3-Mosaic distinguishes three outcomes:
 Only a completed run with every required audit passing receives a `PASSED`
 verdict.
 
+Every run keeps three artifact roles separate:
+
+- `input/presymmetrized_input.cif` is the compiled, pre-diffusion RFD3 input;
+  it is not a generated design;
+- each root-level `*_model_0.cif[.gz]` is one raw generated design, including
+  outputs retained after a required audit rejects them;
+- a PyMOL `mosaic_aligned*` object is an in-memory visualization copy and is
+  not an additional generated structure.
+
+Consequently, `sampling.designs: 2` produces two raw result CIFs (`_0` and
+`_1`) from the same compiled input. Always use the run verdict and per-design
+audits to decide whether either result is usable.
+
 ## Advanced commands
 
 - `inspect`: detect components and candidate interfaces in an input structure;
