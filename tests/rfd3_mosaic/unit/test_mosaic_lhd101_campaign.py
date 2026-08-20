@@ -45,6 +45,11 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         self.assertEqual(manifest["designs_per_job"], 1)
         self.assertEqual(manifest["compiled_pose_count"], 3)
         self.assertEqual(
+            manifest["pose_semantics"],
+            "one_independently_seeded_feasible_pose_per_design; one RFD3 "
+            "model load per shard",
+        )
+        self.assertEqual(
             [record["pose_seed"] for record in manifest["records"]],
             [1200, 1201, 1202],
         )
@@ -85,7 +90,15 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         self.assertIn("designs: 23 across 3 shard(s)", completed.stdout)
         self.assertEqual(manifest["total_designs"], 23)
         self.assertEqual(manifest["shard_count"], 3)
-        self.assertEqual(manifest["compiled_pose_count"], 3)
+        # A shard is now a model-loading unit, not a pose-sharing unit.
+        # Every requested design receives an independently seeded feasible
+        # pose while the three shards still load RFD3 only three times.
+        self.assertEqual(manifest["compiled_pose_count"], 23)
+        self.assertEqual(
+            manifest["pose_semantics"],
+            "one_independently_seeded_feasible_pose_per_design; one RFD3 "
+            "model load per shard",
+        )
         self.assertEqual(
             [record["requested_designs"] for record in manifest["records"]],
             [10, 10, 3],

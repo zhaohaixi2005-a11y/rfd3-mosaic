@@ -85,9 +85,9 @@ def main() -> None:
         type=int,
         default=1,
         help=(
-            "Diffusion samples sharing one compiled pose in each job. The "
-            "scientific LHD101 comparison defaults to one so all 1000 "
-            "designs receive distinct pre-RFD3 poses."
+            "Independent outputs packed into one GPU job. Current Mosaic "
+            "materializes a distinct feasible initial pose per output when "
+            "the pose declaration is stochastic, while loading RFD3 once."
         ),
     )
     parser.add_argument("--seed-start", type=int, default=10000)
@@ -259,6 +259,16 @@ def main() -> None:
             record["submitted"] = result.returncode == 0 and match is not None
         records.append(record)
 
+    compiled_pose_count = len(pose_seeds) if pose_seeds else total
+    pose_semantics = (
+        "explicit_pose_matrix; repeated diffusion streams intentionally "
+        "share each listed pose"
+        if pose_seeds
+        else (
+            "one_independently_seeded_feasible_pose_per_design; one RFD3 "
+            "model load per shard"
+        )
+    )
     manifest = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -270,11 +280,8 @@ def main() -> None:
         "total_designs": total,
         "designs_per_job": per_job,
         "shard_count": shard_count,
-        "compiled_pose_count": shard_count,
-        "pose_semantics": (
-            "one_compiled_pose_per_shard; all requested_designs in a shard "
-            "share that pre-RFD3 pose"
-        ),
+        "compiled_pose_count": compiled_pose_count,
+        "pose_semantics": pose_semantics,
         "seed_start": arguments.seed_start,
         "pose_seeds": pose_seeds,
         "diffusion_seeds_per_pose": arguments.diffusion_seeds_per_pose,
@@ -293,8 +300,8 @@ def main() -> None:
         f"up to {per_job} per GPU job"
     )
     print(
-        f"poses: {shard_count} compiled pose(s); samples within one shard "
-        "share its pre-RFD3 input"
+        f"poses: {compiled_pose_count} compiled pose(s); "
+        f"{shard_count} GPU model load(s)"
     )
 
     failed = [
