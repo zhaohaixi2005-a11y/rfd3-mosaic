@@ -103,8 +103,41 @@ The initial launch exposed and then fixed a public-envelope conversion bug:
 audit, was incorrectly forwarded into the generic internal diffusion sampling
 mapping.  Commit `6b67605` removes it from that envelope; the focused 42-test
 constraint suite and the LHD101 public prevalidation pass before GPU launch.
-Record final job IDs, audits, structure paths and quality measurements here
-after all three sequential runs finish.
+
+All three sequential runs completed and passed the required exact-motif,
+mobility, scaffold-continuity, clash and symmetry audits:
+
+| local run | pose/diffusion seed | normalized Rg | tertiary support | generated inter-chain pairs | minimum pore (A) | scientific targets |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `local-20260819T160936105336Z-91789` | 41001/51000 | 3.330 | 0.294 | 375 | 6.47 | not met |
+| `local-20260819T161838100032Z-93688` | 41002/51001 | 3.382 | 0.400 | 6 | 7.76 | not met |
+| `local-20260819T162737052852Z-94782` | 41003/51002 | 2.950 | 0.624 | 0 | 20.54 | not met |
+
+The three pre-RFD3 CIF SHA256 values are distinct, proving this campaign did
+not repeat one compiled pose.  Every result has zero CA clashes, zero chain
+breaks, motif internal RMSD below `3.1e-5 A`, and exact-symmetry coordinate
+RMSD below `4.2e-5 A`.  The mobility controller accepted eight proposals per
+result; observed complete-seed movement was `0.32--0.49 A` translation and
+`2.12--3.20 degrees` rotation.
+
+These are execution successes but not three scientific-quality successes.
+The third design is the best current open-ring candidate: it meets the
+tertiary-support target, has no unintended generated--generated inter-chain
+contact pairs and has a substantially wider pore, but its normalized Rg of
+`2.95` remains above the provisional `2.60` target.  The first design still
+forms excessive generated-chain contacts and should not be promoted merely
+because its required safety audits passed.
+
+Machine-readable and paper-aligned comparison artifacts are stored at:
+
+```text
+/scratch2/haixi/runs/rfd3-mosaic/_campaigns/lhd101-current-three-pose/20260819T160927Z/comparison/
+```
+
+The comparison reports `requested=3`, `produced=3`, `analyzed=3` and strict
+audit passes `3/3`.  Generated-interface packing is intentionally not
+applicable to this supplied-interface campaign because both graph-interface
+guidance and symmetric generated-interface packing were disabled.
 
 ## Supplied multi-interface gates
 
