@@ -78,6 +78,8 @@ SO(3), rejects geometrically invalid proposals, freezes the accepted inputs,
 and sends them to RFD3 as one multi-example input. The model/checkpoint is
 loaded once. Every result has its own structure, metadata, semantic audits and
 scaffold audit below `audits/<design-id>/`.
+Pose sampling does not prefer a central pore or one cage silhouette unless the
+user explicitly declares a corresponding assembly-shape target.
 The run report records produced, accepted and rejected counts; one rejected
 design does not discard the remaining outputs of a multi-design screening run.
 `pose_manifest.json` records the exact pose seed, diffusion seed, compiled
