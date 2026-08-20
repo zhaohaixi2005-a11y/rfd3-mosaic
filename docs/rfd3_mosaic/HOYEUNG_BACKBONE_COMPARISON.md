@@ -261,3 +261,51 @@ explicitly reported `scientific_quality_satisfied: false`. The run received
 `PASSED` only because those still-uncalibrated scientific targets were
 advisory (`quality_required: false`); required exact-geometry and safety
 contracts passed.
+
+## 2026-08-20 three-pose/two-diffusion-seed batch
+
+The complete `lhd101-mobility-c0f7060-3x2` small-server campaign contains six
+designs: three independently compiled initial poses and two RFD3 diffusion
+streams per pose. All six structures, input mappings, frozen configs and audit
+records were collected under:
+
+```text
+/home/haixi/Documents/template/
+  lhd101-mobility-c0f7060-3x2-collected/
+```
+
+The machine-readable comparison artifacts are:
+
+```text
+comparison/hoyeung_backbone_comparison.json
+comparison/hoyeung_backbone_metrics.csv
+comparison/hoyeung_backbone_comparison.md
+```
+
+All six runs completed, preserved the supplied interface, remained exact C3,
+had zero CA clashes and zero chain breaks. Generated-interface guidance is not
+applicable to this supplied-interface task; its absence must not be counted as
+a packing failure. Two of the six designs met the current advisory monomer-core
+targets:
+
+| pose / diffusion seed | translation (A) | rotation (deg) | core normalized Rg | tertiary support | extra generated inter-chain pairs | pore p05 (A) | core target |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 10063 / 41000 | 0.820 | 7.571 | 2.804 | 0.588 | 57 | 13.91 | no |
+| 10063 / 41001 | 1.430 | 7.956 | 2.877 | 0.588 | 96 | 11.06 | no |
+| 10039 / 41002 | 1.113 | 5.924 | 2.401 | 0.600 | 3 | 13.55 | **yes** |
+| 10039 / 41003 | 1.293 | 5.821 | 2.312 | 0.635 | 6 | 16.24 | **yes** |
+| 10048 / 41004 | 1.058 | 8.377 | 3.304 | 0.624 | 15 | 17.49 | no |
+| 10048 / 41005 | 1.105 | 8.047 | 3.242 | 0.459 | 39 | 16.41 | no |
+
+The two pose-`10039` structures are the priority visual-inspection candidates.
+They combine the lowest core Rg, highest or near-highest tertiary support and
+only three to six unintended generated--generated cross-chain contact pairs.
+The formal paper-aligned collector also places both in the lowest-Rg half of
+this cohort. Pose `10048` produces the widest pores but elongated monomers;
+pose `10063` produces substantially more unintended cross-chain packing.
+
+Across all six designs, the paper-aligned maximum-chain Rg median is `18.875 A`,
+Flatness ranges from `27.80` to `51.60 degrees`, and Twist is approximately
+`30.0 degrees`. A complete Ho-Yeung loop+Rg filter is not yet available because
+STRIDE was not supplied; Foldseek diversity likewise requires a later cohort
+clustering step.

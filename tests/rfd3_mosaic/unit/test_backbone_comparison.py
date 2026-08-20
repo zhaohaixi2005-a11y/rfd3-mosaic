@@ -93,6 +93,51 @@ class BackboneComparisonTestCase(unittest.TestCase):
         self.assertEqual(directories, [run.resolve()])
         self.assertEqual(unavailable, [])
 
+    def test_local_campaign_override_keeps_unique_experiment_discoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "runs"
+            run = run_root / "2026-08-20" / "local-design" / "local-456"
+            run.mkdir(parents=True)
+            index = run_root / ".rfd3-mosaic" / "jobs"
+            index.mkdir(parents=True)
+            (index / "local-456.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "job_id": "local-456",
+                        "experiment": "local-design",
+                        "campaign": "runtime-override",
+                        "run_directory": str(run),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            design = root / "shard.yaml"
+            design.write_text(
+                "name: local-design\n"
+                "output:\n"
+                "  root: /ignored\n"
+                "  campaign: frozen-template-campaign\n",
+                encoding="utf-8",
+            )
+
+            directories, unavailable = _run_directories(
+                {
+                    "records": [
+                        {
+                            "shard_index": 0,
+                            "job_id": None,
+                            "design": str(design),
+                        }
+                    ]
+                },
+                run_root=run_root,
+            )
+
+        self.assertEqual(directories, [run.resolve()])
+        self.assertEqual(unavailable, [])
+
     def test_protocol_records_only_reported_backbone_contract(self) -> None:
         protocol = paper_backbone_protocol()
         self.assertEqual(
@@ -220,14 +265,22 @@ class BackboneComparisonTestCase(unittest.TestCase):
                 run_root=run_root,
             )
             payload = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
+            markdown = artifacts.markdown_path.read_text(encoding="utf-8")
 
         self.assertTrue(payload["summary"]["generation_complete"])
         self.assertEqual(payload["summary"]["worker_accepted_count"], 1)
         self.assertEqual(payload["summary"]["seed_preserved_count"], 1)
+        self.assertEqual(
+            payload["summary"]["packing_guidance_applicable_count"], 0
+        )
         self.assertIsNone(payload["summary"]["loop_percentage"])
         self.assertEqual(
             payload["records"][0]["paper_backbone_filter"],
             "rg_lowest_half_only",
+        )
+        self.assertIn(
+            "Generated-interface guidance: not applicable",
+            markdown,
         )
 
 

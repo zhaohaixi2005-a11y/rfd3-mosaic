@@ -156,7 +156,7 @@ def _run_directories(
                             else None
                         ),
                     }
-            candidates: list[dict[str, Any]] = []
+            experiment_candidates: list[dict[str, Any]] = []
             index_directory = run_root / ".rfd3-mosaic" / "jobs"
             if identity.get("experiment") and index_directory.is_dir():
                 for index_path in sorted(index_directory.glob("*.json")):
@@ -166,12 +166,23 @@ def _run_directories(
                         continue
                     if indexed_candidate.get("experiment") != identity["experiment"]:
                         continue
-                    if (
-                        identity.get("campaign") is not None
-                        and indexed_candidate.get("campaign") != identity["campaign"]
-                    ):
-                        continue
-                    candidates.append(indexed_candidate)
+                    experiment_candidates.append(indexed_candidate)
+            campaign_candidates = [
+                candidate
+                for candidate in experiment_candidates
+                if identity.get("campaign") is not None
+                and candidate.get("campaign") == identity["campaign"]
+            ]
+            # A local ``run --campaign`` override intentionally changes only
+            # artifact organization, not the frozen design identity.  Prefer
+            # an exact experiment+campaign match when it is unique, but allow
+            # one globally unique experiment match when the frozen campaign
+            # name is stale.  Multiple experiment matches still fail closed.
+            candidates = (
+                campaign_candidates
+                if len(campaign_candidates) == 1
+                else experiment_candidates
+            )
             if len(candidates) != 1:
                 unavailable.append(
                     {
@@ -182,6 +193,12 @@ def _run_directories(
                         "experiment": identity.get("experiment"),
                         "campaign": identity.get("campaign"),
                         "matching_run_count": len(candidates),
+                        "experiment_matching_run_count": len(
+                            experiment_candidates
+                        ),
+                        "campaign_matching_run_count": len(
+                            campaign_candidates
+                        ),
                     }
                 )
                 continue
@@ -537,6 +554,32 @@ def _one_design(
         run_directory=run_directory,
     )
     guidance_summary = (guidance or {}).get("summary") or {}
+    core = _audit_payload(
+        design,
+        name="scaffold_core_guidance_audit.json",
+        run_directory=run_directory,
+    )
+    core_summary = (core or {}).get("summary") or {}
+    core_metrics = core_summary.get("final_metrics") or {}
+    mobility = _audit_payload(
+        design,
+        name="component_mobility_audit.json",
+        run_directory=run_directory,
+    )
+    mobility_summary = (mobility or {}).get("summary") or {}
+    mobility_components = mobility_summary.get("components") or []
+    translations = [
+        _number(component.get("maximum_translation_observed"))
+        for component in mobility_components
+        if isinstance(component, Mapping)
+    ]
+    rotations = [
+        _number(component.get("maximum_rotation_deg_observed"))
+        for component in mobility_components
+        if isinstance(component, Mapping)
+    ]
+    translations = [value for value in translations if value is not None]
+    rotations = [value for value in rotations if value is not None]
     seed = _seed_metrics(design, run_directory)
     return {
         "job_id": run_directory.name,
@@ -565,6 +608,56 @@ def _one_design(
             ),
             "final_metrics": guidance_summary.get(
                 "final_packing_metrics"
+            ),
+        },
+        "mobility": {
+            "audit": (
+                "component_mobility_audit.json"
+                if mobility is not None
+                else None
+            ),
+            "passed": bool(mobility.get("passed")) if mobility else None,
+            "applied_proposal_count": mobility_summary.get(
+                "applied_proposal_count"
+            ),
+            "maximum_translation_observed": (
+                max(translations) if translations else None
+            ),
+            "maximum_rotation_deg_observed": (
+                max(rotations) if rotations else None
+            ),
+        },
+        "scaffold_core": {
+            "audit": (
+                "scaffold_core_guidance_audit.json"
+                if core is not None
+                else None
+            ),
+            "passed": bool(core.get("passed")) if core else None,
+            "quality_required": core_summary.get("quality_required"),
+            "scientific_quality_satisfied": core_summary.get(
+                "scientific_quality_satisfied"
+            ),
+            "mean_normalized_rg": core_metrics.get("mean_normalized_rg"),
+            "mean_tertiary_support_fraction": core_metrics.get(
+                "mean_tertiary_support_fraction"
+            ),
+            "generated_inter_chain_contact_pairs": core_metrics.get(
+                "generated_inter_chain_contact_pairs"
+            ),
+            "minimum_generated_inter_chain_distance": core_metrics.get(
+                "minimum_generated_inter_chain_distance"
+            ),
+        },
+        "morphology": {
+            "central_pore_diameter": scaffold_summary.get(
+                "assembly_central_pore_diameter"
+            ),
+            "central_pore_diameter_p05": scaffold_summary.get(
+                "assembly_central_pore_diameter_p05"
+            ),
+            "outer_radial_diameter": scaffold_summary.get(
+                "assembly_outer_radial_diameter"
             ),
         },
         "chain_break_count": scaffold_summary.get("chain_break_count"),
@@ -666,12 +759,51 @@ def _summary(
         "scaffold_passed_count": sum(
             record["scaffold_audit_passed"] is True for record in records
         ),
+        "packing_guidance_applicable_count": sum(
+            record["packing_guidance"]["audit"] is not None
+            for record in records
+        ),
         "packing_guidance_passed_count": sum(
             record["packing_guidance"]["passed"] is True
             for record in records
         ),
         "packing_targets_satisfied_count": sum(
             record["packing_guidance"]["final_targets_satisfied"] is True
+            for record in records
+        ),
+        "scaffold_core_applicable_count": sum(
+            record["scaffold_core"]["audit"] is not None for record in records
+        ),
+        "scaffold_core_scientific_target_count": sum(
+            record["scaffold_core"]["scientific_quality_satisfied"] is True
+            for record in records
+        ),
+        "motif_translation_angstrom": _quantiles(
+            record["mobility"]["maximum_translation_observed"]
+            for record in records
+        ),
+        "motif_rotation_degrees": _quantiles(
+            record["mobility"]["maximum_rotation_deg_observed"]
+            for record in records
+        ),
+        "core_mean_normalized_rg": _quantiles(
+            record["scaffold_core"]["mean_normalized_rg"]
+            for record in records
+        ),
+        "core_tertiary_support_fraction": _quantiles(
+            record["scaffold_core"]["mean_tertiary_support_fraction"]
+            for record in records
+        ),
+        "generated_inter_chain_contact_pairs": _quantiles(
+            record["scaffold_core"]["generated_inter_chain_contact_pairs"]
+            for record in records
+        ),
+        "central_pore_diameter": _quantiles(
+            record["morphology"]["central_pore_diameter"]
+            for record in records
+        ),
+        "central_pore_diameter_p05": _quantiles(
+            record["morphology"]["central_pore_diameter_p05"]
             for record in records
         ),
         "continuous_count": sum(record["chain_break_count"] == 0 for record in records),
@@ -717,6 +849,36 @@ def _flat_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "seed_passed": record["seed"]["passed"],
         "seed_rmsd_angstrom": record["seed"]["rmsd_angstrom"],
         "scaffold_passed": record["scaffold_audit_passed"],
+        "mobility_translation_angstrom": record["mobility"][
+            "maximum_translation_observed"
+        ],
+        "mobility_rotation_degrees": record["mobility"][
+            "maximum_rotation_deg_observed"
+        ],
+        "mobility_applied_proposals": record["mobility"][
+            "applied_proposal_count"
+        ],
+        "core_scientific_target_met": record["scaffold_core"][
+            "scientific_quality_satisfied"
+        ],
+        "core_mean_normalized_rg": record["scaffold_core"][
+            "mean_normalized_rg"
+        ],
+        "core_tertiary_support_fraction": record["scaffold_core"][
+            "mean_tertiary_support_fraction"
+        ],
+        "generated_inter_chain_contact_pairs": record["scaffold_core"][
+            "generated_inter_chain_contact_pairs"
+        ],
+        "central_pore_diameter": record["morphology"][
+            "central_pore_diameter"
+        ],
+        "central_pore_diameter_p05": record["morphology"][
+            "central_pore_diameter_p05"
+        ],
+        "outer_radial_diameter": record["morphology"][
+            "outer_radial_diameter"
+        ],
         "chain_breaks": record["chain_break_count"],
         "ca_clashes": record["ca_clash_count"],
         "max_chain_ca_rg": record["maximum_chain_ca_radius_of_gyration"],
@@ -734,6 +896,21 @@ def _flat_record(record: Mapping[str, Any]) -> dict[str, Any]:
 def _markdown(payload: Mapping[str, Any]) -> str:
     summary = payload["summary"]
     paper_filter = payload["cohort_filter"]
+    packing_applicable = summary["packing_guidance_applicable_count"]
+    if packing_applicable:
+        packing_lines = [
+            "- Generated-interface guidance audit passes: "
+            f"{summary['packing_guidance_passed_count']}/"
+            f"{packing_applicable}",
+            "- Generated-interface final targets satisfied: "
+            f"{summary['packing_targets_satisfied_count']}/"
+            f"{packing_applicable}",
+        ]
+    else:
+        packing_lines = [
+            "- Generated-interface guidance: not applicable; this supplied-"
+            "interface protocol does not declare a second generated interface"
+        ]
     lines = [
         "# Ho-Yeung LHD101 backbone comparison",
         "",
@@ -751,10 +928,10 @@ def _markdown(payload: Mapping[str, Any]) -> str:
         f"- Analyzed: {summary['analyzed_designs']}",
         f"- Mosaic strict audit passes: {summary['worker_accepted_count']}",
         f"- Supplied seed preserved: {summary['seed_preserved_count']}",
-        "- Generated-scaffold packing audit passes: "
-        f"{summary['packing_guidance_passed_count']}",
-        "- Generated-scaffold final packing targets satisfied: "
-        f"{summary['packing_targets_satisfied_count']}",
+        *packing_lines,
+        "- Monomer-core scientific targets satisfied: "
+        f"{summary['scaffold_core_scientific_target_count']}/"
+        f"{summary['scaffold_core_applicable_count']}",
         f"- Continuous backbones: {summary['continuous_count']}",
         f"- CA-clash-free backbones: {summary['clash_free_count']}",
         "",
