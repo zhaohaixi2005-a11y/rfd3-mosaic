@@ -96,6 +96,36 @@ one fresh 10-step A100/H100 execution gate from the current frozen source.
 These jobs are software transport/closure tests, not claims of biologically
 useful O/I cages.
 
+### Fresh T/O/I results on 2026-08-20
+
+Fresh A100/DGX execution now supersedes the earlier zero-output process
+failures:
+
+| group | job | copies | output | exact fixed orbit | final status |
+| --- | --- | ---: | --- | --- | --- |
+| T | `5755072` | 12 | one CIF | PASS | **PASSED** |
+| O | `5755073` | 24 | one CIF | PASS | FAIL scaffold/interface gates |
+| I | `5755075` | 60 | one CIF | FAIL | FAIL constraint/scaffold/interface gates |
+
+Job `5755072` is a complete static tetrahedral GPU closure result: RFD3
+inference, exact two-orbit recovery and scaffold validity all passed.  Job
+`5755073` proves that the 24-action octahedral input now reaches RFD3 output
+and preserves its complete fixed orbit, but it does not yet produce a valid
+scaffold.  Job `5755075` proves 60-action icosahedral inference and output
+serialization, but its fixed-orbit contract still fails and therefore I is
+not closed.
+
+The O/I YAMLs are explicitly documented as transport canaries, with fixed
+initial radii of 110 A (O) and 180 A (I), only ten generated residues at each
+terminus and ten diffusion steps.  They contain no explicit task declaration,
+however, so the legacy experiment inference classified them as
+`create_symmetric_interface` and required respectively 24 and 60 new
+interfaces.  Their observed minimum edge distances (24.18 A for O and
+39.85 A for I) make those interface failures expected and scientifically
+irrelevant to the intended transport gate.  This task-inference mismatch must
+be removed before the canaries are rerun.  Scaffold validity and the I
+constraint-orbit failure remain real independent blockers.
+
 ## Current distinct-pose C3 pilot (2026-08-19)
 
 A three-job local RTX 3070 campaign was launched from source revision

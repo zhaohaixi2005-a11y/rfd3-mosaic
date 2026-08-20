@@ -230,3 +230,30 @@ with the earlier H100 0/4 gate, current evidence is 0/8 accepted structures.
 The next algorithmic change should therefore target continuity-aware,
 all-atom-safe final proposals for near-capture interfaces; pass thresholds
 must not be weakened to convert clashes into successes.
+
+## AI-cluster A100 follow-up
+
+The first two current-campaign locked jobs also completed RFD3 and produced
+two structures each.  Their original worker status is `failed` because they
+were launched before the per-design audit-input isolation fix; post-hoc audit
+from `4df4fcc` recovered the scientific results without rerunning inference.
+
+| job | output | minimum edge distance (A) | heavy-atom residue pairs | chain breaks | constraint orbit | interface result |
+|---|---:|---:|---:|---:|---|---|
+| `5755477` (`s63000`) | 0 | 11.457 | 0 | 3 | PASS | FAIL, 0/3 edges |
+| `5755477` (`s63000`) | 1 | 3.503 | 5 | 0 | PASS | FAIL, 0/3 edges |
+| `5755478` (`s63002`) | 0 | 15.030 | 0 | 6 | PASS | FAIL, 0/3 edges |
+| `5755478` (`s63002`) | 1 | 15.970 | 0 | 0 | PASS | FAIL, 0/3 edges |
+
+Thus the completed A100 locked subset has scientific yield 0/4.  Only one
+output approaches contact, but it still lacks a complete heavy-atom interface;
+the other three remain too far apart and two also contain chain breaks.  The
+motif constraint itself remains exact in all four outputs.
+
+At the time this evidence was collected, job `5755479` (locked `s63004`) and
+jobs `5755482--5755484` (guided `s63000/s63002/s63004`) were still pending and
+had no run directories.  Across the earlier H100 gate, the RTX 3070 gate and
+this completed A100 subset, the current generated-interface evidence is 0/12
+accepted outputs.  The pending guided subset must still be collected, but the
+completed evidence is already sufficient to justify a targeted controller
+change rather than merely increasing the sample count.
