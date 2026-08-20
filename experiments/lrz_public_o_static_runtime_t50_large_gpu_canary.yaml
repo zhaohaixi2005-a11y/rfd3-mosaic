@@ -1,0 +1,52 @@
+schema_version: 1
+name: public-o-static-runtime-t50-s962
+task: preserve_supplied_geometry
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: O
+  axis: [0.0, 0.0, 1.0]
+  secondary_axis: [1.0, 0.0, 0.0]
+  center: [0.0, 0.0, 0.0]
+
+# Runtime/closure canary, not an octahedral cage-quality experiment.  The
+# complete fixed orbit must survive a production-length 50-step trajectory;
+# generated termini must remain continuous and clash-free.  No new interface
+# is declared or audited.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 10
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 10
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: o_static_seed
+
+sampling:
+  initial_pose:
+    radius: {minimum: 110.0, maximum: 110.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    radial_direction: [0.8017837, 0.5345225, 0.2672612]
+    orientation: {method: fixed, rotation_deg: [17.0, 29.0, 11.0]}
+    seed: 96201
+  timesteps: 50
+  designs: 1
+  seed: 962
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+  scaffold_packing: "off"
+
+resources:
+  profile: large_gpu
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-o-static-runtime-t50-canary

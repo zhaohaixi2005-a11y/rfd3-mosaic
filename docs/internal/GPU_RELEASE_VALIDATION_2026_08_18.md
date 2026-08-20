@@ -126,6 +126,18 @@ irrelevant to the intended transport gate.  This task-inference mismatch must
 be removed before the canaries are rerun.  Scaffold validity and the I
 constraint-orbit failure remain real independent blockers.
 
+The replacement runtime canaries are
+`lrz_public_o_static_runtime_t50_large_gpu_canary.yaml` and
+`lrz_public_i_static_runtime_t50_large_gpu_canary.yaml`.  Both now declare
+`task: preserve_supplied_geometry`, disable symmetric generated-interface
+packing and run 50 diffusion steps.  CPU lowering confirms 24 and 60 complete
+fixed actions respectively, no inferred output interface edges and finite RFD3
+inputs.  The release-gate launcher now points `o-static` and `i-static` at
+these replacements.  A successful O rerun can close its short-trajectory
+scaffold question.  An I fixed-orbit failure after the 50-step rerun must be
+treated as a hard-projector/runtime defect rather than excused as insufficient
+sampling, because exact fixed geometry is required at every timestep.
+
 ## Current distinct-pose C3 pilot (2026-08-19)
 
 A three-job local RTX 3070 campaign was launched from source revision

@@ -16,6 +16,7 @@ from rfd3_mosaic.design_compiler import (
 )
 from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.schema import AssemblySpecification, UserDesignSpec
+from rfd3_mosaic.schema.design import load_user_design
 from rfd3_mosaic.topology.component_incidence import (
     enumerate_binary_interface_incidence_plans,
 )
@@ -57,6 +58,9 @@ def _write_structure(path: Path) -> None:
     path.write_text("".join(lines), encoding="utf-8")
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
 class DesignCompilerTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -75,6 +79,31 @@ class DesignCompilerTestCase(unittest.TestCase):
         }
         payload.update(updates)
         return UserDesignSpec.model_validate(payload)
+
+    def test_polyhedral_runtime_canaries_are_fixed_and_interface_free(self) -> None:
+        expected_orders = {"o": 24, "i": 60}
+        for group_id, expected_order in expected_orders.items():
+            with self.subTest(group=group_id.upper()):
+                design = load_user_design(
+                    REPOSITORY_ROOT
+                    / "experiments"
+                    / (
+                        f"lrz_public_{group_id}_static_runtime_t50_"
+                        "large_gpu_canary.yaml"
+                    )
+                )
+                lowered = lower_user_design(design)
+
+                self.assertEqual(design.task.value, "preserve_supplied_geometry")
+                self.assertEqual(design.sampling.timesteps, 50)
+                self.assertEqual(design.sampling.scaffold_packing, "off")
+                self.assertEqual(lowered.specification.interfaces, {})
+                transform_set = lowered.specification.symmetry.transform_sets[
+                    "declared"
+                ]
+                self.assertEqual(transform_set.order, expected_order)
+                orbit = lowered.specification.symmetry.orbits["motif_orbit"]
+                self.assertEqual(orbit.mobility.mode.value, "fixed")
 
     def test_public_selector_accepts_compact_and_assembly_syntax(self) -> None:
         compact = parse_public_selector("A1-2,B3-4")

@@ -91,17 +91,23 @@ GATES: dict[str, dict[str, Any]] = {
     },
     "o-static": {
         "tier": "extended",
-        "design": "experiments/lrz_public_o_static_short_large_gpu_canary.yaml",
+        "design": (
+            "experiments/"
+            "lrz_public_o_static_runtime_t50_large_gpu_canary.yaml"
+        ),
         "profile": LARGE_PROFILE,
         "designs": 1,
-        "claim": "complete twenty-four-action octahedral execution",
+        "claim": "50-step twenty-four-action octahedral runtime closure",
     },
     "i-static": {
         "tier": "extended",
-        "design": "experiments/lrz_public_i_static_short_large_gpu_canary.yaml",
+        "design": (
+            "experiments/"
+            "lrz_public_i_static_runtime_t50_large_gpu_canary.yaml"
+        ),
         "profile": LARGE_PROFILE,
         "designs": 1,
-        "claim": "complete sixty-action icosahedral execution",
+        "claim": "50-step sixty-action icosahedral runtime closure",
     },
 }
 

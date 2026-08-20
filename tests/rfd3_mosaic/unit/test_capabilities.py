@@ -438,6 +438,36 @@ class CapabilityLedgerTestCase(unittest.TestCase):
             {"public_fixed_xyz", "graph_interface_guidance"},
         )
 
+    def test_preserved_geometry_terminal_contig_does_not_infer_interface(self) -> None:
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "polyhedral-runtime-canary",
+                "task": "preserve_supplied_geometry",
+                "input": "motif.pdb",
+                "symmetry": "O",
+                "generation": [
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "n",
+                        "length": 20,
+                    }
+                ],
+                "constraints": [
+                    {"kind": "fixed_xyz", "selector": "A1-2"}
+                ],
+                "sampling": {"scaffold_packing": "off"},
+            }
+        )
+
+        observed = {
+            item.id for item in required_capabilities_for_design(design)
+        }
+        self.assertEqual(
+            observed,
+            {"public_fixed_xyz", "polyhedral_groups"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

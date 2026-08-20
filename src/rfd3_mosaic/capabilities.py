@@ -570,13 +570,18 @@ def required_capabilities_for_design(
         ):
             has_mobile_constraint = True
             require("bounded_orbit_mobility")
-    if any(
+    has_required_contact_interface = any(
         interface.required and interface.relation.mode == "contact"
         for interface in design.interfaces
-    ) or any(
-        isinstance(generation, TerminalGeneration)
-        for generation in design.generation
-    ):
+    )
+    infers_terminal_interface = bool(
+        design.task != UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
+        and any(
+            isinstance(generation, TerminalGeneration)
+            for generation in design.generation
+        )
+    )
+    if has_required_contact_interface or infers_terminal_interface:
         require("graph_interface_guidance")
         if task_optimizes_fixed_components:
             require("joint_packing_mobility")
