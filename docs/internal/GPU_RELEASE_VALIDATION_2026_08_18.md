@@ -82,7 +82,12 @@ result was recorded in the evidence collected for this document. As of
 2026-08-20 it remains pending with no run directory. The old T/O/I jobs
 `5752497--5752499` remain failed process executions with zero output
 structures; all three passed RFD3 input prevalidation first. Their worker
-stderr must be classified before preparing replacement canaries.
+stderr confirms one shared pre-diffusion failure in
+`UnindexFlaggedTokens`: a token-level AtomArray was sliced a second time and
+Biotite rejected duplicate symmetry-expanded bond indices. Commit `dab8103`
+constructs those masks directly from annotation arrays, without slicing the
+bond graph; its focused regression tests pass `2/2`. Fresh T/O/I canaries are
+still required to validate the repair in the complete GPU pipeline.
 
 Current source revision `6b67605` again passes CPU construction for the full
 24-chain O input (4,560 atoms/696 residues) and 60-chain I input (11,400
