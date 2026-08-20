@@ -433,13 +433,26 @@ class UnindexFlaggedTokens(Transform):
 
         atom_array: padded atom array
         """
-        token_starts = get_token_starts(atom_array)
-        token_level_array = atom_array[token_starts]
-        is_motif_token_unindexed = token_level_array.is_motif_atom_unindexed
+        token_starts = np.asarray(get_token_starts(atom_array), dtype=np.int64)
 
-        # ... Grab breaks from the token level array
-        unindexed_token_level_array = token_level_array[is_motif_token_unindexed]
-        breaks = unindexed_token_level_array.is_motif_atom_unindexed_motif_breakpoint
+        # Read token-level flags directly from the annotation arrays.  Building
+        # an intermediate AtomArray here also slices its BondList.  Symmetry-
+        # expanded inputs can legitimately map several token representatives
+        # through the same source bond index, and a second slice of that
+        # intermediate array makes Biotite reject the duplicate bond indices
+        # before diffusion starts.  These masks need only annotations; no
+        # coordinates or bonds participate in their construction.
+        is_motif_token_unindexed = np.asarray(
+            atom_array.is_motif_atom_unindexed,
+            dtype=bool,
+        )[token_starts]
+        token_breaks = np.asarray(
+            atom_array.is_motif_atom_unindexed_motif_breakpoint,
+            dtype=bool,
+        )[token_starts]
+
+        # ... Grab breaks from the token-level annotations
+        breaks = token_breaks[is_motif_token_unindexed]
 
         leak_all = not np.any(breaks)
         if leak_all:
