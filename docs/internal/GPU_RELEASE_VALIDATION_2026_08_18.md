@@ -37,6 +37,26 @@ The locked and guided jobs deliberately request `sampling.designs: 2`. This is
 the first GPU gate for multi-design fan-out, per-design audit isolation and
 aggregate accepted/rejected yield.
 
+### 2026-08-20 locked/guided results
+
+Jobs `5755028` (locked) and `5755029` (guided) both completed normally on an
+H100 and each wrote two independent structures. Multi-design fan-out,
+per-result audit isolation, exact motif preservation and scaffold validity
+therefore executed successfully. Neither gate reached scientific acceptance:
+
+| gate | produced | accepted | closest interface evidence |
+| --- | ---: | ---: | --- |
+| locked | 2 | 0 | 19 residue pairs, density 1.9, shape loss 0.145, minimum edge 3.51 A |
+| guided | 2 | 0 | 8 residue pairs, density 1.6, shape loss 0.160, minimum edge 5.13 A |
+
+The other locked result and the other guided result contained respectively
+zero interface residue pairs and zero/effectively absent useful packing. The
+guided controller was active, but used only `2.1--3.0%` of its translation
+bound and `3.6--4.9%` of its rotation bound. These are runtime successes and
+scientific packing failures: the remaining blocker is stronger reliable
+capture and broad continuous interface formation, not multi-design execution,
+exact symmetry or motif preservation.
+
 ## Extended finite-group gates
 
 `o-static` and `i-static` are short 10-step software execution canaries for 24
@@ -57,8 +77,12 @@ negative scientific results.  Their public designs passed complete CPU
 geometry and RFD3-input prevalidation, but the frozen runtime failed before
 diffusion in AtomWorks `UnindexFlaggedTokens` with duplicate token indices.
 Consequently they produced no structures and say nothing about O/I backbone
-quality.  Job `5753687` was a later I resubmission, but no completed audited
-result was recorded in the evidence collected for this document.
+quality. Job `5753687` was a later I resubmission, but no completed audited
+result was recorded in the evidence collected for this document. As of
+2026-08-20 it remains pending with no run directory. The old T/O/I jobs
+`5752497--5752499` remain failed process executions with zero output
+structures; all three passed RFD3 input prevalidation first. Their worker
+stderr must be classified before preparing replacement canaries.
 
 Current source revision `6b67605` again passes CPU construction for the full
 24-chain O input (4,560 atoms/696 residues) and 60-chain I input (11,400
