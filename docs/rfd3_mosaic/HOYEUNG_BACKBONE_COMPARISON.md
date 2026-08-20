@@ -264,15 +264,12 @@ contracts passed.
 
 ## 2026-08-20 three-pose/two-diffusion-seed batch
 
-The complete `lhd101-mobility-c0f7060-3x2` small-server campaign contains six
+The complete `lhd101-mobility-c0f7060-3x2` validation campaign contains six
 designs: three independently compiled initial poses and two RFD3 diffusion
 streams per pose. All six structures, input mappings, frozen configs and audit
-records were collected under:
-
-```text
-/home/haixi/Documents/template/
-  lhd101-mobility-c0f7060-3x2-collected/
-```
+records were collected in one date-stamped campaign bundle outside the source
+tree. The bundle location is deployment-specific and is recorded in the
+corresponding internal run inventory rather than in this public document.
 
 The machine-readable comparison artifacts are:
 
