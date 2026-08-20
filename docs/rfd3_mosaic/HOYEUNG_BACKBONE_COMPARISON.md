@@ -173,9 +173,9 @@ released in the supplement.
 
 ## Retained narrow-pore C3 pilot result
 
-AI-cluster job `5754107` is retained as a useful historical pilot and as the
-best member of the three diffusion replicates generated from initial-pose seed
-`10063`. Its frozen identifiers are:
+One completed AI-cluster run is retained as a useful historical pilot and as
+the best member of the three diffusion replicates generated from initial-pose
+seed `10063`. Its portable frozen identifiers are:
 
 ```text
 source commit: 985af894f033b29cc668f1b019e0010092e8e27a
@@ -184,22 +184,22 @@ RFD3 diffusion seed: 30001
 timesteps: 50
 ```
 
-Run directory:
+After locating the run through `rfd3-mosaic runs`, define its portable root:
 
-```text
-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/mosaic-lhd101-c3-pilot-20260819T141352Z/lhd101-c3-guided-0001-p10063-s30001/5754107
+```bash
+RUN_DIR=/path/to/rfd3-mosaic/runs/<campaign>/<experiment>/<executor-job-id>
 ```
 
 Generated structure:
 
 ```text
-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/mosaic-lhd101-c3-pilot-20260819T141352Z/lhd101-c3-guided-0001-p10063-s30001/5754107/rfd3_input_lhd101-c3-guided-0001-p10063-s30001_0_model_0.cif.gz
+$RUN_DIR/rfd3_input_lhd101-c3-guided-0001-p10063-s30001_0_model_0.cif.gz
 ```
 
 Per-design audits are under:
 
 ```text
-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/mosaic-lhd101-c3-pilot-20260819T141352Z/lhd101-c3-guided-0001-p10063-s30001/5754107/audits/rfd3_input_lhd101-c3-guided-0001-p10063-s30001_0
+$RUN_DIR/audits/rfd3_input_lhd101-c3-guided-0001-p10063-s30001_0
 ```
 
 The result passed motif, mobility, exact-symmetry, continuity, compactness,
@@ -222,7 +222,6 @@ of a second generated interface, the frozen runtime still passed
 `scaffold_core_inter_chain_weight=0.1` to the pre-`ae33fb4` implementation.
 That old implementation coupled the value to an implicit generated-chain
 excess-contact penalty. Commits `ae33fb4` and `7a37bba` removed that coupling
-and made the LHD101 inter setting neutral. Job `5754107` remains valuable for
-historical comparison, structural inspection and regression analysis, but a
-small pilot from `7a37bba` or later is required for the current scientific
-claim.
+and made the LHD101 inter setting neutral. The retained historical run remains
+valuable for structural inspection and regression analysis, but a small pilot
+from `7a37bba` or later is required for the current scientific claim.
