@@ -82,6 +82,15 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                         "runtime_group_action_count": (observed_group_action_count),
                         "proposal_source": "scaffold_boundary",
                         "update_interval": 1,
+                        "proposal_schedule": {
+                            "total_diffusion_steps": 50,
+                            "declared_update_interval": 5,
+                            "effective_update_interval": 1,
+                            "target_update_count": 24,
+                            "scheduled_proposal_count": 50,
+                            "scheduled_active_proposal_counts": [20]
+                            * mobile_count,
+                        },
                         "constraint_runtime": {
                             "schema_version": 1,
                             "state": "finalized",
@@ -110,6 +119,20 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                                 "group_transform_ids": list(
                                     range(observed_group_action_count)
                                 ),
+                                "schedule": {
+                                    "start_fraction": 0.05,
+                                    "end_fraction": 0.85,
+                                    "response": 0.4,
+                                    "max_step_translation": 0.5,
+                                    "max_step_rotation_degrees": 2.5,
+                                },
+                                "effective_pose_prior": {
+                                    "translation_scale": 1.0,
+                                    "rotation_scale_degrees": 5.0,
+                                    "normalization": (
+                                        "at_least_one_third_of_hard_bound"
+                                    ),
+                                },
                             }
                             for index in range(mobile_count)
                         ],
@@ -207,6 +230,18 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
         component = report["summary"]["components"][0]
         self.assertEqual(component["translation_fraction_of_bound"], 0.5)
         self.assertEqual(component["rotation_fraction_of_bound"], 0.4)
+        self.assertEqual(component["scheduled_active_proposal_count"], 20)
+        self.assertEqual(component["translation_search_budget_upper_bound"], 3.0)
+        self.assertEqual(
+            component["rotation_search_budget_upper_bound_degrees"],
+            10.0,
+        )
+        self.assertEqual(
+            report["summary"]["proposal_schedule"][
+                "effective_update_interval"
+            ],
+            1,
+        )
 
     def test_zero_motion_is_reported_without_falsely_failing_safety(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

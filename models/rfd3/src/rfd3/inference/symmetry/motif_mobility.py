@@ -270,6 +270,38 @@ class OrbitRigidMotifController:
         self.last_joint_transaction_applied = False
         self.last_joint_packing_diagnostics: dict[str, Any] | None = None
         self._diagnostic_trajectory: list[dict[str, Any]] = []
+        self._effective_pose_prior_scales: dict[str, tuple[float, float]] = {}
+
+    def _pose_guidance_config(
+        self,
+        config: ScaffoldGuidanceConfig,
+        motif: OrbitRigidMotif,
+    ) -> ScaffoldGuidanceConfig:
+        """Scale a soft pose prior to the orbit's declared search range.
+
+        The hard translation/rotation caps remain authoritative.  The prior
+        only discourages gratuitous motion inside those caps, so a component
+        allowed to search 15 A / 45 degrees must not receive the same narrow
+        1 A / 5 degree basin as a nearly locked component.
+        """
+
+        translation_scale = max(
+            float(config.translation_prior_scale),
+            float(motif.maximum_translation) / 3.0,
+        )
+        rotation_scale = max(
+            float(config.rotation_prior_scale_degrees),
+            float(motif.maximum_rotation_degrees) / 3.0,
+        )
+        self._effective_pose_prior_scales[motif.constraint_orbit_id] = (
+            translation_scale,
+            rotation_scale,
+        )
+        return replace(
+            config,
+            translation_prior_scale=translation_scale,
+            rotation_prior_scale_degrees=rotation_scale,
+        )
 
     @classmethod
     def from_features(
@@ -698,17 +730,17 @@ class OrbitRigidMotifController:
         combined_clash = geometry.clash + inter_orbit_clash
         total = geometry.total + config.clash_weight * inter_orbit_clash
         orbit_terms = []
-        pose_config = replace(
-            config,
-            junction_weight=0.0,
-            clash_weight=0.0,
-        )
         for motif, principal_axis, rotation, translation in zip(
             self.motifs,
             principal_axes,
             rotations,
             translations,
         ):
+            pose_config = replace(
+                self._pose_guidance_config(config, motif),
+                junction_weight=0.0,
+                clash_weight=0.0,
+            )
             pose = scaffold_orbit_energy(
                 target,
                 scaffold,
@@ -940,6 +972,11 @@ class OrbitRigidMotifController:
                     )
                     continue
 
+                pose_guidance_config = self._pose_guidance_config(
+                    config,
+                    motif,
+                )
+
                 translation_basis = None
                 rotation_basis = None
                 maximum_step_rotation = motif.per_step_rotation_degrees * motif_window
@@ -1056,6 +1093,7 @@ class OrbitRigidMotifController:
                     *,
                     active_motif=motif,
                     active_principal_axis=principal_axis,
+                    active_config=pose_guidance_config,
                 ):
                     master = self._master_coordinates_for_pose(
                         active_motif,
@@ -1077,7 +1115,7 @@ class OrbitRigidMotifController:
                         principal_axis=active_principal_axis,
                         pose_rotation=rotation,
                         pose_translation=translation,
-                        config=config,
+                        config=active_config,
                     )
                     if pose_energy is not None:
                         packing = pose_energy(candidate_target)
@@ -1570,8 +1608,7 @@ class OrbitRigidMotifController:
             )
         return target, coordinates, diagnostics
 
-    @staticmethod
-    def _pose_diagnostics(motif: OrbitRigidMotif) -> dict[str, Any]:
+    def _pose_diagnostics(self, motif: OrbitRigidMotif) -> dict[str, Any]:
         rotation_degrees = []
         for rotation in motif.state.rotation:
             _, angle = _axis_angle(rotation)
@@ -1581,7 +1618,10 @@ class OrbitRigidMotifController:
             dim=-1,
         )
         template_master_centers = motif.template_master.mean(dim=1)
-        return {
+        prior_scales = self._effective_pose_prior_scales.get(
+            motif.constraint_orbit_id
+        )
+        diagnostics = {
             "constraint_orbit_id": motif.constraint_orbit_id,
             "component_id": motif.coupling_group_id,
             "group_action_count": int(motif.group_transform_ids.numel()),
@@ -1618,6 +1658,13 @@ class OrbitRigidMotifController:
                 "max_step_rotation_degrees": (motif.per_step_rotation_degrees),
             },
         }
+        if prior_scales is not None:
+            diagnostics["effective_pose_prior"] = {
+                "translation_scale": prior_scales[0],
+                "rotation_scale_degrees": prior_scales[1],
+                "normalization": "at_least_one_third_of_hard_bound",
+            }
+        return diagnostics
 
     def _diagnostic_snapshot(
         self,

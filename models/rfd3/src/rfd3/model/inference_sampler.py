@@ -70,6 +70,57 @@ logging.basicConfig(level=logging.INFO)
 ranked_logger = RankedLogger(__name__, rank_zero_only=True)
 
 
+def _motif_mobility_proposal_schedule(
+    *,
+    total_steps: int,
+    configured_interval: int,
+    target_update_count: int,
+    windows: tuple[tuple[float, float], ...],
+    always_propose: bool = False,
+) -> dict[str, Any]:
+    """Resolve a trajectory-length-aware mobility proposal schedule."""
+
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    if configured_interval <= 0:
+        raise ValueError("configured_interval must be positive")
+    if target_update_count < 0:
+        raise ValueError("target_update_count cannot be negative")
+    if not windows:
+        raise ValueError("at least one mobility window is required")
+
+    effective_interval = 1 if always_propose else configured_interval
+    if target_update_count and not always_propose:
+        target_interval = max(1, total_steps // target_update_count)
+        effective_interval = min(configured_interval, target_interval)
+
+    proposal_steps = tuple(range(0, total_steps, effective_interval))
+    active_counts = []
+    for start_fraction, end_fraction in windows:
+        active_counts.append(
+            sum(
+                start_fraction
+                < step / max(total_steps - 1, 1)
+                < end_fraction
+                for step in proposal_steps
+            )
+        )
+    return {
+        "total_diffusion_steps": total_steps,
+        "declared_update_interval": configured_interval,
+        "effective_update_interval": effective_interval,
+        "target_update_count": target_update_count,
+        "scheduled_proposal_count": len(proposal_steps),
+        "scheduled_active_proposal_counts": active_counts,
+        "normalization_applied": bool(
+            target_update_count
+            and not always_propose
+            and effective_interval < configured_interval
+        ),
+        "proposal_every_model_step": always_propose,
+    }
+
+
 @dataclass(kw_only=True)
 class SampleDiffusionConfig:
     kind: Literal["default", "symmetry"] = "default"
@@ -181,6 +232,7 @@ class SampleDiffusionConfig:
     )
     motif_mobility_apply_updates: bool = True
     motif_mobility_update_interval: int = 5
+    motif_mobility_target_update_count: int = 24
     motif_mobility_target_max_tilt_degrees: float = 20.0
     motif_mobility_junction_weight: float = 1.0
     motif_mobility_clash_weight: float = 1.0
@@ -634,6 +686,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
         if int(self.motif_mobility_update_interval) <= 0:
             raise ValueError("motif_mobility_update_interval must be positive")
+        if int(self.motif_mobility_target_update_count) < 0:
+            raise ValueError(
+                "motif_mobility_target_update_count cannot be negative"
+            )
         if (
             self.enable_orbit_rigid_motif_mobility
             and self.motif_mobility_proposal_source == "scaffold_boundary"
@@ -1588,6 +1644,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
         )
         joint_packing_mobility = False
+        mobility_schedule_diagnostics = None
+        effective_motif_mobility_update_interval = int(
+            self.motif_mobility_update_interval
+        )
         constraint_runtime = None
         if self.enable_graph_interface_guidance:
             graph_interface_topology = build_graph_interface_topology(
@@ -1678,6 +1738,44 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         "Orbit-rigid motif mobility was enabled but the "
                         "input declares no mobile motif constraint orbit"
                     )
+                mobility_schedule_diagnostics = (
+                    _motif_mobility_proposal_schedule(
+                        total_steps=max(int(noise_schedule.numel()) - 1, 1),
+                        configured_interval=int(
+                            self.motif_mobility_update_interval
+                        ),
+                        target_update_count=int(
+                            self.motif_mobility_target_update_count
+                        ),
+                        windows=tuple(
+                            (
+                                float(
+                                    getattr(
+                                        motif,
+                                        "start_fraction",
+                                        self.motif_mobility_start_fraction,
+                                    )
+                                ),
+                                float(
+                                    getattr(
+                                        motif,
+                                        "end_fraction",
+                                        self.motif_mobility_end_fraction,
+                                    )
+                                ),
+                            )
+                            for motif in motif_mobility_controller.motifs
+                        ),
+                        always_propose=(
+                            self.motif_mobility_proposal_source == "denoiser"
+                        ),
+                    )
+                )
+                effective_motif_mobility_update_interval = int(
+                    mobility_schedule_diagnostics[
+                        "effective_update_interval"
+                    ]
+                )
                 if self.motif_mobility_proposal_source == "scaffold_boundary":
                     scaffold_guidance_topology = build_boundary_topology(
                         f,
@@ -1708,7 +1806,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         "proposal_only="
                         f"{not self.motif_mobility_apply_updates}, "
                         "update_interval="
-                        f"{self.motif_mobility_update_interval}"
+                        f"{effective_motif_mobility_update_interval} "
+                        "(declared="
+                        f"{self.motif_mobility_update_interval}, target="
+                        f"{self.motif_mobility_target_update_count})"
                     )
                     # A monomer-core field must participate in the SE(3) pose
                     # gradient.  Keep the existing atomic graph transaction
@@ -1876,7 +1977,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     fixed_target,
                 ),
                 proposal_source=self.motif_mobility_proposal_source,
-                proposal_interval=int(self.motif_mobility_update_interval),
+                proposal_interval=effective_motif_mobility_update_interval,
                 proposal_hook=proposal_hook,
                 synchronize_conditioning=conditioning_synchronizer,
             )
@@ -2366,9 +2467,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             mobility_diagnostics["apply_updates"] = bool(
                 self.motif_mobility_apply_updates
             )
-            mobility_diagnostics["update_interval"] = int(
-                self.motif_mobility_update_interval
+            mobility_diagnostics["update_interval"] = (
+                effective_motif_mobility_update_interval
             )
+            if mobility_schedule_diagnostics is not None:
+                mobility_diagnostics["proposal_schedule"] = dict(
+                    mobility_schedule_diagnostics
+                )
             if scaffold_guidance_config is not None:
                 mobility_diagnostics["scaffold_guidance_config"] = {
                     key: value for key, value in vars(scaffold_guidance_config).items()

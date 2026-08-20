@@ -4,18 +4,17 @@ import unittest
 from unittest.mock import patch
 
 import torch
-
-from rfd3.inference.symmetry.motif_mobility import (
-    OrbitRigidMotifController,
-    fit_centered_rigid_pose,
-    mobility_window_weight,
-)
 from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceEdge,
     GraphInterfaceGuidanceConfig,
     GraphInterfacePatchState,
     GraphInterfaceTopology,
     graph_interface_energy,
+)
+from rfd3.inference.symmetry.motif_mobility import (
+    OrbitRigidMotifController,
+    fit_centered_rigid_pose,
+    mobility_window_weight,
 )
 from rfd3.inference.symmetry.scaffold_guidance import (
     BoundaryTopology,
@@ -858,6 +857,51 @@ class MotifMobilityTestCase(unittest.TestCase):
             self.assertTrue(
                 torch.allclose(canonical, master, atol=1e-6)
             )
+
+    def test_scaffold_pose_prior_scales_with_declared_orbit_bounds(
+        self,
+    ) -> None:
+        (
+            _,
+            _,
+            _,
+            controller,
+            scaffold,
+            topology,
+            axis,
+            _,
+        ) = self._scaffold_guidance_case()
+        motif = controller.motifs[0]
+        motif.maximum_translation = 15.0
+        motif.maximum_rotation_degrees = 45.0
+        config = ScaffoldGuidanceConfig(
+            junction_weight=1.0,
+            clash_weight=0.0,
+            tilt_weight=0.0,
+            prior_weight=0.05,
+            translation_prior_scale=1.0,
+            rotation_prior_scale_degrees=5.0,
+        )
+
+        controller.update_from_scaffold(
+            scaffold,
+            progress=0.5,
+            topology=topology,
+            axis=axis,
+            principal_axis=axis.direction,
+            config=config,
+            apply_update=False,
+        )
+
+        prior = controller.diagnostics()["orbits"][0][
+            "effective_pose_prior"
+        ]
+        self.assertEqual(prior["translation_scale"], 5.0)
+        self.assertEqual(prior["rotation_scale_degrees"], 15.0)
+        self.assertEqual(
+            prior["normalization"],
+            "at_least_one_third_of_hard_bound",
+        )
 
     def test_joint_scaffold_acceptance_includes_additional_pose_energy(
         self,

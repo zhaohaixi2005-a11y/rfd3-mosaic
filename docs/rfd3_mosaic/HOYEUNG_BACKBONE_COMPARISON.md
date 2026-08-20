@@ -122,6 +122,25 @@ still means the controller ran within bounds; inspect `translation_fraction_of_b
 `rotation_fraction_of_bound`, and `applied_proposal_count` to see how much pose
 correction actually occurred.
 
+The runtime distinguishes two levels of preservation. A fixed arrangement
+keeps both seed internal geometry and its assembly pose unchanged. A mobile
+supplied-interface seed keeps every atom and relative A/B interface transform
+joint-rigid, but permits the complete seed to translate and rotate as one
+master pose; exact C3 copies are rebuilt from that master after every accepted
+update. Mobility never means independently deforming seed fragments or moving
+symmetry copies separately.
+
+Short diffusion trajectories use a timestep-normalized proposal schedule. The
+configured interval remains the maximum spacing, while the runtime targets 24
+pose proposals when a short trajectory would otherwise receive too few. A
+50-step run therefore normally proposes every two steps; a 200-step run keeps
+the established five-step interval. The soft pose prior is also normalized to
+at least one third of each orbit's declared translation and rotation bounds.
+Hard pose bounds, supplied-interface geometry and exact symmetry are unchanged.
+The mobility artifact records declared/effective intervals, scheduled active
+proposals, search-budget upper bounds, effective prior scales and actual
+accepted motion.
+
 After its required audits pass, submit exactly 1,000 backbones:
 
 ```bash

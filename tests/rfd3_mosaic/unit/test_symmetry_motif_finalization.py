@@ -1,10 +1,9 @@
 import math
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import torch
-
 from rfd3.inference.symmetry.symmetry_utils import (
     apply_symmetry_to_xyz_atomwise,
     build_symmetry_orbit_layout,
@@ -14,6 +13,7 @@ from rfd3.inference.symmetry.symmetry_utils import (
 from rfd3.model.inference_sampler import (
     ConditionalDiffusionSampler,
     SampleDiffusionWithSymmetry,
+    _motif_mobility_proposal_schedule,
 )
 
 
@@ -111,6 +111,27 @@ class _RecordingScaffoldController:
 
 
 class SymmetryMotifFinalizationTestCase(unittest.TestCase):
+    def test_short_trajectory_receives_length_normalized_mobility_schedule(
+        self,
+    ) -> None:
+        short = _motif_mobility_proposal_schedule(
+            total_steps=49,
+            configured_interval=5,
+            target_update_count=24,
+            windows=((0.05, 0.85),),
+        )
+        long = _motif_mobility_proposal_schedule(
+            total_steps=199,
+            configured_interval=5,
+            target_update_count=24,
+            windows=((0.05, 0.85),),
+        )
+
+        self.assertEqual(short["effective_update_interval"], 2)
+        self.assertGreaterEqual(short["scheduled_active_proposal_counts"][0], 18)
+        self.assertEqual(long["effective_update_interval"], 5)
+        self.assertGreaterEqual(long["scheduled_active_proposal_counts"][0], 30)
+
     def test_graph_packing_and_mobility_require_unified_proposal_path(
         self,
     ) -> None:
@@ -758,6 +779,7 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                     ),
                     motif_mobility_apply_updates=apply_updates,
                     motif_mobility_update_interval=2,
+                    motif_mobility_target_update_count=0,
                 )
 
                 with (

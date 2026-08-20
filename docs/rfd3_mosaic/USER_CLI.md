@@ -298,6 +298,12 @@ sampling:
 The mobility audit reports the observed translation and rotation as fractions
 of their declared full-SE(3) bounds. Nonzero movement is evidence, not a hard
 acceptance condition: an already-good initial pose may correctly remain still.
+It also reports the declared and effective proposal interval, the scheduled
+active proposal count, the upper-bound translation/rotation search budget and
+the bound-normalized soft-prior scales. `fixed` components remain absolutely
+fixed. These scheduling fields apply only to `orbit_rigid` components: their
+supplied internal interface geometry remains exact while the complete seed can
+move as one symmetry-coupled rigid pose.
 
 Existing YAMLs that omit these fields retain the original values
 `intra_chain_weight=0` and `inter_chain_weight=1`.

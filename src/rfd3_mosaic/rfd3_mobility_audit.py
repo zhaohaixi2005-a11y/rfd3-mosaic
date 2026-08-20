@@ -239,6 +239,7 @@ def write_mobility_trajectory(
             "proposal_source": diagnostics.get("proposal_source"),
             "mobile_orbit_count": diagnostics.get("mobile_orbit_count"),
             "constraint_runtime": diagnostics.get("constraint_runtime"),
+            "proposal_schedule": diagnostics.get("proposal_schedule"),
             "scaffold_guidance_config": diagnostics.get("scaffold_guidance_config"),
             "final_orbits": diagnostics.get("orbits", []),
             "trajectory": trajectory,
@@ -324,6 +325,15 @@ def audit_component_mobility(
         if isinstance(record, dict) and record.get("constraint_orbit_id")
     }
     symmetry_axis = diagnostics.get("symmetry_axis")
+    proposal_schedule = diagnostics.get("proposal_schedule")
+    if not isinstance(proposal_schedule, dict):
+        proposal_schedule = {}
+    scheduled_active_counts = proposal_schedule.get(
+        "scheduled_active_proposal_counts",
+        [],
+    )
+    if not isinstance(scheduled_active_counts, list):
+        scheduled_active_counts = []
 
     component_reports: list[dict[str, Any]] = []
     group_action_contracts: list[bool] = []
@@ -386,6 +396,41 @@ def audit_component_mobility(
             symmetry_axis=symmetry_axis,
             tolerance=tolerance,
         )
+        component_schedule = record.get("schedule")
+        if not isinstance(component_schedule, dict):
+            component_schedule = {}
+        scheduled_active_count = (
+            int(scheduled_active_counts[index])
+            if index < len(scheduled_active_counts)
+            and _finite_number(scheduled_active_counts[index])
+            else None
+        )
+        response = component_schedule.get("response")
+        step_translation = component_schedule.get("max_step_translation")
+        step_rotation = component_schedule.get("max_step_rotation_degrees")
+        translation_budget = None
+        rotation_budget = None
+        if (
+            scheduled_active_count is not None
+            and _finite_number(response)
+            and _finite_number(step_translation)
+            and _finite_number(step_rotation)
+        ):
+            translation_budget = min(
+                maximum_translation,
+                scheduled_active_count
+                * float(response)
+                * float(step_translation),
+            )
+            rotation_budget = min(
+                maximum_rotation,
+                scheduled_active_count
+                * float(response)
+                * float(step_rotation),
+            )
+        prior = record.get("effective_pose_prior")
+        if not isinstance(prior, dict):
+            prior = None
         passed = bool(
             translations
             and rotations
@@ -410,6 +455,22 @@ def audit_component_mobility(
                 "maximum_rotation_deg_allowed": maximum_rotation,
                 "maximum_rotation_deg_observed": rotation_observed,
                 "rotation_fraction_of_bound": rotation_fraction,
+                "scheduled_active_proposal_count": scheduled_active_count,
+                "translation_search_budget_upper_bound": translation_budget,
+                "rotation_search_budget_upper_bound_degrees": rotation_budget,
+                "translation_search_fraction_of_bound": (
+                    translation_budget / maximum_translation
+                    if translation_budget is not None
+                    and maximum_translation > tolerance
+                    else None
+                ),
+                "rotation_search_fraction_of_bound": (
+                    rotation_budget / maximum_rotation
+                    if rotation_budget is not None
+                    and maximum_rotation > tolerance
+                    else None
+                ),
+                "effective_pose_prior": prior,
                 "nonzero_motion_observed": nonzero_motion_observed,
                 **directional,
             }
@@ -544,6 +605,7 @@ def audit_component_mobility(
                 if isinstance(runtime_counts, dict)
                 else 0
             ),
+            "proposal_schedule": proposal_schedule or None,
             # Movement is evidence, not a pass condition: a good initial pose
             # may legitimately require no correction.  Report it explicitly
             # so PASS is never mistaken for proof of large SE(3) motion.
