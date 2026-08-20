@@ -199,3 +199,34 @@ The worker now keeps every pose-specific one-example compiler artifact under
 engine call.  Each output is audited against its exact pose-specific input.
 Regression coverage explicitly checks that fixed-pose diffusion replicates do
 not overwrite the audit contract.
+
+## Recovered RTX 3070 evidence
+
+The two first multi-design RTX jobs completed RFD3 and produced four CIFs
+before the audit-input collision described above stopped post-processing.  The
+outputs were re-audited without rerunning diffusion after the fix in
+`4df4fcc`.  This separates the integration failure from the scientific result.
+
+| mode | output | minimum edge distance (A) | heavy-atom coverage per side | contiguous patch per side | heavy clashes per symmetry edge | result |
+|---|---:|---:|---:|---:|---:|---|
+| locked | 0 | 3.500 | 7 / 7 | 4 / 3 | 2 | FAIL |
+| locked | 1 | 5.775 | 3 / 3 | 1 / 3 | 0 | FAIL |
+| guided | 0 | 3.504 | 7 / 7 | 4 / 5 | 2 | FAIL |
+| guided | 1 | 5.614 | 3 / 4 | 1 / 4 | 0 | FAIL |
+
+All four outputs passed exact constraint recovery and scaffold validity; both
+guided outputs also passed the component-mobility audit.  None passed graph
+guidance or the final assembly-interface relation audit, so the scientific
+yield is 0/4.  The two near-contact outputs already reach seven contacting
+residues on each side but fail by an incomplete contiguous patch plus two
+heavy-atom clashes on every C3 edge.  The other two outputs remain sparse and
+have poor shape/coverage.
+
+This campaign intentionally used the already-usable input pose for both
+diffusion replicas.  It tests the locked versus bounded-mobile runtime
+controller, not the new per-design stochastic initial-pose path.  Guided
+mobility was active but changed the final geometry only slightly.  Together
+with the earlier H100 0/4 gate, current evidence is 0/8 accepted structures.
+The next algorithmic change should therefore target continuity-aware,
+all-atom-safe final proposals for near-capture interfaces; pass thresholds
+must not be weakened to convert clashes into successes.
