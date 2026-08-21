@@ -356,10 +356,15 @@ def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
     if compiled_path.is_file():
         try:
             payload = _load_json(compiled_path)
-            example = next(iter(payload.values())) if len(payload) == 1 else {}
+            examples = [
+                value for value in payload.values() if isinstance(value, dict)
+            ]
+            example = examples[0] if examples else {}
         except (OSError, ValueError, json.JSONDecodeError):
+            examples = []
             example = {}
         if isinstance(example, dict):
+            context["compiled_example_count"] = len(examples)
             source = example.get("input")
             if source is not None:
                 source_path = Path(str(source)).expanduser()
@@ -413,29 +418,40 @@ def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
             if interface_instances:
                 context["interface_instances"] = interface_instances
 
-    manifest_path = run_directory / "input" / "manifest.json"
-    if manifest_path.is_file():
+    input_directory = run_directory / "input"
+    manifest_paths = [input_directory / "manifest.json"]
+    manifest_paths.extend(sorted(input_directory.glob("pose_*/manifest.json")))
+    source_inputs_by_path: dict[str, dict[str, Any]] = {}
+    for manifest_path in manifest_paths:
+        if not manifest_path.is_file():
+            continue
         try:
             manifest = _load_json(manifest_path)
         except (OSError, ValueError, json.JSONDecodeError):
-            manifest = {}
-        inputs = manifest.get("inputs") or []
-        source_inputs = [
-            {
-                "path": str(item["path"]),
+            continue
+        for item in manifest.get("inputs") or []:
+            if not isinstance(item, dict) or not item.get("path"):
+                continue
+            source_path = str(item["path"])
+            source_inputs_by_path[source_path] = {
+                "path": source_path,
                 "sha256": item.get("sha256"),
             }
-            for item in inputs
-            if isinstance(item, dict) and item.get("path")
-        ]
-        if source_inputs:
-            context["source_inputs"] = source_inputs
-            # Retain the singular field for API consumers when there is one
-            # source while still supporting future multi-file assemblies.
-            if len(source_inputs) == 1:
-                context["structure_input"] = source_inputs[0]["path"]
+    source_inputs = list(source_inputs_by_path.values())
+    if source_inputs:
+        context["source_inputs"] = source_inputs
+        # Retain the singular field for API consumers when all pose-specific
+        # compiler manifests trace back to the same biological source.
+        if len(source_inputs) == 1:
+            context["structure_input"] = source_inputs[0]["path"]
 
-    specification_path = run_directory / "input" / "assembly_specification.yaml"
+    specification_path = input_directory / "assembly_specification.yaml"
+    if not specification_path.is_file():
+        pose_specifications = sorted(
+            input_directory.glob("pose_*/assembly_specification.yaml")
+        )
+        if pose_specifications:
+            specification_path = pose_specifications[0]
     if specification_path.is_file():
         try:
             specification = _load_yaml(specification_path)

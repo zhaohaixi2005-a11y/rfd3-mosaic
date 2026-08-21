@@ -478,6 +478,59 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertIn("supplied_seed.pdb", html)
         self.assertIn("A/186-189/*", html)
 
+    def test_status_recovers_context_from_multi_example_pose_artifacts(self) -> None:
+        run = self._completed_run("11225")
+        input_directory = run / "input"
+        input_directory.mkdir()
+        original = run / "inputs" / "supplied_seed.pdb"
+        original.parent.mkdir()
+        original.write_text("END\n", encoding="utf-8")
+        examples = {}
+        for index in range(2):
+            pose_directory = input_directory / f"pose_{index:05d}"
+            pose_directory.mkdir()
+            compiled = pose_directory / "presymmetrized_input.cif"
+            compiled.write_text("data_test\n", encoding="utf-8")
+            self._write_json(
+                pose_directory / "manifest.json",
+                {"inputs": [{"path": str(original), "sha256": "abc123"}]},
+            )
+            examples[f"design_{index:05d}"] = {
+                "input": f"pose_{index:05d}/presymmetrized_input.cif",
+                "symmetry": {"id": "C3"},
+                "extra": {
+                    "symmetry_multiplicity": 3,
+                    "motif_constraint_orbits": [{"id": "fixed"}],
+                    "assembly_interface_relations": [
+                        {"satisfaction_stage": "output"}
+                    ],
+                },
+            }
+        self._write_json(input_directory / "rfd3_input.json", examples)
+        (run / "resolved_config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "topology": {"kind": "user_design"},
+                    "sampling": {"timesteps": 50, "seed": 73000, "designs": 2},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status = collect_run_status(
+            RunReference(job_id="11225", run_directory=run),
+            include_scheduler=False,
+        )
+
+        design = status["design"]
+        self.assertEqual(design["compiled_example_count"], 2)
+        self.assertEqual(design["task"], "create_symmetric_interface")
+        self.assertEqual(design["symmetry"], "C3")
+        self.assertEqual(design["symmetry_multiplicity"], 3)
+        self.assertEqual(design["fixed_component_count"], 1)
+        self.assertEqual(design["structure_input"], str(original))
+        self.assertIn("pose_00000", design["compiled_input"])
+
 
 if __name__ == "__main__":
     unittest.main()
