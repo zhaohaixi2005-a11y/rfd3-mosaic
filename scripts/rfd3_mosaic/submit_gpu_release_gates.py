@@ -103,6 +103,7 @@ GATES: dict[str, dict[str, Any]] = {
         ),
         "profile": LARGE_PROFILE,
         "designs": 1,
+        "defer_runtime_preflight": True,
         "claim": "50-step twenty-four-action octahedral runtime closure",
     },
     "i-static": {
@@ -113,6 +114,7 @@ GATES: dict[str, dict[str, Any]] = {
         ),
         "profile": LARGE_PROFILE,
         "designs": 1,
+        "defer_runtime_preflight": True,
         "claim": "50-step sixty-action icosahedral runtime closure",
     },
 }
@@ -229,12 +231,16 @@ def main() -> None:
             encoding="utf-8",
         )
         profile = str((project / str(gate["profile"])).resolve())
+        defer_runtime_preflight = bool(
+            gate.get("defer_runtime_preflight", False)
+        )
+        validation_command = "plan" if defer_runtime_preflight else "validate"
         validate = _run(
             [
                 sys.executable,
                 "-m",
                 "rfd3_mosaic.cli",
-                "validate",
+                validation_command,
                 str(frozen),
                 "--profile",
                 profile,
@@ -247,22 +253,28 @@ def main() -> None:
             "design": str(frozen),
             "profile": profile,
             "requested_designs": gate["designs"],
+            "submission_preflight": (
+                "complete_on_allocated_worker"
+                if defer_runtime_preflight
+                else "complete_before_submission"
+            ),
             "validation_returncode": validate.returncode,
             "submitted": False,
             "submission_output": None,
         }
         if validate.returncode == 0 and arguments.submit:
-            submitted = _run(
-                [
-                    sys.executable,
-                    "-m",
-                    "rfd3_mosaic.cli",
-                    "submit",
-                    str(frozen),
-                    "--profile",
-                    profile,
-                ]
-            )
+            submission_command = [
+                sys.executable,
+                "-m",
+                "rfd3_mosaic.cli",
+                "submit",
+                str(frozen),
+                "--profile",
+                profile,
+            ]
+            if defer_runtime_preflight:
+                submission_command.append("--defer-runtime-preflight")
+            submitted = _run(submission_command)
             record["submission_returncode"] = submitted.returncode
             record["submission_output"] = submitted.stdout.strip()
             record["submitted"] = submitted.returncode == 0

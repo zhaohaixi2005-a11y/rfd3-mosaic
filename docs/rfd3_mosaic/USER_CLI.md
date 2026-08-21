@@ -155,6 +155,22 @@ executor. The `local` profile performs direct synchronous execution on any
 compatible machine. A custom Slurm profile submits the same envelope through
 the scheduler.
 
+Very high-order explicit-all-copy designs can require substantially more
+memory to construct and prevalidate than a shared login node provides. For
+those designs, submit with:
+
+```bash
+rfd3-mosaic run design.yaml \
+  --profile large-gpu.yaml \
+  --defer-runtime-preflight
+```
+
+This option is not a validation bypass. Mosaic still performs schema,
+selector and constraint-binding checks before submission. Complete expanded
+assembly construction and RFD3 runtime-feature prevalidation then run inside
+the allocated worker before inference; a failed preflight prevents model
+execution. Ordinary designs should keep the default eager preflight.
+
 ### `render`
 
 ```bash

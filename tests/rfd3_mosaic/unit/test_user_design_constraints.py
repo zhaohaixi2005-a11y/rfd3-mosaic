@@ -2,6 +2,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import yaml
@@ -1076,13 +1077,26 @@ constraints:
             payload = yaml.safe_load(
                 envelope.read_text(encoding="utf-8")
             )
+            with patch(
+                "rfd3_mosaic.cli._preflight_public_design_geometry"
+            ) as complete_preflight:
+                deferred_envelope = _write_public_experiment(
+                    declared,
+                    source,
+                    defer_runtime_preflight=True,
+                )
+            deferred_payload = yaml.safe_load(
+                deferred_envelope.read_text(encoding="utf-8")
+            )
 
+        complete_preflight.assert_not_called()
         self.assertEqual(payload["topology"]["kind"], "user_design")
         self.assertEqual(payload["topology"]["config"], str(source))
         self.assertEqual(payload["sampling"]["timesteps"], 50)
         self.assertNotIn("initial_pose", payload["sampling"])
         self.assertNotIn("scaffold_core_quality", payload["sampling"])
         self.assertEqual(payload["resources"]["profile"], "h100")
+        self.assertEqual(deferred_payload["topology"], payload["topology"])
 
 
 if __name__ == "__main__":

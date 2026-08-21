@@ -395,6 +395,15 @@ def _parser() -> argparse.ArgumentParser:
         help="Override output.campaign (public/simple designs only).",
     )
     render.add_argument(
+        "--defer-runtime-preflight",
+        action="store_true",
+        help=(
+            "For high-order public designs, run lightweight schema/selector "
+            "checks now and defer complete RFD3 construction/prevalidation "
+            "to the allocated worker."
+        ),
+    )
+    render.add_argument(
         "--resolution-dir",
         type=Path,
         help=(
@@ -440,6 +449,15 @@ def _parser() -> argparse.ArgumentParser:
         submit.add_argument(
             "--campaign",
             help="Override output.campaign (public/simple designs only).",
+        )
+        submit.add_argument(
+            "--defer-runtime-preflight",
+            action="store_true",
+            help=(
+                "For high-order public designs, run lightweight schema/selector "
+                "checks now and defer complete RFD3 construction/prevalidation "
+                "to the allocated worker."
+            ),
         )
         submit.add_argument(
             "--resolution-dir",
@@ -664,13 +682,24 @@ def _write_quick_experiment(arguments: argparse.Namespace) -> Path:
 def _write_public_experiment(
     design: UserDesignSpec,
     source_path: Path,
+    *,
+    defer_runtime_preflight: bool = False,
 ) -> Path:
     """Materialize the internal experiment envelope for one public design."""
 
-    # Prove that the public declaration lowers and that its complete expanded
-    # assembly satisfies the strict static geometry gates before creating a
-    # request directory or consuming a scheduler slot.
-    _preflight_public_design_geometry(design)
+    if defer_runtime_preflight:
+        # High-order explicit-all-copy inputs can exceed a login node's memory
+        # merely while constructing the complete RFD3 feature tensor. Keep
+        # schema, selector and constraint binding fail-closed here; the worker
+        # still performs complete compilation and RFD3 prevalidation inside
+        # the requested compute allocation before model inference starts.
+        plan = compile_constraint_plan(design)
+        bind_constraint_plan(design, plan)
+    else:
+        # Prove that the public declaration lowers and that its complete
+        # expanded assembly satisfies the strict static geometry gates before
+        # creating a request directory or consuming a scheduler slot.
+        _preflight_public_design_geometry(design)
     if design.output is None:
         raise ValueError("Public design render/submit requires output.root")
     resources = design.resources.model_dump(
@@ -2355,6 +2384,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             config_path = _write_public_experiment(
                 public_design,
                 arguments.config,
+                defer_runtime_preflight=getattr(
+                    arguments,
+                    "defer_runtime_preflight",
+                    False,
+                ),
             )
         except (NotImplementedError, OSError, TypeError, ValueError) as error:
             parser.error(str(error))

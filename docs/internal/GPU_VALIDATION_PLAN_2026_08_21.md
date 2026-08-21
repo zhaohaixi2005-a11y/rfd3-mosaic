@@ -35,6 +35,13 @@ grep -nE 'name:|timesteps:|task:' \
   --gate i-static --submit
 ```
 
+Do not run the full `validate` command for this 60-copy design on a constrained
+login node. The release-gate launcher performs schema, selector and constraint
+binding there, then uses `--defer-runtime-preflight` so complete 60-copy RFD3
+construction and prevalidation run inside the 440 GB A100/H100 allocation.
+The preflight remains mandatory and inference cannot start if it fails; only
+its execution location changes.
+
 Required evidence is: one 60-copy CIF, fixed-orbit constraint recovery,
 continuity, clashes and symmetry diagnostics. Scientific compactness is
 reported separately because this file is a runtime canary, not a designed I
