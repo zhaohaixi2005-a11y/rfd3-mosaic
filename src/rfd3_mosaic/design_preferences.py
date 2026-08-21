@@ -32,7 +32,10 @@ class ResolvedDesignPreferences(StrictModel):
     """Frozen values consumed by search, sampler, provenance and reports."""
 
     schema_version: Literal[1] = 1
-    preset_version: Literal["packing_preferences_v1"] = "packing_preferences_v1"
+    preset_version: Literal[
+        "packing_preferences_v1",
+        "packing_preferences_v2",
+    ] = "packing_preferences_v2"
     packing: PackingPreference
     cavity: CavityPreference
     diversity: DiversityPreference
@@ -58,6 +61,7 @@ class ResolvedDesignPreferences(StrictModel):
 
 _PACKING: dict[PackingPreference, dict[str, float]] = {
     PackingPreference.LOOSE: {
+        "graph_interface_guidance_contact_prior_weight": 0.06,
         "graph_interface_guidance_weight": 0.80,
         "graph_interface_guidance_coverage_weight": 0.80,
         "graph_interface_guidance_continuity_weight": 0.85,
@@ -68,6 +72,7 @@ _PACKING: dict[PackingPreference, dict[str, float]] = {
         "graph_interface_guidance_maximum_token_step": 0.20,
     },
     PackingPreference.BALANCED: {
+        "graph_interface_guidance_contact_prior_weight": 0.10,
         "graph_interface_guidance_weight": 1.00,
         "graph_interface_guidance_coverage_weight": 1.00,
         "graph_interface_guidance_continuity_weight": 1.00,
@@ -78,6 +83,7 @@ _PACKING: dict[PackingPreference, dict[str, float]] = {
         "graph_interface_guidance_maximum_token_step": 0.25,
     },
     PackingPreference.TIGHT: {
+        "graph_interface_guidance_contact_prior_weight": 0.15,
         "graph_interface_guidance_weight": 1.15,
         "graph_interface_guidance_coverage_weight": 1.25,
         "graph_interface_guidance_continuity_weight": 1.30,
@@ -187,6 +193,11 @@ def compile_design_preferences(
             overrides["scaffold_core_intra_chain_weight"] = intra_chain_weight
         if inter_chain_weight is not None:
             overrides["scaffold_core_inter_chain_weight"] = inter_chain_weight
+            # RFdiffusion-style ``inter`` controls broad contact capture. It
+            # must not scale Mosaic continuity, orientation, or safety terms.
+            overrides[
+                "graph_interface_guidance_contact_prior_weight"
+            ] = inter_chain_weight
         if inter_chain_excess_penalty is not None:
             overrides["scaffold_core_inter_chain_excess_penalty"] = (
                 inter_chain_excess_penalty

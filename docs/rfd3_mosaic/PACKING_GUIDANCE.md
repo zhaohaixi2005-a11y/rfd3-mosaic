@@ -23,10 +23,28 @@ each fixed coupling group is a hard invariant in every mode:
 
 ## Runtime packing contract
 
-Each physical interface is one reciprocal pair of sequence-contiguous
-generated patches. Patch residues move through a blended local SE(3)
-translation and rotation, not independent CA attraction. All symmetry copies
-are reconstructed through the declared group action.
+Generated-interface guidance is a two-resolution objective. The first term is
+the broad coordination-number contact prior used by RFdiffusion's public
+`olig_contacts` potential:
+
+```text
+x_ij = (d_ij - d0) / r0
+C_ij = 1 / (1 + x_ij^6)
+E_broad = - w_inter * s(t) * sum(C_ij) / min(N_left, N_right)
+s(t) = guide_scale * (1 - progress)^decay_power
+```
+
+It sees every generated CA pair belonging to a compiler-declared physical
+interface edge. Its purpose is early capture: it supplies a smooth gradient
+when no narrow contiguous patch has yet been selected. Mosaic minimizes
+energy, hence the negative sign. The default switch (`r0=8 A`, `d0=2 A`),
+guide scale (`2`) and quadratic decay follow the public RFdiffusion convention.
+
+The second term is Mosaic's selective interface refinement. Each physical
+interface is one reciprocal pair of sequence-contiguous generated patches.
+Patch residues move through a blended local SE(3) translation and rotation,
+not independent CA attraction. All symmetry copies are reconstructed through
+the declared group action.
 
 The joint objective includes:
 
@@ -43,16 +61,29 @@ The joint objective includes:
 
 The schedule is state adaptive:
 
-1. `capture`: a distant reciprocal patch receives a broad attraction basin;
-2. `expand`: a captured but narrow/scattered patch emphasizes coverage and
+1. the RF-style all-pair prior is strongest early and decays toward zero;
+2. `capture`: a distant reciprocal patch receives a broad attraction basin;
+3. `expand`: a captured but narrow/scattered patch emphasizes coverage and
    continuity;
-3. `polish`: only a sufficiently broad contiguous patch receives smaller
+4. `polish`: only a sufficiently broad contiguous patch receives smaller
    orientation/shape-focused SE(3) updates.
 
 Diffusion timestep supplies an annealing envelope, but it cannot force an
 unsatisfied patch into polish. Patch identity locks only after final-radius
 coverage and continuity are met. Every proposal is symmetry projected, then
 accepted atomically or rolled back.
+
+The RF-style prior does not weaken fixed geometry. With a locked motif only
+generated coordinates receive gradients. With guided component motion, the
+existing atomic transaction may additionally update one complete joint-rigid
+motif orbit, then regenerate all symmetry copies. A globally fixed motif is
+restored by the hard projector after every denoising/guidance step.
+
+Ordinary users select calibrated `packing: loose|balanced|tight` presets.
+Expert `guidance.inter_chain_weight` changes only the broad inter-chain
+contact prior; it no longer scales Mosaic's continuity, orientation, shape or
+safety objectives. This preserves the familiar RFdiffusion intra/inter
+control while keeping Mosaic's higher-resolution terms independently auditable.
 
 ## Pre-diffusion capacity checks
 
@@ -87,10 +118,24 @@ Names ending in `proxy` are deliberately not reported as SASA, Rosetta shape
 complementarity or energetic designability. Those require a sequence/folding
 stage and are outside the current backbone-generation claim.
 
-`graph_interface_guidance_audit.json` schema v8 independently proves that
+`graph_interface_guidance_audit.json` schema v9 independently proves that
 runtime edge identities match the compiler, immutable capacity preflight was
 present, patch identity did not hop after locking, adaptive phases were
-recorded, and the post-finalization proxy contract passed.
+recorded, the scheduled broad contact prior was finite and attached to the
+declared physical edges, and the post-finalization proxy contract passed.
+
+The implementation is based on the published RFdiffusion contact-potential
+form and schedule, not on an invented pass threshold. Mosaic's additional
+coverage/continuity/orientation/shape scores remain advisory generation and
+screening proxies until sequence/refolding evidence exists.
+
+Primary references:
+
+- RFdiffusion paper: <https://doi.org/10.1038/s41586-023-06415-8>
+- public `olig_contacts` implementation:
+  <https://github.com/RosettaCommons/RFdiffusion/blob/main/rfdiffusion/potentials/potentials.py>
+- public potential schedule/configuration:
+  <https://github.com/RosettaCommons/RFdiffusion/blob/main/rfdiffusion/potentials/manager.py>
 
 ## Evidence boundary
 

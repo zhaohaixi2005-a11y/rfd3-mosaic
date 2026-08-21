@@ -5,6 +5,40 @@
 The interface-packing implementation is real and active, but it is not yet a
 scientifically reliable release claim.
 
+## Broad-contact integration (2026-08-21)
+
+The zero-yield 12-output campaign showed that distinct initial poses and an
+active local patch controller were not sufficient: many outputs finished
+10--17 A from the declared edge, where the selected-patch objective had too
+little capture range. The CPU/runtime implementation has therefore been
+changed, without adding a new task mode:
+
+- every declared generated-interface edge now receives the public
+  RFdiffusion `olig_contacts` coordination-number prior over all generated CA
+  pairs;
+- the prior uses the RFdiffusion-style `r0=8 A`, `d0=2 A`, guide scale `2`
+  and quadratic early-to-late decay;
+- the prior is normalized per physical interface side and balanced by source
+  interface identity, so T/O/I multiplicity does not silently dominate Cn;
+- Mosaic's existing contiguous-patch coverage, continuity, orientation,
+  shape, junction, clash, symmetry and rollback contracts remain the second
+  refinement level;
+- `guidance.inter_chain_weight` now controls this broad inter-chain prior
+  rather than multiplying every graph-refinement loss;
+- diagnostics/audit schema v9 records the resolved prior parameters, its
+  timestep schedule and per-edge energy.
+
+This is the mature part borrowed from RFdiffusion: early broad contact
+formation plus annealing. The exact fixed/joint-rigid semantics, finite-group
+edge accounting and post-generation audits remain Mosaic-specific. The code
+change is CPU-testable; useful interface yield still requires a new frozen
+50-step GPU campaign and must not be claimed before that result.
+
+Implementation evidence is traceable to the RFdiffusion Nature paper
+(<https://doi.org/10.1038/s41586-023-06415-8>) and its public
+`rfdiffusion/potentials/{potentials,manager}.py` source. The contact prior is a
+generation aid, not a new definition of backbone success.
+
 ## Independent-pose configuration correction (2026-08-21)
 
 Commit `3b41f95` implemented one independently seeded pre-diffusion assembly

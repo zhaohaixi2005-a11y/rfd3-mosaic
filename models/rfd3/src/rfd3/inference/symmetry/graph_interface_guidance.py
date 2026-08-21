@@ -32,6 +32,14 @@ class GraphInterfaceGuidanceConfig:
     patch_exclusivity_weight: float = 1.0
     clash_weight: float = 8.0
     distance_weight: float = 0.25
+    # RFdiffusion-style broad contact prior over every generated CA pair on a
+    # declared physical interface edge. It is separate from ``weight`` so an
+    # inter-chain setting cannot scale continuity, shape, or safety terms.
+    contact_prior_weight: float = 0.0
+    contact_prior_guide_scale: float = 2.0
+    contact_prior_decay_power: float = 2.0
+    contact_prior_r_0: float = 8.0
+    contact_prior_d_0: float = 2.0
     target_ca_distance: float = 8.0
     clash_ca_distance: float = 3.5
     pairs_per_edge: int = 8
@@ -89,8 +97,15 @@ class GraphInterfaceGuidanceConfig:
             or self.patch_exclusivity_weight < 0.0
             or self.clash_weight < 0.0
             or self.distance_weight < 0.0
+            or self.contact_prior_weight < 0.0
+            or self.contact_prior_guide_scale < 0.0
+            or self.contact_prior_decay_power < 0.0
         ):
             raise ValueError("Interface guidance weights cannot be negative")
+        if self.contact_prior_r_0 <= 0.0:
+            raise ValueError("contact_prior_r_0 must be positive")
+        if self.contact_prior_d_0 < 0.0:
+            raise ValueError("contact_prior_d_0 cannot be negative")
         if self.target_ca_distance <= self.clash_ca_distance:
             raise ValueError(
                 "target_ca_distance must exceed clash_ca_distance"
@@ -227,6 +242,7 @@ class GraphInterfaceEnergy:
     patch_exclusivity: torch.Tensor
     clash: torch.Tensor
     distance: torch.Tensor
+    contact_prior: torch.Tensor
     minimum_distances: torch.Tensor
     mean_selected_distances: torch.Tensor
     covered_left_residues: torch.Tensor
@@ -239,6 +255,7 @@ class GraphInterfaceEnergy:
     per_edge_shape: torch.Tensor
     per_edge_backbone: torch.Tensor
     per_edge_total: torch.Tensor
+    per_edge_contact_prior: torch.Tensor
     per_source_total: torch.Tensor
     global_safety_clash: torch.Tensor
     minimum_global_safety_distance: torch.Tensor
@@ -1670,6 +1687,30 @@ def _source_interface_means(
     )
 
 
+def rf_oligomer_contact_prior(
+    distances: torch.Tensor,
+    *,
+    r_0: float,
+    d_0: float,
+    normalization: int,
+) -> torch.Tensor:
+    """Return the stable RFdiffusion coordination-number contact energy."""
+
+    if distances.numel() == 0:
+        raise ValueError("RF oligomer contact prior requires atom pairs")
+    if r_0 <= 0.0:
+        raise ValueError("RF oligomer contact prior requires r_0 > 0")
+    if normalization < 1:
+        raise ValueError(
+            "RF oligomer contact prior normalization must be positive"
+        )
+    scaled = (distances - float(d_0)) / float(r_0)
+    # RFdiffusion uses (1-x**6)/(1-x**12). This equivalent form is finite at
+    # x == 1. Mosaic minimizes energy, hence the negative sign.
+    contacts = torch.reciprocal(1.0 + torch.pow(scaled, 6))
+    return -contacts.sum() / float(normalization)
+
+
 def graph_interface_energy(
     coordinates: torch.Tensor,
     topology: GraphInterfaceTopology,
@@ -1698,6 +1739,7 @@ def graph_interface_energy(
     backbones = []
     clashes = []
     distance_terms = []
+    contact_priors = []
     minima = []
     selected_means = []
     covered_left_counts = []
@@ -1719,6 +1761,17 @@ def graph_interface_energy(
             raise ValueError(
                 f"Designed interface {edge.edge_id!r} has no atom pairs"
             )
+        contact_priors.append(
+            rf_oligomer_contact_prior(
+                distance_matrix,
+                r_0=config.contact_prior_r_0,
+                d_0=config.contact_prior_d_0,
+                normalization=min(
+                    distance_matrix.shape[0],
+                    distance_matrix.shape[1],
+                ),
+            )
+        )
         if (
             edge.requested_contact_count > 0
             or edge.requested_residues_per_side > 0
@@ -2068,9 +2121,11 @@ def graph_interface_energy(
         + global_safety_clash
     )
     distance = _balanced_source_mean(distance_terms, topology.edges)
+    contact_prior = _balanced_source_mean(contact_priors, topology.edges)
     per_edge_total = torch.stack(
         [
-            config.weight * edge_attraction
+            config.contact_prior_weight * edge_contact_prior
+            + config.weight * edge_attraction
             + config.coverage_weight * edge_coverage
             + config.continuity_weight * edge_continuity
             + config.orientation_weight * edge_orientation
@@ -2080,6 +2135,7 @@ def graph_interface_energy(
             + config.distance_weight * edge_distance
             for (
                 edge_attraction,
+                edge_contact_prior,
                 edge_coverage,
                 edge_continuity,
                 edge_orientation,
@@ -2089,6 +2145,7 @@ def graph_interface_energy(
                 edge_distance,
             ) in zip(
                 attractions,
+                contact_priors,
                 coverages,
                 continuities,
                 orientations,
@@ -2112,7 +2169,8 @@ def graph_interface_energy(
     )
     return GraphInterfaceEnergy(
         total=(
-            config.weight * attraction
+            config.contact_prior_weight * contact_prior
+            + config.weight * attraction
             + config.coverage_weight * coverage
             + config.continuity_weight * continuity
             + config.orientation_weight * orientation
@@ -2134,6 +2192,7 @@ def graph_interface_energy(
         patch_exclusivity=patch_exclusivity,
         clash=clash,
         distance=distance,
+        contact_prior=contact_prior,
         minimum_distances=torch.stack(minima),
         mean_selected_distances=torch.stack(selected_means),
         covered_left_residues=torch.stack(covered_left_counts),
@@ -2146,6 +2205,7 @@ def graph_interface_energy(
         per_edge_shape=torch.stack(shapes),
         per_edge_backbone=torch.stack(backbones),
         per_edge_total=per_edge_total,
+        per_edge_contact_prior=torch.stack(contact_priors),
         per_source_total=source_totals,
         global_safety_clash=global_safety_clash,
         minimum_global_safety_distance=minimum_global_safety_distance,
@@ -2208,6 +2268,19 @@ def guidance_window_weight(
     if phase <= 0.5:
         return pulse
     return terminal_weight_floor + (1.0 - terminal_weight_floor) * pulse
+
+
+def rf_contact_prior_schedule_scale(
+    progress: float,
+    config: GraphInterfaceGuidanceConfig,
+) -> float:
+    """Match RFdiffusion's early-strong polynomial potential schedule."""
+
+    remaining = min(max(1.0 - float(progress), 0.0), 1.0)
+    return float(
+        config.contact_prior_guide_scale
+        * remaining ** config.contact_prior_decay_power
+    )
 
 
 def scheduled_interface_ca_distance(
@@ -2525,6 +2598,7 @@ def graph_interface_energy_diagnostics(
 
     scalar_fields = (
         "total",
+        "contact_prior",
         "attraction",
         "coverage",
         "continuity",
@@ -2552,6 +2626,7 @@ def graph_interface_energy_diagnostics(
         "per_edge_shape",
         "per_edge_backbone",
         "per_edge_total",
+        "per_edge_contact_prior",
         "per_source_total",
     )
     payload = {
@@ -2876,6 +2951,7 @@ def apply_graph_interface_guidance(
         and config.patch_exclusivity_weight == 0.0
         and config.clash_weight == 0.0
         and config.distance_weight == 0.0
+        and config.contact_prior_weight == 0.0
     ):
         return coordinates, {"applied": False, "window_weight": window}
     scheduled_target = scheduled_interface_ca_distance(progress, config)
@@ -2903,6 +2979,16 @@ def apply_graph_interface_guidance(
         )
     adaptive_phase = adaptive_graph_interface_phase(phase_probe, config)
     effective_config = _phase_guidance_config(config, adaptive_phase)
+    contact_prior_schedule_scale = rf_contact_prior_schedule_scale(
+        progress,
+        config,
+    )
+    effective_config = replace(
+        effective_config,
+        contact_prior_weight=(
+            config.contact_prior_weight * contact_prior_schedule_scale
+        ),
+    )
     scheduled_target = _phase_target_ca_distance(
         adaptive_phase,
         scheduled_target,
@@ -3099,6 +3185,10 @@ def apply_graph_interface_guidance(
         "proposal_accepted": accepted_scale > 0.0,
         "line_search_scale": accepted_scale,
         "window_weight": window,
+        "contact_prior_schedule_scale": contact_prior_schedule_scale,
+        "effective_contact_prior_weight": (
+            effective_config.contact_prior_weight
+        ),
         "adaptive_phase": adaptive_phase,
         "time_scheduled_target_ca_distance": (
             scheduled_interface_ca_distance(progress, config)
@@ -3133,6 +3223,9 @@ def apply_graph_interface_guidance(
         ),
         "attraction": float(
             accepted_energy.attraction.detach().cpu().item()
+        ),
+        "contact_prior": float(
+            accepted_energy.contact_prior.detach().cpu().item()
         ),
         "coverage": float(accepted_energy.coverage.detach().cpu().item()),
         "continuity": float(
@@ -3196,6 +3289,9 @@ def apply_graph_interface_guidance(
         ),
         "per_edge_total": (
             accepted_energy.per_edge_total.detach().cpu().tolist()
+        ),
+        "per_edge_contact_prior": (
+            accepted_energy.per_edge_contact_prior.detach().cpu().tolist()
         ),
         "per_source_total": (
             accepted_energy.per_source_total.detach().cpu().tolist()

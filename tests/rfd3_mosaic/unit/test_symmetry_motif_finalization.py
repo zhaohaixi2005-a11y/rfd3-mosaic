@@ -158,6 +158,11 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
             graph_interface_guidance_patch_lock_fraction=0.4,
             graph_interface_guidance_line_search_steps=7,
             graph_interface_guidance_capture_ca_distance=13.0,
+            graph_interface_guidance_contact_prior_weight=0.12,
+            graph_interface_guidance_contact_prior_guide_scale=2.5,
+            graph_interface_guidance_contact_prior_decay_power=3.0,
+            graph_interface_guidance_contact_prior_r_0=7.5,
+            graph_interface_guidance_contact_prior_d_0=1.5,
         )
 
         config = sampler._graph_interface_guidance_config()
@@ -169,6 +174,11 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
         self.assertEqual(config.patch_lock_fraction, 0.4)
         self.assertEqual(config.line_search_steps, 7)
         self.assertEqual(config.capture_ca_distance, 13.0)
+        self.assertEqual(config.contact_prior_weight, 0.12)
+        self.assertEqual(config.contact_prior_guide_scale, 2.5)
+        self.assertEqual(config.contact_prior_decay_power, 3.0)
+        self.assertEqual(config.contact_prior_r_0, 7.5)
+        self.assertEqual(config.contact_prior_d_0, 1.5)
 
     def test_scaffold_runtime_accepts_multiple_declared_mobile_orbits(
         self,

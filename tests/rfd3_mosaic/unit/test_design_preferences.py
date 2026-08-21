@@ -90,6 +90,13 @@ class DesignPreferencesTestCase(unittest.TestCase):
             resolved.sampler_overrides["graph_interface_guidance_clash_weight"],
             8.0,
         )
+        self.assertEqual(
+            resolved.sampler_overrides[
+                "graph_interface_guidance_contact_prior_weight"
+            ],
+            0.1,
+        )
+        self.assertEqual(resolved.preset_version, "packing_preferences_v2")
         self.assertIn("exact_fixed_geometry", resolved.hard_contracts)
 
     def test_guided_motion_infers_arrangement_and_axis_subspace(self) -> None:
@@ -231,6 +238,10 @@ class DesignPreferencesTestCase(unittest.TestCase):
 
         self.assertEqual(overrides["scaffold_core_intra_chain_weight"], 1.0)
         self.assertEqual(overrides["scaffold_core_inter_chain_weight"], 0.1)
+        self.assertEqual(
+            overrides["graph_interface_guidance_contact_prior_weight"],
+            0.1,
+        )
         self.assertNotIn("graph_interface_guidance_intra_chain_weight", overrides)
 
     def test_expert_inter_repulsion_is_independent_from_inter_weight(self) -> None:
@@ -244,6 +255,10 @@ class DesignPreferencesTestCase(unittest.TestCase):
         overrides = compile_design_preferences(expert).sampler_overrides
 
         self.assertEqual(overrides["scaffold_core_inter_chain_weight"], 0.1)
+        self.assertEqual(
+            overrides["graph_interface_guidance_contact_prior_weight"],
+            0.1,
+        )
         self.assertEqual(
             overrides["scaffold_core_inter_chain_excess_penalty"],
             0.7,

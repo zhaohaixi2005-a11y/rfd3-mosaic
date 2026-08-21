@@ -1,7 +1,7 @@
 import inspect
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import torch
@@ -178,6 +178,11 @@ class SampleDiffusionConfig:
     graph_interface_guidance_interface_balance_weight: float = 0.5
     graph_interface_guidance_clash_weight: float = 8.0
     graph_interface_guidance_distance_weight: float = 0.25
+    graph_interface_guidance_contact_prior_weight: float = 0.0
+    graph_interface_guidance_contact_prior_guide_scale: float = 2.0
+    graph_interface_guidance_contact_prior_decay_power: float = 2.0
+    graph_interface_guidance_contact_prior_r_0: float = 8.0
+    graph_interface_guidance_contact_prior_d_0: float = 2.0
     graph_interface_guidance_target_ca_distance: float = 8.0
     graph_interface_guidance_clash_ca_distance: float = 3.5
     graph_interface_guidance_pairs_per_edge: int = 8
@@ -821,9 +826,21 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         self,
     ) -> GraphInterfaceGuidanceConfig:
         return GraphInterfaceGuidanceConfig(
-            weight=(
-                float(self.graph_interface_guidance_weight)
-                * float(self.scaffold_core_inter_chain_weight)
+            weight=float(self.graph_interface_guidance_weight),
+            contact_prior_weight=float(
+                self.graph_interface_guidance_contact_prior_weight
+            ),
+            contact_prior_guide_scale=float(
+                self.graph_interface_guidance_contact_prior_guide_scale
+            ),
+            contact_prior_decay_power=float(
+                self.graph_interface_guidance_contact_prior_decay_power
+            ),
+            contact_prior_r_0=float(
+                self.graph_interface_guidance_contact_prior_r_0
+            ),
+            contact_prior_d_0=float(
+                self.graph_interface_guidance_contact_prior_d_0
             ),
             coverage_weight=float(self.graph_interface_guidance_coverage_weight),
             continuity_weight=float(self.graph_interface_guidance_continuity_weight),
@@ -2409,7 +2426,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             final_graph_interface_energy = graph_interface_energy(
                 X_L,
                 graph_interface_topology,
-                graph_interface_guidance_config,
+                replace(
+                    graph_interface_guidance_config,
+                    contact_prior_weight=0.0,
+                ),
                 patch_assignments=(
                     graph_interface_patch_state.assignments
                     if graph_interface_patch_state is not None
@@ -2539,7 +2559,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 final_graph_interface_energy
             )
             result["graph_interface_guidance_diagnostics"] = {
-                "schema_version": 8,
+                "schema_version": 9,
                 "runtime_active": True,
                 "edge_count": len(graph_interface_topology.edges),
                 "edge_ids": [edge.edge_id for edge in graph_interface_topology.edges],

@@ -1,8 +1,7 @@
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
 import torch
-
 from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceEdge,
     GraphInterfaceGuidanceConfig,
@@ -12,11 +11,13 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     apply_graph_interface_guidance,
     build_graph_interface_topology,
     build_symmetric_scaffold_interface_topology,
+    graph_interface_capacity_preflight,
+    graph_interface_energy,
+    graph_interface_proposal_acceptable,
     graph_interface_quality_satisfied,
     guidance_window_weight,
-    graph_interface_energy,
-    graph_interface_capacity_preflight,
-    graph_interface_proposal_acceptable,
+    rf_contact_prior_schedule_scale,
+    rf_oligomer_contact_prior,
     scheduled_interface_ca_distance,
 )
 
@@ -68,6 +69,80 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
             "is_ca": torch.ones(6, dtype=torch.bool),
             "is_virtual": torch.zeros(6, dtype=torch.bool),
         }
+
+    def test_rf_contact_prior_is_finite_at_switch_midpoint(self) -> None:
+        energy = rf_oligomer_contact_prior(
+            torch.tensor([[10.0]]),
+            r_0=8.0,
+            d_0=2.0,
+            normalization=1,
+        )
+
+        self.assertTrue(torch.isfinite(energy))
+        self.assertAlmostEqual(float(energy), -0.5, places=6)
+
+    def test_rf_contact_prior_prefers_contact_and_decays_early(self) -> None:
+        close = rf_oligomer_contact_prior(
+            torch.full((3, 3), 7.0),
+            r_0=8.0,
+            d_0=2.0,
+            normalization=3,
+        )
+        far = rf_oligomer_contact_prior(
+            torch.full((3, 3), 20.0),
+            r_0=8.0,
+            d_0=2.0,
+            normalization=3,
+        )
+        config = GraphInterfaceGuidanceConfig(
+            contact_prior_guide_scale=2.0,
+            contact_prior_decay_power=2.0,
+        )
+
+        self.assertLess(float(close), float(far))
+        self.assertAlmostEqual(
+            rf_contact_prior_schedule_scale(0.0, config), 2.0
+        )
+        self.assertAlmostEqual(
+            rf_contact_prior_schedule_scale(0.5, config), 0.5
+        )
+        self.assertAlmostEqual(
+            rf_contact_prior_schedule_scale(1.0, config), 0.0
+        )
+
+    def test_contact_prior_is_a_separate_broad_interface_objective(self) -> None:
+        topology = self._three_by_three_topology()
+        close = torch.tensor(
+            [[
+                [0.0, 0.0, 0.0],
+                [0.0, 3.8, 0.0],
+                [0.0, 7.6, 0.0],
+                [7.0, 0.0, 0.0],
+                [7.0, 3.8, 0.0],
+                [7.0, 7.6, 0.0],
+            ]]
+        )
+        far = close.clone()
+        far[:, 3:, 0] = 30.0
+        config = GraphInterfaceGuidanceConfig(
+            weight=0.0,
+            coverage_weight=0.0,
+            continuity_weight=0.0,
+            orientation_weight=0.0,
+            shape_weight=0.0,
+            backbone_weight=0.0,
+            interface_balance_weight=0.0,
+            patch_exclusivity_weight=0.0,
+            clash_weight=0.0,
+            distance_weight=0.0,
+            contact_prior_weight=0.1,
+        )
+
+        close_energy = graph_interface_energy(close, topology, config)
+        far_energy = graph_interface_energy(far, topology, config)
+
+        self.assertLess(float(close_energy.total), float(far_energy.total))
+        self.assertEqual(close_energy.per_edge_contact_prior.shape, (1,))
 
     def test_only_output_stage_contact_edges_create_guidance(self) -> None:
         fixed = torch.tensor([True, False, False, True, False, False])

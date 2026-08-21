@@ -221,6 +221,54 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
             report["summary"]["capacity_preflight_contract_valid"]
         )
 
+    def test_v9_requires_contact_prior_runtime_evidence(self) -> None:
+        self._write_result()
+        payload = json.loads(self.result.read_text(encoding="utf-8"))
+        diagnostics = payload["graph_interface_guidance_diagnostics"]
+        diagnostics["schema_version"] = 9
+        diagnostics["config"] = {
+            "contact_prior_weight": 0.1,
+            "contact_prior_guide_scale": 2.0,
+            "contact_prior_decay_power": 2.0,
+            "contact_prior_r_0": 8.0,
+            "contact_prior_d_0": 2.0,
+        }
+        diagnostics["steps"][0].update(
+            {
+                "contact_prior": -1.0,
+                "contact_prior_schedule_scale": 1.5,
+                "effective_contact_prior_weight": 0.15,
+                "per_edge_contact_prior": [-1.0],
+            }
+        )
+        diagnostics["final_proxy"].update(
+            {
+                "contact_prior": -0.8,
+                "per_edge_contact_prior": [-0.8],
+            }
+        )
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["summary"]["contact_prior_contract_valid"])
+        self.assertEqual(
+            report["summary"]["final_packing_metrics"]["contact_prior"],
+            -0.8,
+        )
+
+        diagnostics["steps"][0].pop("per_edge_contact_prior")
+        self.result.write_text(json.dumps(payload), encoding="utf-8")
+        rejected = audit_graph_interface_guidance(
+            compiled_input=self.compiled,
+            result_json=self.result,
+        )
+        self.assertFalse(rejected["passed"])
+
     def test_v7_rejects_patch_hopping_after_lock(self) -> None:
         self._write_result()
         payload = json.loads(self.result.read_text(encoding="utf-8"))

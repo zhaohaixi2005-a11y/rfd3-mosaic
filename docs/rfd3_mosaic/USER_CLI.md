@@ -340,8 +340,12 @@ fixed. These scheduling fields apply only to `orbit_rigid` components: their
 supplied internal interface geometry remains exact while the complete seed can
 move as one symmetry-coupled rigid pose.
 
-Existing YAMLs that omit these fields retain the original values
-`intra_chain_weight=0` and `inter_chain_weight=1`.
+Existing frozen `packing_preferences_v1` runs retain their original behavior.
+Newly compiled `packing_preferences_v2` designs keep
+`intra_chain_weight=0` unless the user requests monomer-core guidance, while
+the broad generated-interface contact prior is calibrated by the existing
+`packing: loose|balanced|tight` preset (`0.06`, `0.10`, or `0.15`). An explicit
+`inter_chain_weight` overrides that prior directly.
 
 ### Create a symmetric interface
 

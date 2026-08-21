@@ -182,6 +182,28 @@ def audit_graph_interface_guidance(
             )
         )
     )
+    runtime_config = diagnostics.get("config")
+    contact_prior_contract = bool(
+        diagnostics_schema_version < 9
+        or (
+            isinstance(runtime_config, dict)
+            and all(
+                _finite(runtime_config.get(key))
+                for key in (
+                    "contact_prior_weight",
+                    "contact_prior_guide_scale",
+                    "contact_prior_decay_power",
+                    "contact_prior_r_0",
+                    "contact_prior_d_0",
+                )
+            )
+            and float(runtime_config["contact_prior_weight"]) >= 0.0
+            and float(runtime_config["contact_prior_guide_scale"]) >= 0.0
+            and float(runtime_config["contact_prior_decay_power"]) >= 0.0
+            and float(runtime_config["contact_prior_r_0"]) > 0.0
+            and float(runtime_config["contact_prior_d_0"]) >= 0.0
+        )
+    )
     finite_applied_steps = []
     packing_evidence_steps = []
     for step in applied:
@@ -261,6 +283,28 @@ def audit_graph_interface_guidance(
                         )
                     )
                 )
+                and (
+                    diagnostics_schema_version < 9
+                    or (
+                        all(
+                            _finite(step.get(key))
+                            for key in (
+                                "contact_prior",
+                                "contact_prior_schedule_scale",
+                                "effective_contact_prior_weight",
+                            )
+                        )
+                        and isinstance(
+                            step.get("per_edge_contact_prior"), list
+                        )
+                        and len(step["per_edge_contact_prior"])
+                        == len(expected_ids)
+                        and all(
+                            _finite(value)
+                            for value in step["per_edge_contact_prior"]
+                        )
+                    )
+                )
             )
         )
         finite_applied_steps.append(base_evidence and packing_evidence)
@@ -328,6 +372,24 @@ def audit_graph_interface_guidance(
                         _finite(value)
                         for value in final_proxy["per_source_total"]
                     )
+                    and (
+                        diagnostics_schema_version < 9
+                        or (
+                            _finite(final_proxy.get("contact_prior"))
+                            and isinstance(
+                                final_proxy.get("per_edge_contact_prior"),
+                                list,
+                            )
+                            and len(final_proxy["per_edge_contact_prior"])
+                            == len(expected_ids)
+                            and all(
+                                _finite(value)
+                                for value in final_proxy[
+                                    "per_edge_contact_prior"
+                                ]
+                            )
+                        )
+                    )
                 )
             )
         )
@@ -366,6 +428,7 @@ def audit_graph_interface_guidance(
         and patch_identity_contract
         and adaptive_phase_contract
         and capacity_preflight_contract
+        and contact_prior_contract
         and final_proxy_targets_satisfied
     )
     final_step = applied[-1] if applied else {}
@@ -378,6 +441,7 @@ def audit_graph_interface_guidance(
         key: final_metric_source.get(key)
         for key in (
             "energy",
+            "contact_prior",
             "attraction",
             "coverage",
             "continuity",
@@ -432,6 +496,7 @@ def audit_graph_interface_guidance(
             "capacity_preflight_contract_valid": (
                 capacity_preflight_contract
             ),
+            "contact_prior_contract_valid": contact_prior_contract,
             "adaptive_phase_counts": {
                 phase: sum(
                     step.get("adaptive_phase") == phase for step in applied
