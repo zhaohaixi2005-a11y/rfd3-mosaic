@@ -17,7 +17,7 @@ WALLTIME_50=${RFD3_MOBILE_WALLTIME_50:-12:00:00}
 WALLTIME_200=${RFD3_MOBILE_WALLTIME_200:-24:00:00}
 JOB_FILE=${RFD3_MOBILE_JOB_FILE:-"$RUN_BASE/c5_mobile_seed3419_p100_v1.tsv"}
 CONFIG="$PROJECT_DIR/configs/rfd3_mosaic/experimental/lhd101_c5_mobile.yaml"
-PILOT_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/lhd101_c5_mobile_pilot_p100.sbatch"
+PILOT_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/archive/legacy_direct/lhd101_c5_mobile_pilot_p100.sbatch"
 
 if [[ ! "$DIFFUSION_SEED" =~ ^[0-9]+$ ]]; then
     echo "ERROR: RFD3_SEED must be a non-negative integer"
@@ -213,10 +213,10 @@ for STEP_COUNT in $TIMESTEPS; do
                 --time="$WALLTIME" \
                 "${SBATCH_DEPENDENCY[@]}" \
                 --export="ALL,RFD3_NUM_TIMESTEPS=${STEP_COUNT},RFD3_SEED=${DIFFUSION_SEED},RFD3_MOBILITY_APPLY_UPDATES=${APPLY_UPDATES},RFD3_MOBILITY_UPDATE_INTERVAL=${UPDATE_INTERVAL},RFD3_MOBILITY_TARGET_MAX_TILT_DEGREES=${TARGET_MAX_TILT},RFD3_LINKER_LENGTH=${LINKER_LENGTH},RFD3_POSE_CANDIDATE_MANIFEST=${POSE_CANDIDATE_MANIFEST}" \
-                scripts/rfd3_mosaic/lhd101_c5_mobile_pilot_p100.sbatch); then
+                scripts/rfd3_mosaic/archive/legacy_direct/lhd101_c5_mobile_pilot_p100.sbatch); then
             echo "Submission stopped, usually because of the Slurm/QOS job limit."
             echo "Resume with:"
-            echo "RFD3_MOBILE_JOB_FILE=$JOB_FILE bash scripts/rfd3_mosaic/submit_lhd101_c5_mobile_pair_p100.sh"
+            echo "RFD3_MOBILE_JOB_FILE=$JOB_FILE bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_c5_mobile_pair_p100.sh"
             exit 75
         fi
         JOB_ID=${JOB_ID%%;*}

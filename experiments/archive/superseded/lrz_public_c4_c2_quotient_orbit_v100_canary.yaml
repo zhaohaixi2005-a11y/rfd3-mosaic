@@ -1,7 +1,7 @@
 schema_version: 1
 name: public-c4-c2-quotient-orbit-v100-t50-s941
 
-input: ../examples/rfd3_mosaic/inputs/C4_C2_quotient_seed_backbone.pdb
+input: ../../../examples/rfd3_mosaic/inputs/C4_C2_quotient_seed_backbone.pdb
 symmetry:
   id: C4
   axis: [0.0, 0.0, 1.0]

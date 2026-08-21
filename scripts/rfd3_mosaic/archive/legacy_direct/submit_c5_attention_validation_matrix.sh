@@ -4,7 +4,7 @@ set -euo pipefail
 
 PROJECT_DIR=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic
 RUN_BASE=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
-SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/lhd101_cn_full_p100.sbatch"
+SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/archive/legacy_direct/lhd101_cn_full_p100.sbatch"
 POSE_ROOT="$RUN_BASE/lhd101_c5_qd_v2"
 DIFFUSION_SEED="${RFD3_MATRIX_DIFFUSION_SEED:-44}"
 RUN_TAG="${RFD3_MATRIX_RUN_TAG:-$(date +%Y%m%d-%H%M%S)}"

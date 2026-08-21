@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PROJECT_DIR=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic
-SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/prism_c3_g2_fixed_mosaic.sbatch"
+SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/archive/legacy_direct/prism_c3_g2_fixed_mosaic.sbatch"
 PROFILES="${RFD3_PROFILES:-h100 a100 p100}"
 SEEDS="${RFD3_SEEDS:-42}"
 NUM_TIMESTEPS="${RFD3_NUM_TIMESTEPS:-200}"
@@ -55,4 +55,3 @@ for profile in $PROFILES; do
             "$SBATCH_SCRIPT"
     done
 done
-

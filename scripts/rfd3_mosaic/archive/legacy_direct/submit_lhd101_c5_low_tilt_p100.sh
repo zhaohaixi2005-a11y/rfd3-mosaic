@@ -178,10 +178,10 @@ for STEP_COUNT in $TIMESTEPS; do
                 --time="$WALLTIME" \
                 "${SBATCH_DEPENDENCY[@]}" \
                 --export="ALL,RFD3_NUM_TIMESTEPS=${STEP_COUNT},RFD3_SEED=${DIFFUSION_SEED},RFD3_MOBILITY_APPLY_UPDATES=false,RFD3_POSE_CANDIDATE_MANIFEST=${MANIFEST}" \
-                scripts/rfd3_mosaic/lhd101_c5_mobile_pilot_p100.sbatch); then
+                scripts/rfd3_mosaic/archive/legacy_direct/lhd101_c5_mobile_pilot_p100.sbatch); then
             echo "Submission stopped, usually because of the Slurm/QOS job limit."
             echo "Resume with:"
-            echo "RFD3_LOW_TILT_JOB_FILE=$JOB_FILE bash scripts/rfd3_mosaic/submit_lhd101_c5_low_tilt_p100.sh"
+            echo "RFD3_LOW_TILT_JOB_FILE=$JOB_FILE bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_c5_low_tilt_p100.sh"
             exit 75
         fi
         JOB_ID=${JOB_ID%%;*}

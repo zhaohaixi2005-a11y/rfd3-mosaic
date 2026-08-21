@@ -1,7 +1,7 @@
 schema_version: 1
 name: public-t-designed-interface-packing-v2-v100-t50-s926
 
-input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+input: ../../../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
 symmetry:
   id: T
   axis: [0.0, 0.0, 1.0]

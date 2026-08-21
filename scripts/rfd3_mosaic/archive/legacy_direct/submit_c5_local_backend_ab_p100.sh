@@ -40,7 +40,7 @@ for BACKEND in explicit_all_copy local_neighbourhood; do
         --job-name="c5-ab-${BACKEND%%_*}" \
         --time="$WALLTIME" \
         --export="ALL,RFD3_CYCLIC_ORDER=5,RFD3_POSE_CANDIDATE_MANIFEST=${MANIFEST},RFD3_SEED=${DIFFUSION_SEED},RFD3_NUM_TIMESTEPS=${TIMESTEPS},RFD3_SYMMETRY_EXECUTION_BACKEND=${BACKEND},RFD3_SYMMETRY_NEIGHBOUR_RADIUS=${NEIGHBOUR_RADIUS}" \
-        scripts/rfd3_mosaic/lhd101_cn_full_p100.sbatch)
+        scripts/rfd3_mosaic/archive/legacy_direct/lhd101_cn_full_p100.sbatch)
     JOB_ID=${JOB_ID%%;*}
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$BACKEND" \

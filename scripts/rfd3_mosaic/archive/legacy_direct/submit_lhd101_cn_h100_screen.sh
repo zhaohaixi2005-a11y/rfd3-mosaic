@@ -80,9 +80,9 @@ for ORDER in $ORDERS; do
                     --time="$WALLTIME" \
                     --cpus-per-task=12 \
                     --export="ALL,RFD3_ACCELERATOR_LABEL=H100,RFD3_CYCLIC_ORDER=${ORDER},RFD3_NUM_TIMESTEPS=${NUM_TIMESTEPS},RFD3_SEED=${DIFFUSION_SEED},RFD3_POSE_CANDIDATE_MANIFEST=${MANIFEST}" \
-                    scripts/rfd3_mosaic/lhd101_cn_full_p100.sbatch); then
+                    scripts/rfd3_mosaic/archive/legacy_direct/lhd101_cn_full_p100.sbatch); then
                 echo "Submission stopped. After QOS capacity is available, resume with:"
-                echo "RFD3_SCREEN_JOB_FILE=$JOB_FILE bash scripts/rfd3_mosaic/submit_lhd101_cn_h100_screen.sh"
+                echo "RFD3_SCREEN_JOB_FILE=$JOB_FILE bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_cn_h100_screen.sh"
                 exit 75
             fi
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PROJECT_DIR=/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic
-SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/lhd101_c3_central_motif_probe_p100.sbatch"
+SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/archive/legacy_direct/lhd101_c3_central_motif_probe_p100.sbatch"
 TEMPLATE_INPUT="${RFD3_CENTRAL_TEMPLATE_INPUT:?Set RFD3_CENTRAL_TEMPLATE_INPUT to an existing C3 adapter rfd3_input.json}"
 RUN_TAG="${RFD3_CENTRAL_RUN_TAG:-$(date +%Y%m%d-%H%M%S)}"
 JOB_FILE="$PROJECT_DIR/central_motif_c3_abcd_${RUN_TAG}.tsv"

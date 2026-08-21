@@ -127,7 +127,7 @@ coordinates would be identical.  Generate a separate CPU pose ensemble from
 8. Promote only a stable, audit-passing pair to 200 steps.
 
 The tracked entry point is
-`scripts/rfd3_mosaic/lhd101_c5_mobile_pilot_p100.sbatch`.  It defaults to a
+`scripts/rfd3_mosaic/archive/legacy_direct/lhd101_c5_mobile_pilot_p100.sbatch`.  It defaults to a
 50-step, proposal-only P100 job.  The formal C3/C5/C6/C7 scripts and configs do
 not enable mobility.
 
@@ -160,7 +160,7 @@ The retained low-tilt candidate for the first paired experiment is pose seed
 Submit the complete P100-only comparison from the repository root:
 
 ```bash
-bash scripts/rfd3_mosaic/submit_lhd101_c5_mobile_pair_p100.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_c5_mobile_pair_p100.sh
 ```
 
 The wrapper submits four controlled jobs:

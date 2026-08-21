@@ -1,7 +1,7 @@
 schema_version: 1
 name: public-c3-contig-inferred-interface-v100-t10-s927
 
-input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+input: ../../../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
 symmetry: C3
 
 # The user states only the fixed central motif and what to generate.  The

@@ -1,7 +1,7 @@
 schema_version: 1
 name: public-two-orbit-joint-mobility-c3-v100-s913
 
-input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+input: ../../../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
 symmetry:
   id: C3
   axis: [0.0, 0.0, 1.0]

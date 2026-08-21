@@ -30,7 +30,7 @@ without submitting jobs:
 
 ```bash
 RFD3_8_3_SELECT_ONLY=true \
-bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_cn_low_tilt_8_3.sh
 
 column -t -s $'\t' \
   /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/8.3/selected_seed_interfaces.tsv
@@ -42,7 +42,7 @@ the per-user Slurm submission limit; rerun the same command as queue capacity
 becomes available:
 
 ```bash
-bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_cn_low_tilt_8_3.sh
 ```
 
 The default partition pool includes the LRZ H100, A100-80GB, V100 and P100
@@ -53,7 +53,7 @@ the pool if any partition is unavailable to the account:
 sinfo -h -o '%P | %G | %a' | grep -Ei 'h100|a100|v100|p100'
 
 RFD3_8_3_PARTITIONS='lrz-hgx-h100-94x4,lrz-dgx-a100-80x8' \
-bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_cn_low_tilt_8_3.sh
 ```
 
 All campaign state is isolated under:
@@ -83,7 +83,7 @@ rm /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/8.3/s
 
 RFD3_8_3_C5_POSE_SEED=3070 \
 RFD3_8_3_SELECT_ONLY=true \
-bash scripts/rfd3_mosaic/submit_lhd101_cn_low_tilt_8_3.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_cn_low_tilt_8_3.sh
 ```
 
 Once the replacement row is frozen, later submission invocations reuse it
@@ -106,7 +106,7 @@ and `5722385`. The submission script assigns stable logical IDs `A01`--`A12`
 and records every Slurm ID and condition in a timestamped TSV:
 
 ```bash
-bash scripts/rfd3_mosaic/submit_c5_attention_validation_matrix.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_c5_attention_validation_matrix.sh
 ```
 
 This matrix tests attention-fix reproducibility across pose, diffusion depth
@@ -212,7 +212,7 @@ for ORDER in 5 6 7; do
   sbatch \
     --job-name="rfd3-c${ORDER}-200" \
     --export="ALL,RFD3_CYCLIC_ORDER=${ORDER},RFD3_NUM_TIMESTEPS=200,RFD3_POSE_CANDIDATE_MANIFEST=${MANIFEST}" \
-    scripts/rfd3_mosaic/lhd101_cn_full_p100.sbatch
+    scripts/rfd3_mosaic/archive/legacy_direct/lhd101_cn_full_p100.sbatch
 done
 ```
 
@@ -321,7 +321,7 @@ For the retained experimental C5 pose seed `3419`, submit the paired
 proposal/applied 50/200-step experiment on P100 with:
 
 ```bash
-bash scripts/rfd3_mosaic/submit_lhd101_c5_mobile_pair_p100.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_c5_mobile_pair_p100.sh
 ```
 
 Each 200-step job has an `afterok` dependency on the 50-step job with the same
@@ -354,7 +354,7 @@ C5/C6/C7 x top 3 QD poses x diffusion seeds 42--46 x 50 steps
 Run:
 
 ```bash
-bash scripts/rfd3_mosaic/submit_lhd101_cn_h100_screen.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_cn_h100_screen.sh
 ```
 
 The script writes a timestamped TSV under the run base with the order, pose
@@ -368,7 +368,7 @@ jobs remain valid. Resume the same matrix after queue capacity is released:
 
 ```bash
 RFD3_SCREEN_JOB_FILE=/absolute/path/to/cn_h100_screen_TIMESTAMP.tsv \
-bash scripts/rfd3_mosaic/submit_lhd101_cn_h100_screen.sh
+bash scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_cn_h100_screen.sh
 ```
 
 The resume path validates the TSV and skips every combination already

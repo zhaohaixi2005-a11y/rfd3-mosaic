@@ -25,7 +25,7 @@ NEIGHBOUR_RADIUS=${RFD3_8_3_NEIGHBOUR_RADIUS:-1}
 SELECT_ONLY=${RFD3_8_3_SELECT_ONLY:-false}
 SELECTION_FILE="$CAMPAIGN_ROOT/selected_seed_interfaces.tsv"
 JOB_FILE=${RFD3_8_3_JOB_FILE:-"$CAMPAIGN_ROOT/submissions.tsv"}
-SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/lhd101_cn_full_p100.sbatch"
+SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/archive/legacy_direct/lhd101_cn_full_p100.sbatch"
 
 if [[ ! "$CAMPAIGN" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
     || [[ "$CAMPAIGN" == "." || "$CAMPAIGN" == ".." ]]; then

@@ -4,7 +4,7 @@ set -euo pipefail
 
 PROJECT_DIR="${RFD3_A_PROJECT_DIR:-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic}"
 OUTPUT_ROOT="${RFD3_A_OUTPUT_ROOT:-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic}"
-SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/lhd101_c3_central_motif_probe_p100.sbatch"
+SBATCH_SCRIPT="$PROJECT_DIR/scripts/rfd3_mosaic/archive/legacy_direct/lhd101_c3_central_motif_probe_p100.sbatch"
 CAMPAIGN="${RFD3_A_CAMPAIGN:-central-c3-official-A-8_4}"
 PROFILE="${RFD3_A_PROFILE:-p100}"
 SEEDS="${RFD3_A_SEEDS:-102 103 104}"

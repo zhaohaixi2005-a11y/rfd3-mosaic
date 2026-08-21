@@ -19,4 +19,4 @@ RUN_ROOT=${RFD3_D3_VALIDATION_ROOT:-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-
 RUN_DIR="$RUN_ROOT/${SLURM_JOB_ID:?}"
 
 cd "$PROJECT_DIR"
-exec bash scripts/rfd3_mosaic/validate_lhd101_d3_two_orbit.sh "$RUN_DIR"
+exec bash scripts/rfd3_mosaic/archive/legacy_direct/validate_lhd101_d3_two_orbit.sh "$RUN_DIR"

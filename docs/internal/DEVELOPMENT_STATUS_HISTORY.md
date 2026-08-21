@@ -2979,7 +2979,7 @@ The first retained C5 mobility candidate is pose seed `3419`:
 /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/lhd101_c5_mobile_lhs_v1/candidate_0419_seed_3419/manifest.json
 ```
 
-`scripts/rfd3_mosaic/submit_lhd101_c5_mobile_pair_p100.sh` submits a controlled
+`scripts/rfd3_mosaic/archive/legacy_direct/submit_lhd101_c5_mobile_pair_p100.sh` submits a controlled
 comparison on only the P100 partitions:
 
 ```text

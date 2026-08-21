@@ -31,13 +31,13 @@ replayable public design before RFD3 execution.
 
 ## Historical and diagnostic inputs
 
-All other tracked YAMLs remain useful regression or provenance artifacts, but
-they are not automatically current release gates. In particular, do not
-substitute an older `short` O/I input for the maintained 50-step runtime gate,
-and do not compare results across files without checking the frozen commit,
-resolved configuration and pose manifest.
+Superseded inputs that have a direct maintained replacement are isolated in
+`archive/superseded/`. Other active-directory YAMLs may remain useful
+development regressions, but they are not automatically current release
+gates. In particular, do not substitute an archived `short` O/I input for the
+maintained 50-step runtime gate, and do not compare results across files
+without checking the frozen commit, resolved configuration and pose manifest.
 
 New current gates should be added to the launcher mapping and documented in
 `docs/internal/GPU_VALIDATION_PLAN_2026_08_21.md`; do not create an unindexed
 look-alike YAML and rely on its filename.
-

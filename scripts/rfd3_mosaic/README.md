@@ -24,17 +24,18 @@ presence does not make every script a current product path.
 ## Historical direct-execution scripts
 
 The following files call the adapter or `rfd3.run_inference` directly. They
-are retained to explain old runs and reproduce historical experiments. Do not
-use them to validate the current public compiler/worker/report contract.
+are isolated below `archive/legacy_direct/` to explain old runs and reproduce
+historical experiments. Do not use them to validate the current public
+compiler/worker/report contract.
 
-- `lhd101_c3_central_motif_probe_p100.sbatch`
-- `lhd101_c3_full_h100.sbatch`
-- `lhd101_c3_full_single.sbatch`
-- `lhd101_c3_smoke.sbatch`
-- `lhd101_c5_mobile_pilot_p100.sbatch`
-- `lhd101_cn_full_p100.sbatch`
-- `prism_c3_g2_fixed_mosaic.sbatch`
-- `validate_lhd101_d3_two_orbit.sh`
+- `archive/legacy_direct/lhd101_c3_central_motif_probe_p100.sbatch`
+- `archive/legacy_direct/lhd101_c3_full_h100.sbatch`
+- `archive/legacy_direct/lhd101_c3_full_single.sbatch`
+- `archive/legacy_direct/lhd101_c3_smoke.sbatch`
+- `archive/legacy_direct/lhd101_c5_mobile_pilot_p100.sbatch`
+- `archive/legacy_direct/lhd101_cn_full_p100.sbatch`
+- `archive/legacy_direct/prism_c3_g2_fixed_mosaic.sbatch`
+- `archive/legacy_direct/validate_lhd101_d3_two_orbit.sh`
 
 Their associated submission wrappers and focused research matrices are also
 historical/diagnostic unless a current document explicitly names them. They
@@ -49,4 +50,3 @@ explicitly labelled historical comparison or low-level RFD3 test.
 
 See `docs/internal/EXECUTION_PATH_AUDIT_2026_08_21.md` for the full path and
 version audit.
-

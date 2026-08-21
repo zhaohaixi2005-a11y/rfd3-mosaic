@@ -5,6 +5,9 @@ This document records an end-to-end audit of the maintained
 different frontends, historical scripts, commits or scientific screens from
 being interpreted as one execution path.
 
+Repository and run retention rules are defined in
+`docs/internal/VERSION_RETENTION_POLICY.md`.
+
 ## Audited revision and verification
 
 - local branch: `refactor/product-core-v1`
@@ -182,14 +185,18 @@ snapshot generation, campaign indexing or current reporting. They must not be
 used as evidence for the current product contract.
 
 The exact maintained and historical script classification is recorded in
-`scripts/rfd3_mosaic/README.md`. Current release-gate configuration is defined
-by `GATES` in `scripts/rfd3_mosaic/submit_gpu_release_gates.py`, not by every
-YAML whose filename contains `canary` or `smoke`.
+`scripts/rfd3_mosaic/README.md`. Direct historical scripts and their wrappers
+are physically isolated below `scripts/rfd3_mosaic/archive/legacy_direct/`.
+Current release-gate configuration is defined by `GATES` in
+`scripts/rfd3_mosaic/submit_gpu_release_gates.py`, not by every YAML whose
+filename contains `canary` or `smoke`.
 
 The `experiments/` directory similarly contains current gate inputs alongside
-earlier diagnostic canaries. `experiments/README.md` records the current
-source-of-truth set. Historical inputs remain tracked because deleting them
-would make old run provenance and bug regressions harder to understand.
+development canaries. `experiments/README.md` records the current
+source-of-truth set; directly superseded inputs live below
+`experiments/archive/superseded/`. Historical inputs remain tracked because
+deleting them would make old run provenance and bug regressions harder to
+understand.
 
 ## Output status versus scientific advice
 
@@ -239,4 +246,3 @@ newer frozen 50-step runs.
 6. Keep all raw CIFs; use advisory screens for comparison, not destructive
    deletion or universal biological acceptance.
 7. Use boolean `DEBUG`, `TYPE_CHECK` and `NAN_CHECK` values.
-
