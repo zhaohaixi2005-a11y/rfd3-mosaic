@@ -138,6 +138,25 @@ scaffold question.  An I fixed-orbit failure after the 50-step rerun must be
 treated as a hard-projector/runtime defect rather than excused as insufficient
 sampling, because exact fixed geometry is required at every timestep.
 
+### Fifty-timestep O replacement closure
+
+Job `5755569` supersedes the historical O result `5755073`. It ran the
+`o-static-release-gate` for 50 timesteps on an H100 and completed in 14:49.
+The run produced and accepted one 24-copy output:
+
+```text
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/
+rfd3-mosaic/2026-08-20/o-static-release-gate/5755569/
+rfd3_input_design_00000_pose_00000_rep_000_0_model_0.cif.gz
+```
+
+The constraint-orbit, scaffold-validity and RFD3-prevalidation audits all
+pass. This closes static octahedral fixed-geometry scaffolding at the GPU
+runtime level. It does not claim that a biologically useful octahedral cage
+or a generated octahedral interface has been designed; those are separate
+scientific objectives. I remains open pending the corresponding 60-copy,
+50-timestep fixed-orbit closure.
+
 ## Current distinct-pose C3 pilot (2026-08-19)
 
 A three-job local RTX 3070 campaign was launched from source revision

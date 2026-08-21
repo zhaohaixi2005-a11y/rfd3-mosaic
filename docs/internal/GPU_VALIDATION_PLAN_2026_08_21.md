@@ -85,8 +85,9 @@ power, and should not delay the AI-cluster jobs.
 ## Jobs not required now
 
 - Static T already has a complete twelve-action GPU closure.
-- Do not rerun O if the new 50-step O artifact can be tied to the current
-  config and its audits; otherwise run only the existing `o-static` gate once.
+- Static O is closed by job `5755569`: one accepted 24-copy output from the
+  50-timestep `o-static-release-gate`, with constraint-orbit, scaffold-validity
+  and RFD3-prevalidation audits all passing. Do not rerun O for this gate.
 - Do not repeat the old 10-step I canary.
 - Do not submit another same-pose 12-output packing campaign.
 - The 40 produced LHD101 backbones are retained evidence and do not need to be

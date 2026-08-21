@@ -70,10 +70,13 @@ valid executable lowering. It does not mean that an unvalidated candidate is
 silently accepted.
 
 The current finite-group GPU maturity is deliberately asymmetric. Static T
-has a complete 12-copy PASS. O has generated a 24-copy RFD3 output and passed
-its fixed-orbit audit, but not scaffold validity. I has generated a 60-copy
-RFD3 output, but its fixed-orbit audit still fails. These are execution
-milestones, not production-quality O/I cage claims.
+has a complete 12-copy PASS. Static O now also has a complete 24-copy,
+50-timestep PASS (`5755569`): RFD3 inference completed, the exact fixed orbit
+was recovered and scaffold validity passed. I has generated a 60-copy RFD3
+output in the historical 10-timestep canary, but its fixed-orbit audit still
+fails and its replacement 50-timestep gate remains open. These are execution
+and fixed-geometry-scaffolding milestones, not production-quality generated-
+interface O/I cage claims.
 
 ## Known incomplete areas
 
