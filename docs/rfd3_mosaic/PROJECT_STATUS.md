@@ -19,7 +19,8 @@ The current supported target comprises:
 - locked and bounded component mobility, including guided translation and
   rotation;
 - deterministic lowering to RFD3 inputs;
-- strict replay and required post-generation audits;
+- strict replay, explicit geometry contracts and non-destructive advisory
+  screening;
 - guided configuration creation and portable packaged examples;
 - per-design assembly-pose instantiation with explicit pose/diffusion seed
   provenance and one-load RFD3 multi-example execution;
@@ -30,13 +31,20 @@ validation exists for important paths, but broader multi-seed and packing
 quality calibration is still in progress.
 
 Current retained GPU evidence includes exact C3 and D3 fixed/mobile paths, a
-complete static tetrahedral 12-copy result, and a six-design LHD101 C3
-supplied-interface pilot.  All six LHD101 outputs preserve the joint-rigid
-interface, exact C3, continuity and clash safety; two of six also satisfy the
-current advisory monomer-core compactness/support targets.  Generated-new-
+complete static tetrahedral 12-copy result, a six-design LHD101 C3
+supplied-interface pilot and a 40-design independent-pose LHD101 cohort.  In
+the 40-design cohort, all outputs preserve the supplied joint-rigid interface
+and remain continuous; 27 meet the historical configured-check bundle and 28
+are free of CA clashes under the current coarse screen.  None meets all
+current advisory monomer-core controller targets, but those targets are not a
+published RFdiffusion/RFD3 backbone-generation acceptance standard.  Several
+clash-free outputs combine good tertiary support with no unintended
+generated--generated inter-chain contacts.  Generated-new-
 interface packing remains the principal scientific blocker: the most recent
-H100, A100 and RTX 3070 evidence contains no fully accepted output across the
-12 completed structures collected so far.
+H100, A100 and RTX 3070 evidence contains no output meeting the complete
+online packing-proxy target bundle across 20 completed structures.  Those
+outputs remain generated backbones; this result diagnoses controller
+calibration rather than assigning user-level rejection.
 
 ## Experimental capabilities
 
@@ -75,5 +83,7 @@ scope.
 
 Validated workflows are extended incrementally rather than replaced. New
 features must preserve exact constraints, compile to a replayable input and
-pass required result audits. Site-specific cluster results are treated as
-validation evidence, not as dependencies of the public software.
+report required result contracts. Scientific proxy flags remain visible
+recommendations rather than user-independent rejection labels. Site-specific
+cluster results are treated as validation evidence, not as dependencies of the
+public software.

@@ -7,6 +7,8 @@ Maintained public documentation:
 - [Command-line reference](USER_CLI.md)
 - [Project status](PROJECT_STATUS.md)
 - [Packing guidance](PACKING_GUIDANCE.md)
+- [Structure metric provenance](STRUCTURE_METRIC_PROVENANCE.md)
+- [Backbone evaluation evidence and formulas](BACKBONE_EVALUATION_EVIDENCE.md)
 - [Development status](../../DEVELOPMENT_STATUS.md)
 
 RFD3-Mosaic is a research preview under active development. The public

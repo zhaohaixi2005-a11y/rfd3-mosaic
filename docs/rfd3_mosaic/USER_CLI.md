@@ -69,6 +69,10 @@ sampling:
   designs: 100
   replicates_per_pose: 1  # default: one trajectory per variable pose
   seed: 42
+  screening:
+    mode: advisory
+    protocol: auto
+    retain_all_outputs: true
 ```
 
 Set `replicates_per_pose` above one only when intentionally comparing several
@@ -80,8 +84,12 @@ loaded once. Every result has its own structure, metadata, semantic audits and
 scaffold audit below `audits/<design-id>/`.
 Pose sampling does not prefer a central pore or one cage silhouette unless the
 user explicitly declares a corresponding assembly-shape target.
-The run report records produced, accepted and rejected counts; one rejected
-design does not discard the remaining outputs of a multi-design screening run.
+The run report records generated outputs, geometry-contract flags and
+advisory recommendations. A flagged design is never deleted. Set
+`screening.mode: off` to suppress recommendations; destructive screening is
+not part of the public schema. `protocol: hoyeung_lhd101` records campaign
+intent, but the published cohort-median loop/Rg selection is only computed
+after the cohort exists.
 `pose_manifest.json` records the exact pose seed, diffusion seed, compiled
 input and SHA256 for every output. The user supplies one YAML; Mosaic does not
 create one authoring YAML per design.
@@ -166,9 +174,11 @@ rfd3-mosaic report RUN_ID_OR_DIRECTORY
 rfd3-mosaic audit RUN_ID_OR_DIRECTORY
 ```
 
-- `status` summarizes execution state, outputs and required audits.
+- `status` summarizes execution state, generated outputs, contracts and
+  advisory diagnostics.
 - `report` writes JSON and HTML reports from recorded run artifacts.
-- `audit` evaluates a compatible existing run against the declared contracts.
+- `audit` evaluates a compatible existing run without rerunning diffusion or
+  converting a quality proxy into an execution failure.
 
 Use `rfd3-mosaic runs --root /path/to/runs` to list an indexed run root.
 
@@ -378,17 +388,21 @@ rfd3-mosaic run design.yaml --profile "$PWD/my-cluster.yaml"
 
 No public workflow requires access to a particular institutional cluster.
 
-## Exit and acceptance behavior
+## Exit and result behavior
 
-RFD3-Mosaic distinguishes three outcomes:
+RFD3-Mosaic distinguishes execution from measured checks:
 
 - **configuration failure:** the design could not be validated or lowered;
 - **runtime failure:** inference or artifact generation did not finish;
-- **audit failure:** inference produced a structure, but one or more required
-  scientific contracts failed.
+- **generated:** every expected raw structure was generated and retained;
+- **checks:** geometry, safety and task-objective measurements are reported
+  independently beside the generated structures.
 
-Only a completed run with every required audit passing receives a `PASSED`
-verdict.
+Mosaic does not infer whether a user will like or adopt a generated structure.
+The terminal, HTML, JSON and text reports expose measured checks and potential
+risks; the user makes the final selection.  Fixed-geometry, symmetry,
+continuity and clash checks remain explicit facts and are never hidden merely
+because a raw CIF exists.
 
 Every run keeps three artifact roles separate:
 
@@ -396,15 +410,15 @@ Every run keeps three artifact roles separate:
   runs; a multi-pose run instead stores `input/pose_XXXXX/` inputs plus one
   combined `input/rfd3_input.json`; none is a generated design;
 - each root-level `*_model_0.cif[.gz]` is one raw generated design, including
-  outputs retained after a required audit rejects them;
+  outputs retained after a contract or advisory check flags them;
 - a PyMOL `mosaic_aligned*` object is an in-memory visualization copy and is
   not an additional generated structure.
 
 Consequently, `sampling.designs: 2` with a variable initial pose produces two
 raw result CIFs from two independently compiled poses by default. With fixed
 geometry it produces two trajectories from the same exact input. Always use
-the run verdict and per-design audits to decide whether either result is
-usable.
+the per-design contract flags, advisory metrics and downstream refolding to
+decide whether either result is useful for the user's objective.
 
 ## Advanced commands
 

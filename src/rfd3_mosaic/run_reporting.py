@@ -522,11 +522,28 @@ def collect_run_status(
             )
             for path in sorted(run_directory.glob(pattern))
         ]
+    execution_completed = state == "completed"
+    generated = bool(execution_completed and structures)
+    contract_flagged_count = worker.get("contract_flagged_designs")
+    if isinstance(contract_flagged_count, int):
+        contract_status = (
+            "flagged" if contract_flagged_count > 0 else "met"
+        )
+    elif generated and passed is not None:
+        contract_status = "met" if passed else "flagged_or_advisory"
+    else:
+        contract_status = "not_evaluated"
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "job_id": reference.job_id,
         "state": state,
+        "execution_completed": execution_completed,
+        "generated": generated,
+        "contract_status": contract_status,
+        "result_semantics": "generation_contracts_advice_v1",
+        # Compatibility aggregate: all legacy top-level audits passed.  New
+        # callers should use execution_completed/generated/contract_status.
         "passed": passed,
         "experiment": worker.get("experiment") or (scheduler or {}).get("job_name"),
         "run_directory": str(run_directory) if run_directory else None,
@@ -554,8 +571,14 @@ def format_status_text(status: dict[str, Any]) -> str:
 
     worker = status.get("worker") or {}
     produced = worker.get("produced_designs")
-    accepted = worker.get("accepted_designs")
-    rejected = worker.get("rejected_designs")
+    contract_met = worker.get("contract_met_designs")
+    contract_flagged = worker.get("contract_flagged_designs")
+    recommended = worker.get("recommended_designs")
+    review = worker.get("review_designs")
+    if contract_met is None:
+        contract_met = worker.get("accepted_designs")
+    if contract_flagged is None:
+        contract_flagged = worker.get("rejected_designs")
     verdict = (
         "PASSED"
         if status["passed"] is True
@@ -563,21 +586,26 @@ def format_status_text(status: dict[str, Any]) -> str:
         if status["passed"] is False
         else "PENDING"
     )
-    if status["state"] == "completed" and isinstance(produced, int):
-        if accepted == produced:
-            verdict = "PASSED"
-        elif isinstance(accepted, int) and accepted > 0:
-            verdict = "PARTIAL"
-        else:
-            verdict = "REJECTED"
+    structures = status.get("artifacts", {}).get("structures") or []
+    generated = status["state"] == "completed" and (
+        (isinstance(produced, int) and produced > 0) or bool(structures)
+    )
+    result = verdict
+    if generated:
+        # Generation and user preference are deliberately separate.  Audit
+        # counts remain visible below, but Mosaic does not turn a completed
+        # raw structure into an overall aesthetic/scientific verdict.
+        result = "GENERATED"
     lines = [
         "RFD3-Mosaic run status",
         f"job:        {status['job_id'] or 'unknown'}",
         f"experiment: {status['experiment'] or 'unknown'}",
         f"state:      {status['state']}",
-        f"verdict:    {verdict}",
+        f"result:     {result}",
         f"run:        {status['run_directory'] or 'not created yet'}",
     ]
+    if generated:
+        lines.append("execution:   COMPLETED (raw coordinate output produced)")
     scheduler = status.get("scheduler") or {}
     if scheduler:
         lines.append(
@@ -590,8 +618,15 @@ def format_status_text(status: dict[str, Any]) -> str:
     if isinstance(produced, int):
         lines.append(
             "designs:    "
-            f"produced={produced} accepted={accepted} rejected={rejected}"
+            f"generated={produced} contract_met={contract_met} "
+            f"contract_flagged={contract_flagged}"
         )
+        if recommended is not None:
+            lines.append(
+                "screening:  advisory only; "
+                f"recommended={recommended} review={review}; "
+                "all generated outputs retained"
+            )
     design = status.get("design") or {}
     if design:
         lines.extend(
@@ -661,7 +696,7 @@ def format_status_text(status: dict[str, Any]) -> str:
     if not status["audits"]:
         lines.append("  - none available")
     for audit in status["audits"]:
-        label = "PASS" if audit["passed"] else "FAIL"
+        label = "MET" if audit["passed"] else "FLAG"
         lines.append(f"  - {label:<4} {audit['name']}")
         if audit["name"] == "graph_interface_guidance_audit.json":
             metrics = (audit.get("summary") or {}).get("final_packing_metrics") or {}
@@ -740,11 +775,10 @@ def format_status_text(status: dict[str, Any]) -> str:
                         f"requested={check.get('requested_minimum')}.."
                         f"{check.get('requested_maximum')} A"
                     )
-    structures = status["artifacts"]["structures"]
     lines.append(
         "raw outputs: "
         f"{len(structures)} "
-        "(one per produced design; rejected designs are retained for audit)"
+        "(one per produced design; check-flagged outputs remain available)"
     )
     for path in structures:
         lines.append(f"  - {path}")
@@ -760,7 +794,10 @@ def render_html_report(status: dict[str, Any]) -> str:
 
     worker = status.get("worker") or {}
     produced = worker.get("produced_designs")
-    accepted = worker.get("accepted_designs")
+    contract_met = worker.get("contract_met_designs")
+    if contract_met is None:
+        contract_met = worker.get("accepted_designs")
+    recommended = worker.get("recommended_designs")
     verdict = (
         "passed"
         if status["passed"] is True
@@ -768,17 +805,14 @@ def render_html_report(status: dict[str, Any]) -> str:
         if status["passed"] is False
         else "pending"
     )
+    structures = status.get("artifacts", {}).get("structures") or []
+    generated = status["state"] == "completed" and (
+        (isinstance(produced, int) and produced > 0) or bool(structures)
+    )
     verdict_label = verdict.upper()
-    if status["state"] == "completed" and isinstance(produced, int):
-        if accepted == produced:
-            verdict = "passed"
-            verdict_label = "PASSED"
-        elif isinstance(accepted, int) and accepted > 0:
-            verdict = "pending"
-            verdict_label = "PARTIAL"
-        else:
-            verdict = "failed"
-            verdict_label = "REJECTED"
+    if generated:
+        verdict = "pending"
+        verdict_label = "GENERATED"
     audit_rows = []
     for audit in status["audits"]:
         summary = audit.get("summary")
@@ -789,7 +823,7 @@ def render_html_report(status: dict[str, Any]) -> str:
             "<tr>"
             f"<td>{escape(audit['name'])}</td>"
             f"<td><span class='badge {'pass' if audit['passed'] else 'fail'}'>"
-            f"{'PASS' if audit['passed'] else 'FAIL'}</span></td>"
+            f"{'MET' if audit['passed'] else 'FLAG'}</span></td>"
             f"<td><details><summary>metrics</summary><pre>"
             f"{escape(summary_text)}</pre></details></td>"
             "</tr>"
@@ -797,7 +831,7 @@ def render_html_report(status: dict[str, Any]) -> str:
     structure_items = (
         "".join(
             f"<li><code>{escape(path)}</code></li>"
-            for path in status["artifacts"]["structures"]
+            for path in structures
         )
         or "<li>None available</li>"
     )
@@ -834,19 +868,20 @@ pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}}
 <div><span class="badge {verdict}">{verdict_label}</span></div>
 <section class="grid">
 <div class="card"><div class="label">Job ID</div><div class="value">{escape(str(status['job_id'] or 'unknown'))}</div></div>
-<div class="card"><div class="label">Logical state</div><div class="value">{escape(status['state'])}</div></div>
+<div class="card"><div class="label">Execution</div><div class="value">{escape(status['state'].upper())}</div></div>
 <div class="card"><div class="label">Scheduler</div><div class="value">{escape(str(scheduler.get('state') or 'unavailable'))}</div></div>
 <div class="card"><div class="label">Runtime</div><div class="value">{escape(str(scheduler.get('elapsed') or 'unknown'))}</div></div>
-<div class="card"><div class="label">Design yield</div><div class="value">{escape(str(accepted if isinstance(produced, int) else 'unknown'))}/{escape(str(produced if isinstance(produced, int) else 'unknown'))}</div></div>
+<div class="card"><div class="label">Geometry contracts met</div><div class="value">{escape(str(contract_met if isinstance(produced, int) else 'unknown'))}/{escape(str(produced if isinstance(produced, int) else 'unknown'))}</div></div>
+<div class="card"><div class="label">Advisory recommendations</div><div class="value">{escape(str(recommended if recommended is not None else 'unknown'))}</div></div>
 </section>
-<h2>Required audits</h2>
-<table><thead><tr><th>Report</th><th>Verdict</th><th>Summary</th></tr></thead>
+<h2>Measured contracts and advisory checks</h2>
+<table><thead><tr><th>Report</th><th>Status</th><th>Summary</th></tr></thead>
 <tbody>{''.join(audit_rows) or '<tr><td colspan="3">No audits available.</td></tr>'}</tbody></table>
 <h2>Design provenance</h2>
 <div class="card"><pre>{escape(design_text)}</pre></div>
 <h2>Raw generated outputs</h2>
-<p class="muted">One file per produced design. Audit-rejected outputs are
-retained for diagnosis and are not accepted structures.</p>
+<p class="muted">One file per produced design. Configured checks and advisory
+screens are reported separately and do not erase generated artifacts.</p>
 <ul>{structure_items}</ul>
 <h2>Execution details</h2>
 <div class="card"><div class="label">Run directory</div><code>{escape(str(status['run_directory'] or 'not created'))}</code>
@@ -872,6 +907,10 @@ def write_report(
         output_path = Path(output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_html_report(status), encoding="utf-8")
+    output_path.with_suffix(".txt").write_text(
+        format_status_text(status) + "\n",
+        encoding="utf-8",
+    )
     json_path = output_path.with_suffix(".json")
     json_path.write_text(
         json.dumps(status, indent=2, sort_keys=True) + "\n",

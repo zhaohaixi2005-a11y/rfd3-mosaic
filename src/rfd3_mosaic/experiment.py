@@ -708,6 +708,7 @@ def resolve_experiment(
             "execution_backend",
             "neighbour_radius",
             "scaffold_packing",
+            "screening",
         },
         "sampling",
     )
@@ -751,7 +752,39 @@ def resolve_experiment(
         "scaffold_packing": str(
             sampling.get("scaffold_packing", "off")
         ),
+        "screening": {},
         "sampler": dict(SAMPLER_PRESETS[preset]),
+    }
+    raw_screening = sampling.get("screening") or {}
+    if not isinstance(raw_screening, dict):
+        raise ValueError("sampling.screening must be a mapping")
+    _reject_unknown(
+        raw_screening,
+        {"mode", "protocol", "retain_all_outputs"},
+        "sampling.screening",
+    )
+    screening_mode = str(raw_screening.get("mode", "advisory"))
+    if screening_mode not in {"off", "advisory"}:
+        raise ValueError("sampling.screening.mode must be off or advisory")
+    screening_protocol = str(raw_screening.get("protocol", "auto"))
+    if screening_protocol not in {
+        "auto",
+        "generic_backbone",
+        "hoyeung_lhd101",
+    }:
+        raise ValueError(
+            "sampling.screening.protocol must be auto, generic_backbone, "
+            "or hoyeung_lhd101"
+        )
+    retain_all_outputs = raw_screening.get("retain_all_outputs", True)
+    if retain_all_outputs is not True:
+        raise ValueError(
+            "sampling.screening.retain_all_outputs must remain true"
+        )
+    resolved_sampling["screening"] = {
+        "mode": screening_mode,
+        "protocol": screening_protocol,
+        "retain_all_outputs": True,
     }
     if resolved_sampling["replicates_per_pose"] > resolved_sampling["designs"]:
         raise ValueError(

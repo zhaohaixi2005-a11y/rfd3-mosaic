@@ -71,7 +71,7 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertTrue(status["passed"])
         self.assertEqual(len(status["audits"]), 3)
         self.assertEqual(len(status["artifacts"]["structures"]), 1)
-        self.assertIn("verdict:    PASSED", format_status_text(status))
+        self.assertIn("result:     GENERATED", format_status_text(status))
 
         self._write_json(
             run / "scaffold_validity_audit.json",
@@ -143,8 +143,36 @@ class RunReportingTestCase(unittest.TestCase):
         )
 
         text = format_status_text(status)
-        self.assertIn("verdict:    PARTIAL", text)
-        self.assertIn("produced=4 accepted=3 rejected=1", text)
+        self.assertIn("result:     GENERATED", text)
+        self.assertIn("execution:   COMPLETED", text)
+        self.assertIn(
+            "generated=4 contract_met=3 contract_flagged=1",
+            text,
+        )
+
+    def test_completed_rejected_run_is_not_reported_as_execution_failure(self) -> None:
+        run = self._completed_run("13580")
+        summary_path = run / "experiment_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary.update(
+            {
+                "requested_designs": 1,
+                "produced_designs": 1,
+                "accepted_designs": 0,
+                "rejected_designs": 1,
+            }
+        )
+        self._write_json(summary_path, summary)
+
+        status = collect_run_status(
+            RunReference(job_id="13580", run_directory=run),
+            include_scheduler=False,
+        )
+
+        text = format_status_text(status)
+        self.assertEqual(status["state"], "completed")
+        self.assertIn("result:     GENERATED", text)
+        self.assertIn("execution:   COMPLETED", text)
 
     def test_numeric_job_id_resolves_completed_run(self) -> None:
         run = self._completed_run("24680")
@@ -196,6 +224,9 @@ class RunReportingTestCase(unittest.TestCase):
         html = output.read_text(encoding="utf-8")
         self.assertIn("design &lt;unsafe&gt;", html)
         self.assertIn("joint_orbit_rmsd", html)
+        assessment = output.with_suffix(".txt")
+        self.assertTrue(assessment.is_file())
+        self.assertIn("result:     GENERATED", assessment.read_text())
         payload = json.loads(
             output.with_suffix(".json").read_text(encoding="utf-8")
         )

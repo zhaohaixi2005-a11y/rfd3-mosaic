@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from rfd3_mosaic.advisory_screening import write_advisory_screening
 from rfd3_mosaic.result_auditing import (
     find_compiled_input,
     find_result_jsons,
@@ -177,6 +178,8 @@ def audit_existing_run(
     planned_reports_list: list[Path] = []
     mobility_paths: list[Path] = []
     failures: list[Exception] = []
+    check_flags: list[str] = []
+    screening_paths: list[Path] = []
     for result_json in result_jsons:
         try:
             input_path = input_for_result(result_json)
@@ -203,8 +206,25 @@ def audit_existing_run(
             reports_list.extend(outcome.reports)
             if outcome.mobility_trajectory is not None:
                 mobility_paths.append(outcome.mobility_trajectory)
-            gate_result_audits(outcome.reports, python=python)
-        except Exception as error:  # Preserve a complete fail-closed record.
+            try:
+                gate_result_audits(outcome.reports, python=python)
+            except RuntimeError as error:
+                # A generated coordinate file is not an execution failure.
+                # Preserve the legacy aggregate check while the advisory
+                # record distinguishes contracts from scientific proxies.
+                check_flags.append(str(error))
+            screening = config.get("sampling", {}).get("screening") or {}
+            screening_path = (
+                report_directory(result_json) / "screening_advice.json"
+            )
+            write_advisory_screening(
+                screening_path,
+                outcome.reports,
+                mode=str(screening.get("mode", "advisory")),
+                protocol=str(screening.get("protocol", "auto")),
+            )
+            screening_paths.append(screening_path)
+        except Exception as error:  # Audit execution itself remains strict.
             failures.append(error)
 
     reports = (
@@ -214,14 +234,15 @@ def audit_existing_run(
     )
     mobility = mobility_paths[0] if len(mobility_paths) == 1 else None
     failure = failures[0] if failures else None
-    passed = failure is None
+    execution_completed = failure is None
+    passed = bool(execution_completed and not check_flags)
     summary = dict(previous)
     prior_status = previous.get("status")
     prior_error = previous.get("error")
     prior_error_type = previous.get("error_type")
     summary.update(
         {
-            "status": "completed" if passed else "failed",
+            "status": "completed" if execution_completed else "failed",
             "experiment": config.get("name")
             or previous.get("experiment"),
             "topology": (config.get("topology") or {}).get("kind"),
@@ -239,6 +260,10 @@ def audit_existing_run(
                 "started_at": started_at,
                 "completed_at": utc_now(),
                 "passed": passed,
+                "execution_completed": execution_completed,
+                "semantics": "advisory_non_destructive",
+                "check_flags": check_flags,
+                "screening_advice": [str(path) for path in screening_paths],
                 "reports": [str(path) for path in reports],
                 "inference_rerun": False,
                 "result_count": len(result_jsons),
@@ -248,7 +273,7 @@ def audit_existing_run(
             },
         }
     )
-    if passed:
+    if execution_completed:
         summary.pop("error", None)
         summary.pop("error_type", None)
     else:
@@ -258,8 +283,8 @@ def audit_existing_run(
     _update_index(
         config,
         root,
-        state="completed" if passed else "failed",
-        error=None if passed else str(failure),
+        state="completed" if execution_completed else "failed",
+        error=None if execution_completed else str(failure),
     )
     return PosthocAuditResult(
         run_directory=root,
@@ -267,7 +292,7 @@ def audit_existing_run(
         reports=reports,
         result_json=result_jsons[0],
         result_jsons=result_jsons,
-        error=None if passed else str(failure),
+        error=None if execution_completed else str(failure),
     )
 
 

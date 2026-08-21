@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
 
 from rfd3_mosaic.backbone_comparison import (
+    _apply_cohort_filter,
     _run_directories,
     compare_hoyeung_backbone_campaign,
     flatness_twist_descriptors,
@@ -23,31 +25,86 @@ def _atom_line(
     chain: str,
     residue: int,
     coordinate: tuple[float, float, float],
+    atom_name: str = "CA",
 ) -> str:
     x, y, z = coordinate
     return (
-        f"ATOM  {serial:5d} {'CA':>4s} {'ALA':>3s} {chain}{residue:4d}    "
+        f"ATOM  {serial:5d} {atom_name:>4s} {'ALA':>3s} {chain}{residue:4d}    "
         f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C\n"
     )
 
 
 def _write_c3(path: Path) -> None:
-    coordinates = {
-        "A": ((3.0, 0.0, 0.0), (17.0, 0.0, 2.0)),
-        "B": ((3.5, 1.0, 1.0), (-13.5, 16.32, -1.0)),
-        "C": ((3.0, -1.0, 0.5), (-13.0, -16.32, -0.5)),
-    }
+    base = (
+        (3.0, -1.0, -2.0),
+        (3.0, -0.5, -1.0),
+        (3.0, 0.0, 0.0),
+        (3.0, 0.5, 1.0),
+        (3.0, 1.0, 2.0),
+        (17.0, 0.0, 0.0),
+    )
+    coordinates = {}
+    for chain, angle in zip("ABC", (0.0, 120.0, 240.0), strict=True):
+        radians = angle * 3.141592653589793 / 180.0
+        coordinates[chain] = tuple(
+            (
+                x * math.cos(radians) - y * math.sin(radians),
+                x * math.sin(radians) + y * math.cos(radians),
+                z,
+            )
+            for x, y, z in base
+        )
     lines = []
     serial = 1
     for chain, chain_coordinates in coordinates.items():
         for residue, coordinate in enumerate(chain_coordinates, start=1):
             lines.append(_atom_line(serial, chain, residue, coordinate))
             serial += 1
+            carbonyl = (coordinate[0] + 0.3, coordinate[1], coordinate[2])
+            lines.append(
+                _atom_line(serial, chain, residue, carbonyl, atom_name="C")
+            )
+            serial += 1
     lines.append("END\n")
     path.write_text("".join(lines), encoding="utf-8")
 
 
 class BackboneComparisonTestCase(unittest.TestCase):
+    def test_hoyeung_filter_uses_three_strict_cohort_medians(self) -> None:
+        records = []
+        for value in (1.0, 2.0, 3.0):
+            records.append(
+                {
+                    "hoyeung_backbone_metrics": {
+                        "carbonyl_c_radius_of_gyration": value,
+                    },
+                    "secondary_structure": {
+                        "available": True,
+                        "loop_percentage": value,
+                        "longest_loop_residues": value,
+                    },
+                }
+            )
+
+        result = _apply_cohort_filter(records)
+
+        self.assertEqual(
+            records[0]["paper_backbone_filter"],
+            "selected_by_stride_three_metric_approximation",
+        )
+        self.assertEqual(
+            records[1]["paper_backbone_filter"],
+            "not_selected_by_stride_three_metric_approximation",
+        )
+        self.assertEqual(result["loop_percentage_median"], 2.0)
+        self.assertEqual(result["longest_loop_median"], 2.0)
+        self.assertEqual(
+            result["author_carbonyl_c_radius_of_gyration_median"], 2.0
+        )
+        self.assertEqual(
+            result["stride_three_metric_approximation_count"], 1
+        )
+
     def test_local_campaign_recovers_unique_run_from_frozen_design(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -150,7 +207,7 @@ class BackboneComparisonTestCase(unittest.TestCase):
         )
         self.assertEqual(
             protocol["paper_backbone_screen"]["selection"],
-            "lowest 50th percentile",
+            "strictly below each cohort median",
         )
         self.assertIn(
             "SolubleMPNN sequence design",
@@ -171,7 +228,7 @@ class BackboneComparisonTestCase(unittest.TestCase):
         self.assertTrue(descriptors["available"])
         self.assertEqual(
             descriptors["method"],
-            "paper_written_definition_reimplemented",
+            "author_notebook_formula_in_intrinsic_ring_frame",
         )
         self.assertGreaterEqual(descriptors["flatness_degrees"], 0.0)
         self.assertLessEqual(descriptors["flatness_degrees"], 90.0)
@@ -276,7 +333,7 @@ class BackboneComparisonTestCase(unittest.TestCase):
         self.assertIsNone(payload["summary"]["loop_percentage"])
         self.assertEqual(
             payload["records"][0]["paper_backbone_filter"],
-            "rg_lowest_half_only",
+            "not_selected_by_author_rg_median_only",
         )
         self.assertIn(
             "Generated-interface guidance: not applicable",

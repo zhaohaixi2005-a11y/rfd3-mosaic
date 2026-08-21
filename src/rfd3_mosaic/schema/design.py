@@ -504,6 +504,25 @@ class ScaffoldCoreQualitySpec(StrictModel):
     ] = 0.25
 
 
+class AdvisoryScreeningSpec(StrictModel):
+    """Non-destructive interpretation of generated backbone diagnostics.
+
+    Screening never deletes coordinates and never changes whether RFD3
+    execution completed.  It only separates immutable geometry contracts
+    from task-dependent scientific recommendations.  Cohort-level protocols
+    (for example the Ho-Yeung median screen) are applied by their campaign
+    collector rather than invented from a single backbone.
+    """
+
+    mode: Literal["off", "advisory"] = "advisory"
+    protocol: Literal[
+        "auto",
+        "generic_backbone",
+        "hoyeung_lhd101",
+    ] = "auto"
+    retain_all_outputs: Literal[True] = True
+
+
 class UserSamplingSpec(StrictModel):
     """Separate pre-diffusion pose choice from RFD3 diffusion sampling."""
 
@@ -523,6 +542,9 @@ class UserSamplingSpec(StrictModel):
     scaffold_packing: Literal["off", "symmetric_generated"] = "off"
     scaffold_core_quality: ScaffoldCoreQualitySpec = Field(
         default_factory=ScaffoldCoreQualitySpec
+    )
+    screening: AdvisoryScreeningSpec = Field(
+        default_factory=AdvisoryScreeningSpec
     )
 
     @model_validator(mode="after")

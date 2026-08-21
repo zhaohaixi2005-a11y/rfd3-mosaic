@@ -38,6 +38,9 @@ class SamplingPlanTestCase(unittest.TestCase):
 
         self.assertEqual(plan.diffusion.designs, 1000)
         self.assertEqual(plan.diffusion.replicates_per_pose, 1)
+        self.assertEqual(plan.diffusion.screening_mode, "advisory")
+        self.assertEqual(plan.diffusion.screening_protocol, "auto")
+        self.assertTrue(plan.diffusion.retain_all_outputs)
 
     def test_variable_pose_is_resampled_per_design_by_default(self) -> None:
         plan = compile_sampling_plan(

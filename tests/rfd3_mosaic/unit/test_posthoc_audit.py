@@ -277,7 +277,7 @@ class PosthocAuditTestCase(unittest.TestCase):
             "old audit could not map chains",
         )
 
-    def test_failed_gate_is_persisted_fail_closed(self) -> None:
+    def test_flagged_gate_preserves_completed_generated_run(self) -> None:
         self._write_compiled_input(
             {
                 "symmetry_multiplicity": 3,
@@ -312,8 +312,14 @@ class PosthocAuditTestCase(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(summary["status"], "failed")
-        self.assertEqual(summary["error"], "required audit failed")
+        self.assertEqual(summary["status"], "completed")
+        self.assertNotIn("error", summary)
+        self.assertEqual(
+            summary["posthoc_audit"]["check_flags"],
+            ["required audit failed"],
+        )
+        self.assertTrue(summary["posthoc_audit"]["execution_completed"])
+        self.assertIsNone(result.error)
         self.assertEqual(summary["reports"], [str(path) for path in reports])
 
     def test_cli_accepts_numeric_audit_target_and_root(self) -> None:

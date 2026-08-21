@@ -122,10 +122,14 @@ Expert configurations may additionally specify components, ports, group
 relations, mobility subspaces and packing controls. Both modes compile to the
 same internal assembly representation and RFD3 runtime.
 
-## Validation model
+## Generation, contracts and advisory screening
 
-A generated coordinate file is not considered successful merely because
-inference finished. Required result audits evaluate:
+Mosaic reports three distinct facts instead of collapsing them into one
+``PASS/FAIL`` label. ``GENERATED`` means inference wrote a finite coordinate
+file. ``CONTRACT_MET/CONTRACT_FLAGGED`` covers explicit invariants such as
+fixed-motif recovery, continuity and declared symmetry. Advisory screening
+then summarizes task-dependent quality proxies without deleting the output or
+claiming experimental success/failure. Audits measure:
 
 - fixed-motif completeness and joint rigid recovery;
 - declared symmetry and component-orbit consistency;
@@ -133,7 +137,8 @@ inference finished. Required result audits evaluate:
 - backbone continuity, clashes and compactness;
 - runtime packing-guidance execution when enabled.
 
-The CLI reports a run as passed only when every required audit passes.
+Every generated coordinate file is retained. Sequence design and independent
+refolding remain necessary before calling a backbone designable.
 
 ## Documentation
 
@@ -142,6 +147,8 @@ The CLI reports a run as passed only when every required audit passes.
 - [Implemented capabilities and limitations](DEVELOPMENT_STATUS.md)
 - [Current research status](docs/rfd3_mosaic/PROJECT_STATUS.md)
 - [Ho-Yeung LHD101 backbone comparison](docs/rfd3_mosaic/HOYEUNG_BACKBONE_COMPARISON.md)
+- [Structure metric provenance and interpretation](docs/rfd3_mosaic/STRUCTURE_METRIC_PROVENANCE.md)
+- [Evidence-backed backbone evaluation formulas](docs/rfd3_mosaic/BACKBONE_EVALUATION_EVIDENCE.md)
 
 Detailed architecture plans, experiment records and site-specific deployment
 notes are retained as development evidence, but are not prerequisites for

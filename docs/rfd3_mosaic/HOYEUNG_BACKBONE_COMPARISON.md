@@ -47,25 +47,29 @@ The paper and its supplementary Methods report:
 
 - 5,000–10,000 generated backbones per broader design objective;
 - a 1,000-backbone LHD101 diversity analysis;
-- loop percentage and radius of gyration, retaining the lowest 50th
-  percentile and approximately 10% of structures for sequence design;
+- chain-A PyMOL loop fraction, longest contiguous PyMOL loop, and chain-A
+  carbonyl-C radius of gyration; the author notebook sequentially requires
+  each value to be strictly below its cohort median and retains roughly 10%
+  for sequence design;
 - Foldseek `easy-cluster` diversity, defined as clusters divided by
   backbones;
 - more than 13-fold higher diversity when seed orientation was sampled;
 - final ring-interface Flatness and Twist distributions.
 
-The supplement does not give absolute loop/Rg thresholds. It also does not
-publish the raw Foldseek assignments. Mosaic therefore computes cohort
-percentiles and never invents an absolute cutoff or reference distribution.
-As of 2026-08-18, the paper-linked `interface_seeded_oligomers` analysis
-repository returned 404; Flatness/Twist are transparently reimplemented from
-the written definitions rather than described as byte-identical author code.
+The work does not define universal absolute loop/Rg thresholds, and the raw
+Foldseek assignments are not part of the preprint supplement. Mosaic therefore
+computes declared-cohort medians rather than inventing an absolute cutoff. The
+author `interface_seeded_oligomers` notebooks were inspected locally. Their
+Flatness/Twist formulas assume structures have already been aligned to a ring
+frame; Mosaic records when it uses a constructed intrinsic frame instead of
+claiming byte-identical coordinate preprocessing.
 
 ## Mosaic outputs collected
 
 For every backbone, the comparison records:
 
-- generation and strict-audit acceptance;
+- generation and the historical configured-check bundle (reported separately,
+  never treated as the backbone generator's scientific acceptance verdict);
 - supplied-seed atom completeness and RMSD;
 - exact-symmetry coordinate RMSD;
 - chain breaks and CA clashes;
@@ -77,11 +81,25 @@ For every backbone, the comparison records:
 - generated--generated cross-chain contact count, coverage, and the soft
   excess objective;
 - Flatness and Twist in a symmetry-aligned local ring frame;
-- optional STRIDE coil/turn percentage.
+- optional STRIDE coil/turn percentage and longest contiguous loop, explicitly
+  labelled as an approximation to the author's PyMOL `ss='L'` assignment;
+- the exact chain-A carbonyl-C radius of gyration used by the author notebook.
 
 Missing STRIDE does not make a valid Mosaic backbone fail. It leaves only the
 paper's loop-percentile column pending. ProteinMPNN, AF2/AF3, Rosetta and wet
 experiments are intentionally outside this backbone-only comparison.
+
+Exact formulas and primary-source comparisons with RFdiffusion, RFD3,
+Scaffold-Lab, PXDesign/Protenix and BoltzGen are maintained in
+[BACKBONE_EVALUATION_EVIDENCE.md](BACKBONE_EVALUATION_EVIDENCE.md).
+
+The comparison is stage-matched to RFdiffusion/RFD3 backbone generation.
+Current normalized-Rg, tertiary-support and long-range-contact targets are
+Mosaic controller diagnostics, not published universal backbone thresholds.
+Accordingly, `0/40` satisfying that provisional target bundle does not mean
+zero backbones were generated or that all forty failed. Population yield,
+conditioning recovery, stereochemical diagnostics and structural diversity
+must be reported as separate quantities.
 
 ## Run the experiment
 
@@ -279,6 +297,58 @@ comparison/hoyeung_backbone_metrics.csv
 comparison/hoyeung_backbone_comparison.md
 ```
 
+## 2026-08-20 independent-pose 40-design cohort
+
+The first forty shards of the planned one-hundred-design AI-cluster campaign
+completed and were analyzed as the submitted cohort.  These are forty
+independently seeded initial placements and forty independent RFD3 diffusion
+streams, not forty repetitions of one compiled pose.
+
+- generated and analyzed: `40/40` submitted designs;
+- supplied interface preserved: `40/40`;
+- continuous chains: `40/40`;
+- historical configured-check bundle met: `27/40` (not a published
+  Ho-Yeung quality threshold);
+- CA-clash-free: `28/40`;
+- all advisory monomer-core targets satisfied: `0/40`;
+- observed motif motion: `0.081--0.683 A` translation and
+  `0.483--3.422 degrees` rotation;
+- normalized chain Rg: `2.729--4.383`, median `3.426`;
+- tertiary-support fraction: `0.235--0.694`, median `0.512`;
+- generated--generated inter-chain contact pairs: `0--327`, median `48`;
+- fifth-percentile central-pore diameter: `11.02--39.41 A`.
+
+Twelve of the thirteen structures outside that historical set triggered the
+coarse CA-distance clash diagnostic; all forty structures remain continuous.
+The remaining structure (`5755295`) has zero reported CA clashes but triggered
+another scaffold-validity subcheck.  These are inspection flags, not a claim
+that a publication has classified the structures as failed.  The cohort therefore proves
+that independent per-design pose sampling works and produces substantial
+assembly-level geometric diversity, but it does not yet establish a robust
+high-quality-backbone yield.
+
+Metric definitions and the distinction between published thresholds,
+cohort-relative protocols, user preferences and engineering diagnostics are
+recorded in `STRUCTURE_METRIC_PROVENANCE.md`.  The historical package name
+`accepted_strict_27` is retained for reproducibility; it means only "27 designs
+meeting the checks configured at that revision".
+
+The strongest retained inspection candidates are:
+
+| job | normalized Rg | tertiary support | extra generated inter-chain pairs | role |
+|---|---:|---:|---:|---|
+| `5755308` | 2.831 | 0.682 | 0 | strongest tertiary support with no extra cross-chain packing |
+| `5755272` | 2.849 | 0.647 | 0 | balanced compactness/support candidate |
+| `5755278` | 2.822 | 0.565 | 0 | compact, clean cross-chain candidate |
+| `5755279` | 2.729 | 0.518 | 0 | lowest normalized Rg in the cohort |
+
+The campaign manifest describes a one-hundred-design plan, so the generic
+collector reports `requested=100, produced=40`.  This is not interpreted as
+sixty failed structures: only forty shards were submitted for this acceptance
+round.  A future continuation may append the remaining sixty, but the existing
+forty already expose the main quality distribution and should be filtered or
+calibrated before spending that GPU budget.
+
 All six runs completed, preserved the supplied interface, remained exact C3,
 had zero CA clashes and zero chain breaks. Generated-interface guidance is not
 applicable to this supplied-interface task; its absence must not be counted as
@@ -303,6 +373,8 @@ pose `10063` produces substantially more unintended cross-chain packing.
 
 Across all six designs, the paper-aligned maximum-chain Rg median is `18.875 A`,
 Flatness ranges from `27.80` to `51.60 degrees`, and Twist is approximately
-`30.0 degrees`. A complete Ho-Yeung loop+Rg filter is not yet available because
-STRIDE was not supplied; Foldseek diversity likewise requires a later cohort
-clustering step.
+`30.0 degrees`. The exact three-stage Ho-Yeung cohort selection is not yet
+available because its PyMOL `ss='L'` loop assignments were not computed. The
+carbonyl-C Rg portion is exact; STRIDE C+T, when supplied, remains a labelled
+approximation. Foldseek diversity likewise requires a later cohort clustering
+step.

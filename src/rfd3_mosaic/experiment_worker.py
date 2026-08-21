@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from rfd3_mosaic.advisory_screening import write_advisory_screening
 from rfd3_mosaic.assembly_compiler import compile_experiment_assembly
 from rfd3_mosaic.design_preferences import ResolvedDesignPreferences
 from rfd3_mosaic.provenance.software import (
@@ -630,6 +631,11 @@ def execute(
     all_reports: list[Path] = []
     mobility_trajectories: list[Path] = []
     observed_examples: set[str] = set()
+    screening_config = config["sampling"].get("screening") or {
+        "mode": "advisory",
+        "protocol": "auto",
+        "retain_all_outputs": True,
+    }
     for result_json in result_jsons:
         matching_examples = [
             example_id
@@ -667,6 +673,17 @@ def execute(
         except RuntimeError as error:
             accepted = False
             rejection_reason = str(error)
+        screening_path = audit_directory / "screening_advice.json"
+        screening = write_advisory_screening(
+            screening_path,
+            audit_outcome.reports,
+            mode=str(screening_config.get("mode", "advisory")),
+            protocol=str(screening_config.get("protocol", "auto")),
+        )
+        contract_met = screening["contract_status"] in {
+            "met",
+            "not_evaluated",
+        }
         all_reports.extend(audit_outcome.reports)
         if audit_outcome.mobility_trajectory is not None:
             mobility_trajectories.append(
@@ -682,6 +699,12 @@ def execute(
                 "diffusion_seed": assignment.diffusion_seed,
                 "compiled_input": str(assembly.input_path),
                 "result_json": str(result_json),
+                "generated": True,
+                "contract_met": contract_met,
+                "recommendation": screening["recommendation"],
+                "screening_advice": str(screening_path),
+                # Backward-compatible aliases for older campaign collectors.
+                # New reporting must use generated/contract/recommendation.
                 "accepted": accepted,
                 "rejection_reason": rejection_reason,
                 "reports": [str(path) for path in audit_outcome.reports],
@@ -704,9 +727,18 @@ def execute(
         bool(record["accepted"]) for record in design_results
     )
     rejected_count = len(design_results) - accepted_count
+    contract_met_count = sum(
+        bool(record["contract_met"]) for record in design_results
+    )
+    contract_flagged_count = len(design_results) - contract_met_count
+    recommended_count = sum(
+        record["recommendation"] == "recommended_for_next_stage"
+        for record in design_results
+    )
 
     completion = {
         "status": "completed",
+        "execution_completed": True,
         "experiment": config["name"],
         "topology": kind,
         "resolved_config_sha256": _sha256(frozen),
@@ -715,6 +747,16 @@ def execute(
         "pose_manifest": str(pose_manifest_path),
         "model_load_count": 1,
         "produced_designs": len(design_results),
+        "generated_designs": len(design_results),
+        "contract_met_designs": contract_met_count,
+        "contract_flagged_designs": contract_flagged_count,
+        "recommended_designs": recommended_count,
+        "review_designs": len(design_results) - recommended_count,
+        "screening": {
+            **screening_config,
+            "semantics": "advisory_non_destructive",
+        },
+        # Compatibility aliases retained for pre-advisory collectors.
         "accepted_designs": accepted_count,
         "rejected_designs": rejected_count,
         "design_results": design_results,
@@ -738,14 +780,11 @@ def execute(
         encoding="utf-8",
     )
     _record_worker_state(config, run_dir, "completed")
-    if expected_designs == 1 and rejected_count:
-        raise RuntimeError(
-            "The generated design failed required result audits: "
-            + str(design_results[0]["rejection_reason"])
-        )
     print(
         "RFD3-Mosaic experiment completed: "
-        f"accepted={accepted_count}/{expected_designs}",
+        f"generated={len(design_results)}/{expected_designs} "
+        f"contract_met={contract_met_count} "
+        f"recommended={recommended_count}",
         flush=True,
     )
 

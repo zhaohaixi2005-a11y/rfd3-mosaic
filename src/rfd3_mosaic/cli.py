@@ -1478,6 +1478,12 @@ def _print_public_design_plan(
         f"diversity={resolved_preferences.diversity.value} "
         f"motion={resolved_preferences.component_motion.value}"
     )
+    print(
+        "screening:   "
+        f"{sampling.diffusion.screening_mode} "
+        f"protocol={sampling.diffusion.screening_protocol} "
+        "retain_all_outputs=true"
+    )
     if design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
         print(
             "new-interface guidance: off (the supplied interface is checked "

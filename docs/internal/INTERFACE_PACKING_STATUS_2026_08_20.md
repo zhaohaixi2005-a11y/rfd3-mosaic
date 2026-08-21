@@ -250,10 +250,72 @@ output approaches contact, but it still lacks a complete heavy-atom interface;
 the other three remain too far apart and two also contain chain breaks.  The
 motif constraint itself remains exact in all four outputs.
 
-At the time this evidence was collected, job `5755479` (locked `s63004`) and
-jobs `5755482--5755484` (guided `s63000/s63002/s63004`) were still pending and
-had no run directories.  Across the earlier H100 gate, the RTX 3070 gate and
-this completed A100 subset, the current generated-interface evidence is 0/12
-accepted outputs.  The pending guided subset must still be collected, but the
-completed evidence is already sufficient to justify a targeted controller
-change rather than merely increasing the sample count.
+The remaining A100 jobs subsequently completed inference.  Their original
+workers stopped during result auditing because the early multi-design run
+layout passed the merged engine input to a one-result constraint audit.  The
+post-hoc audit path added in `4df4fcc` reconstructed each exact one-example
+input and recovered all twelve results without rerunning RFD3.  Every fixed or
+joint-rigid constraint orbit then passed; every guided result also passed its
+mobility audit.  The full scientific result is nevertheless 0/12:
+
+| mode | job | output | minimum edge distance (A) | minimum per-side coverage | minimum contiguous patch | shape loss | interface result |
+|---|---|---:|---:|---:|---:|---:|---|
+| locked | `5755477` | 0 | 11.457 | 0 | 0 | 1.821 | FAIL, 0/3 edges |
+| locked | `5755477` | 1 | 3.503 | 2 | 2 | 0.470 | FAIL, 0/3 edges |
+| locked | `5755478` | 0 | 15.030 | 0 | 0 | 3.505 | FAIL, 0/3 edges |
+| locked | `5755478` | 1 | 15.970 | 0 | 0 | 4.162 | FAIL, 0/3 edges |
+| locked | `5755479` | 0 | 5.328 | 2 | 2 | 0.282 | FAIL, 0/3 edges |
+| locked | `5755479` | 1 | 11.869 | 0 | 0 | 2.160 | FAIL, 0/3 edges |
+| guided | `5755482` | 0 | 11.745 | 0 | 0 | 2.039 | FAIL, 0/3 edges |
+| guided | `5755482` | 1 | 3.505 | 2 | 2 | 0.477 | FAIL, 0/3 edges |
+| guided | `5755483` | 0 | 15.956 | 0 | 0 | 3.836 | FAIL, 0/3 edges |
+| guided | `5755483` | 1 | 17.329 | 0 | 0 | 4.831 | FAIL, 0/3 edges |
+| guided | `5755484` | 0 | 5.806 | 2 | 1 | 0.244 | FAIL, 0/3 edges |
+| guided | `5755484` | 1 | 12.639 | 0 | 0 | 2.419 | FAIL, 0/3 edges |
+
+The audit repair therefore closes an engineering defect but does not alter the
+scientific verdict.  Locked and guided inputs preserve their required motif
+geometry, guided SE(3) updates execute, and most final scaffolds are continuous
+and clash-free, yet no output forms even one accepted physical interface
+edge.  Including the earlier H100 0/4 and RTX 3070 0/4 campaigns, the retained
+generated-interface evidence is now 0/20.  The next change must improve actual
+capture/continuity/shape formation; increasing sample count or weakening the
+audits is not justified by these results.
+
+### Geometric interpretation of the 0/12 A100 cohort
+
+Visual inspection is consistent with the numerical failure: several outputs
+place helix ends or narrow tips toward one another across the C3 neighbours.
+That is not a broad protein interface.  A valid generated interface need not
+be a coiled coil, but it must expose an extended side-by-side or otherwise
+complementary surface containing several mutually supported residues on both
+sides.  A small minimum distance at one tip cannot substitute for coverage,
+continuity and shape complementarity; this is exactly why the closest A100
+outputs still have only one or two contiguous residues and zero accepted
+physical edges.
+
+The current canaries do not provide a global rescue mechanism for this
+geometry:
+
+- the locked input declares no stochastic `sampling.initial_pose`; its
+  supplied C3 arrangement therefore remains the single compiled arrangement,
+  and only generated atoms may change during diffusion;
+- the guided input also starts from that single compiled arrangement.  It
+  preserves the selected motif internally and can move its complete master
+  orbit only through the local `radial_axial_rotation` controller, currently
+  bounded to 4 A and 10 degrees for `create_symmetric_interface`;
+- exact C3 copies are always regenerated from the same master action, so they
+  never move independently;
+- local line search and rollback are intended to refine a nearby feasible
+  interface, not convert a globally tip-facing arrangement into a new
+  side-facing assembly.
+
+Consequently, the A100 campaign proves that the runtime controller and audits
+execute, but its pose is not a scientifically adequate generated-interface
+canary.  The correct next gate is not a weaker audit or an arbitrarily larger
+local drag.  It is a pre-diffusion population of independent, strictly
+replayable C3 poses, filtered for an interface-facing corridor before RFD3,
+followed by bounded runtime refinement.  Locked semantics remain useful only
+when the user-supplied arrangement already passes that geometric feasibility
+check; `optimize_components` is the route when the complete internally rigid
+motif orbit is allowed to change radius and orientation.

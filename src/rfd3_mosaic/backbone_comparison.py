@@ -75,14 +75,18 @@ def paper_backbone_protocol() -> dict[str, Any]:
             "typical_backbones_per_objective": [5000, 10000],
         },
         "paper_backbone_screen": {
-            "metrics": ["loop_percentage", "radius_of_gyration"],
-            "selection": "lowest 50th percentile",
+            "metrics": [
+                "pymol_chain_a_loop_fraction",
+                "pymol_chain_a_longest_contiguous_loop",
+                "chain_a_carbonyl_c_radius_of_gyration",
+            ],
+            "selection": "strictly below each cohort median",
             "reported_fraction_remaining_approximately": 0.10,
             "warning": (
-                "The supplement does not publish an absolute loop or Rg "
-                "threshold, nor enough detail to reconstruct every additional "
-                "structural filter. Mosaic reports cohort percentiles without "
-                "inventing a cutoff."
+                "The author notebook computes three cohort-relative filters, "
+                "not two universal thresholds. Its loop assignments come from "
+                "PyMOL whereas Mosaic currently records STRIDE C+T as an "
+                "explicit approximation."
             ),
         },
         "paper_diversity": {
@@ -93,8 +97,9 @@ def paper_backbone_protocol() -> dict[str, Any]:
         },
         "paper_orientation_descriptors": {
             "interface_residue_cutoff_angstrom": 6.0,
-            "flatness": "interface-vector angle to the ring xy-plane",
-            "twist": "chain-COM vector angle to the ring xz-plane",
+            "flatness": "degrees(atan2(abs(interface_dz), abs(interface_dy)))",
+            "twist": "degrees(atan2(abs(interface_COM_dy), abs(interface_COM_dx)))",
+            "frame_requirement": "author notebook pre-aligned ring frame",
         },
         "out_of_scope_for_this_report": [
             "SolubleMPNN sequence design",
@@ -319,17 +324,42 @@ def _ca_by_residue(
     }
 
 
+def _carbonyl_c_radius_of_gyration(
+    atoms: Iterable[AtomRecord],
+    chain_id: str,
+) -> float | None:
+    """Return the exact coordinate statistic used by the author notebook."""
+
+    coordinates = np.asarray(
+        [
+            atom.coordinate
+            for atom in atoms
+            if atom.record_type == "ATOM"
+            and atom.chain_id == chain_id
+            and atom.atom_name.upper() == "C"
+        ],
+        dtype=float,
+    )
+    if not len(coordinates):
+        return None
+    center = np.mean(coordinates, axis=0)
+    return float(
+        np.linalg.norm(coordinates - center) / math.sqrt(len(coordinates))
+    )
+
+
 def flatness_twist_descriptors(
     atoms: tuple[AtomRecord, ...],
     ring: Mapping[str, Any],
     *,
     contact_cutoff: float = 6.0,
 ) -> dict[str, Any]:
-    """Reproduce the paper's backbone-level Flatness/Twist definitions.
+    """Apply the author-notebook Flatness/Twist formulas in an intrinsic frame.
 
-    The authors' claimed analysis repository is not currently public.  The
-    implementation follows the written method and records that provenance in
-    the result instead of claiming byte-identical reproduction of their code.
+    The original notebook assumes structures have already been aligned to its
+    ring coordinate frame.  Mosaic constructs the corresponding frame from the
+    measured symmetry axis and a canonical neighbouring-chain pair, and names
+    that distinction in the returned provenance.
     """
 
     order = list(ring.get("angular_chain_order") or ())
@@ -342,22 +372,30 @@ def flatness_twist_descriptors(
     right_heavy = _heavy_coordinates_by_residue(atoms, right)
     left_ca = _ca_by_residue(atoms, left)
     right_ca = _ca_by_residue(atoms, right)
-    contacting_left: set[tuple[int, str]] = set()
-    contacting_right: set[tuple[int, str]] = set()
-    for left_id, left_coordinates in left_heavy.items():
-        for right_id, right_coordinates in right_heavy.items():
-            minimum = float(
-                np.min(
-                    np.linalg.norm(
-                        left_coordinates[:, None, :]
-                        - right_coordinates[None, :, :],
-                        axis=-1,
-                    )
-                )
-            )
-            if minimum <= contact_cutoff:
-                contacting_left.add(left_id)
-                contacting_right.add(right_id)
+    if not left_heavy or not right_heavy or not left_ca or not right_ca:
+        return {
+            "available": False,
+            "reason": "neighbouring chains do not contain required protein atoms",
+            "left_chain": left,
+            "right_chain": right,
+        }
+    left_all_heavy = np.concatenate(tuple(left_heavy.values()), axis=0)
+    right_all_heavy = np.concatenate(tuple(right_heavy.values()), axis=0)
+    # PyMOL's ``chain A within 6 of chain B`` selects individual atoms.  The
+    # author notebook then retains only selected CA atoms; it does not promote
+    # every residue having any contacting side-chain atom to a CA contact.
+    contacting_left = {
+        residue
+        for residue, ca in left_ca.items()
+        if float(np.min(np.linalg.norm(right_all_heavy - ca, axis=-1)))
+        <= contact_cutoff
+    }
+    contacting_right = {
+        residue
+        for residue, ca in right_ca.items()
+        if float(np.min(np.linalg.norm(left_all_heavy - ca, axis=-1)))
+        <= contact_cutoff
+    }
     left_points = np.asarray(
         [left_ca[item] for item in sorted(contacting_left) if item in left_ca],
         dtype=float,
@@ -366,10 +404,13 @@ def flatness_twist_descriptors(
         [right_ca[item] for item in sorted(contacting_right) if item in right_ca],
         dtype=float,
     )
-    if not len(left_points) or not len(right_points):
+    if len(left_points) <= 4 or len(right_points) <= 4:
         return {
             "available": False,
-            "reason": "no neighbouring interface residues within cutoff",
+            "reason": (
+                "author notebook requires more than four interface CA atoms "
+                "on each side"
+            ),
             "left_chain": left,
             "right_chain": right,
         }
@@ -377,8 +418,8 @@ def flatness_twist_descriptors(
     center = np.asarray(ring["center"], dtype=float)
     z_axis = np.asarray(ring["axis"], dtype=float)
     z_axis /= np.linalg.norm(z_axis)
-    left_center = np.mean(np.asarray(list(left_ca.values())), axis=0)
-    right_center = np.mean(np.asarray(list(right_ca.values())), axis=0)
+    left_center = np.mean(left_points, axis=0)
+    right_center = np.mean(right_points, axis=0)
     x_axis = left_center - center
     x_axis -= np.dot(x_axis, z_axis) * z_axis
     x_axis /= np.linalg.norm(x_axis)
@@ -407,18 +448,18 @@ def flatness_twist_descriptors(
     flatness = math.degrees(
         math.atan2(
             abs(float(interface_local[2])),
-            float(np.linalg.norm(interface_local[:2])),
+            abs(float(interface_local[1])),
         )
     )
     twist = math.degrees(
         math.atan2(
             abs(float(com_local[1])),
-            float(np.linalg.norm(com_local[[0, 2]])),
+            abs(float(com_local[0])),
         )
     )
     return {
         "available": True,
-        "method": "paper_written_definition_reimplemented",
+        "method": "author_notebook_formula_in_intrinsic_ring_frame",
         "contact_cutoff_angstrom": contact_cutoff,
         "left_chain": left,
         "right_chain": right,
@@ -490,16 +531,27 @@ def stride_loop_metrics(
             or f"STRIDE exited {completed.returncode}",
         }
     counts = {key: 0 for key in ("H", "E", "C", "T", "G", "I", "B")}
+    assignments: list[str] = []
     for line in completed.stdout.splitlines():
         if not line.startswith("ASG"):
             continue
         fields = line.split()
         if len(fields) > 5 and fields[5].upper() in counts:
-            counts[fields[5].upper()] += 1
+            assignment = fields[5].upper()
+            counts[assignment] += 1
+            assignments.append(assignment)
     total = sum(counts.values())
     if not total:
         return {"available": False, "reason": "STRIDE returned no assignments"}
     percentages = {key: 100.0 * value / total for key, value in counts.items()}
+    longest_loop = 0
+    current_loop = 0
+    for assignment in assignments:
+        if assignment in {"C", "T"}:
+            current_loop += 1
+            longest_loop = max(longest_loop, current_loop)
+        else:
+            current_loop = 0
     return {
         "available": True,
         "residue_count": total,
@@ -507,7 +559,13 @@ def stride_loop_metrics(
         "helix_percentage": sum(percentages[key] for key in ("H", "G", "I")),
         "extended_percentage": sum(percentages[key] for key in ("E", "B")),
         "loop_percentage": percentages["C"] + percentages["T"],
+        "longest_loop_residues": longest_loop,
         "loop_definition": "STRIDE C (coil) + T (turn)",
+        "paper_protocol_compatible": False,
+        "paper_protocol_difference": (
+            "Ho-Yeung uses PyMOL chain-A ss == 'L'; STRIDE C+T is a "
+            "declared approximation"
+        ),
     }
 
 
@@ -542,6 +600,7 @@ def _one_design(
         chain_id=representative_chain,
         stride_executable=stride_executable,
     )
+    author_rg = _carbonyl_c_radius_of_gyration(atoms, representative_chain)
     scaffold = _audit_payload(
         design,
         name="scaffold_validity_audit.json",
@@ -672,6 +731,14 @@ def _one_design(
         "packing": packing,
         "orientation": orientation,
         "secondary_structure": stride,
+        "hoyeung_backbone_metrics": {
+            "representative_chain": representative_chain,
+            "carbonyl_c_radius_of_gyration": author_rg,
+            "loop_percentage": stride.get("loop_percentage"),
+            "longest_loop_residues": stride.get("longest_loop_residues"),
+            "loop_assignment_method": "STRIDE_C_plus_T_approximation",
+            "author_exact_loop_assignment_available": False,
+        },
         "paper_backbone_filter": "pending_cohort_percentiles",
     }
 
@@ -699,7 +766,11 @@ def _quantiles(values: Iterable[Any]) -> dict[str, float] | None:
 
 def _apply_cohort_filter(records: list[dict[str, Any]]) -> dict[str, Any]:
     rg_values = [
-        _number(record["maximum_chain_ca_radius_of_gyration"])
+        _number(
+            record["hoyeung_backbone_metrics"].get(
+                "carbonyl_c_radius_of_gyration"
+            )
+        )
         for record in records
     ]
     loop_values = [
@@ -708,34 +779,73 @@ def _apply_cohort_filter(records: list[dict[str, Any]]) -> dict[str, Any]:
         else None
         for record in records
     ]
+    longest_loop_values = [
+        _number(record["secondary_structure"].get("longest_loop_residues"))
+        if record["secondary_structure"].get("available")
+        else None
+        for record in records
+    ]
     finite_rg = [value for value in rg_values if value is not None]
     finite_loop = [value for value in loop_values if value is not None]
+    finite_longest_loop = [
+        value for value in longest_loop_values if value is not None
+    ]
     rg_median = float(np.median(finite_rg)) if finite_rg else None
     loop_median = float(np.median(finite_loop)) if finite_loop else None
-    for record, rg, loop in zip(records, rg_values, loop_values, strict=True):
+    longest_loop_median = (
+        float(np.median(finite_longest_loop))
+        if finite_longest_loop
+        else None
+    )
+    for record, rg, loop, longest_loop in zip(
+        records,
+        rg_values,
+        loop_values,
+        longest_loop_values,
+        strict=True,
+    ):
         if rg_median is None:
             record["paper_backbone_filter"] = "unavailable"
-        elif loop_median is None:
+        elif loop_median is None or longest_loop_median is None:
             record["paper_backbone_filter"] = (
-                "rg_lowest_half_only" if rg <= rg_median else "rejected_by_rg"
+                "selected_by_author_rg_median_only"
+                if rg < rg_median
+                else "not_selected_by_author_rg_median_only"
             )
         else:
             record["paper_backbone_filter"] = (
-                "passed_reported_two_metric_percentiles"
-                if rg <= rg_median and loop <= loop_median
-                else "rejected_by_reported_two_metric_percentiles"
+                "selected_by_stride_three_metric_approximation"
+                if rg < rg_median
+                and loop < loop_median
+                and longest_loop < longest_loop_median
+                else "not_selected_by_stride_three_metric_approximation"
             )
     return {
+        "author_carbonyl_c_radius_of_gyration_median": rg_median,
+        # Legacy alias retained for readers of earlier reports.
         "radius_of_gyration_median": rg_median,
         "loop_percentage_median": loop_median,
-        "complete_two_metric_filter_available": loop_median is not None,
-        "two_metric_pass_count": sum(
+        "longest_loop_median": longest_loop_median,
+        "author_exact_filter_available": False,
+        "author_exact_filter_reason": (
+            "Ho-Yeung uses PyMOL chain-A ss == 'L'; this report's optional "
+            "secondary-structure calculation uses STRIDE C+T"
+        ),
+        "stride_three_metric_approximation_available": (
+            loop_median is not None and longest_loop_median is not None
+        ),
+        "stride_three_metric_approximation_count": sum(
             record["paper_backbone_filter"]
-            == "passed_reported_two_metric_percentiles"
+            == "selected_by_stride_three_metric_approximation"
             for record in records
         ),
+        # Legacy keys remain machine-readable but no longer imply an exact
+        # reproduction of the author protocol.
+        "complete_two_metric_filter_available": False,
+        "two_metric_pass_count": 0,
         "rg_only_lowest_half_count": sum(
-            record["paper_backbone_filter"] == "rg_lowest_half_only"
+            record["paper_backbone_filter"]
+            == "selected_by_author_rg_median_only"
             for record in records
         ),
     }
@@ -748,13 +858,24 @@ def _summary(
     produced: int,
     unavailable_shards: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    historical_check_count = sum(
+        record["worker_accepted"] for record in records
+    )
+    advisory_core_target_count = sum(
+        record["scaffold_core"]["scientific_quality_satisfied"] is True
+        for record in records
+    )
     return {
         "requested_designs": requested,
         "produced_designs": produced,
         "analyzed_designs": len(records),
         "unavailable_shards": len(unavailable_shards),
         "generation_complete": produced == requested and len(records) == produced,
-        "worker_accepted_count": sum(record["worker_accepted"] for record in records),
+        # Keep the legacy key for machine-readable compatibility.  It records
+        # the check bundle configured in that historical worker revision; it
+        # is not a universal scientific acceptance verdict.
+        "worker_accepted_count": historical_check_count,
+        "historical_configured_check_count": historical_check_count,
         "seed_preserved_count": sum(record["seed"]["passed"] is True for record in records),
         "scaffold_passed_count": sum(
             record["scaffold_audit_passed"] is True for record in records
@@ -774,10 +895,10 @@ def _summary(
         "scaffold_core_applicable_count": sum(
             record["scaffold_core"]["audit"] is not None for record in records
         ),
-        "scaffold_core_scientific_target_count": sum(
-            record["scaffold_core"]["scientific_quality_satisfied"] is True
-            for record in records
-        ),
+        # Keep the legacy key while exposing the correct stage-matched name.
+        # These controller targets are advisory until cohort-calibrated.
+        "scaffold_core_scientific_target_count": advisory_core_target_count,
+        "advisory_scaffold_core_target_count": advisory_core_target_count,
         "motif_translation_angstrom": _quantiles(
             record["mobility"]["maximum_translation_observed"]
             for record in records
@@ -827,6 +948,16 @@ def _summary(
         ),
         "loop_percentage": _quantiles(
             record["secondary_structure"].get("loop_percentage")
+            for record in records
+        ),
+        "longest_loop_residues": _quantiles(
+            record["secondary_structure"].get("longest_loop_residues")
+            for record in records
+        ),
+        "author_carbonyl_c_radius_of_gyration": _quantiles(
+            record["hoyeung_backbone_metrics"].get(
+                "carbonyl_c_radius_of_gyration"
+            )
             for record in records
         ),
         "foldseek_diversity": {
@@ -888,6 +1019,15 @@ def _flat_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "flatness_degrees": record["orientation"].get("flatness_degrees"),
         "twist_degrees": record["orientation"].get("twist_degrees"),
         "loop_percentage": record["secondary_structure"].get("loop_percentage"),
+        "longest_loop_residues": record["secondary_structure"].get(
+            "longest_loop_residues"
+        ),
+        "author_carbonyl_c_radius_of_gyration": record[
+            "hoyeung_backbone_metrics"
+        ].get("carbonyl_c_radius_of_gyration"),
+        "loop_assignment_method": record["hoyeung_backbone_metrics"].get(
+            "loop_assignment_method"
+        ),
         "paper_backbone_filter": record["paper_backbone_filter"],
         "structure": record["structure"],
     }
@@ -926,36 +1066,49 @@ def _markdown(payload: Mapping[str, Any]) -> str:
         f"- Requested: {summary['requested_designs']}",
         f"- Produced: {summary['produced_designs']}",
         f"- Analyzed: {summary['analyzed_designs']}",
-        f"- Mosaic strict audit passes: {summary['worker_accepted_count']}",
+        "- Historical configured-check bundle met: "
+        f"{summary['historical_configured_check_count']}",
         f"- Supplied seed preserved: {summary['seed_preserved_count']}",
         *packing_lines,
-        "- Monomer-core scientific targets satisfied: "
-        f"{summary['scaffold_core_scientific_target_count']}/"
+        "- Advisory scaffold-core controller targets met: "
+        f"{summary['advisory_scaffold_core_target_count']}/"
         f"{summary['scaffold_core_applicable_count']}",
         f"- Continuous backbones: {summary['continuous_count']}",
         f"- CA-clash-free backbones: {summary['clash_free_count']}",
+        "- Interpretation: every parseable produced backbone is a generated "
+        "result; the two check counts above are screening measurements, not "
+        "RFdiffusion/RFD3-standard scientific pass rates.",
         "",
         "## Paper-aligned backbone screen",
         "",
-        "The paper retained the lowest 50th percentile by loop percentage "
-        "and radius of gyration; it did not publish absolute cutoffs.",
+        "The author notebook sequentially retains structures whose chain-A "
+        "loop fraction, longest contiguous loop, and chain-A carbonyl-C "
+        "radius of gyration are each strictly below that cohort's median. "
+        "It does not define universal absolute cutoffs.",
         "",
-        f"- Cohort Rg median: {paper_filter['radius_of_gyration_median']}",
+        "- Cohort chain-A carbonyl-C Rg median: "
+        f"{paper_filter['author_carbonyl_c_radius_of_gyration_median']}",
         f"- Cohort loop median: {paper_filter['loop_percentage_median']}",
-        "- Complete loop+Rg filter available: "
-        f"{paper_filter['complete_two_metric_filter_available']}",
-        "- Two-metric pass count: "
-        f"{paper_filter['two_metric_pass_count']}",
+        "- Cohort longest-loop median: "
+        f"{paper_filter['longest_loop_median']}",
+        "- Exact author filter available: "
+        f"{paper_filter['author_exact_filter_available']}",
+        "- STRIDE three-metric approximation available: "
+        f"{paper_filter['stride_three_metric_approximation_available']}",
+        "- STRIDE three-metric approximation count: "
+        f"{paper_filter['stride_three_metric_approximation_count']}",
+        "- Important: STRIDE C+T is not PyMOL ss='L'; this count is "
+        "explicitly an approximation, not the author's exact result.",
         "",
         "## Fair-comparison limits",
         "",
         "- The authors report Foldseek diversity as clusters/backbones and "
         "a >13-fold gain from orientation sampling, but their raw cluster "
         "assignments are not in the preprint supplement.",
-        "- The paper-linked `interface_seeded_oligomers` repository returned "
-        "404 when this protocol was prepared; exact Flatness/Twist source "
-        "code was therefore unavailable. Mosaic records a transparent "
-        "reimplementation of the written definition.",
+        "- The author analysis notebooks were inspected directly. Their "
+        "Flatness/Twist formulas assume a previously aligned ring frame; "
+        "Mosaic applies the same formulas in a documented intrinsic ring "
+        "frame and records that coordinate-frame distinction.",
         "- ProteinMPNN/AF2/AF3/Rosetta and experimental success are outside "
         "this backbone-only report.",
         "",

@@ -26,6 +26,9 @@ class DiffusionSamplingPlan(StrictModel):
     execution_backend: str
     neighbour_radius: int
     scaffold_packing: str
+    screening_mode: str
+    screening_protocol: str
+    retain_all_outputs: bool
 
 
 class StaticPosePlan(StrictModel):
@@ -183,6 +186,9 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
             execution_backend=sampling.execution_backend,
             neighbour_radius=sampling.neighbour_radius,
             scaffold_packing=sampling.scaffold_packing,
+            screening_mode=sampling.screening.mode,
+            screening_protocol=sampling.screening.protocol,
+            retain_all_outputs=sampling.screening.retain_all_outputs,
         ),
     )
 
