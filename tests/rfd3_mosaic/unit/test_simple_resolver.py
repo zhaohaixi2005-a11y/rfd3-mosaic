@@ -745,6 +745,7 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
                     str(self.root / "portable-runs"),
                     "--campaign",
                     "portable-campaign",
+                    "--defer-runtime-preflight",
                     "--dry-run",
                 ]
             )
@@ -762,6 +763,7 @@ class SimpleIntentResolverTestCase(unittest.TestCase):
             run_root=self.root / "portable-runs",
             campaign="portable-campaign",
             dry_run=True,
+            defer_runtime_preflight=True,
         )
         self.assertIn("ordinary one-command execution", stdout.getvalue())
 

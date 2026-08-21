@@ -921,6 +921,7 @@ def _dispatch_replayed_design(
     run_root: Path | None,
     campaign: str | None,
     dry_run: bool,
+    defer_runtime_preflight: bool,
 ) -> None:
     """Continue through the normal public-design CLI after strict replay."""
 
@@ -933,6 +934,8 @@ def _dispatch_replayed_design(
         nested.extend(("--run-root", str(run_root)))
     if campaign is not None:
         nested.extend(("--campaign", campaign))
+    if defer_runtime_preflight:
+        nested.append("--defer-runtime-preflight")
     if dry_run and command in {"run", "submit"}:
         nested.append("--dry-run")
     main(nested)
@@ -2118,6 +2121,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                 run_root=arguments.run_root,
                 campaign=arguments.campaign,
                 dry_run=getattr(arguments, "dry_run", False),
+                defer_runtime_preflight=getattr(
+                    arguments,
+                    "defer_runtime_preflight",
+                    False,
+                ),
             )
             return
         if arguments.command == "resolve":
