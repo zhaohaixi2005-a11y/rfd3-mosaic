@@ -30,7 +30,20 @@ constraints:
     selector: A12-20
 
 sampling:
+  # Each requested design receives one independent, replayable assembly pose
+  # before diffusion.  The 20--30 A radial envelope keeps adjacent C3 motif
+  # centres in a reachable but non-overlapping regime; Haar SO(3) sampling
+  # explores which fixed-motif face presents the generated termini to the
+  # neighbour.  "locked" still means that the selected pose cannot move at
+  # any diffusion timestep.
+  initial_pose:
+    radius: {minimum: 20.0, maximum: 30.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    radial_direction: [1.0, 0.0, 0.0]
+    orientation: {method: uniform_so3}
+    seed: 70000
   timesteps: 50
+  replicates_per_pose: 1
   seed: 948
   preset: exact_mosaic
   low_memory_mode: true

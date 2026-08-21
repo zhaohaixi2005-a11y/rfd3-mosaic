@@ -5,6 +5,39 @@
 The interface-packing implementation is real and active, but it is not yet a
 scientifically reliable release claim.
 
+## Independent-pose configuration correction (2026-08-21)
+
+Commit `3b41f95` implemented one independently seeded pre-diffusion assembly
+pose per requested design whenever a public design declares a variable
+`sampling.initial_pose`. The first 12-output packing campaign did not exercise
+that path: both frozen C3 packing templates omitted `initial_pose`, so every
+output reused the already-positioned input motif and changed only its diffusion
+seed. This is recorded by the old run manifests and must not be described as
+an assembly-pose diversity experiment.
+
+The locked and guided C3 templates now declare the same explicit pose envelope:
+
+- radial distance uniformly sampled from 20 to 30 A;
+- fixed zero axial displacement (a common axial translation does not change a
+  C3 neighbour relation);
+- Haar-uniform SO(3) motif orientation;
+- one diffusion trajectory per pose.
+
+For C3, adjacent motif-centre separation is
+`2 r sin(pi / 3) = sqrt(3) r`, hence the declared radial interval spans about
+34.6--52.0 A. The selected G2 motif has a heavy-atom radial extent of about
+9.37 A, so this interval does not begin with copy overlap. RFD3 prevalidation
+still rejects any atomically invalid sampled orientation. These checks prove
+geometric feasibility, not interface quality; the latter remains the purpose
+of the GPU campaign.
+
+The campaign launcher derives the pose seed from each campaign seed and gives
+the corresponding locked/guided jobs the same ordered pose population. Thus
+`locked[i]` and `guided[i]` are a controlled pair, while design indices and
+different campaign seeds cannot silently reuse one pre-RFD3 pose. Locked
+freezes its selected pose for all diffusion timesteps; guided starts from the
+matched pose and may apply only its declared bounded rigid-orbit corrections.
+
 The latest frozen 50-step H100 evidence used revision `1e58d1e`:
 
 - job `5755028`, locked motif arrangement: 2 structures, 0 accepted;
@@ -105,11 +138,11 @@ Mosaic exact fixed/joint-rigid/symmetry constraints
 
 ## Next GPU evidence gate
 
-Do not tune weights again from four outputs.  First run the current revision
-as 6 locked and 6 guided outputs on LRZ, plus 2 locked and 2 guided outputs on
-the RTX 3070 development server.  This distinguishes a low-yield stochastic
-method from a systematically broken controller and tests the post-gate motif
-mobility and per-design pose changes.
+Do not tune weights again from four outputs. First run the revised explicit
+pose-distribution configuration as 6 locked and 6 guided outputs on LRZ, plus
+2 locked and 2 guided outputs on the RTX 3070 development server. This
+distinguishes a low-yield stochastic method from a systematically broken
+controller and tests both bounded mobility and per-design pose changes.
 
 ### LRZ / AI cluster (12 outputs, six jobs, any compatible GPU)
 

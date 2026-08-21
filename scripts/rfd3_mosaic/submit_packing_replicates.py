@@ -112,8 +112,9 @@ def main() -> None:
         default=2,
         help=(
             "Independent outputs per GPU job. Variable-pose designs receive "
-            "one independently seeded pose per output; locked designs keep "
-            "one fixed arrangement and vary diffusion only (default: 2)."
+            "one independently seeded pre-diffusion pose per output. Locked "
+            "designs freeze each selected pose during diffusion; guided "
+            "designs may subsequently apply bounded motion (default: 2)."
         ),
     )
     parser.add_argument(
@@ -166,6 +167,19 @@ def main() -> None:
             payload["sampling"] = dict(base["sampling"])
             payload["sampling"]["seed"] = seed
             payload["sampling"]["designs"] = arguments.designs_per_job
+            initial_pose = payload["sampling"].get("initial_pose")
+            if not isinstance(initial_pose, dict):
+                raise ValueError(
+                    f"Packing base design {source} must declare a variable "
+                    "initial_pose"
+                )
+            initial_pose = dict(initial_pose)
+            # A repeated campaign seed identifies one paired assembly-pose
+            # population.  Locked and guided jobs therefore receive the same
+            # pose seeds, while different --seed values cannot silently reuse
+            # the same pre-RFD3 coordinates.
+            initial_pose["seed"] = 1_000_000 + seed
+            payload["sampling"]["initial_pose"] = initial_pose
             payload["name"] = f"c3-{mode}-packing-t50-s{seed}"
             payload["output"] = dict(base["output"])
             payload["output"]["root"] = str(run_root)
@@ -194,6 +208,7 @@ def main() -> None:
             record: dict[str, Any] = {
                 "mode": mode,
                 "seed": seed,
+                "pose_seed_start": initial_pose["seed"],
                 "requested_designs": arguments.designs_per_job,
                 "profile": profile,
                 "design": str(generated),
@@ -235,12 +250,16 @@ def main() -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git_revision": _revision(project),
         "purpose": (
-            "independent current-revision GPU evidence for locked and guided "
+            "paired independent-pose GPU evidence for locked and guided "
             "interface packing"
         ),
         "run_root": str(run_root),
         "profile_assignment": "round_robin_without_duplicate_samples",
         "designs_per_job": arguments.designs_per_job,
+        "pose_pairing": (
+            "same campaign seed gives locked and guided the same ordered "
+            "pre-diffusion pose seeds; each design uses one pose"
+        ),
         "requested_output_count": len(modes)
         * len(seeds)
         * arguments.designs_per_job,

@@ -37,7 +37,10 @@ GATES: dict[str, dict[str, Any]] = {
         ),
         "profile": SMALL_PROFILE,
         "designs": 2,
-        "claim": "generated-only interface packing with locked motif pose",
+        "claim": (
+            "generated-only interface packing from independently instantiated "
+            "poses that remain locked during diffusion"
+        ),
     },
     "guided-packing": {
         "tier": "core",
@@ -47,7 +50,10 @@ GATES: dict[str, dict[str, Any]] = {
         ),
         "profile": SMALL_PROFILE,
         "designs": 2,
-        "claim": "joint radial/axial/rotation packing transaction",
+        "claim": (
+            "matched initial poses plus joint radial/axial/rotation packing "
+            "transaction"
+        ),
     },
     "d3-dynamic": {
         "tier": "core",

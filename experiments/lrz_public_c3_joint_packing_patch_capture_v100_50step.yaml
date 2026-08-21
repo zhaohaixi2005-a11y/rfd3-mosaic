@@ -31,7 +31,17 @@ constraints:
     selector: A12-20
 
 sampling:
+  # Match the locked canary's independently sampled pre-diffusion poses.
+  # Runtime mobility is an additional bounded correction; it does not replace
+  # assembly-pose diversity or alter the motif's internal geometry.
+  initial_pose:
+    radius: {minimum: 20.0, maximum: 30.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    radial_direction: [1.0, 0.0, 0.0]
+    orientation: {method: uniform_so3}
+    seed: 70000
   timesteps: 50
+  replicates_per_pose: 1
   seed: 949
   preset: exact_mosaic
   low_memory_mode: true

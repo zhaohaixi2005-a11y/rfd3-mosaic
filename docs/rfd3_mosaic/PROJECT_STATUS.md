@@ -46,6 +46,14 @@ online packing-proxy target bundle across 20 completed structures.  Those
 outputs remain generated backbones; this result diagnoses controller
 calibration rather than assigning user-level rejection.
 
+The completed 20-structure packing evidence all reused one supplied input pose
+within each job and therefore did not test the per-design assembly-pose
+sampler. The maintained locked/guided canaries now use paired independent
+20--30 A, Haar-SO(3) pre-diffusion poses while preserving their distinct
+runtime motion contracts. GPU evidence for that corrected configuration is
+pending; it must be collected before changing packing weights or acceptance
+targets again.
+
 ## Experimental capabilities
 
 The following capabilities are implemented at varying compiler or CPU
