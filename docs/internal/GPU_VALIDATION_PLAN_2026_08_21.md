@@ -70,6 +70,27 @@ Different design indices receive different pose and diffusion seeds. The
 campaign manifest records `pose_seed_start`; each run records the realized
 pose/input digest in `pose_manifest.json`.
 
+Submitted on 2026-08-21 from revision `a935529`:
+
+| mode | campaign seed | job | requested outputs |
+| --- | ---: | ---: | ---: |
+| locked | 73000 | 5756760 | 2 |
+| locked | 73002 | 5756761 | 2 |
+| locked | 73004 | 5756762 | 2 |
+| guided | 73000 | 5756763 | 2 |
+| guided | 73002 | 5756764 | 2 |
+| guided | 73004 | 5756765 | 2 |
+
+All six public designs passed complete CPU geometry and RFD3 feature
+prevalidation before submission. The frozen campaign manifest is:
+
+```text
+/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/_campaigns/packing-replicates/20260821T105510Z/campaign_manifest.json
+```
+
+Submission is not scientific acceptance; collect and compare the twelve
+outputs after all six jobs reach a terminal state.
+
 After all jobs finish:
 
 ```bash

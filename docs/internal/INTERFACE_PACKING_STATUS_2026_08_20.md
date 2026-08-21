@@ -162,6 +162,14 @@ export PYTHONPATH="$PWD/src:$PWD/models/rfd3/src:${PYTHONPATH:-}"
 `any_gpu.yaml` asks Slurm to choose H100, A100, V100 or P100 and does not submit
 the same sample once per accelerator type.
 
+The current-revision campaign was submitted on 2026-08-21 with seeds 73000,
+73002 and 73004. Locked jobs are `5756760`, `5756761` and `5756762`; their
+paired guided jobs are `5756763`, `5756764` and `5756765`. Each job requests
+two independently instantiated designs. The frozen manifest is
+`_campaigns/packing-replicates/20260821T105510Z/campaign_manifest.json` below
+the LRZ run root. All six inputs passed geometry and RFD3 feature prevalidation
+before submission; output-quality evidence remains pending.
+
 ### mightymorphin RTX 3070 (4 outputs, two sequential jobs)
 
 Create a machine-local profile outside the repository:
