@@ -320,8 +320,8 @@ streams, not forty repetitions of one compiled pose.
 
 Twelve of the thirteen structures outside that historical set triggered the
 coarse CA-distance clash diagnostic; all forty structures remain continuous.
-The remaining structure (`5755295`) has zero reported CA clashes but triggered
-another scaffold-validity subcheck.  These are inspection flags, not a claim
+The remaining structure has zero reported CA clashes but triggered another
+scaffold-validity subcheck.  These are inspection flags, not a claim
 that a publication has classified the structures as failed.  The cohort therefore proves
 that independent per-design pose sampling works and produces substantial
 assembly-level geometric diversity, but it does not yet establish a robust
@@ -335,12 +335,12 @@ meeting the checks configured at that revision".
 
 The strongest retained inspection candidates are:
 
-| job | normalized Rg | tertiary support | extra generated inter-chain pairs | role |
+| candidate | normalized Rg | tertiary support | extra generated inter-chain pairs | role |
 |---|---:|---:|---:|---|
-| `5755308` | 2.831 | 0.682 | 0 | strongest tertiary support with no extra cross-chain packing |
-| `5755272` | 2.849 | 0.647 | 0 | balanced compactness/support candidate |
-| `5755278` | 2.822 | 0.565 | 0 | compact, clean cross-chain candidate |
-| `5755279` | 2.729 | 0.518 | 0 | lowest normalized Rg in the cohort |
+| A | 2.831 | 0.682 | 0 | strongest tertiary support with no extra cross-chain packing |
+| B | 2.849 | 0.647 | 0 | balanced compactness/support candidate |
+| C | 2.822 | 0.565 | 0 | compact, clean cross-chain candidate |
+| D | 2.729 | 0.518 | 0 | lowest normalized Rg in the cohort |
 
 The campaign manifest describes a one-hundred-design plan, so the generic
 collector reports `requested=100, produced=40`.  This is not interpreted as

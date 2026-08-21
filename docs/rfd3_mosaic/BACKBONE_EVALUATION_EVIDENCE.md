@@ -44,12 +44,12 @@ Primary sources:
 - [BoltzGen official pipeline](https://github.com/HannesStark/boltzgen)
 - [BoltzGen official filtering implementation](https://github.com/HannesStark/boltzgen/blob/main/src/boltzgen/task/filter/filter.py)
 - [Ho-Yeung/Chim et al. preprint](https://www.biorxiv.org/content/10.64898/2026.07.02.736098v1)
-- author analysis notebook inspected locally at
-  `/home/haixi/Documents/HYC_repeat/interface_seeded_oligomers/design_backbone_filtering/backbone_filter.ipynb`,
-  SHA-256 `0a0022f335d91b5b1d15ee7257bb3d95fdac9220f1b7b1491c5eb7d9e16bfb77`;
-- author ring-analysis notebook inspected locally at
-  `/home/haixi/Documents/HYC_repeat/interface_seeded_oligomers/pdb_3mer_ring_analysis/pdb_3mer_ring_analysis.ipynb`,
-  SHA-256 `6f2159c4481883221d58d062f8649ee048afa919979fb96378835377ce22b254`.
+- author `design_backbone_filtering/backbone_filter.ipynb` notebook inspected
+  from the paper-associated source snapshot, SHA-256
+  `0a0022f335d91b5b1d15ee7257bb3d95fdac9220f1b7b1491c5eb7d9e16bfb77`;
+- author `pdb_3mer_ring_analysis/pdb_3mer_ring_analysis.ipynb` notebook
+  inspected from the same snapshot, SHA-256
+  `6f2159c4481883221d58d062f8649ee048afa919979fb96378835377ce22b254`.
 
 ## Exact formulas
 
