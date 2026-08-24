@@ -67,6 +67,19 @@ a runtime canary and should not be presented as a scientifically optimized I
 cage.  After the chain-order audit correction, re-audit this existing output;
 do not spend another 36-minute GPU run to re-prove fixed-orbit preservation.
 
+The separate follow-up
+`experiments/lrz_public_i_long_scaffold_t50_large_gpu_canary.yaml` uses
+`20-20,A1-9,20-20` semantics (49 residues per physical chain) while retaining
+the same I frame, fixed motif and 180 A pose. Its purpose is to test whether a
+less pathologically short scaffold improves continuity and backbone
+morphology. It does not declare a generated I interface and must not be
+presented as a complete designed I cage. Submit it once with:
+
+```bash
+"$PY" scripts/rfd3_mosaic/submit_gpu_release_gates.py \
+  --gate i-long-scaffold --submit
+```
+
 ### 2. Generated C3 interface, paired locked/guided poses
 
 Run six independently seeded poses for each mode (12 outputs total):

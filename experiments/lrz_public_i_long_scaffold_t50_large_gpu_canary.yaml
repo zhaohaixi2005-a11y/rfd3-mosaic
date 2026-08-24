@@ -1,0 +1,52 @@
+schema_version: 1
+name: public-i-long-scaffold-t50-s964
+task: preserve_supplied_geometry
+
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: I
+  axis: [0.0, 0.0, 1.0]
+  secondary_axis: [1.0, 0.0, 0.0]
+  center: [0.0, 0.0, 0.0]
+
+# Follow-up to the 10+9+10 runtime canary.  This deliberately doubles each
+# generated terminus while retaining the same fixed motif, I frame and pose.
+# Its question is scaffold continuity/backbone morphology, not de novo I
+# interface formation: no generated-interface edge is declared.
+generation:
+  - kind: terminal
+    anchor: A12-20
+    terminus: n
+    length: 20
+  - kind: terminal
+    anchor: A12-20
+    terminus: c
+    length: 20
+
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: i_long_scaffold_seed
+
+sampling:
+  initial_pose:
+    radius: {minimum: 180.0, maximum: 180.0}
+    axial_offset: {minimum: 0.0, maximum: 0.0}
+    radial_direction: [0.8017837, 0.5345225, 0.2672612]
+    orientation: {method: fixed, rotation_deg: [17.0, 29.0, 11.0]}
+    seed: 96401
+  timesteps: 50
+  designs: 1
+  seed: 964
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+  scaffold_packing: "off"
+
+resources:
+  profile: large_gpu
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-i-long-scaffold-t50-canary

@@ -4,16 +4,15 @@
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import subprocess
 import sys
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
-
 
 SMALL_PROFILE = "configs/rfd3_mosaic/sites/lrz/any_gpu.yaml"
 LARGE_PROFILE = "configs/rfd3_mosaic/sites/lrz/large_gpu.yaml"
@@ -116,6 +115,20 @@ GATES: dict[str, dict[str, Any]] = {
         "designs": 1,
         "defer_runtime_preflight": True,
         "claim": "50-step sixty-action icosahedral runtime closure",
+    },
+    "i-long-scaffold": {
+        "tier": "extended",
+        "design": (
+            "experiments/"
+            "lrz_public_i_long_scaffold_t50_large_gpu_canary.yaml"
+        ),
+        "profile": LARGE_PROFILE,
+        "designs": 1,
+        "defer_runtime_preflight": True,
+        "claim": (
+            "50-step sixty-action longer-scaffold continuity and "
+            "backbone-morphology follow-up"
+        ),
     },
 }
 
