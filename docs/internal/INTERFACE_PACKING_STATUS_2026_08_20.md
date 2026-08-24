@@ -407,3 +407,37 @@ followed by bounded runtime refinement.  Locked semantics remain useful only
 when the user-supplied arrangement already passes that geometric feasibility
 check; `optimize_components` is the route when the complete internally rigid
 motif orbit is allowed to change radius and orientation.
+
+## Independent-pose broad-contact gate, 2026-08-24
+
+Campaign `packing-replicates/20260824T112419Z` tested the current per-design
+pose semantics at revision `f3f7c937`.  Two independently instantiated poses
+were paired across locked job `5760485` and guided job `5760486`; this is no
+longer the earlier single-pose canary.  All four outputs were generated and
+all four interface-guidance runtime contracts executed.  Two outputs met all
+hard structural contracts; the other two were flagged only for scaffold chain
+continuity.  Interface quality remained advisory and no output was deleted.
+
+| pose | mode | overall contract | runtime coverage/continuity | post-hoc coverage/continuity | observed rigid motion | shape | minimum edge (A) | required edges |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 0 | locked | met | 4/4 | 4/2 | fixed | 0.208 | 3.654 | 0/3 |
+| 0 | guided | met | 4/4 | 4/2 | 0.258 A / 0.335 deg; 12 commits | 0.210 | 3.858 | 0/3 |
+| 1 | locked | continuity flag | 4/2 | 4/2 | fixed | 0.072 | 4.406 | 0/3 |
+| 1 | guided | continuity flag | 4/2 | 5/2 | 0.138 A / 0.727 deg; 22 commits | 0.090 | 4.842 | 0/3 |
+
+This gate improves broad capture relative to the older zero-to-two-residue
+cohort, but it does not close generated-interface formation.  The paired
+comparison is decisive: guided mobility is active and commits repeatedly, yet
+uses less than 0.3 A translation and less than 0.8 degrees rotation, produces
+no continuity gain, and does not improve shape or the required physical edge
+count relative to locked controls.  The pose controller is therefore locally
+active but practically under-responsive.  The separate continuity flag is a
+backbone-generation issue shared by locked and guided pose 1 and must not be
+misdiagnosed as a mobility failure.
+
+The next controller change should preserve the 4 A / 10 degree total bound,
+exact C3 projection, internal motif rigidity, line search and atomic rollback,
+while making the SE(3) proposal scale phase-aware: stronger during unsatisfied
+capture/expansion and conservative during polish.  Another undiagnosed seed
+campaign is not justified until that behaviour is covered by CPU contracts
+and one new paired GPU gate.
