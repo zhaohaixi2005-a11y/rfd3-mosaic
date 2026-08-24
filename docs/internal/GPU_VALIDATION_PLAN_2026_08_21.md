@@ -80,6 +80,16 @@ presented as a complete designed I cage. Submit it once with:
   --gate i-long-scaffold --submit
 ```
 
+Job `5760213` completed this 50-step H100 inference and wrote one 60-chain
+coordinate result.  Its first login-node re-audit was killed after inference
+because the fixed-orbit audit materialized dense all-pairs heavy-atom distance
+matrices.  The audit now computes the identical ordered-pair RMSD in bounded
+row blocks; a 4,200-atom stress test used about 86 MiB peak RSS.  Re-audit the
+existing output after synchronizing that correction.  Do not rerun diffusion
+to diagnose this post-hoc resource failure.  This canary still has
+`scaffold_packing: off` and a fixed 180 A pose, so its appearance is not
+evidence for or against compact I-cage design quality.
+
 ### 2. Generated C3 interface, paired locked/guided poses
 
 Run six independently seeded poses for each mode (12 outputs total):

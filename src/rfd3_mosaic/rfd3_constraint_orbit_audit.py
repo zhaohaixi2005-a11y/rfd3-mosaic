@@ -122,6 +122,62 @@ def _rmsd(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.sum((left - right) ** 2, axis=-1))))
 
 
+def _pairwise_distance_matrix_rmsd(
+    expected: np.ndarray,
+    observed: np.ndarray,
+    *,
+    block_size: int = 256,
+) -> float:
+    """Return the exact all-pairs distance RMSD with bounded memory.
+
+    Materializing two ``N x N x 3`` broadcast arrays is unnecessary and can
+    exceed a login node's memory limit for high-order fixed orbits.  Accumulate
+    the same ordered-pair mean square error in row blocks instead.  Diagonal
+    entries and both directions of every pair remain included, matching the
+    historical dense calculation exactly.
+    """
+
+    expected = np.asarray(expected, dtype=float)
+    observed = np.asarray(observed, dtype=float)
+    if expected.shape != observed.shape:
+        raise ValueError(
+            "Pairwise distance RMSD requires matching coordinate shapes"
+        )
+    if expected.ndim != 2 or expected.shape[1] != 3 or not len(expected):
+        raise ValueError(
+            "Pairwise distance RMSD requires a non-empty N x 3 array"
+        )
+    if block_size < 1:
+        raise ValueError("block_size must be positive")
+
+    expected_norms = np.einsum("ij,ij->i", expected, expected)
+    observed_norms = np.einsum("ij,ij->i", observed, observed)
+    squared_error_sum = 0.0
+    comparison_count = 0
+    for start in range(0, len(expected), block_size):
+        stop = min(start + block_size, len(expected))
+        expected_squared = (
+            expected_norms[start:stop, None]
+            + expected_norms[None, :]
+            - 2.0 * expected[start:stop] @ expected.T
+        )
+        observed_squared = (
+            observed_norms[start:stop, None]
+            + observed_norms[None, :]
+            - 2.0 * observed[start:stop] @ observed.T
+        )
+        np.maximum(expected_squared, 0.0, out=expected_squared)
+        np.maximum(observed_squared, 0.0, out=observed_squared)
+        np.sqrt(expected_squared, out=expected_squared)
+        np.sqrt(observed_squared, out=observed_squared)
+        observed_squared -= expected_squared
+        squared_error_sum += float(
+            np.einsum("ij,ij->", observed_squared, observed_squared)
+        )
+        comparison_count += observed_squared.size
+    return float(np.sqrt(squared_error_sum / comparison_count))
+
+
 def _derive_result_structure(result_json: Path) -> Path:
     stem = result_json.with_suffix("")
     for suffix in (".cif.gz", ".cif", ".pdb"):
@@ -678,20 +734,9 @@ def audit_constraint_orbit(
             )
             joint_rmsd = _rmsd(aligned_joint, expected_joint)
             joint_maximum = float(np.max(deviations))
-            expected_distances = np.linalg.norm(
-                expected_joint[:, None, :] - expected_joint[None, :, :],
-                axis=-1,
-            )
-            observed_distances = np.linalg.norm(
-                observed_joint[:, None, :] - observed_joint[None, :, :],
-                axis=-1,
-            )
-            distance_matrix_rmsd = float(
-                np.sqrt(
-                    np.mean(
-                        (observed_distances - expected_distances) ** 2
-                    )
-                )
+            distance_matrix_rmsd = _pairwise_distance_matrix_rmsd(
+                expected_joint,
+                observed_joint,
             )
             per_copy_rmsd = [
                 _rmsd(_kabsch_align(observed, expected), expected)

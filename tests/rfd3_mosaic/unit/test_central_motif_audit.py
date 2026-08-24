@@ -1,15 +1,17 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
+
+import numpy as np
 
 from rfd3_mosaic.rfd3_central_motif_audit import audit_central_motif
 from rfd3_mosaic.rfd3_constraint_orbit_audit import (
     _chain_ids_in_encounter_order,
+    _pairwise_distance_matrix_rmsd,
     audit_constraint_orbit,
 )
 from rfd3_mosaic.structure import AtomRecord
-
 
 MMCIF_HEADER = """\
 data_structure
@@ -31,6 +33,30 @@ _atom_site.pdbx_PDB_model_num
 
 
 class CentralMotifAuditTestCase(unittest.TestCase):
+    def test_blockwise_distance_matrix_rmsd_matches_dense_formula(self) -> None:
+        generator = np.random.default_rng(19)
+        expected = generator.normal(size=(37, 3))
+        observed = expected + generator.normal(scale=0.08, size=(37, 3))
+        expected_distances = np.linalg.norm(
+            expected[:, None, :] - expected[None, :, :],
+            axis=-1,
+        )
+        observed_distances = np.linalg.norm(
+            observed[:, None, :] - observed[None, :, :],
+            axis=-1,
+        )
+        dense = float(
+            np.sqrt(np.mean((observed_distances - expected_distances) ** 2))
+        )
+
+        blockwise = _pairwise_distance_matrix_rmsd(
+            expected,
+            observed,
+            block_size=7,
+        )
+
+        self.assertAlmostEqual(blockwise, dense, places=12)
+
     def test_high_order_output_chains_keep_materialization_order(self) -> None:
         """Punctuation chain IDs must not reorder high-order group actions."""
 
