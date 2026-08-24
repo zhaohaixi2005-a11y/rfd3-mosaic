@@ -256,6 +256,12 @@ def main() -> None:
                     str(frozen),
                     "--profile",
                     str(profile_path),
+                    # Ten independent explicit-C3 poses can exhaust a login
+                    # node while constructing complete RFD3 feature tensors.
+                    # Selector/constraint binding still runs here; complete
+                    # compilation and RFD3 prevalidation run fail-closed in
+                    # the allocated GPU worker before inference.
+                    "--defer-runtime-preflight",
                 ],
                 cwd=project,
             )

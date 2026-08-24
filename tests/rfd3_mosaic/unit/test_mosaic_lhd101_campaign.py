@@ -14,6 +14,11 @@ SCRIPT = PROJECT / "scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py"
 
 
 class MosaicLHD101CampaignTestCase(unittest.TestCase):
+    def test_submission_defers_full_runtime_preflight_to_compute_node(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('"--defer-runtime-preflight"', source)
+
     def test_full_comparison_defaults_to_one_pose_per_design(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "campaign"

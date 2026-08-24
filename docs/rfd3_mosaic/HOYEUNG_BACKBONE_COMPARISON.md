@@ -175,6 +175,10 @@ groups ten distinct pose-specific RFD3 specifications into one recoverable GPU
 job, so the checkpoint is loaded 100 rather than 1,000 times. It does not make
 the ten outputs diffusion replicates of one pose. Use the default
 `replicates_per_pose: 1`; sharing one pose remains an explicit expert ablation.
+The launcher performs lightweight selector and constraint binding on the login
+node and deliberately defers complete multi-pose RFD3 construction and
+prevalidation to the allocated GPU worker. This avoids exhausting login-node
+memory without weakening the fail-closed runtime prevalidation contract.
 
 The launcher prints the campaign directory. When every shard is complete,
 generate JSON, CSV and Markdown comparison artifacts:
