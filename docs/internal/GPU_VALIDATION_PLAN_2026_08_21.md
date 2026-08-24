@@ -90,6 +90,20 @@ to diagnose this post-hoc resource failure.  This canary still has
 `scaffold_packing: off` and a fixed 180 A pose, so its appearance is not
 evidence for or against compact I-cage design quality.
 
+The bounded-memory re-audit completed.  Fixed-orbit preservation, exact I
+symmetry and the CA-clash check met their contracts: the maximum symmetry
+coordinate RMSD was `0.000235 A`, the maximum coordinate error was
+`0.000290 A`, and the CA-clash count was zero.  Continuity remained advisory-
+flagged.  The output contains five ASU-local breaks, each copied by all 60
+group actions (`300 = 5 x 60`).  The two material defects are precisely the
+generated--fixed junctions `20--21` and `29--30`, with C--N distances of
+`5.078 A` and `5.129 A`; the other three records are nearby CA-step excesses.
+Thus high-order execution is closed for this sample, while generated peptide
+junction formation is not.  Because this is one stochastic backbone with no
+scaffold-packing field, it is evidence for a matched lower-order replicate
+screen before changing sampler physics, not evidence that fixed geometry or
+I symmetry should be relaxed.
+
 ### 2. Generated C3 interface, paired locked/guided poses
 
 Run six independently seeded poses for each mode (12 outputs total):
