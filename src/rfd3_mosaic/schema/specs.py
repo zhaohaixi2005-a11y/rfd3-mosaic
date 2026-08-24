@@ -293,11 +293,13 @@ class ContactConstraint(StrictModel):
 
 
 class InterfaceCoverageConstraint(StrictModel):
-    """Scale-aware interface-quality contract used by the sampler and audit.
+    """Optional interface-guidance target used by the sampler and audit.
 
-    ``auto`` is the public default.  Optional numeric values exist only as an
-    internal/expert replay mechanism; the normal compiler leaves them unset
-    so the runtime can derive targets from the available generated residues.
+    ``auto`` is the backwards-compatible public representation. With no
+    numeric values it permits the runtime to construct differentiable
+    controller references from the available generated residues, but those
+    references are not scientific acceptance thresholds. Numeric values are
+    explicit user/expert targets and may be checked as declared contracts.
     """
 
     mode: Literal["auto"] = "auto"

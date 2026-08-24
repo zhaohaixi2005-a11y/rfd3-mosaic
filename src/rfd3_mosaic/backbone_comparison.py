@@ -191,18 +191,12 @@ def _run_directories(
                 unavailable.append(
                     {
                         "shard_index": record.get("shard_index"),
-                        "reason": (
-                            "no uniquely indexed local run for frozen design"
-                        ),
+                        "reason": ("no uniquely indexed local run for frozen design"),
                         "experiment": identity.get("experiment"),
                         "campaign": identity.get("campaign"),
                         "matching_run_count": len(candidates),
-                        "experiment_matching_run_count": len(
-                            experiment_candidates
-                        ),
-                        "campaign_matching_run_count": len(
-                            campaign_candidates
-                        ),
+                        "experiment_matching_run_count": len(experiment_candidates),
+                        "campaign_matching_run_count": len(campaign_candidates),
                     }
                 )
                 continue
@@ -271,8 +265,7 @@ def _seed_metrics(
             "audit": "seed_integrity_audit.json",
             "passed": bool(seed.get("passed")),
             "rmsd_angstrom": (
-                summary.get("maximum_all_atom_rmsd")
-                or summary.get("maximum_ca_rmsd")
+                summary.get("maximum_all_atom_rmsd") or summary.get("maximum_ca_rmsd")
             ),
             "atom_completeness": summary.get("minimum_atom_completeness"),
         }
@@ -299,9 +292,9 @@ def _heavy_coordinates_by_residue(
             or atom_name.startswith("H")
         ):
             continue
-        grouped.setdefault(
-            (atom.residue_number, atom.insertion_code), []
-        ).append(atom.coordinate)
+        grouped.setdefault((atom.residue_number, atom.insertion_code), []).append(
+            atom.coordinate
+        )
     return {
         residue: np.asarray(coordinates, dtype=float)
         for residue, coordinates in grouped.items()
@@ -342,9 +335,7 @@ def _carbonyl_c_radius_of_gyration(
     if not len(coordinates):
         return None
     center = np.mean(coordinates, axis=0)
-    return float(
-        np.linalg.norm(coordinates - center) / math.sqrt(len(coordinates))
-    )
+    return float(np.linalg.norm(coordinates - center) / math.sqrt(len(coordinates)))
 
 
 def flatness_twist_descriptors(
@@ -392,8 +383,7 @@ def flatness_twist_descriptors(
     contacting_right = {
         residue
         for residue, ca in right_ca.items()
-        if float(np.min(np.linalg.norm(left_all_heavy - ca, axis=-1)))
-        <= contact_cutoff
+        if float(np.min(np.linalg.norm(left_all_heavy - ca, axis=-1))) <= contact_cutoff
     }
     left_points = np.asarray(
         [left_ca[item] for item in sorted(contacting_left) if item in left_ca],
@@ -590,9 +580,7 @@ def _one_design(
     )
     orientation = flatness_twist_descriptors(atoms, ring)
     representative_chain = (
-        min(ring["angular_chain_order"])
-        if ring.get("available")
-        else min(ca_by_chain)
+        min(ring["angular_chain_order"]) if ring.get("available") else min(ca_by_chain)
     )
     stride = stride_loop_metrics(
         atoms,
@@ -652,49 +640,35 @@ def _one_design(
         ),
         "packing_guidance": {
             "audit": (
-                "graph_interface_guidance_audit.json"
-                if guidance is not None
-                else None
+                "graph_interface_guidance_audit.json" if guidance is not None else None
             ),
-            "passed": (
-                bool(guidance.get("passed"))
-                if guidance is not None
-                else None
+            "passed": (bool(guidance.get("passed")) if guidance is not None else None),
+            "controller_proxy_bundle_satisfied": guidance_summary.get(
+                "controller_proxy_targets_satisfied",
+                guidance_summary.get("final_proxy_targets_satisfied"),
             ),
-            "final_targets_satisfied": guidance_summary.get(
-                "final_proxy_targets_satisfied"
-            ),
-            "final_metrics": guidance_summary.get(
-                "final_packing_metrics"
-            ),
+            "final_metrics": guidance_summary.get("final_packing_metrics"),
         },
         "mobility": {
             "audit": (
-                "component_mobility_audit.json"
-                if mobility is not None
-                else None
+                "component_mobility_audit.json" if mobility is not None else None
             ),
             "passed": bool(mobility.get("passed")) if mobility else None,
-            "applied_proposal_count": mobility_summary.get(
-                "applied_proposal_count"
-            ),
+            "applied_proposal_count": mobility_summary.get("applied_proposal_count"),
             "maximum_translation_observed": (
                 max(translations) if translations else None
             ),
-            "maximum_rotation_deg_observed": (
-                max(rotations) if rotations else None
-            ),
+            "maximum_rotation_deg_observed": (max(rotations) if rotations else None),
         },
         "scaffold_core": {
             "audit": (
-                "scaffold_core_guidance_audit.json"
-                if core is not None
-                else None
+                "scaffold_core_guidance_audit.json" if core is not None else None
             ),
             "passed": bool(core.get("passed")) if core else None,
             "quality_required": core_summary.get("quality_required"),
-            "scientific_quality_satisfied": core_summary.get(
-                "scientific_quality_satisfied"
+            "declared_quality_targets_satisfied": core_summary.get(
+                "declared_quality_targets_satisfied",
+                core_summary.get("scientific_quality_satisfied"),
             ),
             "mean_normalized_rg": core_metrics.get("mean_normalized_rg"),
             "mean_tertiary_support_fraction": core_metrics.get(
@@ -765,11 +739,7 @@ def _quantiles(values: Iterable[Any]) -> dict[str, float] | None:
 
 def _apply_cohort_filter(records: list[dict[str, Any]]) -> dict[str, Any]:
     rg_values = [
-        _number(
-            record["hoyeung_backbone_metrics"].get(
-                "carbonyl_c_radius_of_gyration"
-            )
-        )
+        _number(record["hoyeung_backbone_metrics"].get("carbonyl_c_radius_of_gyration"))
         for record in records
     ]
     loop_values = [
@@ -786,15 +756,11 @@ def _apply_cohort_filter(records: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     finite_rg = [value for value in rg_values if value is not None]
     finite_loop = [value for value in loop_values if value is not None]
-    finite_longest_loop = [
-        value for value in longest_loop_values if value is not None
-    ]
+    finite_longest_loop = [value for value in longest_loop_values if value is not None]
     rg_median = float(np.median(finite_rg)) if finite_rg else None
     loop_median = float(np.median(finite_loop)) if finite_loop else None
     longest_loop_median = (
-        float(np.median(finite_longest_loop))
-        if finite_longest_loop
-        else None
+        float(np.median(finite_longest_loop)) if finite_longest_loop else None
     )
     for record, rg, loop, longest_loop in zip(
         records,
@@ -843,8 +809,7 @@ def _apply_cohort_filter(records: list[dict[str, Any]]) -> dict[str, Any]:
         "complete_two_metric_filter_available": False,
         "two_metric_pass_count": 0,
         "rg_only_lowest_half_count": sum(
-            record["paper_backbone_filter"]
-            == "selected_by_author_rg_median_only"
+            record["paper_backbone_filter"] == "selected_by_author_rg_median_only"
             for record in records
         ),
     }
@@ -857,11 +822,9 @@ def _summary(
     produced: int,
     unavailable_shards: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    historical_check_count = sum(
-        record["worker_accepted"] for record in records
-    )
+    historical_check_count = sum(record["worker_accepted"] for record in records)
     advisory_core_target_count = sum(
-        record["scaffold_core"]["scientific_quality_satisfied"] is True
+        record["scaffold_core"]["declared_quality_targets_satisfied"] is True
         for record in records
     )
     return {
@@ -875,20 +838,25 @@ def _summary(
         # is not a universal scientific acceptance verdict.
         "worker_accepted_count": historical_check_count,
         "historical_configured_check_count": historical_check_count,
-        "seed_preserved_count": sum(record["seed"]["passed"] is True for record in records),
+        "seed_preserved_count": sum(
+            record["seed"]["passed"] is True for record in records
+        ),
         "scaffold_passed_count": sum(
             record["scaffold_audit_passed"] is True for record in records
         ),
         "packing_guidance_applicable_count": sum(
-            record["packing_guidance"]["audit"] is not None
-            for record in records
+            record["packing_guidance"]["audit"] is not None for record in records
         ),
         "packing_guidance_passed_count": sum(
-            record["packing_guidance"]["passed"] is True
+            record["packing_guidance"]["passed"] is True for record in records
+        ),
+        "controller_proxy_bundle_satisfied_count": sum(
+            record["packing_guidance"]["controller_proxy_bundle_satisfied"] is True
             for record in records
         ),
+        # Compatibility alias for historical comparison JSON readers.
         "packing_targets_satisfied_count": sum(
-            record["packing_guidance"]["final_targets_satisfied"] is True
+            record["packing_guidance"]["controller_proxy_bundle_satisfied"] is True
             for record in records
         ),
         "scaffold_core_applicable_count": sum(
@@ -899,16 +867,13 @@ def _summary(
         "scaffold_core_scientific_target_count": advisory_core_target_count,
         "advisory_scaffold_core_target_count": advisory_core_target_count,
         "motif_translation_angstrom": _quantiles(
-            record["mobility"]["maximum_translation_observed"]
-            for record in records
+            record["mobility"]["maximum_translation_observed"] for record in records
         ),
         "motif_rotation_degrees": _quantiles(
-            record["mobility"]["maximum_rotation_deg_observed"]
-            for record in records
+            record["mobility"]["maximum_rotation_deg_observed"] for record in records
         ),
         "core_mean_normalized_rg": _quantiles(
-            record["scaffold_core"]["mean_normalized_rg"]
-            for record in records
+            record["scaffold_core"]["mean_normalized_rg"] for record in records
         ),
         "core_tertiary_support_fraction": _quantiles(
             record["scaffold_core"]["mean_tertiary_support_fraction"]
@@ -919,12 +884,10 @@ def _summary(
             for record in records
         ),
         "central_pore_diameter": _quantiles(
-            record["morphology"]["central_pore_diameter"]
-            for record in records
+            record["morphology"]["central_pore_diameter"] for record in records
         ),
         "central_pore_diameter_p05": _quantiles(
-            record["morphology"]["central_pore_diameter_p05"]
-            for record in records
+            record["morphology"]["central_pore_diameter_p05"] for record in records
         ),
         "continuous_count": sum(record["chain_break_count"] == 0 for record in records),
         "clash_free_count": sum(record["ca_clash_count"] == 0 for record in records),
@@ -935,28 +898,23 @@ def _summary(
             record["seed"]["rmsd_angstrom"] for record in records
         ),
         "neighbor_ca_contacts": _quantiles(
-            record["packing"].get("mean_neighbor_ca_contacts")
-            for record in records
+            record["packing"].get("mean_neighbor_ca_contacts") for record in records
         ),
         "flatness_degrees": _quantiles(
-            record["orientation"].get("flatness_degrees")
-            for record in records
+            record["orientation"].get("flatness_degrees") for record in records
         ),
         "twist_degrees": _quantiles(
             record["orientation"].get("twist_degrees") for record in records
         ),
         "loop_percentage": _quantiles(
-            record["secondary_structure"].get("loop_percentage")
-            for record in records
+            record["secondary_structure"].get("loop_percentage") for record in records
         ),
         "longest_loop_residues": _quantiles(
             record["secondary_structure"].get("longest_loop_residues")
             for record in records
         ),
         "author_carbonyl_c_radius_of_gyration": _quantiles(
-            record["hoyeung_backbone_metrics"].get(
-                "carbonyl_c_radius_of_gyration"
-            )
+            record["hoyeung_backbone_metrics"].get("carbonyl_c_radius_of_gyration")
             for record in records
         ),
         "foldseek_diversity": {
@@ -985,45 +943,33 @@ def _flat_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "mobility_rotation_degrees": record["mobility"][
             "maximum_rotation_deg_observed"
         ],
-        "mobility_applied_proposals": record["mobility"][
-            "applied_proposal_count"
+        "mobility_applied_proposals": record["mobility"]["applied_proposal_count"],
+        "core_declared_target_met": record["scaffold_core"][
+            "declared_quality_targets_satisfied"
         ],
-        "core_scientific_target_met": record["scaffold_core"][
-            "scientific_quality_satisfied"
-        ],
-        "core_mean_normalized_rg": record["scaffold_core"][
-            "mean_normalized_rg"
-        ],
+        "core_mean_normalized_rg": record["scaffold_core"]["mean_normalized_rg"],
         "core_tertiary_support_fraction": record["scaffold_core"][
             "mean_tertiary_support_fraction"
         ],
         "generated_inter_chain_contact_pairs": record["scaffold_core"][
             "generated_inter_chain_contact_pairs"
         ],
-        "central_pore_diameter": record["morphology"][
-            "central_pore_diameter"
-        ],
-        "central_pore_diameter_p05": record["morphology"][
-            "central_pore_diameter_p05"
-        ],
-        "outer_radial_diameter": record["morphology"][
-            "outer_radial_diameter"
-        ],
+        "central_pore_diameter": record["morphology"]["central_pore_diameter"],
+        "central_pore_diameter_p05": record["morphology"]["central_pore_diameter_p05"],
+        "outer_radial_diameter": record["morphology"]["outer_radial_diameter"],
         "chain_breaks": record["chain_break_count"],
         "ca_clashes": record["ca_clash_count"],
         "max_chain_ca_rg": record["maximum_chain_ca_radius_of_gyration"],
-        "mean_neighbor_ca_contacts": record["packing"].get(
-            "mean_neighbor_ca_contacts"
-        ),
+        "mean_neighbor_ca_contacts": record["packing"].get("mean_neighbor_ca_contacts"),
         "flatness_degrees": record["orientation"].get("flatness_degrees"),
         "twist_degrees": record["orientation"].get("twist_degrees"),
         "loop_percentage": record["secondary_structure"].get("loop_percentage"),
         "longest_loop_residues": record["secondary_structure"].get(
             "longest_loop_residues"
         ),
-        "author_carbonyl_c_radius_of_gyration": record[
-            "hoyeung_backbone_metrics"
-        ].get("carbonyl_c_radius_of_gyration"),
+        "author_carbonyl_c_radius_of_gyration": record["hoyeung_backbone_metrics"].get(
+            "carbonyl_c_radius_of_gyration"
+        ),
         "loop_assignment_method": record["hoyeung_backbone_metrics"].get(
             "loop_assignment_method"
         ),
@@ -1041,8 +987,9 @@ def _markdown(payload: Mapping[str, Any]) -> str:
             "- Generated-interface runtime contracts met: "
             f"{summary['packing_guidance_passed_count']}/"
             f"{packing_applicable}",
-            "- Generated-interface final targets satisfied: "
-            f"{summary['packing_targets_satisfied_count']}/"
+            "- Generated-interface controller proxy bundles reached "
+            "(advisory): "
+            f"{summary['controller_proxy_bundle_satisfied_count']}/"
             f"{packing_applicable}",
         ]
     else:
@@ -1088,8 +1035,7 @@ def _markdown(payload: Mapping[str, Any]) -> str:
         "- Cohort chain-A carbonyl-C Rg median: "
         f"{paper_filter['author_carbonyl_c_radius_of_gyration_median']}",
         f"- Cohort loop median: {paper_filter['loop_percentage_median']}",
-        "- Cohort longest-loop median: "
-        f"{paper_filter['longest_loop_median']}",
+        "- Cohort longest-loop median: " f"{paper_filter['longest_loop_median']}",
         "- Exact author filter available: "
         f"{paper_filter['author_exact_filter_available']}",
         "- STRIDE three-metric approximation available: "

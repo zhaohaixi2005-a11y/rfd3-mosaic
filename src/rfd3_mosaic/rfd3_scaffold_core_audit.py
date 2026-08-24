@@ -115,10 +115,10 @@ def audit_scaffold_core_guidance(
             for step in applied
         )
     )
-    # Geometry safety remains mandatory.  Scientific-quality thresholds are
-    # a separate, explicitly enabled contract so older designs do not acquire
-    # a new calibrated gate merely by being replayed with newer software.
-    safety_contract = bool(
+    # These are controller-loss reference values, not direct coordinate
+    # geometry checks and not published safety thresholds.  Actual clashes
+    # and chain continuity are checked by scaffold_validity_audit.
+    controller_safety_proxy_satisfied = bool(
         final_metric_contract
         and float(final_metrics["clash"]) <= 1e-4
         and float(final_metrics["continuity"]) <= 0.05
@@ -129,7 +129,7 @@ def audit_scaffold_core_guidance(
         and _finite(quality_contract.get("minimum_mean_tertiary_support_fraction"))
         and _finite(quality_contract.get("maximum_long_range_contact_deficit"))
     )
-    scientific_quality_satisfied = bool(
+    declared_quality_targets_satisfied = bool(
         final_metric_contract
         and quality_thresholds_valid
         and float(final_metrics["mean_normalized_rg"])
@@ -139,14 +139,15 @@ def audit_scaffold_core_guidance(
         and float(final_metrics["long_range_contacts"])
         <= float(quality_contract["maximum_long_range_contact_deficit"])
     )
-    quality_gate_satisfied = bool(not quality_required or scientific_quality_satisfied)
+    quality_gate_satisfied = bool(
+        not quality_required or declared_quality_targets_satisfied
+    )
     passed = bool(
         diagnostics.get("runtime_active") is True
         and int(diagnostics.get("chain_count", 0)) >= 1
         and config_contract
         and step_contract
         and final_metric_contract
-        and safety_contract
         and quality_gate_satisfied
     )
     return {
@@ -165,10 +166,20 @@ def audit_scaffold_core_guidance(
             "config_contract_valid": config_contract,
             "step_contract_valid": step_contract,
             "final_metric_contract_valid": final_metric_contract,
-            "safety_contract_valid": safety_contract,
+            "controller_safety_proxy_satisfied": (controller_safety_proxy_satisfied),
+            "controller_safety_proxy_is_advisory": True,
+            # Compatibility key: a finite diagnostic payload is the runtime
+            # contract. The old numeric loss cutoff is exposed separately
+            # above and no longer decides software success.
+            "safety_contract_valid": final_metric_contract,
             "quality_required": quality_required,
             "quality_thresholds_valid": quality_thresholds_valid,
-            "scientific_quality_satisfied": (scientific_quality_satisfied),
+            "declared_quality_targets_satisfied": (declared_quality_targets_satisfied),
+            "quality_targets_are_user_declared": quality_required,
+            "quality_targets_are_advisory": not quality_required,
+            # Compatibility alias for frozen report readers. These proxy
+            # values are not a universal scientific-quality definition.
+            "scientific_quality_satisfied": (declared_quality_targets_satisfied),
             "quality_gate_satisfied": quality_gate_satisfied,
             "quality_contract": quality_contract,
             "final_metrics": final_metrics,

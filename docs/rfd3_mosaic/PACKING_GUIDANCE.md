@@ -56,8 +56,10 @@ The joint objective includes:
 - global CA exclusion and target-edge clash rejection;
 - patch exclusivity across different physical interfaces;
 - equal weighting by declared interface identity, independent of orbit size;
-- a worst-interface acceptance contract that prevents one interface from
-  paying for a materially worse one.
+- a worst-interface **proposal-acceptance** rule that prevents one controller
+  update from improving one interface by making another materially worse.
+  This governs an optimization transaction; it is not an output-quality
+  verdict.
 
 The schedule is state adaptive:
 
@@ -124,8 +126,8 @@ present, patch identity did not hop after locking, adaptive phases were
 recorded, the scheduled broad contact prior was finite and attached to the
 declared physical edges, and a finite post-finalization proxy was recorded.
 Its top-level runtime result reports this executable contract only. Whether
-the final coverage, continuity, orientation and shape targets were reached is
-recorded separately as advisory quality evidence.
+the final coverage, continuity, orientation and shape controller references
+were reached is recorded separately as advisory diagnostic evidence.
 
 Runtime continuity and post-hoc continuity are intentionally distinct:
 

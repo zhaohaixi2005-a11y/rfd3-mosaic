@@ -15,7 +15,8 @@ server or deployment site.
   `status`, `report` and `audit` lifecycle commands;
 - direct synchronous and Slurm execution adapters;
 - immutable execution configuration and software provenance;
-- strict result verdicts based on required scientific audits;
+- result reporting that separates generated artifacts, declared software/
+  geometry contracts and non-destructive advisory screening;
 - automated CPU regression and wheel-installation checks.
 
 ## Supported scientific target
@@ -51,7 +52,8 @@ not yet stable public guarantees:
 - multiple supplied interface identities with independently solved poses;
 - multi-participant interface relations;
 - mixed component multiplicities;
-- automatic finite-group topology and pose candidate enumeration.
+- topology and pose candidate enumeration inside a user-declared finite group
+  and architecture.
 
 These features are available for controlled research evaluation. Their
 remaining work is dominated by broader executable replay, GPU evidence and
@@ -59,13 +61,16 @@ schema stabilization rather than by server access requirements.
 
 ## Active gaps
 
-1. Demonstrate repeatable generated-interface packing quality across diverse
-   inputs and diffusion seeds.
-2. Generalize interface-edge stabilizers and mixed physical multiplicities.
-3. Remove remaining special cases from native polymer-path lowering.
-4. Expand ordinary-user error messages and maintained examples.
-5. Define schema migration and stable-version compatibility policy.
-6. Separate historical engineering evidence from maintained public manuals.
+1. Characterize generated-interface controller behavior across diverse inputs
+   and diffusion seeds without inventing a universal raw-backbone threshold.
+2. Expand ordinary-user explanations and maintained examples.
+3. Define schema migration and stable-version compatibility policy.
+
+Automatic discovery of symmetry/order, connectivity, interface multiplicity
+or a supposedly best cage architecture is outside the current product plan.
+Unrestricted quotient/path generalization is likewise not a v0.1 completion
+requirement. Existing implementations remain available for validated research
+cases; they are not being deleted or rewritten.
 
 Sequence design and refolding are intentionally deferred and are not part of
 the current release target.

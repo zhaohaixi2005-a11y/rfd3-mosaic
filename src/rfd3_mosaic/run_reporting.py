@@ -356,9 +356,7 @@ def _run_design_context(run_directory: Path | None) -> dict[str, Any] | None:
     if compiled_path.is_file():
         try:
             payload = _load_json(compiled_path)
-            examples = [
-                value for value in payload.values() if isinstance(value, dict)
-            ]
+            examples = [value for value in payload.values() if isinstance(value, dict)]
             example = examples[0] if examples else {}
         except (OSError, ValueError, json.JSONDecodeError):
             examples = []
@@ -542,9 +540,7 @@ def collect_run_status(
     generated = bool(execution_completed and structures)
     contract_flagged_count = worker.get("contract_flagged_designs")
     if isinstance(contract_flagged_count, int):
-        contract_status = (
-            "flagged" if contract_flagged_count > 0 else "met"
-        )
+        contract_status = "flagged" if contract_flagged_count > 0 else "met"
     elif generated and passed is not None:
         contract_status = "met" if passed else "flagged_or_advisory"
     else:
@@ -735,17 +731,17 @@ def format_status_text(status: dict[str, Any]) -> str:
                     f"{metrics.get('mean_tertiary_support_fraction', 'NA')} "
                     "long_range_deficit="
                     f"{metrics.get('long_range_contacts', 'NA')} "
-                    "target_met="
-                    f"{summary.get('scientific_quality_satisfied', 'NA')}"
+                    "declared_target_met="
+                    f"{summary.get('declared_quality_targets_satisfied', summary.get('scientific_quality_satisfied', 'NA'))}"
                 )
-                if (
-                    summary.get("scientific_quality_satisfied") is False
-                    and not summary.get("quality_required", False)
-                ):
+                if summary.get(
+                    "declared_quality_targets_satisfied",
+                    summary.get("scientific_quality_satisfied"),
+                ) is False and not summary.get("quality_required", False):
                     lines.append(
-                        "         advisory: scientific monomer-core targets "
-                        "were not met; PASSED covers required geometry and "
-                        "safety contracts only"
+                        "         advisory: internal monomer-core controller "
+                        "references were not reached; they are not a "
+                        "published backbone-designability verdict"
                     )
         if audit["name"] == "component_mobility_audit.json":
             summary = audit.get("summary") or {}
@@ -845,10 +841,7 @@ def render_html_report(status: dict[str, Any]) -> str:
             "</tr>"
         )
     structure_items = (
-        "".join(
-            f"<li><code>{escape(path)}</code></li>"
-            for path in structures
-        )
+        "".join(f"<li><code>{escape(path)}</code></li>" for path in structures)
         or "<li>None available</li>"
     )
     scheduler = status.get("scheduler") or {}

@@ -25,6 +25,13 @@ Every reported metric belongs to exactly one of these classes:
 An absolute quality cutoff with neither a published source nor explicit user
 authorization must remain measurement-only.
 
+This rule applies to sampling-controller outputs too. Contact coverage,
+contiguous-patch length, Mosaic's shape loss and edge counts may help compare
+controller revisions, but none may become a default backbone/interface
+acceptance threshold unless a primary source defines the same quantity and
+cutoff for a comparable generation task. A paper that reports a downstream
+ProteinMPNN/refolding/Rosetta filter is not evidence for a raw-backbone gate.
+
 ## Match the metric to the development stage
 
 The current Mosaic product ends at **oligomeric backbone generation**.  Its
@@ -107,7 +114,7 @@ remain advisory until calibrated on a declared reference cohort.
 | buried interface surface area | physical interface size descriptor | Janin & Rodier, *Proteins* 23, 580-587 (1995), DOI `10.1002/prot.340230413` | report BSA; use task/reference distributions, not one universal cutoff |
 | current coverage/continuity/shape proxy thresholds | online sampling objectives | no universal published cutoff for the current proxy implementation | retain as controller diagnostics and calibration targets, not authoritative user verdicts |
 | pore diameter and outer diameter | morphology/user design preference | no universal quality optimum | measurement-only unless the user supplies bounds |
-| backbone-generator population benchmark | distributions of secondary structure, length-conditioned Rg, stereochemical validity and structural diversity | Janson et al., *PLOS Computational Biology* (2026), Scaffold-Lab, DOI `10.1371/journal.pcbi.1014290` | adopt as the stage-matched evaluation framework; declare clustering settings and avoid universal aesthetic cutoffs |
+| backbone-generator population benchmark | distributions of secondary structure, length-conditioned Rg, stereochemical validity and structural diversity | Zheng et al., *PLOS Computational Biology* (2026), Scaffold-Lab, DOI `10.1371/journal.pcbi.1014290` | adopt as the stage-matched evaluation framework; declare clustering settings and avoid universal aesthetic cutoffs |
 | AF2/RF validation | sequence-conditioned designability check after sequence design | Watson et al., *Nature* 620, 1089-1100 (2023), DOI `10.1038/s41586-023-06415-8`: mean pAE below 5, design-vs-AF2 backbone RMSD below 2 A, and scaffolded-site backbone RMSD below 1 A for that paper's in-silico benchmark | future sequence/refolding stage; do not apply to backbone-only output |
 
 ## Consequence for the LHD101 40-design cohort

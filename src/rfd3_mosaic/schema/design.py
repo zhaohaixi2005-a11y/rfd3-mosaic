@@ -483,15 +483,17 @@ class UserInitialPoseSpec(StrictModel):
 
 
 class ScaffoldCoreQualitySpec(StrictModel):
-    """Scale-normalized final scaffold-core acceptance targets.
+    """Optional user-declared scaffold-core proxy targets.
 
-    These targets distinguish a sampler that merely executed from one that
-    produced a supported compact monomer.  They are independent of exact
-    motif, symmetry, clash and continuity hard contracts.
+    The quantities are useful controller diagnostics, but their default
+    values are not a published definition of backbone designability.  They
+    become a contract only when the user explicitly sets ``required``.  Exact
+    motif, symmetry, clash and coordinate-continuity contracts are audited
+    independently.
     """
 
-    # Keep existing designs report-only unless the author explicitly opts in
-    # to a calibrated scientific gate.  Safety contracts remain mandatory.
+    # Keep existing designs measurement-only unless the author explicitly
+    # opts into a task-specific target contract.
     required: bool = False
     maximum_mean_normalized_rg: Annotated[float, Field(gt=0.0)] = 2.60
     minimum_mean_tertiary_support_fraction: Annotated[
@@ -630,11 +632,12 @@ class UserPreserveInputRelationSpec(StrictModel):
 class UserContactRelationSpec(StrictModel):
     """Ask Mosaic to design an interface between two components.
 
-    A plain ``mode: contact`` is deliberately sufficient.  Mosaic derives a
-    scale-aware contact-coverage and continuity target from the generated
-    regions at runtime.  ``distance`` and ``minimum_heavy_atom_contacts`` are
-    retained as optional expert overrides and for backwards compatibility;
-    ordinary users should not have to guess either value.
+    A plain ``mode: contact`` is deliberately sufficient. Mosaic applies a
+    continuous RFdiffusion-style contact guidance field and records the
+    resulting geometry. It does not invent a universal residue-coverage,
+    contiguous-patch or shape-loss acceptance threshold. ``distance`` and
+    ``minimum_heavy_atom_contacts`` are optional user-declared contracts and
+    backwards-compatible expert overrides.
     """
 
     mode: Literal["contact"] = "contact"
@@ -649,8 +652,8 @@ class UserContactRelationSpec(StrictModel):
     # This is a heavy-atom contact cutoff.  Eight angstrom is useful for a
     # coarse CA neighbourhood, but is far too permissive for claiming a
     # physical all-atom interface: unrelated surface atoms can satisfy it.
-    # Keep the ordinary default at a conventional direct-contact distance;
-    # experts may still override it explicitly.
+    # Keep the ordinary default as a transparent measurement/guidance
+    # distance. It is not, by itself, a biological-success cutoff.
     cutoff: Annotated[float, Field(gt=0.0)] = 4.5
 
 

@@ -79,9 +79,7 @@ class PackingCampaignCollectorTestCase(unittest.TestCase):
                         "contract_status": "met",
                         "recommendation": "review_advisory_metrics",
                         "contract_flags": [],
-                        "advisory_flags": [
-                            {"code": "advisory.interface.packing"}
-                        ],
+                        "advisory_flags": [{"code": "advisory.interface.packing"}],
                     }
                 ),
                 encoding="utf-8",
@@ -110,9 +108,7 @@ class PackingCampaignCollectorTestCase(unittest.TestCase):
                         "run_root": str(run_root),
                         "git_revision": "test-revision",
                         "requested_output_count": 1,
-                        "records": [
-                            {"mode": "guided", "seed": 1, "job_id": "1"}
-                        ],
+                        "records": [{"mode": "guided", "seed": 1, "job_id": "1"}],
                     }
                 ),
                 encoding="utf-8",
@@ -132,41 +128,35 @@ class PackingCampaignCollectorTestCase(unittest.TestCase):
             )
 
             summary = json.loads(
-                (root / "packing_campaign_summary.json").read_text(
-                    encoding="utf-8"
-                )
+                (root / "packing_campaign_summary.json").read_text(encoding="utf-8")
             )
             result = summary["records"][0]["results"][0]
-            self.assertEqual(summary["schema_version"], 3)
+            self.assertEqual(summary["schema_version"], 4)
             self.assertEqual(summary["generated_output_count"], 1)
             self.assertEqual(summary["runtime_contract_met_output_count"], 1)
             self.assertEqual(
-                summary[
-                    "interface_guidance_runtime_contract_met_output_count"
-                ],
+                summary["interface_guidance_runtime_contract_met_output_count"],
                 1,
             )
             self.assertEqual(summary["overall_contract_met_output_count"], 1)
+            self.assertEqual(summary["packing_targets_satisfied_output_count"], 0)
             self.assertEqual(
-                summary["packing_targets_satisfied_output_count"], 0
+                summary["controller_proxy_bundle_satisfied_output_count"],
+                0,
             )
             self.assertNotIn("accepted_output_count", summary)
             self.assertEqual(result["runtime_ca_contact_residues_per_side"], 5)
-            self.assertEqual(
-                result["runtime_ca_contiguous_residues_per_side"], 3
-            )
+            self.assertEqual(result["runtime_ca_contiguous_residues_per_side"], 3)
             self.assertEqual(result["posthoc_contact_residues_per_side"], 5)
-            self.assertEqual(
-                result["posthoc_contiguous_residues_per_side"], 2
-            )
+            self.assertEqual(result["posthoc_contiguous_residues_per_side"], 2)
             self.assertEqual(result["maximum_translation_observed"], 1.25)
             self.assertEqual(result["maximum_rotation_deg_observed"], 4.5)
             self.assertEqual(result["mobility_applied_proposal_count"], 3)
-            markdown = (
-                root / "packing_campaign_summary.md"
-            ).read_text(encoding="utf-8")
+            markdown = (root / "packing_campaign_summary.md").read_text(
+                encoding="utf-8"
+            )
             self.assertNotIn("scientifically accepted", markdown)
-            self.assertIn("advisory packing targets satisfied", markdown)
+            self.assertIn("controller proxy bundles satisfied (advisory)", markdown)
             self.assertIn("runtime CA contiguous", markdown)
             self.assertIn("interface-guidance runtime contracts met", markdown)
             self.assertIn("move (A/deg; commits)", markdown)

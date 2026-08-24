@@ -48,12 +48,25 @@ class CapabilityLedgerTestCase(unittest.TestCase):
             CapabilityMaturity.CPU_VALIDATED,
         )
 
-    def test_functional_geometry_is_not_overclaimed(self) -> None:
+    def test_functional_geometry_schema_is_not_overclaimed(self) -> None:
         schema = capability_by_id("functional_geometry_schema")
-        runtime = capability_by_id("cooperative_site_orbit")
 
         self.assertEqual(schema.maturity, CapabilityMaturity.SCHEMA_ONLY)
-        self.assertEqual(runtime.maturity, CapabilityMaturity.PLANNED)
+
+    def test_out_of_scope_roadmap_items_are_not_advertised(self) -> None:
+        identifiers = {
+            item["id"] for item in capability_manifest()["capabilities"]
+        }
+
+        self.assertTrue(
+            {
+                "cooperative_site_orbit",
+                "symmetry_discovery",
+                "topology_inference",
+                "diffusion_feedback_refinement",
+                "sequence_fold_validation",
+            }.isdisjoint(identifiers)
+        )
 
     def test_polyhedral_execution_is_not_overclaimed(self) -> None:
         record = capability_by_id("polyhedral_groups")

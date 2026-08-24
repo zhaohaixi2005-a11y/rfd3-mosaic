@@ -97,8 +97,7 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertTrue(status["passed"])
         self.assertTrue(
             all(
-                Path(audit["path"]).is_relative_to(target)
-                for audit in status["audits"]
+                Path(audit["path"]).is_relative_to(target) for audit in status["audits"]
             )
         )
 
@@ -227,9 +226,7 @@ class RunReportingTestCase(unittest.TestCase):
         assessment = output.with_suffix(".txt")
         self.assertTrue(assessment.is_file())
         self.assertIn("result:     GENERATED", assessment.read_text())
-        payload = json.loads(
-            output.with_suffix(".json").read_text(encoding="utf-8")
-        )
+        payload = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
         self.assertTrue(payload["passed"])
 
     def test_status_exposes_final_graph_packing_metrics(self) -> None:
@@ -309,8 +306,11 @@ class RunReportingTestCase(unittest.TestCase):
         text = format_status_text(status)
 
         self.assertIn("normalized_rg=2.9", text)
-        self.assertIn("target_met=False", text)
-        self.assertIn("scientific monomer-core targets were not met", text)
+        self.assertIn("declared_target_met=False", text)
+        self.assertIn(
+            "internal monomer-core controller references were not reached",
+            text,
+        )
         self.assertIn("mobility applied=7 moved=True", text)
         self.assertIn("rotation_bound_used=0.5", text)
 
@@ -371,9 +371,7 @@ class RunReportingTestCase(unittest.TestCase):
             include_scheduler=False,
         )
 
-        self.assertEqual(
-            status["design"]["task"], "preserve_supplied_geometry"
-        )
+        self.assertEqual(status["design"]["task"], "preserve_supplied_geometry")
         self.assertEqual(status["design"]["symmetry"], "C3")
         self.assertEqual(status["design"]["fixed_component_count"], 2)
         text = format_status_text(status)
@@ -418,11 +416,7 @@ class RunReportingTestCase(unittest.TestCase):
         )
         self._write_json(
             run / "input" / "manifest.json",
-            {
-                "inputs": [
-                    {"path": str(original), "sha256": "abc123"}
-                ]
-            },
+            {"inputs": [{"path": str(original), "sha256": "abc123"}]},
         )
         (run / "input" / "assembly_specification.yaml").write_text(
             yaml.safe_dump(
@@ -469,9 +463,7 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertIn(f"RFD3 input:  {compiled.resolve()}", text)
         self.assertIn("not a generated design", text)
         self.assertIn("interfaces: interface_alpha x2, interface_beta x1", text)
-        self.assertIn(
-            "- interface_alpha: A/186-189/* + B/238-240/*", text
-        )
+        self.assertIn("- interface_alpha: A/186-189/* + B/238-240/*", text)
         report = write_report(status)
         html = report.read_text(encoding="utf-8")
         self.assertIn("Design provenance", html)
@@ -501,9 +493,7 @@ class RunReportingTestCase(unittest.TestCase):
                 "extra": {
                     "symmetry_multiplicity": 3,
                     "motif_constraint_orbits": [{"id": "fixed"}],
-                    "assembly_interface_relations": [
-                        {"satisfaction_stage": "output"}
-                    ],
+                    "assembly_interface_relations": [{"satisfaction_stage": "output"}],
                 },
             }
         self._write_json(input_directory / "rfd3_input.json", examples)

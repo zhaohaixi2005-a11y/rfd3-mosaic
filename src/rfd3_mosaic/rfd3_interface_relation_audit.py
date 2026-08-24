@@ -49,9 +49,7 @@ def _component(value: str) -> tuple[str, int]:
 def _parse_selector(value: str) -> tuple[str, int, int]:
     match = _SELECTOR.fullmatch(value)
     if match is None:
-        raise ValueError(
-            f"Interface relation selector {value!r} is not contiguous"
-        )
+        raise ValueError(f"Interface relation selector {value!r} is not contiguous")
     chain, start_text, end_text = match.groups()
     start, end = int(start_text), int(end_text)
     if end < start:
@@ -83,9 +81,7 @@ def _runtime_action_index(value: Any, registry_order: list[str]) -> int:
         try:
             index = int(str(value))
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Unknown runtime symmetry action {value!r}"
-            ) from error
+            raise ValueError(f"Unknown runtime symmetry action {value!r}") from error
     if not 0 <= index < len(registry_order):
         raise ValueError(
             f"Runtime symmetry action {index} is outside the declared "
@@ -120,23 +116,17 @@ def _fit_transform(
     observed_zero = observed - observed_center
     left, _, right_t = np.linalg.svd(reference_zero.T @ observed_zero)
     correction = np.eye(3)
-    correction[-1, -1] = (
-        -1.0 if np.linalg.det(left @ right_t) < 0.0 else 1.0
-    )
+    correction[-1, -1] = -1.0 if np.linalg.det(left @ right_t) < 0.0 else 1.0
     rotation = left @ correction @ right_t
     translation = observed_center - reference_center @ rotation
     fitted = reference @ rotation + translation
-    rmsd = float(
-        np.sqrt(np.mean(np.sum((fitted - observed) ** 2, axis=-1)))
-    )
+    rmsd = float(np.sqrt(np.mean(np.sum((fitted - observed) ** 2, axis=-1))))
     return rotation, translation, rmsd
 
 
 def _rotation_error_deg(left: np.ndarray, right: np.ndarray) -> float:
     relative = left.T @ right
-    cosine = float(
-        np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0)
-    )
+    cosine = float(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
     return float(np.rad2deg(np.arccos(cosine)))
 
 
@@ -151,9 +141,7 @@ def _source_atom_key_blocks(
     for selector in selectors:
         chain, start, end = _parse_selector(selector)
         keys = sorted(
-            key
-            for key in source_lookup
-            if key[0] == chain and start <= key[1] <= end
+            key for key in source_lookup if key[0] == chain and start <= key[1] <= end
         )
         if not keys:
             raise ValueError(
@@ -198,9 +186,7 @@ def _edge_side_fragment_ids(
         instances = side.get("fragment_instance_ids")
         if not isinstance(instances, list):
             continue
-        fragment_ids.update(
-            str(instance).split("@", 1)[0] for instance in instances
-        )
+        fragment_ids.update(str(instance).split("@", 1)[0] for instance in instances)
     return fragment_ids if found and fragment_ids else None
 
 
@@ -236,11 +222,7 @@ def _member_residue_runs(
     residues: list[list[_AtomKey]] = []
     for value in components:
         residue_id = _component(str(value))
-        keys = sorted(
-            key
-            for key in source_lookup
-            if (key[0], key[1]) == residue_id
-        )
+        keys = sorted(key for key in source_lookup if (key[0], key[1]) == residue_id)
         if keys:
             residues.append(keys)
 
@@ -252,10 +234,7 @@ def _member_residue_runs(
         if (
             current
             and previous is not None
-            and (
-                residue[0] != previous[0]
-                or residue[1] != previous[1] + 1
-            )
+            and (residue[0] != previous[0] or residue[1] != previous[1] + 1)
         ):
             runs.append(current)
             current = []
@@ -274,12 +253,8 @@ def _transformed_source_coordinates(
     registry_order: list[str],
     registry_matrices: dict[str, Any],
 ) -> np.ndarray:
-    matrix = np.asarray(
-        registry_matrices[registry_order[action_index]], dtype=float
-    )
-    coordinates = np.asarray(
-        [source_lookup[key] for key in atom_keys], dtype=float
-    )
+    matrix = np.asarray(registry_matrices[registry_order[action_index]], dtype=float)
+    coordinates = np.asarray([source_lookup[key] for key in atom_keys], dtype=float)
     return coordinates @ matrix[:3, :3].T + matrix[:3, 3]
 
 
@@ -309,17 +284,14 @@ def _resolve_runtime_bindings(
     used: set[_RuntimeBinding] = set()
     remapped = 0
     groups = (
-        motif_constraint_groups
-        if isinstance(motif_constraint_groups, list)
-        else []
+        motif_constraint_groups if isinstance(motif_constraint_groups, list) else []
     )
 
     atom_indices = {key: index for index, key in enumerate(atom_keys)}
     for block_keys in atom_key_blocks:
         block_indices = [atom_indices[key] for key in block_keys]
         if (preexpanded or not groups) and all(
-            f"{chain}{residue}" in index_map
-            for chain, residue, _ in block_keys
+            f"{chain}{residue}" in index_map for chain, residue, _ in block_keys
         ):
             for index, key in zip(block_indices, block_keys, strict=True):
                 binding = (key, desired_action_index)
@@ -329,8 +301,7 @@ def _resolve_runtime_bindings(
 
         original_residues = _ordered_residue_keys(block_keys)
         original_signature = [
-            tuple(key[2] for key in residue_keys)
-            for residue_keys in original_residues
+            tuple(key[2] for key in residue_keys) for residue_keys in original_residues
         ]
         expected = _transformed_source_coordinates(
             block_keys,
@@ -349,20 +320,16 @@ def _resolve_runtime_bindings(
             for member in members:
                 if not isinstance(member, dict):
                     continue
-                if allowed_source_fragment_ids is not None and str(
-                    member.get("source_fragment_id", "")
-                ) not in allowed_source_fragment_ids:
-                    continue
-                for residue_run in _member_residue_runs(
-                    member, source_lookup
+                if (
+                    allowed_source_fragment_ids is not None
+                    and str(member.get("source_fragment_id", ""))
+                    not in allowed_source_fragment_ids
                 ):
+                    continue
+                for residue_run in _member_residue_runs(member, source_lookup):
                     window_size = len(original_residues)
-                    for start in range(
-                        0, len(residue_run) - window_size + 1
-                    ):
-                        residue_window = residue_run[
-                            start : start + window_size
-                        ]
+                    for start in range(0, len(residue_run) - window_size + 1):
+                        residue_window = residue_run[start : start + window_size]
                         signature = [
                             tuple(key[2] for key in residue_keys)
                             for residue_keys in residue_window
@@ -380,10 +347,7 @@ def _resolve_runtime_bindings(
                         candidate_bindings = [
                             (key, action_index) for key in candidate_keys
                         ]
-                        if any(
-                            binding in used
-                            for binding in candidate_bindings
-                        ):
+                        if any(binding in used for binding in candidate_bindings):
                             continue
                         if not all(
                             f"{chain}{residue}" in index_map
@@ -399,9 +363,7 @@ def _resolve_runtime_bindings(
                         )
                         rmsd = float(
                             np.sqrt(
-                                np.mean(
-                                    np.sum((expected - candidate) ** 2, axis=-1)
-                                )
+                                np.mean(np.sum((expected - candidate) ** 2, axis=-1))
                             )
                         )
                         candidates.append((rmsd, candidate_bindings))
@@ -456,15 +418,11 @@ def _observed_coordinates(
             output_chain_index = chain_positions[master_chain]
         else:
             asu_chain_index = chain_positions[master_chain] % asu_chain_count
-            output_chain_index = (
-                action_index * asu_chain_count + asu_chain_index
-            )
+            output_chain_index = action_index * asu_chain_count + asu_chain_index
         if output_chain_index >= len(ordered_output_chains):
             continue
         output_chain = ordered_output_chains[output_chain_index]
-        coordinate = output_lookup.get(
-            (output_chain, output_residue, atom_name)
-        )
+        coordinate = output_lookup.get((output_chain, output_residue, atom_name))
         if coordinate is None:
             continue
         keep.append(atom_index)
@@ -551,9 +509,7 @@ def _longest_contiguous_residue_run(
         current = 0
         previous: int | None = None
         for residue in sorted(set(numbers)):
-            is_adjacent = (
-                previous is not None and residue == previous + 1
-            )
+            is_adjacent = previous is not None and residue == previous + 1
             current = current + 1 if is_adjacent else 1
             maximum = max(maximum, current)
             previous = residue
@@ -595,12 +551,8 @@ def _heavy_atom_packing_metrics(
     """
 
     contact_rows, contact_columns = np.nonzero(distances < cutoff)
-    left_keys = [
-        (atom.chain_id, atom.residue_number) for atom in left_atoms
-    ]
-    right_keys = [
-        (atom.chain_id, atom.residue_number) for atom in right_atoms
-    ]
+    left_keys = [(atom.chain_id, atom.residue_number) for atom in left_atoms]
+    right_keys = [(atom.chain_id, atom.residue_number) for atom in right_atoms]
     residue_pairs = {
         (left_keys[left_index], right_keys[right_index])
         for left_index, right_index in zip(
@@ -629,9 +581,7 @@ def _heavy_atom_packing_metrics(
     available_residues = set(residue_names)
     contact_residues = left_contact_residues | right_contact_residues
     hydrophobic_available = {
-        key
-        for key in available_residues
-        if residue_names[key] in hydrophobic_names
+        key for key in available_residues if residue_names[key] in hydrophobic_names
     }
     hydrophobic_contacting = hydrophobic_available & contact_residues
 
@@ -664,15 +614,12 @@ def _heavy_atom_packing_metrics(
         1,
     )
     burial_proxy = float(
-        np.clip((cutoff - distances) / max(cutoff - 2.0, 1.0), 0.0, 1.0)
-        .sum()
+        np.clip((cutoff - distances) / max(cutoff - 2.0, 1.0), 0.0, 1.0).sum()
     )
 
     # A loose residue-pair grid exposes holes inside the already selected
     # contact patch.  This is a porosity descriptor, not a SASA calculation.
-    loose_pairs: set[
-        tuple[tuple[str, int], tuple[str, int]]
-    ] = set()
+    loose_pairs: set[tuple[tuple[str, int], tuple[str, int]]] = set()
     loose_rows, loose_columns = np.nonzero(distances < cutoff + 1.5)
     for left_index, right_index in zip(
         loose_rows.tolist(),
@@ -681,10 +628,7 @@ def _heavy_atom_packing_metrics(
     ):
         left_key = left_keys[left_index]
         right_key = right_keys[right_index]
-        if (
-            left_key in left_contact_residues
-            and right_key in right_contact_residues
-        ):
+        if left_key in left_contact_residues and right_key in right_contact_residues:
             loose_pairs.add((left_key, right_key))
     possible_patch_pairs = max(
         len(left_contact_residues) * len(right_contact_residues),
@@ -722,14 +666,14 @@ def _automatic_interface_targets(
     left_contiguous_capacity: int | None = None,
     right_contiguous_capacity: int | None = None,
 ) -> tuple[int, int]:
-    """Derive feasible scale-aware automatic interface targets.
+    """Derive feasible scale-aware controller reference values.
 
     Coverage may be accumulated across several generated regions on one
-    output chain.  Continuity cannot: a fixed motif or an ungenerated residue
-    gap separates two contact patches permanently.  Automatic mode therefore
-    caps its contiguous-patch target by the longest generated residue run on
-    both sides.  Explicit user targets are handled by the caller and are never
-    relaxed here.
+    output chain. Continuity cannot: a fixed motif or an ungenerated residue
+    gap separates two contact patches permanently. These values support the
+    differentiable controller and historical comparison only. They are not a
+    published backbone/interface acceptance standard. Explicit user targets
+    are handled by the caller and are never relaxed here.
     """
 
     available = min(left_available, right_available)
@@ -771,9 +715,7 @@ def audit_interface_relations(
     extra = example.get("extra") or {}
     plan = extra.get("assembly_interface_relations")
     if not isinstance(plan, list) or not plan:
-        raise ValueError(
-            "Compiled input declares no assembly interface relation plan"
-        )
+        raise ValueError("Compiled input declares no assembly interface relation plan")
     order = extra.get("registry_transform_order")
     matrices = extra.get("registry_transform_matrices")
     multiplicity = int(extra.get("symmetry_multiplicity", 0))
@@ -809,11 +751,7 @@ def audit_interface_relations(
         if atom.record_type == "ATOM" and _is_heavy(atom)
     }
     ordered_output_chains = sorted(
-        {
-            atom.chain_id
-            for atom in output_atoms
-            if atom.record_type == "ATOM"
-        },
+        {atom.chain_id for atom in output_atoms if atom.record_type == "ATOM"},
         key=_chain_sort_key,
     )
     preexpanded_layout = extra.get("preexpanded_chain_layout")
@@ -827,8 +765,7 @@ def audit_interface_relations(
                 f"{len(ordered_output_chains)}"
             )
         asu_chain_count = sum(
-            bool(record.get("is_asu", False))
-            for record in preexpanded_layout
+            bool(record.get("is_asu", False)) for record in preexpanded_layout
         )
     elif len(ordered_output_chains) % multiplicity != 0:
         raise ValueError(
@@ -951,9 +888,7 @@ def audit_interface_relations(
         completeness = matched_atoms / expected_atoms if expected_atoms else 0.0
 
         geometry = edge["target_geometry"]
-        satisfaction_stage = str(
-            edge.get("satisfaction_stage", "input")
-        )
+        satisfaction_stage = str(edge.get("satisfaction_stage", "input"))
         evaluation_scope = "declared_port_atoms"
         left_evaluation_atoms = None
         right_evaluation_atoms = None
@@ -981,8 +916,7 @@ def audit_interface_relations(
                 if atom.record_type == "ATOM"
                 and _is_heavy(atom)
                 and atom.chain_id in left_chains
-                and (atom.chain_id, atom.residue_number)
-                not in mapped_fixed_residues
+                and (atom.chain_id, atom.residue_number) not in mapped_fixed_residues
             ]
             right_evaluation_atoms = [
                 atom
@@ -990,8 +924,7 @@ def audit_interface_relations(
                 if atom.record_type == "ATOM"
                 and _is_heavy(atom)
                 and atom.chain_id in right_chains
-                and (atom.chain_id, atom.residue_number)
-                not in mapped_fixed_residues
+                and (atom.chain_id, atom.residue_number) not in mapped_fixed_residues
             ]
             left_observed = np.asarray(
                 [atom.coordinate for atom in left_evaluation_atoms],
@@ -1009,10 +942,7 @@ def audit_interface_relations(
                 axis=-1,
             )
             centroid_distance = float(
-                np.linalg.norm(
-                    left_observed.mean(axis=0)
-                    - right_observed.mean(axis=0)
-                )
+                np.linalg.norm(left_observed.mean(axis=0) - right_observed.mean(axis=0))
             )
             minimum_distance = float(distances.min())
             hard_clashes = int((distances < 2.0).sum())
@@ -1040,20 +970,14 @@ def audit_interface_relations(
             "equivalent_action_transform_ids": list(
                 edge.get("equivalent_action_transform_ids") or ()
             ),
-            "edge_stabilizer_order": int(
-                edge.get("edge_stabilizer_order", 1)
-            ),
+            "edge_stabilizer_order": int(edge.get("edge_stabilizer_order", 1)),
             "orbit_id": edge.get("orbit_id"),
             "target_mode": str(geometry["mode"]),
-            "reference_basis": str(
-                edge.get("reference_basis", "compiled_input")
-            ),
+            "reference_basis": str(edge.get("reference_basis", "compiled_input")),
             "expected_heavy_atoms": expected_atoms,
             "matched_heavy_atoms": matched_atoms,
             "atom_completeness": completeness,
-            "runtime_provenance_remapped": bool(
-                left_remapped or right_remapped
-            ),
+            "runtime_provenance_remapped": bool(left_remapped or right_remapped),
             "left_runtime_remapped_heavy_atoms": left_remapped,
             "right_runtime_remapped_heavy_atoms": right_remapped,
             "centroid_distance": centroid_distance,
@@ -1071,17 +995,12 @@ def audit_interface_relations(
                     right_reference, right_observed
                 )
                 predicted_right_center = (
-                    right_reference.mean(axis=0) @ left_rotation
-                    + left_translation
+                    right_reference.mean(axis=0) @ left_rotation + left_translation
                 )
                 translation_error = float(
-                    np.linalg.norm(
-                        predicted_right_center - right_observed.mean(axis=0)
-                    )
+                    np.linalg.norm(predicted_right_center - right_observed.mean(axis=0))
                 )
-                rotation_error = _rotation_error_deg(
-                    left_rotation, right_rotation
-                )
+                rotation_error = _rotation_error_deg(left_rotation, right_rotation)
             else:
                 left_rmsd = None
                 right_rmsd = None
@@ -1090,13 +1009,9 @@ def audit_interface_relations(
             translation_tolerance = float(geometry["translation_tolerance"])
             rotation_tolerance = float(geometry["rotation_tolerance_deg"])
             contact_cutoff = float(geometry.get("contact_cutoff", 4.5))
-            minimum_contacts = int(
-                geometry.get("minimum_heavy_atom_contacts", 0)
-            )
+            minimum_contacts = int(geometry.get("minimum_heavy_atom_contacts", 0))
             contact_count = (
-                int((distances < contact_cutoff).sum())
-                if distances is not None
-                else 0
+                int((distances < contact_cutoff).sum()) if distances is not None else 0
             )
             contacts_satisfied = contact_count >= minimum_contacts
             satisfied = bool(
@@ -1150,9 +1065,7 @@ def audit_interface_relations(
             if contacts is not None:
                 cutoff = float(contacts["cutoff"])
                 contact_count = (
-                    int((distances < cutoff).sum())
-                    if distances is not None
-                    else 0
+                    int((distances < cutoff).sum()) if distances is not None else 0
                 )
                 contacts_satisfied = contact_count >= int(
                     contacts["min_heavy_atom_contacts"]
@@ -1170,17 +1083,13 @@ def audit_interface_relations(
                 checks.append(contacts_satisfied)
             coverage = geometry.get("coverage")
             if coverage is not None:
-                cutoff = float(
-                    (contacts or {}).get("cutoff", 8.0)
-                )
+                cutoff = float((contacts or {}).get("cutoff", 8.0))
                 if (
                     distances is not None
                     and left_evaluation_atoms is not None
                     and right_evaluation_atoms is not None
                 ):
-                    left_indices, right_indices = np.nonzero(
-                        distances < cutoff
-                    )
+                    left_indices, right_indices = np.nonzero(distances < cutoff)
                     left_contact_residues = {
                         (
                             left_evaluation_atoms[index].chain_id,
@@ -1216,17 +1125,19 @@ def audit_interface_relations(
                 right_contiguous_capacity = _longest_contiguous_residue_run(
                     right_available_residues
                 )
-                automatic_coverage, automatic_continuity = (
-                    _automatic_interface_targets(
-                        left_available,
-                        right_available,
-                        left_contiguous_capacity=left_contiguous_capacity,
-                        right_contiguous_capacity=right_contiguous_capacity,
-                    )
+                automatic_coverage, automatic_continuity = _automatic_interface_targets(
+                    left_available,
+                    right_available,
+                    left_contiguous_capacity=left_contiguous_capacity,
+                    right_contiguous_capacity=right_contiguous_capacity,
+                )
+                declared_minimum_coverage = coverage.get(
+                    "minimum_contact_residues_per_side"
                 )
                 minimum_coverage = int(
-                    coverage.get("minimum_contact_residues_per_side")
-                    or automatic_coverage
+                    automatic_coverage
+                    if declared_minimum_coverage is None
+                    else declared_minimum_coverage
                 )
                 declared_minimum_contiguous = coverage.get(
                     "minimum_contiguous_contact_residues_per_side"
@@ -1238,9 +1149,7 @@ def audit_interface_relations(
                 )
                 left_coverage = len(left_contact_residues)
                 right_coverage = len(right_contact_residues)
-                left_contiguous = _longest_contiguous_residue_run(
-                    left_contact_residues
-                )
+                left_contiguous = _longest_contiguous_residue_run(left_contact_residues)
                 right_contiguous = _longest_contiguous_residue_run(
                     right_contact_residues
                 )
@@ -1284,27 +1193,34 @@ def audit_interface_relations(
                 )
                 maximum_depth_standard_deviation = max(2.0, 0.45 * cutoff)
                 packing_quality_satisfied = bool(
-                    packing_metrics[
-                        "reciprocal_contact_residue_pair_count"
-                    ]
+                    packing_metrics["reciprocal_contact_residue_pair_count"]
                     >= minimum_residue_pairs
                     and packing_metrics["reciprocal_contact_density"] >= 1.0
-                    and packing_metrics[
-                        "contact_depth_standard_deviation"
-                    ]
+                    and packing_metrics["contact_depth_standard_deviation"]
                     <= maximum_depth_standard_deviation
                 )
                 report.update(
                     {
-                        "interface_quality_mode": str(
-                            coverage.get("mode", "auto")
+                        "interface_quality_mode": "measurement_only"
+                        if (
+                            declared_minimum_coverage is None
+                            and declared_minimum_contiguous is None
+                        )
+                        else "explicit_user_target",
+                        "controller_reference_only": bool(
+                            declared_minimum_coverage is None
+                            and declared_minimum_contiguous is None
+                        ),
+                        "controller_reference_contact_residues_per_side": (
+                            automatic_coverage
+                        ),
+                        "controller_reference_contiguous_residues_per_side": (
+                            automatic_continuity
                         ),
                         "minimum_contact_residues_per_side": minimum_coverage,
                         "contact_residue_count_left": left_coverage,
                         "contact_residue_count_right": right_coverage,
-                        "contact_residue_coverage_satisfied": (
-                            coverage_satisfied
-                        ),
+                        "contact_residue_coverage_satisfied": (coverage_satisfied),
                         "minimum_contiguous_contact_residues_per_side": (
                             minimum_contiguous
                         ),
@@ -1314,35 +1230,29 @@ def audit_interface_relations(
                         "available_contiguous_residues_right": (
                             right_contiguous_capacity
                         ),
-                        "maximum_contiguous_contact_residues_left": (
-                            left_contiguous
-                        ),
-                        "maximum_contiguous_contact_residues_right": (
-                            right_contiguous
-                        ),
+                        "maximum_contiguous_contact_residues_left": (left_contiguous),
+                        "maximum_contiguous_contact_residues_right": (right_contiguous),
                         "contact_continuity_satisfied": continuity_satisfied,
                         **packing_metrics,
                         "minimum_reciprocal_contact_residue_pairs": (
                             minimum_residue_pairs
                         ),
-                        "maximum_contact_islands_per_side": (
-                            maximum_contact_islands
-                        ),
+                        "maximum_contact_islands_per_side": (maximum_contact_islands),
                         "maximum_contact_depth_standard_deviation": (
                             maximum_depth_standard_deviation
                         ),
-                        "output_packing_quality_satisfied": (
+                        "controller_proxy_bundle_satisfied": (
                             packing_quality_satisfied
                         ),
+                        # Compatibility alias for historical collectors. This
+                        # value is explicitly not an acceptance decision.
+                        "output_packing_quality_satisfied": packing_quality_satisfied,
                     }
                 )
-                checks.extend(
-                    (
-                        coverage_satisfied,
-                        continuity_satisfied,
-                        packing_quality_satisfied,
-                    )
-                )
+                if declared_minimum_coverage is not None:
+                    checks.append(coverage_satisfied)
+                if declared_minimum_contiguous is not None:
+                    checks.append(continuity_satisfied)
             report["satisfied"] = bool(
                 completeness >= min_atom_completeness
                 and checks
@@ -1350,9 +1260,7 @@ def audit_interface_relations(
                 and hard_clashes == 0
             )
         else:
-            raise ValueError(
-                f"Unsupported target geometry mode {geometry['mode']!r}"
-            )
+            raise ValueError(f"Unsupported target geometry mode {geometry['mode']!r}")
         edge_reports.append(report)
 
     required_reports = [report for report in edge_reports if report["required"]]
@@ -1361,76 +1269,73 @@ def audit_interface_relations(
         for report in required_reports
         if not report["satisfied"]
     ]
-    interface_ids = sorted(
-        {report["source_interface_id"] for report in edge_reports}
-    )
-    hyperedge_ids = sorted(
-        {report["hyperedge_id"] for report in edge_reports}
-    )
+    interface_ids = sorted({report["source_interface_id"] for report in edge_reports})
+    hyperedge_ids = sorted({report["hyperedge_id"] for report in edge_reports})
     hyperedge_reports = []
     for hyperedge_id in hyperedge_ids:
         members = [
-            report
-            for report in edge_reports
-            if report["hyperedge_id"] == hyperedge_id
+            report for report in edge_reports if report["hyperedge_id"] == hyperedge_id
         ]
-        physical_members: dict[
-            tuple[str | None, int], list[dict[str, Any]]
-        ] = {}
+        physical_members: dict[tuple[str | None, int], list[dict[str, Any]]] = {}
         for member in members:
             action_copy = member.get("action_copy_index")
             physical_index = int(
-                member["source_copy_index"]
-                if action_copy is None
-                else action_copy
+                member["source_copy_index"] if action_copy is None else action_copy
             )
             physical_key = (member.get("orbit_id"), physical_index)
             physical_members.setdefault(physical_key, []).append(member)
-        hyperedge_reports.append({
-            "hyperedge_id": hyperedge_id,
-            "physical_instance_count": len(physical_members),
-            "member_edge_instance_count": len(members),
-            "members_per_physical_instance": sorted(
-                {len(group) for group in physical_members.values()}
-            ),
-            "required": any(member["required"] for member in members),
-            "satisfied": all(
-                member["satisfied"]
-                for member in members
-                if member["required"]
-            ),
-            "physical_instances": [
-                {
-                    "orbit_id": orbit_id,
-                    "action_copy_index": physical_index,
-                    "member_edge_instance_ids": sorted(
-                        member["edge_instance_id"]
-                        for member in group
-                    ),
-                    "satisfied": all(
-                        member["satisfied"]
-                        for member in group
-                        if member["required"]
-                    ),
-                }
-                for (orbit_id, physical_index), group in sorted(
-                    physical_members.items(),
-                    key=lambda item: (str(item[0][0]), item[0][1]),
-                )
-            ],
-            "source_interface_ids": sorted(
-                {member["source_interface_id"] for member in members}
-            ),
-        })
+        hyperedge_reports.append(
+            {
+                "hyperedge_id": hyperedge_id,
+                "physical_instance_count": len(physical_members),
+                "member_edge_instance_count": len(members),
+                "members_per_physical_instance": sorted(
+                    {len(group) for group in physical_members.values()}
+                ),
+                "required": any(member["required"] for member in members),
+                "satisfied": all(
+                    member["satisfied"] for member in members if member["required"]
+                ),
+                "physical_instances": [
+                    {
+                        "orbit_id": orbit_id,
+                        "action_copy_index": physical_index,
+                        "member_edge_instance_ids": sorted(
+                            member["edge_instance_id"] for member in group
+                        ),
+                        "satisfied": all(
+                            member["satisfied"]
+                            for member in group
+                            if member["required"]
+                        ),
+                    }
+                    for (orbit_id, physical_index), group in sorted(
+                        physical_members.items(),
+                        key=lambda item: (str(item[0][0]), item[0][1]),
+                    )
+                ],
+                "source_interface_ids": sorted(
+                    {member["source_interface_id"] for member in members}
+                ),
+            }
+        )
     output_packing_reports = [
         report
         for report in edge_reports
         if report.get("satisfaction_stage") == "output"
-        and "output_packing_quality_satisfied" in report
+        and "controller_proxy_bundle_satisfied" in report
     ]
+    controller_proxy_bundle_satisfied = bool(
+        output_packing_reports
+        and all(
+            report["controller_proxy_bundle_satisfied"]
+            for report in output_packing_reports
+        )
+    )
     return {
         "audit": "rfd3_mosaic.assembly_interface_relations",
         "schema_version": 1,
+        "semantics": "declared_contracts_with_measurement_only_quality",
         "passed": not failed_required,
         "inputs": {
             "compiled_input": str(input_path),
@@ -1450,8 +1355,7 @@ def audit_interface_relations(
             "edge_instance_count": len(edge_reports),
             "unique_physical_edge_instance_count": len(edge_reports),
             "equivalent_group_action_count": sum(
-                int(report.get("edge_stabilizer_order", 1))
-                for report in edge_reports
+                int(report.get("edge_stabilizer_order", 1)) for report in edge_reports
             ),
             "quotient_edge_instance_count": sum(
                 int(report.get("edge_stabilizer_order", 1)) > 1
@@ -1470,13 +1374,12 @@ def audit_interface_relations(
             ),
             "failed_required_edge_instances": failed_required,
             "output_packing_edge_count": len(output_packing_reports),
-            "output_packing_quality_satisfied": bool(
-                output_packing_reports
-                and all(
-                    report["output_packing_quality_satisfied"]
-                    for report in output_packing_reports
-                )
-            ),
+            "controller_proxy_bundle_satisfied": (controller_proxy_bundle_satisfied),
+            "controller_proxy_bundle_is_advisory": True,
+            # Compatibility alias for historical reports.  It is a
+            # controller diagnostic, not a scientific acceptance verdict.
+            "output_packing_quality_satisfied": (controller_proxy_bundle_satisfied),
+            "output_packing_quality_is_advisory": True,
             "minimum_reciprocal_contact_residue_pairs": (
                 min(
                     report["reciprocal_contact_residue_pair_count"]
@@ -1526,9 +1429,7 @@ def main() -> None:
     parser.add_argument("--result-json", required=True, type=Path)
     parser.add_argument("--result-structure", type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument(
-        "--min-atom-completeness", type=float, default=0.99
-    )
+    parser.add_argument("--min-atom-completeness", type=float, default=0.99)
     parser.add_argument("--report-only", action="store_true")
     arguments = parser.parse_args()
     report = audit_interface_relations(

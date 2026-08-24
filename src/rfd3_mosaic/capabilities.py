@@ -286,17 +286,6 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         ),
     ),
     CapabilityRecord(
-        id="cooperative_site_orbit",
-        title="Cooperative multi-subunit functional-site orbit",
-        maturity=CapabilityMaturity.PLANNED,
-        public_interface=False,
-        summary=(
-            "Bind, compile, project and audit one functional site spanning "
-            "multiple symmetry-related subunits throughout diffusion."
-        ),
-        dependencies=("functional_geometry_schema", "public_fixed_xyz"),
-    ),
-    CapabilityRecord(
         id="cyclic_relation_compatibility",
         title="Cyclic pairwise-relation compatibility",
         maturity=CapabilityMaturity.CPU_VALIDATED,
@@ -310,31 +299,6 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "LRZ complete unit suite: 393 tests passed on 2026-08-05",
             "inverse-direction, noise, subgroup and screw-motion tests",
         ),
-    ),
-    CapabilityRecord(
-        id="symmetry_discovery",
-        title="Symmetry and order discovery",
-        maturity=CapabilityMaturity.PLANNED,
-        public_interface=False,
-        summary=(
-            "Rank compatible Cn/Dn group, order, orbit assignment and group "
-            "frame from local functional geometry."
-        ),
-        dependencies=(
-            "cyclic_relation_compatibility",
-            "static_pose_sampling",
-        ),
-    ),
-    CapabilityRecord(
-        id="topology_inference",
-        title="Assembly topology inference",
-        maturity=CapabilityMaturity.PLANNED,
-        public_interface=False,
-        summary=(
-            "Infer component partition and generated connectivity for each "
-            "compatible architecture hypothesis."
-        ),
-        dependencies=("symmetry_discovery",),
     ),
     CapabilityRecord(
         id="cylindrical_projector",
@@ -439,20 +403,6 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         ),
     ),
     CapabilityRecord(
-        id="diffusion_feedback_refinement",
-        title="Diffusion-in-the-loop pose refinement",
-        maturity=CapabilityMaturity.PLANNED,
-        public_interface=False,
-        summary=(
-            "Refine continuous orbit pose from scaffold feedback while "
-            "keeping one discrete architecture fixed per trajectory."
-        ),
-        dependencies=(
-            "topology_inference",
-            "bounded_orbit_mobility",
-        ),
-    ),
-    CapabilityRecord(
         id="local_neighbourhood",
         title="Local symmetry-neighbourhood execution",
         maturity=CapabilityMaturity.CPU_VALIDATED,
@@ -479,13 +429,6 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
             "center preservation and complete AssemblySpecification "
             "instance expansion",
         ),
-    ),
-    CapabilityRecord(
-        id="sequence_fold_validation",
-        title="Sequence and fold validation pipeline",
-        maturity=CapabilityMaturity.PLANNED,
-        public_interface=False,
-        summary="Sequence design, multimer prediction and interface-energy ranking.",
     ),
 )
 

@@ -45,21 +45,16 @@ def audit_graph_interface_guidance(
     result_path = Path(result_json).resolve()
     example = _single_example(input_path)
     extra = example.get("extra") or {}
-    diagnostics = _load(result_path).get(
-        "graph_interface_guidance_diagnostics"
-    )
+    diagnostics = _load(result_path).get("graph_interface_guidance_diagnostics")
     if not isinstance(diagnostics, dict):
         diagnostics = {}
     observed_ids = [str(value) for value in diagnostics.get("edge_ids", [])]
     observed_source_ids = [
-        str(value)
-        for value in diagnostics.get("source_interface_ids", [])
+        str(value) for value in diagnostics.get("source_interface_ids", [])
     ]
     declared = [
         relation
-        for relation in extra.get(
-            "assembly_interface_relations", []
-        )
+        for relation in extra.get("assembly_interface_relations", [])
         if bool(relation.get("required", True))
         and relation.get("satisfaction_stage") == "output"
         and (relation.get("target_geometry") or {}).get("mode")
@@ -82,15 +77,12 @@ def audit_graph_interface_guidance(
     elif automatic:
         symmetry_id = str((example.get("symmetry") or {}).get("id") or "")
         if not symmetry_id.startswith("C") or not symmetry_id[1:].isdigit():
-            raise ValueError(
-                "Automatic symmetric scaffold packing audit requires Cn"
-            )
+            raise ValueError("Automatic symmetric scaffold packing audit requires Cn")
         order = int(symmetry_id[1:])
         expected_count = 1 if order == 2 else order
         prefix = "automatic_symmetric_scaffold_interface@"
-        if (
-            len(observed_ids) != expected_count
-            or any(not edge_id.startswith(prefix) for edge_id in observed_ids)
+        if len(observed_ids) != expected_count or any(
+            not edge_id.startswith(prefix) for edge_id in observed_ids
         ):
             raise ValueError(
                 "Automatic scaffold packing diagnostics do not contain the "
@@ -98,8 +90,7 @@ def audit_graph_interface_guidance(
             )
         expected_ids = list(observed_ids)
         expected_source_ids = [
-            "automatic_symmetric_scaffold_interface"
-            for _ in expected_ids
+            "automatic_symmetric_scaffold_interface" for _ in expected_ids
         ]
     else:
         raise ValueError(
@@ -115,9 +106,7 @@ def audit_graph_interface_guidance(
     if not isinstance(steps, list):
         steps = []
     locked_steps = [step for step in steps if step.get("patch_locked") is True]
-    locked_patch_assignments = [
-        step.get("patch_assignments") for step in locked_steps
-    ]
+    locked_patch_assignments = [step.get("patch_assignments") for step in locked_steps]
     patch_identity_contract = bool(
         diagnostics_schema_version < 7
         or (
@@ -137,8 +126,7 @@ def audit_graph_interface_guidance(
         or (
             applied
             and all(
-                step.get("adaptive_phase")
-                in {"capture", "expand", "polish"}
+                step.get("adaptive_phase") in {"capture", "expand", "polish"}
                 and _finite(step.get("scheduled_target_ca_distance"))
                 and _finite(step.get("time_scheduled_target_ca_distance"))
                 for step in applied
@@ -162,22 +150,10 @@ def audit_graph_interface_guidance(
                 >= int(record.get("requested_residues_per_side", 1))
                 and int(record.get("available_residues_right", 0))
                 >= int(record.get("requested_residues_per_side", 1))
-                and int(
-                    record.get("available_contiguous_residues_left", 0)
-                )
-                >= int(
-                    record.get(
-                        "requested_contiguous_residues_per_side", 1
-                    )
-                )
-                and int(
-                    record.get("available_contiguous_residues_right", 0)
-                )
-                >= int(
-                    record.get(
-                        "requested_contiguous_residues_per_side", 1
-                    )
-                )
+                and int(record.get("available_contiguous_residues_left", 0))
+                >= int(record.get("requested_contiguous_residues_per_side", 1))
+                and int(record.get("available_contiguous_residues_right", 0))
+                >= int(record.get("requested_contiguous_residues_per_side", 1))
                 for record in capacity_preflight
             )
         )
@@ -219,91 +195,71 @@ def audit_graph_interface_guidance(
                     "maximum_token_step",
                 )
             )
-            and len(step.get("minimum_distances", []))
-            == len(expected_ids)
-            and all(
-                _finite(value)
-                for value in step.get("minimum_distances", [])
-            )
+            and len(step.get("minimum_distances", [])) == len(expected_ids)
+            and all(_finite(value) for value in step.get("minimum_distances", []))
         )
-        packing_evidence = (
-            diagnostics_schema_version < 2
-            or (
-                _finite(step.get("coverage"))
-                and _finite(step.get("continuity"))
-                and _finite(step.get("mean_token_step"))
-                and len(step.get("covered_left_residues", []))
-                == len(expected_ids)
-                and len(step.get("covered_right_residues", []))
-                == len(expected_ids)
-                and len(step.get("target_residues_per_side", []))
-                == len(expected_ids)
-                and (
-                    diagnostics_schema_version < 3
-                    or len(
-                        step.get(
-                            "target_contiguous_residues_per_side",
-                            [],
-                        )
-                    )
-                    == len(expected_ids)
-                )
-                and len(step.get("contiguous_left_residues", []))
-                == len(expected_ids)
-                and len(step.get("contiguous_right_residues", []))
-                == len(expected_ids)
-                and len(step.get("per_edge_total", []))
-                == len(expected_ids)
-                and (
-                    diagnostics_schema_version < 4
-                    or (
-                        all(
-                            _finite(step.get(key))
-                            for key in (
-                                "orientation",
-                                "shape",
-                                "backbone",
-                                "interface_balance",
-                            )
-                        )
-                        and all(
-                            len(step.get(key, [])) == len(expected_ids)
-                            and all(_finite(value) for value in step[key])
-                            for key in (
-                                "per_edge_orientation",
-                                "per_edge_shape",
-                                "per_edge_backbone",
-                            )
-                        )
-                        and len(step.get("per_source_total", []))
-                        == len(unique_expected_source_ids)
-                        and all(
-                            _finite(value)
-                            for value in step.get("per_source_total", [])
-                        )
+        packing_evidence = diagnostics_schema_version < 2 or (
+            _finite(step.get("coverage"))
+            and _finite(step.get("continuity"))
+            and _finite(step.get("mean_token_step"))
+            and len(step.get("covered_left_residues", [])) == len(expected_ids)
+            and len(step.get("covered_right_residues", [])) == len(expected_ids)
+            and len(step.get("target_residues_per_side", [])) == len(expected_ids)
+            and (
+                diagnostics_schema_version < 3
+                or len(
+                    step.get(
+                        "target_contiguous_residues_per_side",
+                        [],
                     )
                 )
-                and (
-                    diagnostics_schema_version < 9
-                    or (
-                        all(
-                            _finite(step.get(key))
-                            for key in (
-                                "contact_prior",
-                                "contact_prior_schedule_scale",
-                                "effective_contact_prior_weight",
-                            )
-                        )
-                        and isinstance(
-                            step.get("per_edge_contact_prior"), list
-                        )
-                        and len(step["per_edge_contact_prior"])
-                        == len(expected_ids)
-                        and all(
-                            _finite(value)
-                            for value in step["per_edge_contact_prior"]
+                == len(expected_ids)
+            )
+            and len(step.get("contiguous_left_residues", [])) == len(expected_ids)
+            and len(step.get("contiguous_right_residues", [])) == len(expected_ids)
+            and len(step.get("per_edge_total", [])) == len(expected_ids)
+            and (
+                diagnostics_schema_version < 4
+                or (
+                    all(
+                        _finite(step.get(key))
+                        for key in (
+                            "orientation",
+                            "shape",
+                            "backbone",
+                            "interface_balance",
                         )
                     )
+                    and all(
+                        len(step.get(key, [])) == len(expected_ids)
+                        and all(_finite(value) for value in step[key])
+                        for key in (
+                            "per_edge_orientation",
+                            "per_edge_shape",
+                            "per_edge_backbone",
+                        )
+                    )
+                    and len(step.get("per_source_total", []))
+                    == len(unique_expected_source_ids)
+                    and all(
+                        _finite(value) for value in step.get("per_source_total", [])
+                    )
+                )
+            )
+            and (
+                diagnostics_schema_version < 9
+                or (
+                    all(
+                        _finite(step.get(key))
+                        for key in (
+                            "contact_prior",
+                            "contact_prior_schedule_scale",
+                            "effective_contact_prior_weight",
+                        )
+                    )
+                    and isinstance(step.get("per_edge_contact_prior"), list)
+                    and len(step["per_edge_contact_prior"]) == len(expected_ids)
+                    and all(_finite(value) for value in step["per_edge_contact_prior"])
                 )
             )
         )
@@ -314,9 +270,7 @@ def audit_graph_interface_guidance(
     final_proxy_contract = bool(
         diagnostics_schema_version < 5
         or (
-            isinstance(
-                diagnostics.get("final_proxy_targets_satisfied"), bool
-            )
+            isinstance(diagnostics.get("final_proxy_targets_satisfied"), bool)
             and isinstance(final_proxy, dict)
             and all(
                 isinstance(final_proxy.get(key), list)
@@ -363,15 +317,10 @@ def audit_graph_interface_guidance(
                             "per_edge_total",
                         )
                     )
-                    and isinstance(
-                        final_proxy.get("per_source_total"), list
-                    )
+                    and isinstance(final_proxy.get("per_source_total"), list)
                     and len(final_proxy["per_source_total"])
                     == len(unique_expected_source_ids)
-                    and all(
-                        _finite(value)
-                        for value in final_proxy["per_source_total"]
-                    )
+                    and all(_finite(value) for value in final_proxy["per_source_total"])
                     and (
                         diagnostics_schema_version < 9
                         or (
@@ -384,9 +333,7 @@ def audit_graph_interface_guidance(
                             == len(expected_ids)
                             and all(
                                 _finite(value)
-                                for value in final_proxy[
-                                    "per_edge_contact_prior"
-                                ]
+                                for value in final_proxy["per_edge_contact_prior"]
                             )
                         )
                     )
@@ -394,7 +341,7 @@ def audit_graph_interface_guidance(
             )
         )
     )
-    quality_targets_satisfied = bool(
+    controller_proxy_targets_satisfied = bool(
         diagnostics_schema_version < 5
         or diagnostics.get("final_proxy_targets_satisfied") is True
     )
@@ -403,8 +350,7 @@ def audit_graph_interface_guidance(
         and set(observed_ids) == set(expected_ids)
         and int(diagnostics.get("edge_count", -1)) == len(expected_ids)
         and (
-            diagnostics_schema_version < 2
-            or observed_source_ids == expected_source_ids
+            diagnostics_schema_version < 2 or observed_source_ids == expected_source_ids
         )
     )
     applied_count = int(diagnostics.get("applied_steps", -1))
@@ -468,13 +414,9 @@ def audit_graph_interface_guidance(
         if _finite(value)
     ]
     if final_minimum_distances:
-        final_packing_metrics["minimum_edge_distance"] = min(
-            final_minimum_distances
-        )
+        final_packing_metrics["minimum_edge_distance"] = min(final_minimum_distances)
     if final_source_totals:
-        final_packing_metrics["maximum_source_objective"] = max(
-            final_source_totals
-        )
+        final_packing_metrics["maximum_source_objective"] = max(final_source_totals)
     for key in (
         "covered_left_residues",
         "covered_right_residues",
@@ -503,14 +445,10 @@ def audit_graph_interface_guidance(
             "identifier_contract_valid": identifier_contract,
             "patch_identity_contract_valid": patch_identity_contract,
             "adaptive_phase_contract_valid": adaptive_phase_contract,
-            "capacity_preflight_contract_valid": (
-                capacity_preflight_contract
-            ),
+            "capacity_preflight_contract_valid": (capacity_preflight_contract),
             "contact_prior_contract_valid": contact_prior_contract,
             "adaptive_phase_counts": {
-                phase: sum(
-                    step.get("adaptive_phase") == phase for step in applied
-                )
+                phase: sum(step.get("adaptive_phase") == phase for step in applied)
                 for phase in ("capture", "expand", "polish")
             },
             "locked_patch_steps": len(locked_steps),
@@ -522,10 +460,17 @@ def audit_graph_interface_guidance(
             "final_proxy_targets_satisfied": (
                 diagnostics.get("final_proxy_targets_satisfied")
             ),
-            "quality_targets_satisfied": quality_targets_satisfied,
-            "final_result_contract_valid": (
-                quality_targets_satisfied
-            ),
+            "controller_proxy_targets_satisfied": (controller_proxy_targets_satisfied),
+            "controller_proxy_targets_are_advisory": True,
+            # Compatibility alias for historical result collectors.  These
+            # are sampler-controller reference targets, not a published
+            # definition of backbone or interface quality.
+            "quality_targets_satisfied": (controller_proxy_targets_satisfied),
+            # Historical consumers treated this field as the final packing
+            # proxy decision.  It now correctly reports the actual runtime
+            # contract: the declared controller ran on the declared edges
+            # with finite, replayable evidence.
+            "final_result_contract_valid": passed,
             "final_polish_steps": diagnostics.get("final_polish_steps", 0),
             "final_metrics_source": (
                 "post_finalize_state"
@@ -564,11 +509,11 @@ def main() -> None:
         "Graph interface guidance runtime contract: "
         + ("MET" if report["passed"] else "FLAGGED")
     )
-    quality = report["summary"].get("quality_targets_satisfied")
-    if isinstance(quality, bool):
+    controller_proxy = report["summary"].get("controller_proxy_targets_satisfied")
+    if isinstance(controller_proxy, bool):
         print(
-            "Graph interface packing targets (advisory): "
-            + ("SATISFIED" if quality else "REVIEW")
+            "Graph interface controller proxies (advisory): "
+            + ("SATISFIED" if controller_proxy else "REVIEW")
         )
     if not report["passed"] and not arguments.report_only:
         raise SystemExit(1)

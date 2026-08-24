@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-
 _HARD_REPORTS = frozenset(
     {
         "constraint_orbit_audit.json",
@@ -160,14 +159,19 @@ def build_advisory_screening(
                     prefix="contract.interface_guidance",
                 )
             )
-            if summary.get("final_proxy_targets_satisfied") is False:
+            controller_proxy_satisfied = summary.get(
+                "controller_proxy_targets_satisfied",
+                summary.get("final_proxy_targets_satisfied"),
+            )
+            if controller_proxy_satisfied is False:
                 advisory_flags.append(
                     _flag(
-                        code="advisory.interface_guidance.packing_targets",
+                        code="advisory.interface_guidance.controller_proxies",
                         report=path,
                         message=(
-                            "The generated-interface packing target bundle "
-                            "was not satisfied."
+                            "The generated-interface controller proxy bundle "
+                            "was not reached. This is not a published "
+                            "interface-quality verdict."
                         ),
                         observed=summary.get("final_packing_metrics"),
                     )
@@ -241,20 +245,24 @@ def build_advisory_screening(
                     prefix="contract.scaffold_core",
                 )
             )
-            if summary.get("scientific_quality_satisfied") is False:
+            targets_satisfied = summary.get(
+                "declared_quality_targets_satisfied",
+                summary.get("scientific_quality_satisfied"),
+            )
+            if targets_satisfied is False:
                 quality_flag = _flag(
                     code=(
                         "contract.scaffold_core.declared_quality_targets"
                         if summary.get("quality_required") is True
-                        else "advisory.scaffold_core.quality_targets"
+                        else "advisory.scaffold_core.controller_proxies"
                     ),
                     report=path,
                     message=(
-                        "The explicitly required scaffold-quality targets "
+                        "The explicitly required scaffold proxy targets "
                         "were not satisfied."
                         if summary.get("quality_required") is True
-                        else "Optional compactness/tertiary-support targets "
-                        "were not satisfied."
+                        else "Optional compactness/tertiary-support controller "
+                        "reference values were not reached."
                     ),
                     observed=summary.get("final_metrics"),
                 )
@@ -300,9 +308,7 @@ def build_advisory_screening(
         ),
         "evidence": {
             "policy": "docs/rfd3_mosaic/BACKBONE_EVALUATION_EVIDENCE.md",
-            "metric_provenance": (
-                "docs/rfd3_mosaic/STRUCTURE_METRIC_PROVENANCE.md"
-            ),
+            "metric_provenance": ("docs/rfd3_mosaic/STRUCTURE_METRIC_PROVENANCE.md"),
             "cohort_note": (
                 "Ho-Yeung loop/Rg selection and diversity analysis require "
                 "a campaign cohort and are not inferred from one structure."

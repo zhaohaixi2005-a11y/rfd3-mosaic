@@ -29,9 +29,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
         self.source = self.root / "presymmetrized_input.pdb"
-        left = np.asarray(
-            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-        )
+        left = np.asarray([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
         right = left + np.asarray([4.0, 0.0, 0.0])
         self.left = left
         self.right = right
@@ -78,8 +76,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         right_shift: float = 0.0,
         generated_coordinates: dict[
             str,
-            tuple[float, float, float]
-            | dict[int, tuple[float, float, float]],
+            tuple[float, float, float] | dict[int, tuple[float, float, float]],
         ]
         | None = None,
     ) -> None:
@@ -90,14 +87,10 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             right = self._transform(self.right, copy_index)
             right = right + np.asarray([right_shift, 0.0, 0.0])
             for residue, coordinate in enumerate(left, start=1):
-                lines.append(
-                    _atom_line(serial, chain, residue, tuple(coordinate))
-                )
+                lines.append(_atom_line(serial, chain, residue, tuple(coordinate)))
                 serial += 1
             for residue, coordinate in enumerate(right, start=4):
-                lines.append(
-                    _atom_line(serial, chain, residue, tuple(coordinate))
-                )
+                lines.append(_atom_line(serial, chain, residue, tuple(coordinate)))
                 serial += 1
             if generated_coordinates and chain in generated_coordinates:
                 generated = generated_coordinates[chain]
@@ -116,9 +109,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
                         )
                     )
                     serial += 1
-        self.result_structure.write_text(
-            "".join(lines) + "END\n", encoding="utf-8"
-        )
+        self.result_structure.write_text("".join(lines) + "END\n", encoding="utf-8")
 
     def _compiled_input(
         self,
@@ -136,9 +127,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
                 "required": True,
                 "satisfaction_stage": satisfaction_stage,
                 "source_copy_index": copy_index,
-                "target_copy_index": (
-                    copy_index + target_copy_offset
-                ) % 2,
+                "target_copy_index": (copy_index + target_copy_offset) % 2,
                 "left_source_components": ["A1-3"],
                 "right_source_components": ["B1-3"],
                 "target_geometry": geometry,
@@ -184,26 +173,13 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["summary"]["edge_instance_count"], 2)
-        self.assertEqual(
-            report["summary"]["unique_physical_edge_instance_count"], 2
-        )
-        self.assertEqual(
-            report["summary"]["equivalent_group_action_count"], 2
-        )
-        self.assertEqual(
-            report["summary"]["quotient_edge_instance_count"], 0
-        )
-        self.assertEqual(
-            report["summary"]["maximum_edge_stabilizer_order"], 1
-        )
+        self.assertEqual(report["summary"]["unique_physical_edge_instance_count"], 2)
+        self.assertEqual(report["summary"]["equivalent_group_action_count"], 2)
+        self.assertEqual(report["summary"]["quotient_edge_instance_count"], 0)
+        self.assertEqual(report["summary"]["maximum_edge_stabilizer_order"], 1)
+        self.assertTrue(all(edge["satisfied"] for edge in report["interfaces"]))
         self.assertTrue(
-            all(edge["satisfied"] for edge in report["interfaces"])
-        )
-        self.assertTrue(
-            all(
-                edge["translation_error"] < 1e-6
-                for edge in report["interfaces"]
-            )
+            all(edge["translation_error"] < 1e-6 for edge in report["interfaces"])
         )
 
     def test_atomic_hyperedge_groups_member_edges_by_orbit_action(self) -> None:
@@ -220,25 +196,19 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         )
         payload = json.loads(compiled.read_text(encoding="utf-8"))
         members = []
-        for edge in payload["example"]["extra"][
-            "assembly_interface_relations"
-        ]:
+        for edge in payload["example"]["extra"]["assembly_interface_relations"]:
             for member_index in (1, 2):
                 member = dict(edge)
                 member["edge_instance_id"] = (
                     f"three_way__member_{member_index:02d}"
                     f"@orbit[{edge['source_copy_index']}]"
                 )
-                member["source_interface_id"] = (
-                    f"three_way__member_{member_index:02d}"
-                )
+                member["source_interface_id"] = f"three_way__member_{member_index:02d}"
                 member["hyperedge_id"] = "three_way"
                 member["orbit_id"] = "motif_orbit"
                 member["action_copy_index"] = edge["source_copy_index"]
                 members.append(member)
-        payload["example"]["extra"][
-            "assembly_interface_relations"
-        ] = members
+        payload["example"]["extra"]["assembly_interface_relations"] = members
         compiled.write_text(json.dumps(payload), encoding="utf-8")
 
         report = audit_interface_relations(
@@ -277,9 +247,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             }
         )
         payload = json.loads(compiled.read_text(encoding="utf-8"))
-        relations = payload["example"]["extra"][
-            "assembly_interface_relations"
-        ]
+        relations = payload["example"]["extra"]["assembly_interface_relations"]
         for edge_index, edge in enumerate(relations):
             edge["physical_edge_index"] = edge_index
             edge["equivalent_action_transform_ids"] = [
@@ -297,18 +265,10 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["summary"]["edge_instance_count"], 2)
-        self.assertEqual(
-            report["summary"]["unique_physical_edge_instance_count"], 2
-        )
-        self.assertEqual(
-            report["summary"]["equivalent_group_action_count"], 4
-        )
-        self.assertEqual(
-            report["summary"]["quotient_edge_instance_count"], 2
-        )
-        self.assertEqual(
-            report["summary"]["maximum_edge_stabilizer_order"], 2
-        )
+        self.assertEqual(report["summary"]["unique_physical_edge_instance_count"], 2)
+        self.assertEqual(report["summary"]["equivalent_group_action_count"], 4)
+        self.assertEqual(report["summary"]["quotient_edge_instance_count"], 2)
+        self.assertEqual(report["summary"]["maximum_edge_stabilizer_order"], 2)
 
     def test_preserve_input_relation_detects_component_drift(self) -> None:
         self._write_result(right_shift=1.0)
@@ -326,14 +286,9 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         )
 
         self.assertFalse(report["passed"])
-        self.assertEqual(
-            len(report["summary"]["failed_required_edge_instances"]), 2
-        )
+        self.assertEqual(len(report["summary"]["failed_required_edge_instances"]), 2)
         self.assertTrue(
-            all(
-                edge["translation_error"] > 0.9
-                for edge in report["interfaces"]
-            )
+            all(edge["translation_error"] > 0.9 for edge in report["interfaces"])
         )
 
     def test_preserve_input_relation_can_require_contacts(self) -> None:
@@ -355,10 +310,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
 
         self.assertFalse(report["passed"])
         self.assertTrue(
-            all(
-                not edge["contacts_satisfied"]
-                for edge in report["interfaces"]
-            )
+            all(not edge["contacts_satisfied"] for edge in report["interfaces"])
         )
 
     def test_contact_relation_checks_distance_and_contacts(self) -> None:
@@ -430,7 +382,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             all(edge["contacts_satisfied"] for edge in report["interfaces"])
         )
 
-    def test_output_contact_auto_derives_residue_quality_targets(self) -> None:
+    def test_output_contact_auto_reports_controller_reference_values(self) -> None:
         self._write_result(
             generated_coordinates={
                 "A": (10.0, 0.0, 0.0),
@@ -455,16 +407,16 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         )
 
         self.assertTrue(report["passed"])
-        self.assertTrue(
-            report["summary"]["output_packing_quality_satisfied"]
-        )
+        self.assertTrue(report["summary"]["controller_proxy_bundle_satisfied"])
+        self.assertTrue(report["summary"]["controller_proxy_bundle_is_advisory"])
+        self.assertTrue(report["summary"]["output_packing_quality_satisfied"])
         self.assertGreaterEqual(
-            report["summary"][
-                "minimum_reciprocal_contact_residue_pairs"
-            ],
+            report["summary"]["minimum_reciprocal_contact_residue_pairs"],
             1,
         )
         for edge in report["interfaces"]:
+            self.assertEqual(edge["interface_quality_mode"], "measurement_only")
+            self.assertTrue(edge["controller_reference_only"])
             self.assertEqual(edge["minimum_contact_residues_per_side"], 1)
             self.assertEqual(
                 edge["minimum_contiguous_contact_residues_per_side"],
@@ -480,13 +432,46 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             self.assertGreater(edge["heavy_atom_burial_proxy"], 0.0)
             self.assertTrue(edge["output_packing_quality_satisfied"])
 
+    def test_output_contact_auto_proxy_miss_is_not_a_contract_failure(
+        self,
+    ) -> None:
+        self._write_result(
+            generated_coordinates={
+                "A": (10.0, 0.0, 0.0),
+                "B": (30.0, 0.0, 0.0),
+            }
+        )
+        report = audit_interface_relations(
+            compiled_input=self._compiled_input(
+                {
+                    "mode": "geometric_constraints",
+                    "contacts": {
+                        "min_heavy_atom_contacts": 0,
+                        "cutoff": 4.5,
+                    },
+                    "coverage": {"mode": "auto"},
+                },
+                satisfaction_stage="output",
+                target_copy_offset=1,
+            ),
+            result_json=self.result_json,
+            result_structure=self.result_structure,
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertFalse(report["summary"]["controller_proxy_bundle_satisfied"])
+        for edge in report["interfaces"]:
+            self.assertTrue(edge["satisfied"])
+            self.assertEqual(edge["interface_quality_mode"], "measurement_only")
+            self.assertTrue(edge["controller_reference_only"])
+            self.assertFalse(edge["contact_residue_coverage_satisfied"])
+            self.assertFalse(edge["controller_proxy_bundle_satisfied"])
+
     def test_output_contact_auto_continuity_respects_generated_runs(
         self,
     ) -> None:
         residue_numbers = tuple(
-            residue
-            for start in range(10, 90, 10)
-            for residue in (start, start + 1)
+            residue for start in range(10, 90, 10) for residue in (start, start + 1)
         )
         self._write_result(
             generated_coordinates={
@@ -533,9 +518,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
 
     def test_output_contact_explicit_continuity_is_not_relaxed(self) -> None:
         residue_numbers = tuple(
-            residue
-            for start in range(10, 90, 10)
-            for residue in (start, start + 1)
+            residue for start in range(10, 90, 10) for residue in (start, start + 1)
         )
         self._write_result(
             generated_coordinates={
@@ -572,6 +555,8 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
 
         self.assertFalse(report["passed"])
         for edge in report["interfaces"]:
+            self.assertEqual(edge["interface_quality_mode"], "explicit_user_target")
+            self.assertFalse(edge["controller_reference_only"])
             self.assertEqual(
                 edge["minimum_contiguous_contact_residues_per_side"],
                 3,
@@ -616,9 +601,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
         )
         rotation_two = rotation_one @ rotation_one
         rotations = (np.eye(3), rotation_one, rotation_two)
-        left = np.asarray(
-            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-        )
+        left = np.asarray([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
         original_right = left + np.asarray([4.0, 0.0, 0.0])
         runtime_right = original_right @ rotation_one
         self.source.write_text(
@@ -626,11 +609,18 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
                 _atom_line(serial, chain, residue, tuple(coordinate))
                 for serial, (chain, residue, coordinate) in enumerate(
                     [
-                        *(('A', index, coordinate) for index, coordinate in enumerate(left, 1)),
-                        *((
-                            'B', index, coordinate
-                        ) for index, coordinate in enumerate(original_right, 1)),
-                        *(('F', index, coordinate) for index, coordinate in enumerate(runtime_right, 1)),
+                        *(
+                            ("A", index, coordinate)
+                            for index, coordinate in enumerate(left, 1)
+                        ),
+                        *(
+                            ("B", index, coordinate)
+                            for index, coordinate in enumerate(original_right, 1)
+                        ),
+                        *(
+                            ("F", index, coordinate)
+                            for index, coordinate in enumerate(runtime_right, 1)
+                        ),
                     ],
                     start=1,
                 )
@@ -656,20 +646,14 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             left_chain = output_chains[action_index * 2]
             right_chain = output_chains[action_index * 2 + 1]
             for residue, coordinate in enumerate(left @ rotation.T, 1):
-                lines.append(
-                    _atom_line(serial, left_chain, residue, tuple(coordinate))
-                )
+                lines.append(_atom_line(serial, left_chain, residue, tuple(coordinate)))
                 serial += 1
-            for residue, coordinate in enumerate(
-                runtime_right @ rotation.T, 4
-            ):
+            for residue, coordinate in enumerate(runtime_right @ rotation.T, 4):
                 lines.append(
                     _atom_line(serial, right_chain, residue, tuple(coordinate))
                 )
                 serial += 1
-        self.result_structure.write_text(
-            "".join(lines) + "END\n", encoding="utf-8"
-        )
+        self.result_structure.write_text("".join(lines) + "END\n", encoding="utf-8")
 
         matrices = {}
         order = []
@@ -742,9 +726,7 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["summary"]["asu_chain_count"], 2)
-        self.assertEqual(
-            report["summary"]["satisfied_required_edge_instance_count"], 3
-        )
+        self.assertEqual(report["summary"]["satisfied_required_edge_instance_count"], 3)
         for edge in report["interfaces"]:
             self.assertTrue(edge["runtime_provenance_remapped"])
             self.assertEqual(edge["left_runtime_remapped_heavy_atoms"], 0)

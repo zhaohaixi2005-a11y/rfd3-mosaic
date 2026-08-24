@@ -33,9 +33,7 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
                                     "edge_instance_id": "preserved@0",
                                     "required": True,
                                     "satisfaction_stage": "input",
-                                    "target_geometry": {
-                                        "mode": "reference_transform"
-                                    },
+                                    "target_geometry": {"mode": "reference_transform"},
                                 },
                             ]
                         }
@@ -162,15 +160,11 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
             0.4,
         )
         self.assertEqual(
-            report["summary"]["final_packing_metrics"][
-                "minimum_edge_distance"
-            ],
+            report["summary"]["final_packing_metrics"]["minimum_edge_distance"],
             7.25,
         )
         self.assertEqual(
-            report["summary"]["final_packing_metrics"][
-                "contiguous_left_residues"
-            ],
+            report["summary"]["final_packing_metrics"]["contiguous_left_residues"],
             [3],
         )
         self.assertTrue(report["summary"]["quality_targets_satisfied"])
@@ -179,15 +173,9 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
             report["summary"]["final_metrics_source"],
             "post_finalize_state",
         )
-        self.assertTrue(
-            report["summary"]["patch_identity_contract_valid"]
-        )
-        self.assertTrue(
-            report["summary"]["adaptive_phase_contract_valid"]
-        )
-        self.assertTrue(
-            report["summary"]["capacity_preflight_contract_valid"]
-        )
+        self.assertTrue(report["summary"]["patch_identity_contract_valid"])
+        self.assertTrue(report["summary"]["adaptive_phase_contract_valid"])
+        self.assertTrue(report["summary"]["capacity_preflight_contract_valid"])
         self.assertEqual(
             report["summary"]["adaptive_phase_counts"]["expand"],
             1,
@@ -207,16 +195,12 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         )
 
         self.assertFalse(report["passed"])
-        self.assertFalse(
-            report["summary"]["adaptive_phase_contract_valid"]
-        )
+        self.assertFalse(report["summary"]["adaptive_phase_contract_valid"])
 
     def test_v8_rejects_missing_capacity_preflight(self) -> None:
         self._write_result()
         payload = json.loads(self.result.read_text(encoding="utf-8"))
-        payload["graph_interface_guidance_diagnostics"].pop(
-            "capacity_preflight"
-        )
+        payload["graph_interface_guidance_diagnostics"].pop("capacity_preflight")
         self.result.write_text(json.dumps(payload), encoding="utf-8")
 
         report = audit_graph_interface_guidance(
@@ -225,9 +209,7 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         )
 
         self.assertFalse(report["passed"])
-        self.assertFalse(
-            report["summary"]["capacity_preflight_contract_valid"]
-        )
+        self.assertFalse(report["summary"]["capacity_preflight_contract_valid"])
 
     def test_v9_requires_contact_prior_runtime_evidence(self) -> None:
         self._write_result()
@@ -298,9 +280,7 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         )
 
         self.assertFalse(report["passed"])
-        self.assertFalse(
-            report["summary"]["patch_identity_contract_valid"]
-        )
+        self.assertFalse(report["summary"]["patch_identity_contract_valid"])
 
     def test_accepts_legacy_v1_runtime_evidence(self) -> None:
         self._write_result()
@@ -376,14 +356,12 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertTrue(report["summary"]["runtime_contract_met"])
-        self.assertFalse(
-            report["summary"]["final_proxy_targets_satisfied"]
-        )
+        self.assertFalse(report["summary"]["final_proxy_targets_satisfied"])
         self.assertFalse(report["summary"]["quality_targets_satisfied"])
+        self.assertFalse(report["summary"]["controller_proxy_targets_satisfied"])
+        self.assertTrue(report["summary"]["controller_proxy_targets_are_advisory"])
         self.assertTrue(report["summary"]["final_proxy_contract_valid"])
-        self.assertFalse(
-            report["summary"]["final_result_contract_valid"]
-        )
+        self.assertTrue(report["summary"]["final_result_contract_valid"])
 
     def test_v5_rejects_missing_final_proxy_evidence(self) -> None:
         self._write_result()
@@ -410,9 +388,7 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         self.assertFalse(report["passed"])
 
     def test_accepts_explicit_c2_automatic_scaffold_packing(self) -> None:
-        edge_id = (
-            "automatic_symmetric_scaffold_interface@chain_0_chain_1"
-        )
+        edge_id = "automatic_symmetric_scaffold_interface@chain_0_chain_1"
         source_id = "automatic_symmetric_scaffold_interface"
         self.compiled.write_text(
             json.dumps(
@@ -436,9 +412,7 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         diagnostics = payload["graph_interface_guidance_diagnostics"]
         diagnostics["source_interface_ids"] = [source_id]
         diagnostics["capacity_preflight"][0]["edge_id"] = edge_id
-        diagnostics["capacity_preflight"][0]["source_interface_id"] = (
-            source_id
-        )
+        diagnostics["capacity_preflight"][0]["source_interface_id"] = source_id
         diagnostics["steps"][0]["patch_assignments"] = {
             edge_id: {
                 "left_token_ids": [1, 2, 3],

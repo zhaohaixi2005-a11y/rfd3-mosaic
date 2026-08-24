@@ -108,16 +108,8 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
         ]
         posthoc_continuity = [
             min(
-                int(
-                    item.get(
-                        "maximum_contiguous_contact_residues_left", 0
-                    )
-                ),
-                int(
-                    item.get(
-                        "maximum_contiguous_contact_residues_right", 0
-                    )
-                ),
+                int(item.get("maximum_contiguous_contact_residues_left", 0)),
+                int(item.get("maximum_contiguous_contact_residues_right", 0)),
             )
             for item in interfaces
         ]
@@ -126,13 +118,14 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                 "result_id": audit_root.name,
                 "generated": True,
                 "runtime_contract_met": graph.get("passed"),
-                "packing_targets_satisfied": graph_summary.get(
-                    "quality_targets_satisfied",
-                    graph_summary.get("final_proxy_targets_satisfied"),
+                "controller_proxy_bundle_satisfied": graph_summary.get(
+                    "controller_proxy_targets_satisfied",
+                    graph_summary.get(
+                        "quality_targets_satisfied",
+                        graph_summary.get("final_proxy_targets_satisfied"),
+                    ),
                 ),
-                "posthoc_interface_targets_satisfied": relation.get(
-                    "passed"
-                ),
+                "posthoc_interface_targets_satisfied": relation.get("passed"),
                 "scaffold_checks_satisfied": scaffold.get("passed"),
                 "contract_status": screening.get("contract_status"),
                 "recommendation": screening.get("recommendation"),
@@ -141,15 +134,11 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                 "satisfied_edges": relation_summary.get(
                     "satisfied_required_edge_instance_count"
                 ),
-                "required_edges": relation_summary.get(
-                    "required_edge_instance_count"
-                ),
+                "required_edges": relation_summary.get("required_edge_instance_count"),
                 "packing_energy": _first_metric(
                     graph, "final_packing_metrics", "energy"
                 ),
-                "shape_loss": _first_metric(
-                    graph, "final_packing_metrics", "shape"
-                ),
+                "shape_loss": _first_metric(graph, "final_packing_metrics", "shape"),
                 "minimum_edge_distance": _first_metric(
                     graph,
                     "final_packing_metrics",
@@ -176,8 +165,7 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                     min(posthoc_continuity) if posthoc_continuity else None
                 ),
                 "hard_clashes": sum(
-                    int(item.get("hard_clashes_below_2_0A", 0))
-                    for item in interfaces
+                    int(item.get("hard_clashes_below_2_0A", 0)) for item in interfaces
                 ),
                 "mobility_applied_proposal_count": mobility_summary.get(
                     "applied_proposal_count"
@@ -187,8 +175,7 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                         float(item["maximum_translation_observed"])
                         for item in mobility_components
                         if isinstance(item, dict)
-                        and item.get("maximum_translation_observed")
-                        is not None
+                        and item.get("maximum_translation_observed") is not None
                     ),
                     default=None,
                 ),
@@ -197,8 +184,7 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                         float(item["maximum_rotation_deg_observed"])
                         for item in mobility_components
                         if isinstance(item, dict)
-                        and item.get("maximum_rotation_deg_observed")
-                        is not None
+                        and item.get("maximum_rotation_deg_observed") is not None
                     ),
                     default=None,
                 ),
@@ -218,22 +204,24 @@ def _markdown(summary: dict[str, Any]) -> str:
         f"{summary['interface_guidance_runtime_contract_met_output_count']}",
         "- overall screening contracts met: "
         f"{summary['overall_contract_met_output_count']}",
-        "- advisory packing targets satisfied: "
-        f"{summary['packing_targets_satisfied_output_count']}",
+        "- controller proxy bundles satisfied (advisory): "
+        f"{summary['controller_proxy_bundle_satisfied_output_count']}",
         f"- recommended for next stage: {summary['recommended_output_count']}",
         f"- review advised: {summary['review_output_count']}",
         "",
-        "The CA-window columns are the differentiable runtime objective. The "
-        "post-hoc columns are a stricter backbone-heavy-atom observation. "
-        "Neither is an experimental success/failure verdict.",
+        "The CA-window columns are differentiable controller diagnostics. The "
+        "post-hoc columns are backbone-heavy-atom observations. The proxy "
+        "bundle has no published universal cutoff and is never a backbone, "
+        "interface or experimental success/failure verdict.",
         "",
         "| mode | job/run | result | guidance runtime | overall contract | flags | advice | edges | runtime CA coverage | runtime CA contiguous | post-hoc coverage | post-hoc contiguous | move (A/deg; commits) | shape | min edge (A) | hard clashes |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |",
     ]
     for record in summary["records"]:
-        identity = record.get("job_id") or Path(
-            str(record.get("run_directory") or "pending")
-        ).name
+        identity = (
+            record.get("job_id")
+            or Path(str(record.get("run_directory") or "pending")).name
+        )
         if not record["results"]:
             lines.append(
                 f"| {record['mode']} | {identity} | pending | - | - | - | - | - | - | - | - | - | - | - | - | - |"
@@ -302,8 +290,8 @@ def main() -> None:
         for record in records
         for result in record["results"]
     )
-    packing_targets_satisfied = sum(
-        result["packing_targets_satisfied"] is True
+    controller_proxy_bundle_satisfied = sum(
+        result["controller_proxy_bundle_satisfied"] is True
         for record in records
         for result in record["results"]
     )
@@ -313,25 +301,24 @@ def main() -> None:
         for result in record["results"]
     )
     reviewed = sum(
-        result["recommendation"]
-        in {"review_contract", "review_advisory_metrics"}
+        result["recommendation"] in {"review_contract", "review_advisory_metrics"}
         for record in records
         for result in record["results"]
     )
     summary = {
-        "schema_version": 3,
+        "schema_version": 4,
         "git_revision": campaign.get("git_revision"),
         "campaign_manifest": str(manifest_path),
         "requested_output_count": campaign.get("requested_output_count", 0),
         "generated_output_count": observed,
         "runtime_contract_met_output_count": runtime_contract_met,
-        "interface_guidance_runtime_contract_met_output_count": (
-            runtime_contract_met
-        ),
+        "interface_guidance_runtime_contract_met_output_count": (runtime_contract_met),
         "overall_contract_met_output_count": overall_contract_met,
-        "packing_targets_satisfied_output_count": (
-            packing_targets_satisfied
+        "controller_proxy_bundle_satisfied_output_count": (
+            controller_proxy_bundle_satisfied
         ),
+        # Compatibility alias for frozen v3 campaign summaries.
+        "packing_targets_satisfied_output_count": (controller_proxy_bundle_satisfied),
         "recommended_output_count": recommended,
         "review_output_count": reviewed,
         "complete": observed == campaign.get("requested_output_count", 0),
@@ -351,7 +338,8 @@ def main() -> None:
         "interface-guidance runtime contracts met: "
         f"{runtime_contract_met}; overall contracts met: "
         f"{overall_contract_met}; "
-        f"advisory packing targets satisfied: {packing_targets_satisfied}; "
+        "controller proxy bundles satisfied (advisory): "
+        f"{controller_proxy_bundle_satisfied}; "
         f"recommended: {recommended}; review: {reviewed}"
     )
 

@@ -76,8 +76,7 @@ validation levels but are not currently presented as stable release features:
 - tetrahedral, octahedral and icosahedral assembly paths;
 - component stabilizers, cosets and quotient orbits;
 - unknown-relative-pose multi-interface assembly solving;
-- higher-participant interface hyperedges;
-- fully automatic architecture selection.
+- higher-participant interface hyperedges.
 
 Experimental means that the software fails closed when it cannot prove a
 valid executable lowering. It does not mean that an unvalidated candidate is
@@ -86,13 +85,14 @@ silently accepted.
 The current finite-group GPU maturity is deliberately asymmetric. Static T
 has a complete 12-copy PASS, including repeated exact fixed-orbit,
 scaffold-continuity and clash-free results. Static O also has a documented
-24-copy, 50-timestep PASS in job `5755569`: RFD3 inference completed, the
-exact fixed orbit was recovered and scaffold validity passed. The longer
-50-step I canary `5760213` completed and materialized all 60 copies. Its exact
-fixed orbit, symmetry-coordinate residual (`0.000235 A` RMSD) and zero-CA-
-clash checks met their contracts, but five ASU-local generated/fixed boundary
-defects were reproduced across all copies (`300 = 5 x 60`), so I scaffold-
-continuity closure remains open. These are static execution and fixed-
+24-copy, 50-timestep PASS: RFD3 inference completed, the exact fixed orbit was
+recovered and scaffold validity passed. A longer 50-step I canary completed
+and materialized all 60 copies. Its exact fixed orbit, sub-milliangstrom
+symmetry-coordinate residual and zero-CA-clash checks met their contracts, but
+five ASU-local generated/fixed boundary defects were reproduced across all
+copies, so I scaffold-continuity closure remains open. Exact run identifiers
+and paths are retained only in the internal validation history. These are
+static execution and fixed-
 geometry-scaffolding milestones; dynamic T/O/I mobility and production-
 quality generated-interface polyhedral cages are separate, still-unvalidated
 scientific capabilities.
@@ -101,13 +101,22 @@ scientific capabilities.
 
 - repeated multi-seed GPU validation across diverse real inputs;
 - scientific calibration of generated-interface packing quality;
-- general interface-edge stabilizers and mixed multiplicities;
-- fully general native polymer-path lowering;
 - stable schema migration and long-term release compatibility;
 - polished tutorials and a broader public example library.
 
 Sequence design and refolding are intentionally outside the current release
 scope.
+
+The following are also intentionally outside the current product plan and do
+not count as incomplete release work: automatic inference of symmetry/order,
+component connectivity, interface multiplicity or a supposedly "best" cage
+architecture from arbitrary structures; cooperative functional-site design;
+and unrestricted generalization of every quotient-edge or native-polymer-path
+case. Users declare the intended symmetry and architecture. Mosaic preserves,
+samples, compiles and audits that declared problem and fails closed outside
+the supported executable domain. Existing implementation work in these areas
+is retained where it supports validated paths, but no speculative roadmap
+item is advertised as a missing v0.1 feature.
 
 ## Development policy
 

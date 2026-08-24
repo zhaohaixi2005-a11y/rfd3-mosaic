@@ -201,6 +201,31 @@ distance count is not MolProbity clashscore and must not be named as such.
 - `SELECTED`: user- or protocol-specific ranking result.  It is not synonymous
   with generation success.
 
+### Generated-interface policy
+
+The sources above do not provide a universal raw-backbone rule equivalent to
+"at least N contacting residues", "one contiguous patch of length M", or a
+cutoff on Mosaic's contact-depth `shape` loss. RFdiffusion's published
+inter-chain contact term is a differentiable sampling intervention, and its
+official documentation says its strength is task-dependent. RFdiffusion,
+Scaffold-Lab, PXDesign and BoltzGen place their principal designability
+decisions after inverse folding and independent refolding.
+
+Mosaic therefore keeps the richer interface machinery while separating its
+roles:
+
+- contact, coverage, continuity, orientation and shape terms remain active
+  controller objectives;
+- the same quantities remain visible as continuous per-edge observations;
+- automatically derived values are controller reference values only;
+- a numeric value becomes an output contract only when the user explicitly
+  declares that target for the task;
+- no controller proxy is relabelled as Lawrence--Colman `Sc`, buried surface
+  area, foldability or experimental success.
+
+This is a change in interpretation and reporting, not a removal of Mosaic's
+generated-interface advantage.
+
 For the current LHD101 cohort, historical `27/40` means 27 structures met that
 revision's configured engineering check bundle.  It is not the RFdiffusion,
 RFD3, Ho-Yeung, PXDesign, Protenix or BoltzGen definition of design success.

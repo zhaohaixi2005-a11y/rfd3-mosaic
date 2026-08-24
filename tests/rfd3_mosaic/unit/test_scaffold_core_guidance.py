@@ -239,6 +239,7 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
             4.0,
         )
         self.assertTrue(report["summary"]["scientific_quality_satisfied"])
+        self.assertTrue(report["summary"]["declared_quality_targets_satisfied"])
 
     def test_audit_rejects_executed_but_open_scaffold(self) -> None:
         metrics = {
@@ -322,6 +323,7 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
 
         self.assertFalse(report["passed"])
         self.assertFalse(report["summary"]["scientific_quality_satisfied"])
+        self.assertFalse(report["summary"]["declared_quality_targets_satisfied"])
         self.assertTrue(report_only["passed"])
         self.assertFalse(report_only["summary"]["scientific_quality_satisfied"])
         self.assertTrue(report_only["summary"]["quality_gate_satisfied"])

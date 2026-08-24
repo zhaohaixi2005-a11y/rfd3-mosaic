@@ -224,9 +224,14 @@ not parallel software paths:
 - 50-step icosahedral fixed-orbit runtime closure;
 - corrected independent-pose locked/guided generated-interface GPU evidence;
 - calibration of broad, continuous generated interfaces;
-- broader real-input multi-seed GPU validation;
-- general interface-edge stabilizers/mixed multiplicities and fully general
-  native polymer paths.
+- broader real-input multi-seed GPU validation.
+
+Automatic symmetry/topology inference, cooperative functional-site design,
+unrestricted quotient-edge multiplicities and a fully general native polymer
+path language are outside the current product scope. They are not release
+blockers and must not be included in completion estimates. Existing validated
+subsets remain available and continue to fail closed outside their executable
+domain.
 
 These open items must not be described as already validated. Conversely, old
 10-step failures and direct-script outputs must not overwrite claims proved by

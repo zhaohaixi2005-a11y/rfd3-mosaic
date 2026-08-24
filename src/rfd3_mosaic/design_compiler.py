@@ -630,9 +630,10 @@ def _graph_interface_geometry(relation) -> dict[str, object]:
 
     geometry: dict[str, object] = {
         "mode": "geometric_constraints",
-        # Public contact edges are intent, not a demand that users tune an
-        # arbitrary number of atom pairs.  The runtime derives residue-scale
-        # coverage and continuity targets from the two generated sides.
+        # Public contact edges are intent, not a demand that users guess an
+        # authoritative atom/residue threshold. The runtime may derive
+        # scale-aware controller references for a differentiable guidance
+        # field, but output evaluation keeps them measurement-only.
         "coverage": {"mode": "auto"},
     }
     if relation.distance is not None:

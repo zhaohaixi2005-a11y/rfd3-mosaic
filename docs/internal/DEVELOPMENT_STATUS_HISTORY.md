@@ -3,7 +3,7 @@
 > Internal chronological record. The maintained public status is available in
 > `docs/rfd3_mosaic/PROJECT_STATUS.md` and the root `DEVELOPMENT_STATUS.md`.
 
-Last updated: 2026-08-18
+Last updated: 2026-08-24
 
 This file is the persistent project memory for resuming development after a
 new login or a new Codex session. Update it whenever a milestone changes.
@@ -11,6 +11,34 @@ new login or a new Codex session. Update it whenever a milestone changes.
 Scope decision (2026-08-18): helical/screw symmetry is not part of the Mosaic
 product plan. It is excluded from capability maturity, release milestones and
 completion estimates. The supported symmetry roadmap is Cn, Dn and T/O/I.
+
+## 2026-08-24 evidence-scoped screening correction
+
+A primary-source and official-implementation audit corrected the interpretation
+of Mosaic's backbone/interface proxy values without removing any sampler,
+packing, mobility, pose-search, symmetry or multi-interface capability.
+
+- RFdiffusion documents intra/inter contact potentials as task-dependent
+  sampling guidance and recommends beginning with an unguided baseline; it
+  does not publish a universal final value for contact coverage, contiguous
+  patch length or Mosaic's shape proxy.
+- RFdiffusion, Scaffold-Lab, PXDesign and BoltzGen define their principal
+  designability decisions after sequence design and independent refolding.
+- The Ho-Yeung LHD101 author notebook uses cohort-relative medians for chain-A
+  loop fraction, longest loop and carbonyl-C radius of gyration; it does not
+  define universal absolute backbone cutoffs.
+
+Consequently, automatically derived coverage/continuity values and the
+normalized-Rg/tertiary-support bundle remain controller references and
+continuous diagnostics. They no longer determine an automatic scientific
+pass/fail label. Explicit user-declared numeric targets remain enforceable.
+Geometry/runtime contracts (fixed coordinates, joint rigidity, symmetry,
+declared topology, output count and finite execution evidence) remain strict.
+Historical JSON aliases are retained so frozen runs remain readable.
+
+Automatic architecture inference and unrestricted quotient/native-path
+generalization are not v0.1 completion requirements. Their existing code is
+retained for validated research cases; the capability is not deleted.
 
 ## 2026-08-18 downloadable product and local execution closeout
 
