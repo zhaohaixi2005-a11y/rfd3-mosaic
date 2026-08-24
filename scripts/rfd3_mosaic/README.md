@@ -16,7 +16,10 @@ presence does not make every script a current product path.
   every shard uses the normal CLI and current per-design pose semantics.
 - `collect_packing_campaign.py`: collects generated-output, runtime-contract,
   runtime CA-window and post-hoc backbone-heavy-atom packing diagnostics
-  without deleting raw outputs or assigning a scientific verdict.
+  without deleting raw outputs or assigning a scientific verdict. Its table
+  separates interface-guidance runtime completion from the overall hard
+  contract, lists the exact contract flags, and reports observed SE(3) motion
+  plus committed proposals when a mobility audit is available.
 - `compare_hoyeung_lhd101_backbones.py`: creates the backbone-only comparison
   report.
 - `check_public_surface.py` and `release_smoke.sh`: release checks.

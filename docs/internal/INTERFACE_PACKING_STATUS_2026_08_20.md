@@ -249,8 +249,11 @@ The collector writes `packing_campaign_summary.json` and
 `packing_campaign_summary.md` beside the manifest.  The current collector
 separates generated output, executable runtime contracts, advisory runtime CA
 window targets, post-hoc backbone-heavy-atom observations and the user's
-review recommendation. It does not combine those layers into a scientific
-accept/reject verdict, and every generated structure is retained.
+review recommendation. The per-result table also records exact hard-contract
+flag codes and observed component translation/rotation with committed proposal
+counts, so a completed guidance objective cannot be mistaken for an overall
+contract pass. It does not combine those layers into a scientific accept/reject
+verdict, and every generated structure is retained.
 
 ## Stop/go rule after this campaign
 

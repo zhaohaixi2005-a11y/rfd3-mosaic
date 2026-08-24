@@ -76,14 +76,28 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
         graph_path = audit_root / "graph_interface_guidance_audit.json"
         relation_path = audit_root / "assembly_interface_relation_audit.json"
         scaffold_path = audit_root / "scaffold_validity_audit.json"
+        mobility_path = audit_root / "component_mobility_audit.json"
         graph = _load(graph_path) if graph_path.is_file() else {}
         relation = _load(relation_path) if relation_path.is_file() else {}
         scaffold = _load(scaffold_path) if scaffold_path.is_file() else {}
+        mobility = _load(mobility_path) if mobility_path.is_file() else {}
         screening_path = audit_root / "screening_advice.json"
         screening = _load(screening_path) if screening_path.is_file() else {}
         graph_summary = graph.get("summary", graph)
         final_proxy = graph_summary.get("final_packing_metrics") or {}
         relation_summary = relation.get("summary", relation)
+        mobility_summary = mobility.get("summary", mobility)
+        mobility_components = mobility_summary.get("components") or []
+        contract_flag_codes = [
+            str(item.get("code"))
+            for item in screening.get("contract_flags") or []
+            if isinstance(item, dict) and item.get("code")
+        ]
+        advisory_flag_codes = [
+            str(item.get("code"))
+            for item in screening.get("advisory_flags") or []
+            if isinstance(item, dict) and item.get("code")
+        ]
         interfaces = relation.get("interfaces") or []
         posthoc_coverage = [
             min(
@@ -122,6 +136,8 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                 "scaffold_checks_satisfied": scaffold.get("passed"),
                 "contract_status": screening.get("contract_status"),
                 "recommendation": screening.get("recommendation"),
+                "contract_flag_codes": contract_flag_codes,
+                "advisory_flag_codes": advisory_flag_codes,
                 "satisfied_edges": relation_summary.get(
                     "satisfied_required_edge_instance_count"
                 ),
@@ -163,6 +179,29 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                     int(item.get("hard_clashes_below_2_0A", 0))
                     for item in interfaces
                 ),
+                "mobility_applied_proposal_count": mobility_summary.get(
+                    "applied_proposal_count"
+                ),
+                "maximum_translation_observed": max(
+                    (
+                        float(item["maximum_translation_observed"])
+                        for item in mobility_components
+                        if isinstance(item, dict)
+                        and item.get("maximum_translation_observed")
+                        is not None
+                    ),
+                    default=None,
+                ),
+                "maximum_rotation_deg_observed": max(
+                    (
+                        float(item["maximum_rotation_deg_observed"])
+                        for item in mobility_components
+                        if isinstance(item, dict)
+                        and item.get("maximum_rotation_deg_observed")
+                        is not None
+                    ),
+                    default=None,
+                ),
             }
         )
     return results
@@ -175,8 +214,10 @@ def _markdown(summary: dict[str, Any]) -> str:
         f"- revision: `{summary.get('git_revision')}`",
         f"- requested outputs: {summary['requested_output_count']}",
         f"- generated outputs: {summary['generated_output_count']}",
-        "- runtime contracts met: "
-        f"{summary['runtime_contract_met_output_count']}",
+        "- interface-guidance runtime contracts met: "
+        f"{summary['interface_guidance_runtime_contract_met_output_count']}",
+        "- overall screening contracts met: "
+        f"{summary['overall_contract_met_output_count']}",
         "- advisory packing targets satisfied: "
         f"{summary['packing_targets_satisfied_output_count']}",
         f"- recommended for next stage: {summary['recommended_output_count']}",
@@ -186,8 +227,8 @@ def _markdown(summary: dict[str, Any]) -> str:
         "post-hoc columns are a stricter backbone-heavy-atom observation. "
         "Neither is an experimental success/failure verdict.",
         "",
-        "| mode | job/run | result | contract | advice | edges | runtime CA coverage | runtime CA contiguous | post-hoc coverage | post-hoc contiguous | shape | min edge (A) | hard clashes |",
-        "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| mode | job/run | result | guidance runtime | overall contract | flags | advice | edges | runtime CA coverage | runtime CA contiguous | post-hoc coverage | post-hoc contiguous | move (A/deg; commits) | shape | min edge (A) | hard clashes |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |",
     ]
     for record in summary["records"]:
         identity = record.get("job_id") or Path(
@@ -195,19 +236,29 @@ def _markdown(summary: dict[str, Any]) -> str:
         ).name
         if not record["results"]:
             lines.append(
-                f"| {record['mode']} | {identity} | pending | - | - | - | - | - | - | - | - | - | - |"
+                f"| {record['mode']} | {identity} | pending | - | - | - | - | - | - | - | - | - | - | - | - | - |"
             )
             continue
         for result in record["results"]:
             edges = f"{result['satisfied_edges']}/{result['required_edges']}"
+            flags = ", ".join(result["contract_flag_codes"]) or "-"
+            movement = (
+                f"{result['maximum_translation_observed']}/"
+                f"{result['maximum_rotation_deg_observed']}; "
+                f"{result['mobility_applied_proposal_count']}"
+                if result["maximum_translation_observed"] is not None
+                else "-"
+            )
             lines.append(
                 f"| {record['mode']} | {identity} | {result['result_id']} | "
+                f"{'met' if result['runtime_contract_met'] is True else 'flagged'} | "
                 f"{result['contract_status'] or '-'} | "
-                f"{result['recommendation'] or '-'} | {edges} | "
+                f"{flags} | {result['recommendation'] or '-'} | {edges} | "
                 f"{result['runtime_ca_contact_residues_per_side']} | "
                 f"{result['runtime_ca_contiguous_residues_per_side']} | "
                 f"{result['posthoc_contact_residues_per_side']} | "
                 f"{result['posthoc_contiguous_residues_per_side']} | "
+                f"{movement} | "
                 f"{result['shape_loss']} | {result['minimum_edge_distance']} | "
                 f"{result['hard_clashes']} |"
             )
@@ -246,6 +297,11 @@ def main() -> None:
         for record in records
         for result in record["results"]
     )
+    overall_contract_met = sum(
+        result["contract_status"] == "met"
+        for record in records
+        for result in record["results"]
+    )
     packing_targets_satisfied = sum(
         result["packing_targets_satisfied"] is True
         for record in records
@@ -263,12 +319,16 @@ def main() -> None:
         for result in record["results"]
     )
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "git_revision": campaign.get("git_revision"),
         "campaign_manifest": str(manifest_path),
         "requested_output_count": campaign.get("requested_output_count", 0),
         "generated_output_count": observed,
         "runtime_contract_met_output_count": runtime_contract_met,
+        "interface_guidance_runtime_contract_met_output_count": (
+            runtime_contract_met
+        ),
+        "overall_contract_met_output_count": overall_contract_met,
         "packing_targets_satisfied_output_count": (
             packing_targets_satisfied
         ),
@@ -288,7 +348,9 @@ def main() -> None:
     print(f"summary Markdown: {markdown_path}")
     print(
         f"generated outputs: {observed}/{summary['requested_output_count']}; "
-        f"runtime contracts met: {runtime_contract_met}; "
+        "interface-guidance runtime contracts met: "
+        f"{runtime_contract_met}; overall contracts met: "
+        f"{overall_contract_met}; "
         f"advisory packing targets satisfied: {packing_targets_satisfied}; "
         f"recommended: {recommended}; review: {reviewed}"
     )
