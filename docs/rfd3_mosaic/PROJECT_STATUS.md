@@ -74,16 +74,18 @@ valid executable lowering. It does not mean that an unvalidated candidate is
 silently accepted.
 
 The current finite-group GPU maturity is deliberately asymmetric. Static T
-has a complete 12-copy PASS. Static O now also has a documented 24-copy,
-50-timestep PASS: RFD3 inference completed, the exact fixed orbit was
-recovered and scaffold validity passed. The frozen 50-step I canary completed
-and materialized all 60 copies. Its original high fixed-orbit flag was a
-high-order chain-label ordering bug in the audit; preserving RFD3
-materialization order recovers the fixed orbit at `0.000132 A` RMSD. One real
-ASU generated-to-fixed peptide-junction defect is reproduced across all 60
-chains, so complete I scaffold-continuity closure remains open. These are
-execution and fixed-geometry-scaffolding milestones, not production-quality
-generated-interface O/I cage claims.
+has a complete 12-copy PASS, including repeated exact fixed-orbit,
+scaffold-continuity and clash-free results. Static O also has a documented
+24-copy, 50-timestep PASS in job `5755569`: RFD3 inference completed, the
+exact fixed orbit was recovered and scaffold validity passed. The longer
+50-step I canary `5760213` completed and materialized all 60 copies. Its exact
+fixed orbit, symmetry-coordinate residual (`0.000235 A` RMSD) and zero-CA-
+clash checks met their contracts, but five ASU-local generated/fixed boundary
+defects were reproduced across all copies (`300 = 5 x 60`), so I scaffold-
+continuity closure remains open. These are static execution and fixed-
+geometry-scaffolding milestones; dynamic T/O/I mobility and production-
+quality generated-interface polyhedral cages are separate, still-unvalidated
+scientific capabilities.
 
 ## Known incomplete areas
 
