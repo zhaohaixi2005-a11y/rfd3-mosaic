@@ -104,6 +104,15 @@ scaffold-packing field, it is evidence for a matched lower-order replicate
 screen before changing sampler physics, not evidence that fixed geometry or
 I symmetry should be relaxed.
 
+To close I scaffold continuity rather than stopping at execution closure,
+`experiments/lrz_public_i_alternative_motif_continuity_t50_large_gpu.yaml`
+uses a different maintained input: the contiguous 30-residue `A165-194`
+motif from `7mwr_interface.pdb`, followed by one 20-residue generated
+extension.  It retains exact I, the fixed 180 A pose and packing-off semantics
+but reduces the contract to one genuine generated--fixed peptide junction.
+Two independently diffused outputs are requested in one large-GPU job.  This
+is an engineering continuity gate, not a compact-I-cage claim.
+
 ### 2. Generated C3 interface, paired locked/guided poses
 
 Run six independently seeded poses for each mode (12 outputs total):
