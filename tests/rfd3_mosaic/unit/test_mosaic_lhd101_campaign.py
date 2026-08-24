@@ -105,15 +105,31 @@ class MosaicLHD101CampaignTestCase(unittest.TestCase):
         )
         self.assertEqual(
             [record["seed"] for record in manifest["records"]],
-            [1200, 1201, 1202],
+            [1200, 1210, 1220],
         )
+        self.assertEqual(
+            [record["design_start"] for record in manifest["records"]],
+            [0, 10, 20],
+        )
+        derived_pose_seeds = [
+            int(record["pose_seed"]) + offset
+            for record in manifest["records"]
+            for offset in range(int(record["requested_designs"]))
+        ]
+        derived_diffusion_seeds = [
+            int(record["diffusion_seed"]) + offset
+            for record in manifest["records"]
+            for offset in range(int(record["requested_designs"]))
+        ]
+        self.assertEqual(derived_pose_seeds, list(range(1200, 1223)))
+        self.assertEqual(derived_diffusion_seeds, list(range(1200, 1223)))
         self.assertEqual(
             [design["sampling"]["designs"] for design in frozen],
             [10, 10, 3],
         )
         self.assertEqual(
             [design["sampling"]["initial_pose"]["seed"] for design in frozen],
-            [1200, 1201, 1202],
+            [1200, 1210, 1220],
         )
         self.assertTrue(
             all(design["sampling"]["scaffold_packing"] == "off" for design in frozen)

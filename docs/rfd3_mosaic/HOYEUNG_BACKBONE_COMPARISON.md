@@ -165,14 +165,16 @@ After its required audits pass, submit exactly 1,000 backbones:
 python scripts/rfd3_mosaic/submit_mosaic_lhd101_c3_1000.py \
   --mode full \
   --total-designs 1000 \
+  --designs-per-job 10 \
   --submit
 ```
 
-The default is deliberately one design per compiled pose. Thus the 1,000
-backbones have 1,000 independently seeded rigid initial placements as well as
-independent RFD3 diffusion streams. Passing `--designs-per-job 10` is a cheaper
-diffusion-replicate experiment with only 100 compiled poses; it is not the
-pose-diverse Ho-Yeung comparison.
+The 1,000 backbones have 1,000 independently seeded rigid initial placements
+and 1,000 independent RFD3 diffusion streams. `--designs-per-job 10` only
+groups ten distinct pose-specific RFD3 specifications into one recoverable GPU
+job, so the checkpoint is loaded 100 rather than 1,000 times. It does not make
+the ten outputs diffusion replicates of one pose. Use the default
+`replicates_per_pose: 1`; sharing one pose remains an explicit expert ablation.
 
 The launcher prints the campaign directory. When every shard is complete,
 generate JSON, CSV and Markdown comparison artifacts:

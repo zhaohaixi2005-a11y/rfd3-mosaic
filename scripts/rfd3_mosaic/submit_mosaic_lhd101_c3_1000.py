@@ -196,7 +196,12 @@ def main() -> None:
     for shard_index in range(shard_count):
         shard_designs = min(per_job, remaining)
         remaining -= shard_designs
-        diffusion_seed = arguments.seed_start + shard_index
+        # The worker derives one pose and diffusion seed per design by adding
+        # the design's index within this shard.  Advance each shard by its
+        # global design offset so adjacent multi-design shards never reuse
+        # seeds (for example 10000..10009 followed by 10010..10019).
+        design_start = shard_index * per_job
+        diffusion_seed = arguments.seed_start + design_start
         pose_seed = (
             pilot_pose_schedule[shard_index]
             if pilot_pose_schedule
@@ -228,6 +233,7 @@ def main() -> None:
         )
         record: dict[str, Any] = {
             "shard_index": shard_index,
+            "design_start": design_start,
             "design": str(frozen),
             # Keep seed for manifest compatibility; it is the RFD3 diffusion
             # seed. Pose and diffusion randomness are also recorded
