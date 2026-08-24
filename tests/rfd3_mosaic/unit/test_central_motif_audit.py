@@ -5,8 +5,10 @@ import unittest
 
 from rfd3_mosaic.rfd3_central_motif_audit import audit_central_motif
 from rfd3_mosaic.rfd3_constraint_orbit_audit import (
+    _chain_ids_in_encounter_order,
     audit_constraint_orbit,
 )
+from rfd3_mosaic.structure import AtomRecord
 
 
 MMCIF_HEADER = """\
@@ -29,6 +31,35 @@ _atom_site.pdbx_PDB_model_num
 
 
 class CentralMotifAuditTestCase(unittest.TestCase):
+    def test_high_order_output_chains_keep_materialization_order(self) -> None:
+        """Punctuation chain IDs must not reorder high-order group actions."""
+
+        chain_ids = [chr(ord("A") + index) for index in range(27)]
+        # RFD3's legacy mmCIF writer materializes the backslash identifier as
+        # a blank label; this is the pair that a lexical sort used to swap.
+        chain_ids.append(" ")
+        atoms = tuple(
+            AtomRecord(
+                record_type="ATOM",
+                serial=index + 1,
+                atom_name="CA",
+                alternate_location="",
+                residue_name="ALA",
+                chain_id=chain_id,
+                residue_number=1,
+                insertion_code="",
+                coordinate=(float(index), 0.0, 0.0),
+                element="C",
+            )
+            for index, chain_id in enumerate(chain_ids)
+        )
+
+        self.assertEqual(
+            _chain_ids_in_encounter_order(atoms),
+            chain_ids,
+        )
+        self.assertEqual(chain_ids[-2:], ["[", " "])
+
     def test_uses_rfd3_label_numbering_for_fixed_selector(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

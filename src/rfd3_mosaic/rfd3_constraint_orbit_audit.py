@@ -55,15 +55,21 @@ def _component(value: str) -> tuple[str, int]:
     return value[:cursor], int(value[cursor:])
 
 
-def _chain_sort_key(chain: str) -> tuple[int, ...]:
-    """Sort output chains in the compiler's A..Z, AA..AZ allocation order."""
+def _chain_ids_in_encounter_order(atoms) -> list[str]:
+    """Return atom-chain identities in their materialized coordinate order.
 
-    if chain and chain.isalpha() and chain.isupper():
-        value = 0
-        for character in chain:
-            value = value * 26 + ord(character) - ord("A") + 1
-        return (0, value)
-    return (1, *chain.encode("utf-8"))
+    Native RFD3 symmetry expansion concatenates copies in registry-transform
+    order.  The legacy chain allocator uses punctuation after ``Z`` for large
+    assemblies, so sorting chain labels can silently exchange physical copies
+    (notably ``[`` and the blank identifier in an icosahedral 60-copy output).
+    File encounter order is therefore part of the runtime identity contract.
+    """
+
+    return list(
+        dict.fromkeys(
+            atom.chain_id for atom in atoms if atom.record_type == "ATOM"
+        )
+    )
 
 
 def _runtime_action_index(
@@ -139,9 +145,8 @@ def _constraint_components(
     extra = example.get("extra") or {}
     preexpanded_layout = extra.get("preexpanded_chain_layout")
     if isinstance(preexpanded_layout, list):
-        source_chains = sorted(
-            {key[0] for key in source_lookup},
-            key=_chain_sort_key,
+        source_chains = list(
+            dict.fromkeys(key[0] for key in source_lookup)
         )
         if len(source_chains) != len(preexpanded_layout):
             raise ValueError(
@@ -578,14 +583,7 @@ def audit_constraint_orbit(
         for atom in output_atoms
         if atom.record_type == "ATOM" and _is_heavy(atom)
     }
-    ordered_output_chains = sorted(
-        {
-            atom.chain_id
-            for atom in output_atoms
-            if atom.record_type == "ATOM"
-        },
-        key=_chain_sort_key,
-    )
+    ordered_output_chains = _chain_ids_in_encounter_order(output_atoms)
 
     matrices = example.get("extra", {}).get("registry_transform_matrices")
     order = example.get("extra", {}).get("registry_transform_order")

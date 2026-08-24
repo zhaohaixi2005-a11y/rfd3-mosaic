@@ -72,12 +72,15 @@ silently accepted.
 
 The current finite-group GPU maturity is deliberately asymmetric. Static T
 has a complete 12-copy PASS. Static O now also has a documented 24-copy,
-50-timestep PASS: RFD3 inference completed, the exact fixed orbit
-was recovered and scaffold validity passed. I has generated a 60-copy RFD3
-output in the historical 10-timestep canary, but its fixed-orbit audit still
-fails and its replacement 50-timestep gate remains open. These are execution
-and fixed-geometry-scaffolding milestones, not production-quality generated-
-interface O/I cage claims.
+50-timestep PASS: RFD3 inference completed, the exact fixed orbit was
+recovered and scaffold validity passed. I job `5756755` completed 50 steps and
+materialized all 60 copies. Its original `62.535 A` fixed-orbit flag was a
+high-order chain-label ordering bug in the audit; preserving RFD3
+materialization order recovers the fixed orbit at `0.000132 A` RMSD. One real
+ASU generated-to-fixed peptide-junction defect is reproduced across all 60
+chains, so complete I scaffold-continuity closure remains open. These are
+execution and fixed-geometry-scaffolding milestones, not production-quality
+generated-interface O/I cage claims.
 
 ## Known incomplete areas
 

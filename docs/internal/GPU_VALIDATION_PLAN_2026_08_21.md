@@ -47,6 +47,26 @@ continuity, clashes and symmetry diagnostics. Scientific compactness is
 reported separately because this file is a runtime canary, not a designed I
 cage.
 
+#### Result of the 50-step I run
+
+Job `5756755` completed 50 diffusion steps and produced one 60-chain CIF.  A
+post-run investigation found that its reported `62.535 A` fixed-orbit RMSD
+was an audit false positive, not a runtime loss of the fixed motif.  Native
+RFD3 concatenated copies in registry order, but the audit sorted legacy chain
+labels; above chain `Z` this exchanged the `[` and blank identifiers.  Keeping
+coordinate-file encounter order gives a joint fixed-orbit RMSD of
+`0.000132387 A` and a maximum error of `0.000241701 A`.  The runtime fixed
+target independently reports `0.0 A` RMSD.
+
+The remaining continuity flag is real but localized.  The ASU has one
+generated-to-fixed peptide-junction defect between residues 10 and 11
+(`C--N = 3.1511 A`), which exact I symmetry reproduces once in every chain.
+Thus `chain_break_count: 60` means one ASU defect copied 60 times, not 60
+independent failures.  The current `10-10,A1-9,10-10` input with packing off is
+a runtime canary and should not be presented as a scientifically optimized I
+cage.  After the chain-order audit correction, re-audit this existing output;
+do not spend another 36-minute GPU run to re-prove fixed-orbit preservation.
+
 ### 2. Generated C3 interface, paired locked/guided poses
 
 Run six independently seeded poses for each mode (12 outputs total):
@@ -116,7 +136,10 @@ power, and should not delay the AI-cluster jobs.
 - Static O is closed by job `5755569`: one accepted 24-copy output from the
   50-timestep `o-static-release-gate`, with constraint-orbit, scaffold-validity
   and RFD3-prevalidation audits all passing. Do not rerun O for this gate.
-- Do not repeat the old 10-step I canary.
+- Do not repeat the old 10-step I canary or rerun job `5756755` merely to
+  resolve its fixed-orbit flag.  Use post-hoc re-audit after the chain-order
+  correction.  A separate longer-scaffold experiment is required if the goal
+  changes from runtime closure to scientific I-backbone quality.
 - Do not submit another same-pose 12-output packing campaign.
 - The 40 produced LHD101 backbones are retained evidence and do not need to be
   regenerated for these two gates.
