@@ -14,8 +14,9 @@ presence does not make every script a current product path.
   local and performs complete RFD3 prevalidation in the allocation.
 - `submit_mosaic_lhd101_c3_1000.py`: shards the LHD101 comparison campaign;
   every shard uses the normal CLI and current per-design pose semantics.
-- `collect_packing_campaign.py`: collects packing diagnostics without deleting
-  raw outputs.
+- `collect_packing_campaign.py`: collects generated-output, runtime-contract,
+  runtime CA-window and post-hoc backbone-heavy-atom packing diagnostics
+  without deleting raw outputs or assigning a scientific verdict.
 - `compare_hoyeung_lhd101_backbones.py`: creates the backbone-only comparison
   report.
 - `check_public_surface.py` and `release_smoke.sh`: release checks.

@@ -127,8 +127,10 @@ prevalidation before submission. The frozen campaign manifest is:
 /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/_campaigns/packing-replicates/20260821T105510Z/campaign_manifest.json
 ```
 
-Submission is not scientific acceptance; collect and compare the twelve
-outputs after all six jobs reach a terminal state.
+Submission is not a quality verdict; collect and compare the twelve outputs
+after all six jobs reach a terminal state. The collector reports executable
+contracts, runtime CA-window targets and post-hoc backbone-heavy-atom
+observations separately.
 
 After all jobs finish:
 

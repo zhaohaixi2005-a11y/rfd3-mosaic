@@ -168,6 +168,14 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
             7.25,
         )
         self.assertEqual(
+            report["summary"]["final_packing_metrics"][
+                "contiguous_left_residues"
+            ],
+            [3],
+        )
+        self.assertTrue(report["summary"]["quality_targets_satisfied"])
+        self.assertTrue(report["summary"]["runtime_contract_met"])
+        self.assertEqual(
             report["summary"]["final_metrics_source"],
             "post_finalize_state",
         )
@@ -353,7 +361,7 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["summary"]["packing_evidence_steps"], 0)
 
-    def test_v5_rejects_unsatisfied_final_proxy(self) -> None:
+    def test_v5_reports_unsatisfied_final_proxy_as_advisory(self) -> None:
         self._write_result()
         payload = json.loads(self.result.read_text(encoding="utf-8"))
         diagnostics = payload["graph_interface_guidance_diagnostics"]
@@ -366,10 +374,12 @@ class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
             result_json=self.result,
         )
 
-        self.assertFalse(report["passed"])
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["summary"]["runtime_contract_met"])
         self.assertFalse(
             report["summary"]["final_proxy_targets_satisfied"]
         )
+        self.assertFalse(report["summary"]["quality_targets_satisfied"])
         self.assertTrue(report["summary"]["final_proxy_contract_valid"])
         self.assertFalse(
             report["summary"]["final_result_contract_valid"]

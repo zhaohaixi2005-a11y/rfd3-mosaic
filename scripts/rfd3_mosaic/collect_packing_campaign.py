@@ -48,6 +48,25 @@ def _first_metric(
     return value
 
 
+def _minimum_reciprocal_edge_value(
+    payload: dict[str, Any],
+    left_key: str,
+    right_key: str,
+) -> int | None:
+    """Return the worst physical-edge value across reciprocal sides."""
+
+    left = payload.get(left_key)
+    right = payload.get(right_key)
+    if not isinstance(left, list) or not isinstance(right, list):
+        return None
+    if not left or len(left) != len(right):
+        return None
+    return min(
+        min(int(left_value), int(right_value))
+        for left_value, right_value in zip(left, right, strict=True)
+    )
+
+
 def _result_records(run: Path) -> list[dict[str, Any]]:
     results = []
     audit_roots = sorted((run / "audits").glob("*"))
@@ -60,19 +79,49 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
         graph = _load(graph_path) if graph_path.is_file() else {}
         relation = _load(relation_path) if relation_path.is_file() else {}
         scaffold = _load(scaffold_path) if scaffold_path.is_file() else {}
+        screening_path = audit_root / "screening_advice.json"
+        screening = _load(screening_path) if screening_path.is_file() else {}
+        graph_summary = graph.get("summary", graph)
+        final_proxy = graph_summary.get("final_packing_metrics") or {}
         relation_summary = relation.get("summary", relation)
         interfaces = relation.get("interfaces") or []
+        posthoc_coverage = [
+            min(
+                int(item.get("contact_residue_count_left", 0)),
+                int(item.get("contact_residue_count_right", 0)),
+            )
+            for item in interfaces
+        ]
+        posthoc_continuity = [
+            min(
+                int(
+                    item.get(
+                        "maximum_contiguous_contact_residues_left", 0
+                    )
+                ),
+                int(
+                    item.get(
+                        "maximum_contiguous_contact_residues_right", 0
+                    )
+                ),
+            )
+            for item in interfaces
+        ]
         results.append(
             {
                 "result_id": audit_root.name,
-                "accepted": bool(
-                    graph.get("passed")
-                    and relation.get("passed")
-                    and scaffold.get("passed")
+                "generated": True,
+                "runtime_contract_met": graph.get("passed"),
+                "packing_targets_satisfied": graph_summary.get(
+                    "quality_targets_satisfied",
+                    graph_summary.get("final_proxy_targets_satisfied"),
                 ),
-                "graph_guidance_passed": graph.get("passed"),
-                "interface_relation_passed": relation.get("passed"),
-                "scaffold_passed": scaffold.get("passed"),
+                "posthoc_interface_targets_satisfied": relation.get(
+                    "passed"
+                ),
+                "scaffold_checks_satisfied": scaffold.get("passed"),
+                "contract_status": screening.get("contract_status"),
+                "recommendation": screening.get("recommendation"),
                 "satisfied_edges": relation_summary.get(
                     "satisfied_required_edge_instance_count"
                 ),
@@ -90,35 +139,25 @@ def _result_records(run: Path) -> list[dict[str, Any]]:
                     "final_packing_metrics",
                     "minimum_edge_distance",
                 ),
-                "maximum_contact_residues_per_side": max(
-                    (
-                        min(
-                            int(item.get("contact_residue_count_left", 0)),
-                            int(item.get("contact_residue_count_right", 0)),
-                        )
-                        for item in interfaces
-                    ),
-                    default=0,
+                "runtime_ca_contact_residues_per_side": (
+                    _minimum_reciprocal_edge_value(
+                        final_proxy,
+                        "covered_left_residues",
+                        "covered_right_residues",
+                    )
                 ),
-                "maximum_contiguous_residues_per_side": max(
-                    (
-                        min(
-                            int(
-                                item.get(
-                                    "maximum_contiguous_contact_residues_left",
-                                    0,
-                                )
-                            ),
-                            int(
-                                item.get(
-                                    "maximum_contiguous_contact_residues_right",
-                                    0,
-                                )
-                            ),
-                        )
-                        for item in interfaces
-                    ),
-                    default=0,
+                "runtime_ca_contiguous_residues_per_side": (
+                    _minimum_reciprocal_edge_value(
+                        final_proxy,
+                        "contiguous_left_residues",
+                        "contiguous_right_residues",
+                    )
+                ),
+                "posthoc_contact_residues_per_side": (
+                    min(posthoc_coverage) if posthoc_coverage else None
+                ),
+                "posthoc_contiguous_residues_per_side": (
+                    min(posthoc_continuity) if posthoc_continuity else None
                 ),
                 "hard_clashes": sum(
                     int(item.get("hard_clashes_below_2_0A", 0))
@@ -135,11 +174,20 @@ def _markdown(summary: dict[str, Any]) -> str:
         "",
         f"- revision: `{summary.get('git_revision')}`",
         f"- requested outputs: {summary['requested_output_count']}",
-        f"- observed outputs: {summary['observed_output_count']}",
-        f"- scientifically accepted: {summary['accepted_output_count']}",
+        f"- generated outputs: {summary['generated_output_count']}",
+        "- runtime contracts met: "
+        f"{summary['runtime_contract_met_output_count']}",
+        "- advisory packing targets satisfied: "
+        f"{summary['packing_targets_satisfied_output_count']}",
+        f"- recommended for next stage: {summary['recommended_output_count']}",
+        f"- review advised: {summary['review_output_count']}",
         "",
-        "| mode | job/run | result | accepted | edges | coverage | contiguous | shape | min edge (A) | hard clashes |",
-        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        "The CA-window columns are the differentiable runtime objective. The "
+        "post-hoc columns are a stricter backbone-heavy-atom observation. "
+        "Neither is an experimental success/failure verdict.",
+        "",
+        "| mode | job/run | result | contract | advice | edges | runtime CA coverage | runtime CA contiguous | post-hoc coverage | post-hoc contiguous | shape | min edge (A) | hard clashes |",
+        "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for record in summary["records"]:
         identity = record.get("job_id") or Path(
@@ -147,16 +195,19 @@ def _markdown(summary: dict[str, Any]) -> str:
         ).name
         if not record["results"]:
             lines.append(
-                f"| {record['mode']} | {identity} | pending | no | - | - | - | - | - | - |"
+                f"| {record['mode']} | {identity} | pending | - | - | - | - | - | - | - | - | - | - |"
             )
             continue
         for result in record["results"]:
             edges = f"{result['satisfied_edges']}/{result['required_edges']}"
             lines.append(
                 f"| {record['mode']} | {identity} | {result['result_id']} | "
-                f"{'yes' if result['accepted'] else 'no'} | {edges} | "
-                f"{result['maximum_contact_residues_per_side']} | "
-                f"{result['maximum_contiguous_residues_per_side']} | "
+                f"{result['contract_status'] or '-'} | "
+                f"{result['recommendation'] or '-'} | {edges} | "
+                f"{result['runtime_ca_contact_residues_per_side']} | "
+                f"{result['runtime_ca_contiguous_residues_per_side']} | "
+                f"{result['posthoc_contact_residues_per_side']} | "
+                f"{result['posthoc_contiguous_residues_per_side']} | "
                 f"{result['shape_loss']} | {result['minimum_edge_distance']} | "
                 f"{result['hard_clashes']} |"
             )
@@ -190,18 +241,39 @@ def main() -> None:
             }
         )
     observed = sum(len(record["results"]) for record in records)
-    accepted = sum(
-        result["accepted"]
+    runtime_contract_met = sum(
+        result["runtime_contract_met"] is True
+        for record in records
+        for result in record["results"]
+    )
+    packing_targets_satisfied = sum(
+        result["packing_targets_satisfied"] is True
+        for record in records
+        for result in record["results"]
+    )
+    recommended = sum(
+        result["recommendation"] == "recommended_for_next_stage"
+        for record in records
+        for result in record["results"]
+    )
+    reviewed = sum(
+        result["recommendation"]
+        in {"review_contract", "review_advisory_metrics"}
         for record in records
         for result in record["results"]
     )
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "git_revision": campaign.get("git_revision"),
         "campaign_manifest": str(manifest_path),
         "requested_output_count": campaign.get("requested_output_count", 0),
-        "observed_output_count": observed,
-        "accepted_output_count": accepted,
+        "generated_output_count": observed,
+        "runtime_contract_met_output_count": runtime_contract_met,
+        "packing_targets_satisfied_output_count": (
+            packing_targets_satisfied
+        ),
+        "recommended_output_count": recommended,
+        "review_output_count": reviewed,
         "complete": observed == campaign.get("requested_output_count", 0),
         "records": records,
     }
@@ -215,8 +287,10 @@ def main() -> None:
     print(f"summary JSON: {json_path}")
     print(f"summary Markdown: {markdown_path}")
     print(
-        f"outputs: {observed}/{summary['requested_output_count']}; "
-        f"scientifically accepted: {accepted}"
+        f"generated outputs: {observed}/{summary['requested_output_count']}; "
+        f"runtime contracts met: {runtime_contract_met}; "
+        f"advisory packing targets satisfied: {packing_targets_satisfied}; "
+        f"recommended: {recommended}; review: {reviewed}"
     )
 
 

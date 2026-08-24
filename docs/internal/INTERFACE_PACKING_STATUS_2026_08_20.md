@@ -246,23 +246,28 @@ python scripts/rfd3_mosaic/collect_packing_campaign.py \
 ```
 
 The collector writes `packing_campaign_summary.json` and
-`packing_campaign_summary.md` beside the manifest.  A scientific packing
-result is accepted only when graph guidance, final heavy-atom interface
-relations and scaffold validity all pass.
+`packing_campaign_summary.md` beside the manifest.  The current collector
+separates generated output, executable runtime contracts, advisory runtime CA
+window targets, post-hoc backbone-heavy-atom observations and the user's
+review recommendation. It does not combine those layers into a scientific
+accept/reject verdict, and every generated structure is retained.
 
 ## Stop/go rule after this campaign
 
-- If either mode has reproducible accepted yield and the accepted structures
-  show broad continuous interfaces, retain the controller and calibrate its
-  yield with a larger campaign.
+- If either mode reproducibly shows broad continuous interfaces in both the
+  runtime CA-window and post-hoc observations, retain the controller and
+  characterize its distribution with a larger campaign.
 - If locked remains near-contact but repeatedly fails by heavy-atom clashes or
   one-residue continuity deficits, add all-atom/backbone safety to the local
   proposal and rerun a focused gate.
 - If guided remains far from contact despite distinct initial poses and active
   committed SE(3) transactions, revise the joint pose/patch objective; do not
   increase the allowed motion blindly.
-- A zero-yield 12-output current-revision campaign is sufficient evidence for
-  another algorithm change.  A zero-yield 2-output campaign is not.
+- A 12-output current-revision campaign in which runtime CA-window continuity
+  itself repeatedly remains narrow is sufficient evidence for another
+  algorithm change. A discrepancy limited to the stricter post-hoc proxy is
+  evidence to inspect/calibrate the measurement first. Two outputs are not
+  sufficient for either conclusion.
 
 ## Multi-design audit follow-up
 

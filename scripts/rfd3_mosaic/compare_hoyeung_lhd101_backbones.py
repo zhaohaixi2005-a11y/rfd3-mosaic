@@ -52,8 +52,9 @@ def main() -> None:
         f"analyzed={summary['analyzed_designs']}"
     )
     print(
-        "strict:  "
-        f"{summary['worker_accepted_count']}/{summary['analyzed_designs']}"
+        "historical configured checks met: "
+        f"{summary['historical_configured_check_count']}/"
+        f"{summary['analyzed_designs']}"
     )
     print(f"JSON:    {artifacts.json_path}")
     print(f"CSV:     {artifacts.csv_path}")

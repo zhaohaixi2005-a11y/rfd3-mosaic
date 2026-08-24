@@ -31,7 +31,6 @@ from rfd3_mosaic.rfd3_seed_audit import _derive_structure_path
 from rfd3_mosaic.run_index import read_run_record
 from rfd3_mosaic.structure import AtomRecord, read_structure_atoms
 
-
 PROTOCOL_ID = "hoyeung_lhd101_backbone_v1"
 PAPER_DOI = "10.64898/2026.07.02.736098"
 PAPER_URL = "https://www.biorxiv.org/content/10.64898/2026.07.02.736098v1"
@@ -1039,7 +1038,7 @@ def _markdown(payload: Mapping[str, Any]) -> str:
     packing_applicable = summary["packing_guidance_applicable_count"]
     if packing_applicable:
         packing_lines = [
-            "- Generated-interface guidance audit passes: "
+            "- Generated-interface runtime contracts met: "
             f"{summary['packing_guidance_passed_count']}/"
             f"{packing_applicable}",
             "- Generated-interface final targets satisfied: "

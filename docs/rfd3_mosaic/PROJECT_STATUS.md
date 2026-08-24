@@ -44,7 +44,10 @@ interface packing remains the principal scientific blocker: the most recent
 H100, A100 and RTX 3070 evidence contains no output meeting the complete
 online packing-proxy target bundle across 20 completed structures.  Those
 outputs remain generated backbones; this result diagnoses controller
-calibration rather than assigning user-level rejection.
+calibration rather than assigning user-level rejection. Runtime reciprocal
+CA-window continuity and stricter post-hoc backbone-heavy-atom continuity are
+now reported separately, because they are different measurements and must not
+be collapsed into one acceptance label.
 
 The historical 20-structure packing evidence all reused one supplied input
 pose within each job and therefore did not test the per-design assembly-pose

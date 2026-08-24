@@ -118,11 +118,27 @@ Names ending in `proxy` are deliberately not reported as SASA, Rosetta shape
 complementarity or energetic designability. Those require a sequence/folding
 stage and are outside the current backbone-generation claim.
 
-`graph_interface_guidance_audit.json` schema v9 independently proves that
+`graph_interface_guidance_audit.json` independently proves that
 runtime edge identities match the compiler, immutable capacity preflight was
 present, patch identity did not hop after locking, adaptive phases were
 recorded, the scheduled broad contact prior was finite and attached to the
-declared physical edges, and the post-finalization proxy contract passed.
+declared physical edges, and a finite post-finalization proxy was recorded.
+Its top-level runtime result reports this executable contract only. Whether
+the final coverage, continuity, orientation and shape targets were reached is
+recorded separately as advisory quality evidence.
+
+Runtime continuity and post-hoc continuity are intentionally distinct:
+
+- runtime guidance optimizes reciprocal sequence-contiguous **CA windows** at
+  its scheduled differentiable distance;
+- the relation audit observes contacts between available backbone heavy atoms
+  at the declared output cutoff.
+
+The two measurements must be shown side by side. A campaign report must not
+replace one with the other, take the best edge when every physical edge
+matters, or combine them into a universal `accepted` verdict. The maintained
+collector therefore reports the worst reciprocal side/edge for each measure,
+keeps all generated coordinates, and labels unmet proxy targets for review.
 
 The implementation is based on the published RFdiffusion contact-potential
 form and schedule, not on an invented pass threshold. Mosaic's additional
@@ -139,8 +155,10 @@ Primary references:
 
 ## Evidence boundary
 
-CPU implementation and regression tests can close software semantics. A new
-packing capability is scientifically promoted only after several frozen
-50-step GPU seeds pass exact motif, symmetry, chain continuity, global clash,
-runtime guidance and final heavy-atom interface audits. CPU success must not
-be described as stable interface-generation quality.
+CPU implementation and regression tests can close software semantics. Several
+frozen 50-step GPU seeds are still required to characterize exact motif,
+symmetry, chain continuity, clash burden and interface metric distributions.
+Those observations support comparison and calibration; they are not a claim
+that Mosaic can infer whether a user likes a backbone or whether it will work
+experimentally. CPU success must not be described as stable
+interface-generation quality.
