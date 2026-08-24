@@ -190,11 +190,16 @@ export PYTHONPATH="$PWD/src:$PWD/models/rfd3/src:${PYTHONPATH:-}"
   --profile configs/rfd3_mosaic/sites/lrz/any_gpu.yaml \
   --seed 63000 --seed 63002 --seed 63004 \
   --designs-per-job 2 \
+  --defer-runtime-preflight \
   --submit
 ```
 
 `any_gpu.yaml` asks Slurm to choose H100, A100, V100 or P100 and does not submit
 the same sample once per accelerator type.
+`--defer-runtime-preflight` still performs lightweight compiler planning on
+the login node, but moves complete RFD3 construction and finite-feature checks
+into the allocated worker. It is an execution-location change, not a relaxed
+scientific or geometry gate.
 
 The current-revision campaign was submitted on 2026-08-21 with seeds 73000,
 73002 and 73004. Locked jobs are `5756760`, `5756761` and `5756762`; their

@@ -4,16 +4,15 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
-
 
 BASE_DESIGNS = {
     "locked": (
@@ -122,6 +121,15 @@ def main() -> None:
         action="store_true",
         help="Submit after validation; without this flag only validate.",
     )
+    parser.add_argument(
+        "--defer-runtime-preflight",
+        action="store_true",
+        help=(
+            "Run lightweight planning on the login node and defer complete "
+            "RFD3 construction/prevalidation to the allocated worker. Use "
+            "this when login-node memory limits kill full validation."
+        ),
+    )
     arguments = parser.parse_args()
 
     project = Path.cwd().resolve()
@@ -191,16 +199,20 @@ def main() -> None:
                 yaml.safe_dump(payload, sort_keys=False),
                 encoding="utf-8",
             )
-            validate_command = [
+            validation_command = [
                 sys.executable,
                 "-m",
                 "rfd3_mosaic.cli",
-                "validate",
+                (
+                    "plan"
+                    if arguments.defer_runtime_preflight
+                    else "validate"
+                ),
                 str(generated),
                 "--profile",
                 profile,
             ]
-            validation = _run(validate_command)
+            validation = _run(validation_command)
             if validation.returncode != 0:
                 raise SystemExit(
                     f"Packing validation failed for {mode} seed {seed}"
@@ -213,23 +225,29 @@ def main() -> None:
                 "profile": profile,
                 "design": str(generated),
                 "validated": True,
+                "submission_preflight": (
+                    "complete_on_allocated_worker"
+                    if arguments.defer_runtime_preflight
+                    else "complete_before_submission"
+                ),
                 "submitted": False,
                 "job_id": None,
                 "run_index": None,
                 "returncode": None,
             }
             if arguments.submit:
-                submission = _run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "rfd3_mosaic.cli",
-                        "run",
-                        str(generated),
-                        "--profile",
-                        profile,
-                    ]
-                )
+                submission_command = [
+                    sys.executable,
+                    "-m",
+                    "rfd3_mosaic.cli",
+                    "run",
+                    str(generated),
+                    "--profile",
+                    profile,
+                ]
+                if arguments.defer_runtime_preflight:
+                    submission_command.append("--defer-runtime-preflight")
+                submission = _run(submission_command)
                 job_match = JOB_ID_PATTERN.search(submission.stdout)
                 index_match = RUN_INDEX_PATTERN.search(submission.stdout)
                 record["returncode"] = submission.returncode

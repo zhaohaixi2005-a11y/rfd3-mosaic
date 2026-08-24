@@ -9,7 +9,9 @@ presence does not make every script a current product path.
 - `submit_gpu_release_gates.py`: freezes and submits the non-redundant current
   GPU evidence matrix through `rfd3-mosaic run/submit`.
 - `submit_packing_replicates.py`: creates matched independent-pose
-  locked/guided C3 packing evidence through the normal CLI.
+  locked/guided C3 packing evidence through the normal CLI. On memory-limited
+  Slurm login nodes, `--defer-runtime-preflight` keeps lightweight planning
+  local and performs complete RFD3 prevalidation in the allocation.
 - `submit_mosaic_lhd101_c3_1000.py`: shards the LHD101 comparison campaign;
   every shard uses the normal CLI and current per-design pose semantics.
 - `collect_packing_campaign.py`: collects packing diagnostics without deleting

@@ -76,8 +76,14 @@ Run six independently seeded poses for each mode (12 outputs total):
   --profile configs/rfd3_mosaic/sites/lrz/any_gpu.yaml \
   --seed 73000 --seed 73002 --seed 73004 \
   --designs-per-job 2 \
+  --defer-runtime-preflight \
   --submit
 ```
+
+`--defer-runtime-preflight` keeps lightweight planning on the login node and
+runs complete RFD3 feature construction inside the GPU allocation. It does
+not skip prevalidation. This is required when the login-node memory limit
+kills the broad all-pair contact feature build before `sbatch` is reached.
 
 Each campaign seed creates one matched two-pose population:
 
