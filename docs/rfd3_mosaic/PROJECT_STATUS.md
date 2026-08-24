@@ -51,12 +51,17 @@ be collapsed into one acceptance label.
 
 The historical 20-structure packing evidence all reused one supplied input
 pose within each job and therefore did not test the per-design assembly-pose
-sampler. Maintained locked/guided canaries now use paired independent 20--30 A,
-Haar-SO(3) pre-diffusion poses while preserving their distinct runtime motion
-contracts. The controller now also combines an early, quadratically decayed
-RFdiffusion-style all-pair contact prior with Mosaic's later contiguous-patch
-refinement. CPU contracts are complete; a new frozen 50-step GPU campaign is
-required before claiming improved generated-interface yield.
+sampler. A subsequent four-output paired gate used two independent 20--30 A,
+Haar-SO(3) poses. It improved minimum contact coverage to four or five
+residues but still produced zero complete physical interface edges. Guided
+transactions committed 12 and 22 times yet displaced the motif orbit by less
+than 0.3 A and 0.8 degrees, establishing under-responsive early pose motion
+rather than a missing runtime path. The controller now combines an early,
+quadratically decayed RFdiffusion-style all-pair contact prior with Mosaic's
+later contiguous-patch refinement and scales bounded motif response by the
+observed capture/expansion/polish phase. CPU contracts are complete; a new
+frozen paired 50-step GPU gate is required before claiming improved generated-
+interface yield.
 
 ## Experimental capabilities
 

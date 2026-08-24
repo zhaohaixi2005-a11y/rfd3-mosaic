@@ -467,6 +467,11 @@ class MotifMobilityTestCase(unittest.TestCase):
             coordinates, interface_topology, interface_config
         )
         patch_state = GraphInterfacePatchState(assignments={})
+        # Public create-interface designs declare response=0.2.  During a
+        # distant capture phase the joint controller should use the bounded
+        # phase multiplier rather than taking the historical 0.05 A nominal
+        # translation step forever.
+        controller.motifs[0].response = 0.2
 
         target, observed, diagnostics = (
             controller.update_orbits_with_interface_packing(
@@ -482,6 +487,9 @@ class MotifMobilityTestCase(unittest.TestCase):
                 patch_state=patch_state,
                 projector=lambda candidate: candidate,
                 apply_update=True,
+                capture_response_scale=4.0,
+                expand_response_scale=3.0,
+                polish_response_scale=1.0,
             )
         )
         final = graph_interface_energy(
@@ -493,6 +501,13 @@ class MotifMobilityTestCase(unittest.TestCase):
 
         self.assertTrue(diagnostics["accepted"])
         self.assertTrue(diagnostics["committed"])
+        self.assertEqual(diagnostics["adaptive_phase"], "capture")
+        self.assertEqual(diagnostics["motif_pose_response_scale"], 4.0)
+        trajectory = controller.diagnostics()["trajectory"][-1]
+        self.assertAlmostEqual(
+            trajectory["orbit_proposals"][0]["effective_response"],
+            0.8,
+        )
         self.assertTrue(controller.last_joint_transaction_applied)
         self.assertLess(float(final.total), float(baseline.total))
         self.assertFalse(torch.equal(observed, coordinates))

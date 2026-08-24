@@ -435,9 +435,11 @@ active but practically under-responsive.  The separate continuity flag is a
 backbone-generation issue shared by locked and guided pose 1 and must not be
 misdiagnosed as a mobility failure.
 
-The next controller change should preserve the 4 A / 10 degree total bound,
-exact C3 projection, internal motif rigidity, line search and atomic rollback,
-while making the SE(3) proposal scale phase-aware: stronger during unsatisfied
-capture/expansion and conservative during polish.  Another undiagnosed seed
-campaign is not justified until that behaviour is covered by CPU contracts
-and one new paired GPU gate.
+Revision following this gate preserves the 4 A / 10 degree total bound, exact
+C3 projection, internal motif rigidity, line search and atomic rollback while
+making the SE(3) proposal scale phase-aware.  The declared response is scaled
+by 4 during capture, 3 during expansion and 1 during polish, and remains
+clamped by the existing per-step and total bounds.  CPU contracts cover the
+phase selection, effective response and unchanged symmetry/rollback paths.
+One new paired GPU gate is required to measure whether the larger early moves
+improve physical interface formation.

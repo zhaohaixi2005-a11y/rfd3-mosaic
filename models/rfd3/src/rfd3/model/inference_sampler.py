@@ -238,6 +238,13 @@ class SampleDiffusionConfig:
     motif_mobility_apply_updates: bool = True
     motif_mobility_update_interval: int = 5
     motif_mobility_target_update_count: int = 24
+    # Joint interface packing needs meaningful rigid-body exploration while
+    # the selected patch is still distant or too narrow.  The multiplier is
+    # applied to the declared per-orbit response and remains clamped by the
+    # existing per-step and total translation/rotation bounds.
+    motif_mobility_capture_response_scale: float = 4.0
+    motif_mobility_expand_response_scale: float = 3.0
+    motif_mobility_polish_response_scale: float = 1.0
     motif_mobility_target_max_tilt_degrees: float = 20.0
     motif_mobility_junction_weight: float = 1.0
     motif_mobility_clash_weight: float = 1.0
@@ -695,6 +702,22 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             raise ValueError(
                 "motif_mobility_target_update_count cannot be negative"
             )
+        for name, value in (
+            (
+                "motif_mobility_capture_response_scale",
+                self.motif_mobility_capture_response_scale,
+            ),
+            (
+                "motif_mobility_expand_response_scale",
+                self.motif_mobility_expand_response_scale,
+            ),
+            (
+                "motif_mobility_polish_response_scale",
+                self.motif_mobility_polish_response_scale,
+            ),
+        ):
+            if not 0.0 < float(value) <= 5.0:
+                raise ValueError(f"{name} must be in (0, 5]")
         if (
             self.enable_orbit_rigid_motif_mobility
             and self.motif_mobility_proposal_source == "scaffold_boundary"
@@ -1896,6 +1919,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 patch_state=graph_interface_patch_state,
                                 projector=joint_projector,
                                 apply_update=bool(self.motif_mobility_apply_updates),
+                                capture_response_scale=float(
+                                    self.motif_mobility_capture_response_scale
+                                ),
+                                expand_response_scale=float(
+                                    self.motif_mobility_expand_response_scale
+                                ),
+                                polish_response_scale=float(
+                                    self.motif_mobility_polish_response_scale
+                                ),
                             )
                             packing_step = dict(joint_diagnostics["packing_step"])
                             packing_step.update(
@@ -1907,6 +1939,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                     ),
                                     "joint_transaction_committed": (
                                         joint_diagnostics["committed"]
+                                    ),
+                                    "motif_pose_response_scale": (
+                                        joint_diagnostics[
+                                            "motif_pose_response_scale"
+                                        ]
                                     ),
                                 }
                             )

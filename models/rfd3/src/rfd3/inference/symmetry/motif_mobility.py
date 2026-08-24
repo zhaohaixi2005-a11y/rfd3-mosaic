@@ -883,6 +883,7 @@ class OrbitRigidMotifController:
         config: ScaffoldGuidanceConfig,
         apply_update: bool,
         pose_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        proposal_response_scale: float = 1.0,
     ) -> torch.Tensor:
         """Jointly propose and atomically apply scaffold-driven orbit poses.
 
@@ -912,6 +913,8 @@ class OrbitRigidMotifController:
             )
         if not torch.isfinite(scaffold).all():
             raise ValueError("Scaffold guidance coordinates contain NaN or Inf")
+        if not math.isfinite(proposal_response_scale) or proposal_response_scale <= 0:
+            raise ValueError("proposal_response_scale must be finite and positive")
 
         self.update_calls += 1
         self.last_update_applied = False
@@ -937,6 +940,7 @@ class OrbitRigidMotifController:
                 "tilt": config.tilt_weight,
                 "prior": config.prior_weight,
             },
+            "proposal_response_scale": float(proposal_response_scale),
         }
         if window > 0.0:
             self.active_window_calls += 1
@@ -981,8 +985,14 @@ class OrbitRigidMotifController:
                 rotation_basis = None
                 maximum_step_rotation = motif.per_step_rotation_degrees * motif_window
                 maximum_total_rotation = motif.maximum_rotation_degrees
+                effective_response = min(
+                    1.0,
+                    motif.response * proposal_response_scale,
+                )
                 rotation_step_size = (
-                    motif.per_step_rotation_degrees * motif.response * motif_window
+                    motif.per_step_rotation_degrees
+                    * effective_response
+                    * motif_window
                 )
                 if motif.mobility_subspace == "tilt_only":
                     axis_direction = axis.direction.to(
@@ -1154,7 +1164,7 @@ class OrbitRigidMotifController:
                         translation_step_size
                         if motif.mobility_subspace == "tilt_only"
                         else motif.per_step_translation
-                        * motif.response
+                        * effective_response
                         * motif_window
                     ),
                     rotation_step_size_degrees=rotation_step_size,
@@ -1188,6 +1198,7 @@ class OrbitRigidMotifController:
                         "component_id": motif.coupling_group_id,
                         "objective_ids": list(motif.objective_ids),
                         "mobility_subspace": motif.mobility_subspace,
+                        "effective_response": effective_response,
                         "active": True,
                         "accepted": proposal.accepted,
                         "committed": False,
@@ -1362,6 +1373,9 @@ class OrbitRigidMotifController:
         patch_state: GraphInterfacePatchState,
         projector: Callable[[torch.Tensor], torch.Tensor],
         apply_update: bool,
+        capture_response_scale: float = 1.0,
+        expand_response_scale: float = 1.0,
+        polish_response_scale: float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         """Propose motif poses and generated packing as one transaction.
 
@@ -1377,6 +1391,18 @@ class OrbitRigidMotifController:
             raise ValueError("Joint packing scaffold must match the motif target shape")
         if self.base_target.shape[0] != 1:
             raise ValueError("Joint packing mobility supports one pose batch")
+        phase_response_scales = {
+            "capture": float(capture_response_scale),
+            "expand": float(expand_response_scale),
+            "polish": float(polish_response_scale),
+        }
+        if any(
+            not math.isfinite(value) or value <= 0.0
+            for value in phase_response_scales.values()
+        ):
+            raise ValueError(
+                "Joint packing phase response scales must be finite and positive"
+            )
         self.last_joint_transaction_applied = False
         pose_snapshot = self._mobile_pose_snapshot()
         patch_snapshot = dict(patch_state.assignments)
@@ -1432,6 +1458,13 @@ class OrbitRigidMotifController:
         except Exception:
             rollback_mutable_state()
             raise
+        adaptive_phase = str(packing_step.get("adaptive_phase", "polish"))
+        if adaptive_phase not in phase_response_scales:
+            rollback_mutable_state()
+            raise ValueError(
+                f"Unknown joint packing adaptive phase {adaptive_phase!r}"
+            )
+        proposal_response_scale = phase_response_scales[adaptive_phase]
 
         def packing_aware_pose_energy(
             candidate_target: torch.Tensor,
@@ -1460,6 +1493,7 @@ class OrbitRigidMotifController:
                 # proposal-only run.
                 apply_update=True,
                 pose_energy=packing_aware_pose_energy,
+                proposal_response_scale=proposal_response_scale,
             )
         except Exception:
             rollback_mutable_state()
@@ -1566,6 +1600,8 @@ class OrbitRigidMotifController:
             "committed": committed,
             "proposal_only": not apply_update,
             "motif_pose_changed": motif_pose_changed,
+            "adaptive_phase": adaptive_phase,
+            "motif_pose_response_scale": proposal_response_scale,
             "generated_patch_changed": bool(
                 packing_step.get("proposal_accepted", False)
             ),
