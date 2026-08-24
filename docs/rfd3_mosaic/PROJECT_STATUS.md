@@ -60,8 +60,13 @@ rather than a missing runtime path. The controller now combines an early,
 quadratically decayed RFdiffusion-style all-pair contact prior with Mosaic's
 later contiguous-patch refinement and scales bounded motif response by the
 observed capture/expansion/polish phase. CPU contracts are complete; a new
-frozen paired 50-step GPU gate is required before claiming improved generated-
-interface yield.
+paired 50-step gate confirms that the phase scaling raises observed guided
+motion to 0.33--1.10 A and 1.02--2.42 degrees, but still closes zero physical
+interface edges. One pose removes three heavy-atom clashes; the other gains
+two post-hoc contact residues but introduces three heavy-atom clashes and a
+continuity flag. Runtime acceptance currently protects CA geometry while the
+final audit observes backbone-heavy-atom and C--N geometry, so closing that
+representation gap is the next generated-interface blocker.
 
 ## Experimental capabilities
 

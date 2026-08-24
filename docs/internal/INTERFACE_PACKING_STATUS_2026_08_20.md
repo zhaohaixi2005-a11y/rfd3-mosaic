@@ -443,3 +443,31 @@ clamped by the existing per-step and total bounds.  CPU contracts cover the
 phase selection, effective response and unchanged symmetry/rollback paths.
 One new paired GPU gate is required to measure whether the larger early moves
 improve physical interface formation.
+
+### Phase-aware paired gate, revision `abe8a9e`
+
+Jobs `5760582` (locked, A100) and `5760583` (guided, H100) reused the same two
+independently instantiated poses at 50 diffusion steps.  All four coordinate
+outputs were generated and all graph-guidance runtime contracts executed.
+
+| pose | mode | overall contract | runtime coverage/continuity | post-hoc coverage/continuity | observed rigid motion | shape | minimum edge (A) | heavy-atom clashes | required edges |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 0 | locked | met | 4/4 | 3/3 | fixed | 0.149 | 4.065 | 3 | 0/3 |
+| 0 | guided | met | 4/4 | 3/3 | 0.327 A / 2.423 deg; 8 commits | 0.152 | 4.611 | 0 | 0/3 |
+| 1 | locked | met | 5/2 | 9/3 | fixed | 0.069 | 3.502 | 0 | 0/3 |
+| 1 | guided | continuity flag | 4/2 | 11/3 | 1.098 A / 1.017 deg; 21 commits | 0.081 | 4.002 | 3 | 0/3 |
+
+The phase scaling works mechanically: guided motion is now materially larger
+than in the preceding gate and remains well inside the unchanged 4 A / 10
+degree total bounds.  Pose 0 removes three post-hoc heavy-atom clashes but does
+not widen the interface.  Pose 1 gains two post-hoc contact residues yet loses
+runtime coverage, worsens shape, introduces three heavy-atom clashes and fails
+scaffold continuity.  No physical interface edge closes.
+
+Code inspection explains the mismatch.  Runtime proposal acceptance protects
+CA--CA global safety and CA peptide-neighbour geometry, whereas the final
+scaffold/interface audits additionally observe backbone-heavy-atom clashes and
+C--N peptide continuity.  A proposal can therefore satisfy the differentiable
+CA contract but fail the stricter final backbone observation.  The next change
+must close this representation gap with differentiable backbone-heavy-atom and
+peptide-bond safety; increasing motion again is not justified.
