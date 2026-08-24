@@ -2893,6 +2893,13 @@ def compile_assembly_rfd3_input(
         ],
         "symmetry_multiplicity": symmetry_multiplicity,
         "full_symmetry_multiplicity": full_symmetry_multiplicity,
+        # Native RFD3 initializes every generated atom at one global origin.
+        # In an already expanded assembly this produces artificial radial
+        # spokes from spatially separated motifs to the group centre.  Ask the
+        # vendored parser to erase detailed coordinates in each chain's local
+        # fixed-anchor frame instead.  This is explicit Mosaic provenance and
+        # leaves non-Mosaic/native RFD3 inputs on their historical default.
+        "generated_coordinate_initialization": "local_fixed_anchor",
         "symmetry_action_kind": (
             "compact_mixed_stabilizer_quotients"
             if compact_mixed_runtime

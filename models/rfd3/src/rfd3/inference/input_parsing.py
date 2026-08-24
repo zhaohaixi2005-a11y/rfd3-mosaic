@@ -73,6 +73,103 @@ logging.basicConfig(level=logging.DEBUG)
 logger = RankedLogger(__name__, rank_zero_only=True)
 
 
+def _initialize_generated_coordinates(
+    atom_array: AtomArray,
+    *,
+    mode: str = "global_origin",
+) -> tuple[int, int]:
+    """Initialize regular-diffusion atoms without changing fixed coordinates.
+
+    Native RFD3 historically removes all generated-coordinate information by
+    placing every non-fixed atom at the global origin.  That is appropriate for
+    one compact conditioning frame, but not for a compiler-preexpanded
+    symmetric assembly: the fixed motif of each physical copy can be hundreds
+    of Angstroms from the group origin.  Starting all generated chains at the
+    common origin then creates an artificial radial spoke from every local
+    motif to the assembly centre.
+
+    ``local_fixed_anchor`` retains the same zero-information initialization in
+    each *local* chain frame.  Generated residues are placed at the nearest
+    fixed residue anchor in their chain, or linearly between the nearest fixed
+    anchors on both sides.  Symmetry-related chains therefore receive
+    symmetry-related initial coordinates.  Chains without a fixed anchor keep
+    the native global-origin behavior.
+
+    Returns the number of locally initialized chains and residues for logging.
+    """
+
+    supported_modes = {"global_origin", "local_fixed_anchor"}
+    if mode not in supported_modes:
+        raise ValueError(
+            "generated_coordinate_initialization must be one of "
+            f"{sorted(supported_modes)}, observed {mode!r}"
+        )
+
+    fixed = atom_array.is_motif_atom_with_fixed_coord.astype(bool)
+    generated = ~fixed
+    atom_array.coord[generated] = 0.0
+    if mode == "global_origin" or not generated.any() or not fixed.any():
+        return 0, 0
+
+    initialized_chains = 0
+    initialized_residues = 0
+    chain_ids = np.asarray(atom_array.chain_id)
+    residue_ids = np.asarray(atom_array.res_id)
+    atom_names = np.asarray(atom_array.atom_name)
+
+    for chain_id in np.unique(chain_ids[generated]):
+        chain_mask = chain_ids == chain_id
+        chain_fixed = chain_mask & fixed
+        chain_generated = chain_mask & generated
+        if not chain_fixed.any():
+            continue
+
+        fixed_anchors: dict[int, np.ndarray] = {}
+        for residue_id in np.unique(residue_ids[chain_fixed]):
+            residue_fixed = chain_fixed & (residue_ids == residue_id)
+            ca_mask = residue_fixed & (atom_names == "CA")
+            coordinates = atom_array.coord[ca_mask]
+            if not len(coordinates):
+                coordinates = atom_array.coord[residue_fixed]
+            finite = np.isfinite(coordinates).all(axis=-1)
+            if finite.any():
+                fixed_anchors[int(residue_id)] = coordinates[finite].mean(axis=0)
+        if not fixed_anchors:
+            continue
+
+        anchor_ids = np.asarray(sorted(fixed_anchors), dtype=int)
+        chain_initialized = False
+        for residue_id in np.unique(residue_ids[chain_generated]):
+            residue_id_int = int(residue_id)
+            generated_residue = chain_generated & (residue_ids == residue_id)
+            if residue_id_int in fixed_anchors:
+                anchor = fixed_anchors[residue_id_int]
+            else:
+                left = anchor_ids[anchor_ids < residue_id_int]
+                right = anchor_ids[anchor_ids > residue_id_int]
+                if len(left) and len(right):
+                    left_id = int(left[-1])
+                    right_id = int(right[0])
+                    fraction = (residue_id_int - left_id) / (right_id - left_id)
+                    anchor = (
+                        (1.0 - fraction) * fixed_anchors[left_id]
+                        + fraction * fixed_anchors[right_id]
+                    )
+                elif len(left):
+                    anchor = fixed_anchors[int(left[-1])]
+                elif len(right):
+                    anchor = fixed_anchors[int(right[0])]
+                else:  # Defensive: fixed_anchors is non-empty above.
+                    continue
+            atom_array.coord[generated_residue] = anchor
+            initialized_residues += 1
+            chain_initialized = True
+        if chain_initialized:
+            initialized_chains += 1
+
+    return initialized_chains, initialized_residues
+
+
 #################################################################################
 # Custom infer_ori functions
 #################################################################################
@@ -791,16 +888,31 @@ class DesignInputSpecification(BaseModel):
                         atom_array, ori_token=None, infer_ori_strategy="com"
                     )
         else:
-            # Standard: set ori token, zero out diffused atoms
+            # Standard: set ori token, then remove detailed generated
+            # coordinates.  Mosaic's explicit symmetric assemblies opt into a
+            # local-anchor initialization so every physical copy starts in its
+            # own conditioning frame instead of at one shared global origin.
             atom_array = set_com(
                 atom_array,
                 ori_token=self.ori_token,
                 infer_ori_strategy=self.infer_ori_strategy,
             )
-            # Diffused atoms are always initialized at origin during regular diffusion (all information removed)
-            atom_array.coord[
-                ~atom_array.is_motif_atom_with_fixed_coord.astype(bool)
-            ] = 0.0
+            initialization_mode = str(
+                (self.extra or {}).get(
+                    "generated_coordinate_initialization",
+                    "global_origin",
+                )
+            )
+            local_chains, local_residues = _initialize_generated_coordinates(
+                atom_array,
+                mode=initialization_mode,
+            )
+            if initialization_mode == "local_fixed_anchor":
+                logger.info(
+                    "Initialized generated coordinates from local fixed "
+                    f"anchors for {local_residues} residues across "
+                    f"{local_chains} chains."
+                )
         return atom_array
 
     def _apply_globals(self, atom_array):

@@ -700,6 +700,10 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(emitted["ori_token"], [0.0, 0.0, 0.0])
         self.assertEqual(emitted["extra"]["symmetry_multiplicity"], 2)
         self.assertEqual(
+            emitted["extra"]["generated_coordinate_initialization"],
+            "local_fixed_anchor",
+        )
+        self.assertEqual(
             emitted["extra"]["full_symmetry_multiplicity"],
             4,
         )

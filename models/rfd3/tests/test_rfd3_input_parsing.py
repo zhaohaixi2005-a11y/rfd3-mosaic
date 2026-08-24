@@ -24,10 +24,91 @@ prepend import mode.
 import biotite.structure as struc
 import numpy as np
 from rfd3.inference.input_parsing import (
+    _initialize_generated_coordinates,
     _is_polymer_backbone_like,
     _is_standard_polymer_backbone_bond,
     _polymer_link_atoms_for_residue,
 )
+
+
+def _initialization_array() -> struc.AtomArray:
+    atoms = struc.AtomArray(8)
+    atoms.chain_id = np.asarray(["A", "A", "A", "B", "B", "C", "C", "C"])
+    atoms.res_id = np.asarray([1, 2, 3, 1, 2, 1, 2, 3])
+    atoms.atom_name = np.asarray(["CA"] * 8)
+    atoms.coord = np.asarray(
+        [
+            [10.0, 0.0, 0.0],
+            [999.0, 999.0, 999.0],
+            [20.0, 0.0, 0.0],
+            [-10.0, 0.0, 0.0],
+            [999.0, 999.0, 999.0],
+            [999.0, 999.0, 999.0],
+            [999.0, 999.0, 999.0],
+            [999.0, 999.0, 999.0],
+        ],
+        dtype=np.float32,
+    )
+    atoms.set_annotation(
+        "is_motif_atom_with_fixed_coord",
+        np.asarray([True, False, True, True, False, False, False, False]),
+    )
+    return atoms
+
+
+def test_generated_coordinate_initialization_preserves_native_global_origin():
+    atoms = _initialization_array()
+
+    initialized = _initialize_generated_coordinates(atoms)
+
+    assert initialized == (0, 0)
+    assert np.allclose(
+        atoms.coord[[1, 4, 5, 6, 7]],
+        np.zeros((5, 3), dtype=np.float32),
+    )
+
+
+def test_generated_coordinate_initialization_uses_local_fixed_anchors():
+    atoms = _initialization_array()
+
+    initialized = _initialize_generated_coordinates(
+        atoms,
+        mode="local_fixed_anchor",
+    )
+
+    assert initialized == (2, 2)
+    # Internal generated residue is interpolated between its two anchors.
+    assert np.allclose(atoms.coord[1], [15.0, 0.0, 0.0])
+    # Terminal generated residue starts at its own chain's fixed anchor.
+    assert np.allclose(atoms.coord[4], [-10.0, 0.0, 0.0])
+    # An unanchored generated-only chain retains the native global origin.
+    assert np.allclose(atoms.coord[5:], np.zeros((3, 3), dtype=np.float32))
+
+
+def test_local_fixed_anchor_initialization_commutes_with_group_transform():
+    atoms = struc.AtomArray(4)
+    atoms.chain_id = np.asarray(["A", "A", "B", "B"])
+    atoms.res_id = np.asarray([1, 2, 1, 2])
+    atoms.atom_name = np.asarray(["CA"] * 4)
+    source_anchor = np.asarray([8.0, 3.0, -2.0], dtype=np.float32)
+    rotation = np.asarray(
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    transformed_anchor = rotation @ source_anchor
+    atoms.coord = np.asarray(
+        [source_anchor, [999.0] * 3, transformed_anchor, [999.0] * 3],
+        dtype=np.float32,
+    )
+    atoms.set_annotation(
+        "is_motif_atom_with_fixed_coord",
+        np.asarray([True, False, True, False]),
+    )
+
+    _initialize_generated_coordinates(atoms, mode="local_fixed_anchor")
+
+    assert np.allclose(atoms.coord[1], source_anchor)
+    assert np.allclose(atoms.coord[3], rotation @ atoms.coord[1])
 
 
 def _atom(chain_id: str, res_id: int, res_name: str, atom_name: str) -> struc.Atom:

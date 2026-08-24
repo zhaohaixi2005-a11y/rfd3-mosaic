@@ -1,6 +1,6 @@
 # RFD3-Mosaic development status
 
-Last updated: 2026-08-18
+Last updated: 2026-08-24
 
 RFD3-Mosaic is an actively developed research preview. This page describes
 the public capability boundary; it does not depend on a particular validation
@@ -30,6 +30,12 @@ The current release target is:
 - locked, radial, radial/axial and bounded rotational component motion;
 - ordered generated polymer connections;
 - motif, symmetry, interface, mobility and scaffold audits.
+
+The regular-diffusion initializer is symmetry-local for Mosaic-compiled
+generated regions: each generated path starts from fixed anchors in its own
+physical copy instead of placing every copy at one shared global origin. This
+contract applies uniformly to Cn, Dn, T, O and I and leaves native RFD3 inputs
+on their historical default.
 
 Supported means that the path has an executable compiler/runtime contract and
 fails closed when the contract cannot be satisfied. Scientific usefulness of
