@@ -536,6 +536,14 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Refresh the report without querying sacct/squeue.",
     )
+    audit.add_argument(
+        "--reuse-reports",
+        action="store_true",
+        help=(
+            "Refresh status and advisory screening from the existing audit "
+            "JSON files without recomputing geometry or loading RFD3."
+        ),
+    )
 
     runs = commands.add_parser(
         "runs",
@@ -1998,7 +2006,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             if reference.run_directory is None:
                 raise ValueError("The referenced job has no run directory to audit")
-            result = audit_existing_run(reference.run_directory)
+            result = audit_existing_run(
+                reference.run_directory,
+                reuse_reports=arguments.reuse_reports,
+            )
             status = collect_run_status(
                 reference,
                 include_scheduler=not arguments.no_scheduler,
@@ -2009,6 +2020,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         print("RFD3-Mosaic post-hoc audit")
         print(f"run:       {result.run_directory}")
         print("inference: reused existing output (not rerun)")
+        if arguments.reuse_reports:
+            print("audits:    reused existing reports (not recomputed)")
         audit_states = {item["name"]: item for item in status.get("audits") or []}
         for report in result.reports:
             record = audit_states.get(report.name) or {}

@@ -818,6 +818,12 @@ fail-closed gate used by the live worker, refreshes `experiment_summary.json`
 and the HTML/JSON report, and records `inference_rerun: false`. It refuses to
 guess when required frozen artifacts are absent.
 
+When the existing reports are already complete and only status/advisory policy
+changed, use `audit --reuse-reports`. This path does not import RFD3 or
+recompute geometry. Audit-process errors, including scheduler or login-node
+resource kills, are recorded under `posthoc_audit` and do not replace a
+previously completed inference state or its last valid report set.
+
 Generate a portable report next to a completed run with:
 
 ```bash

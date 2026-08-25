@@ -195,6 +195,7 @@ useful for review, provenance inspection and deployment integration.
 rfd3-mosaic status RUN_ID_OR_DIRECTORY
 rfd3-mosaic report RUN_ID_OR_DIRECTORY
 rfd3-mosaic audit RUN_ID_OR_DIRECTORY
+rfd3-mosaic audit RUN_ID_OR_DIRECTORY --reuse-reports
 ```
 
 - `status` summarizes execution state, generated outputs, contracts and
@@ -202,6 +203,11 @@ rfd3-mosaic audit RUN_ID_OR_DIRECTORY
 - `report` writes JSON and HTML reports from recorded run artifacts.
 - `audit` evaluates a compatible existing run without rerunning diffusion or
   converting a quality proxy into an execution failure.
+- `audit --reuse-reports` refreshes status and advisory screening from an
+  already complete audit set without recomputing geometry or importing RFD3.
+  This is useful after reporting-policy updates or on memory-limited login
+  nodes. A failed audit attempt is recorded separately and never rewrites a
+  previously completed inference run as failed.
 
 Use `rfd3-mosaic runs --root /path/to/runs` to list an indexed run root.
 

@@ -348,11 +348,96 @@ class PosthocAuditTestCase(unittest.TestCase):
 
     def test_cli_accepts_numeric_audit_target_and_root(self) -> None:
         arguments = _parser().parse_args(
-            ["audit", "12345", "--root", str(self.run.parent)]
+            [
+                "audit",
+                "12345",
+                "--root",
+                str(self.run.parent),
+                "--reuse-reports",
+            ]
         )
         self.assertEqual(arguments.command, "audit")
         self.assertEqual(arguments.target, "12345")
         self.assertEqual(arguments.root, self.run.parent)
+        self.assertTrue(arguments.reuse_reports)
+
+    def test_reuses_existing_reports_without_running_audit_commands(self) -> None:
+        self._write_compiled_input(
+            {
+                "symmetry_multiplicity": 3,
+                "motif_constraint_orbits": [],
+                "assembly_interface_relations": [],
+            }
+        )
+        reports = (
+            self.run / "constraint_orbit_audit.json",
+            self.run / "scaffold_validity_audit.json",
+        )
+        for report in reports:
+            report.write_text('{"passed": true}\n', encoding="utf-8")
+
+        with (
+            patch("rfd3_mosaic.posthoc_audit.run_result_audits") as runner,
+            patch("rfd3_mosaic.posthoc_audit._update_index"),
+        ):
+            result = audit_existing_run(self.run, reuse_reports=True)
+
+        self.assertTrue(result.passed)
+        runner.assert_not_called()
+        summary = json.loads(
+            (self.run / "experiment_summary.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(summary["posthoc_audit"]["reports_reused"])
+        self.assertEqual(summary["contract_met_designs"], 1)
+
+    def test_audit_execution_failure_preserves_completed_run_state(self) -> None:
+        self._write_compiled_input(
+            {
+                "symmetry_multiplicity": 3,
+                "motif_constraint_orbits": [],
+                "assembly_interface_relations": [],
+            }
+        )
+        original_report = self.run / "scaffold_validity_audit.json"
+        original_report.write_text('{"passed": true}\n', encoding="utf-8")
+        (self.run / "experiment_summary.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "experiment": "posthoc-test",
+                    "produced_designs": 1,
+                    "contract_met_designs": 1,
+                    "contract_flagged_designs": 0,
+                    "reports": [str(original_report)],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch(
+                "rfd3_mosaic.posthoc_audit.run_result_audits",
+                side_effect=RuntimeError("audit process was killed"),
+            ),
+            patch("rfd3_mosaic.posthoc_audit._update_index") as update_index,
+        ):
+            result = audit_existing_run(self.run)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.error, "audit process was killed")
+        summary = json.loads(
+            (self.run / "experiment_summary.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary["status"], "completed")
+        self.assertEqual(summary["contract_met_designs"], 1)
+        self.assertEqual(summary["reports"], [str(original_report)])
+        self.assertNotIn("error", summary)
+        self.assertEqual(
+            summary["posthoc_audit"]["audit_error"],
+            "audit process was killed",
+        )
+        self.assertEqual(update_index.call_args.kwargs["state"], "completed")
+        self.assertIsNone(update_index.call_args.kwargs["error"])
 
 
 if __name__ == "__main__":

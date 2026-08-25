@@ -120,6 +120,7 @@ def audit_existing_run(
     run_directory: str | Path,
     *,
     python: str = sys.executable,
+    reuse_reports: bool = False,
 ) -> PosthocAuditResult:
     """Reconstruct and execute the complete frozen post-inference audit set.
 
@@ -196,21 +197,41 @@ def audit_existing_run(
                     "scaffold_validity_audit.json",
                 )
             )
-            outcome = run_result_audits(
-                run_directory=root,
-                rfd3_input=input_path,
-                result_json=result_json,
-                semantic_audits=audits,
-                output_directory=report_directory(result_json),
-                python=python,
-            )
-            reports_list.extend(outcome.reports)
-            if outcome.mobility_trajectory is not None:
-                mobility_paths.append(outcome.mobility_trajectory)
+            output_directory = report_directory(result_json)
+            if reuse_reports:
+                outcome_reports = tuple(
+                    output_directory / report_name
+                    for report_name in (
+                        *(audit.report_name for audit in audits),
+                        "scaffold_validity_audit.json",
+                    )
+                )
+                missing = [path for path in outcome_reports if not path.is_file()]
+                if missing:
+                    raise FileNotFoundError(
+                        "Cannot reuse missing result audit reports: "
+                        + ", ".join(str(path) for path in missing)
+                    )
+                trajectory = output_directory / "mobility_trajectory.json"
+                outcome_mobility = trajectory if trajectory.is_file() else None
+            else:
+                outcome = run_result_audits(
+                    run_directory=root,
+                    rfd3_input=input_path,
+                    result_json=result_json,
+                    semantic_audits=audits,
+                    output_directory=output_directory,
+                    python=python,
+                )
+                outcome_reports = outcome.reports
+                outcome_mobility = outcome.mobility_trajectory
+            reports_list.extend(outcome_reports)
+            if outcome_mobility is not None:
+                mobility_paths.append(outcome_mobility)
             required_audits_met = True
             rejection_reason = None
             try:
-                gate_result_audits(outcome.reports, python=python)
+                gate_result_audits(outcome_reports, python=python)
             except RuntimeError as error:
                 # A generated coordinate file is not an execution failure.
                 # Preserve the legacy aggregate check while the advisory
@@ -224,7 +245,7 @@ def audit_existing_run(
             )
             screening_payload = write_advisory_screening(
                 screening_path,
-                outcome.reports,
+                outcome_reports,
                 mode=str(screening.get("mode", "advisory")),
                 protocol=str(screening.get("protocol", "auto")),
             )
@@ -233,10 +254,10 @@ def audit_existing_run(
                 {
                     "result_json": str(result_json),
                     "compiled_input": str(input_path),
-                    "reports": [str(path) for path in outcome.reports],
+                    "reports": [str(path) for path in outcome_reports],
                     "mobility_trajectory": (
-                        str(outcome.mobility_trajectory)
-                        if outcome.mobility_trajectory is not None
+                        str(outcome_mobility)
+                        if outcome_mobility is not None
                         else None
                     ),
                     "screening_advice": str(screening_path),
@@ -343,51 +364,86 @@ def audit_existing_run(
                 "design_results": refreshed_designs,
             }
         )
-    summary.update(
-        {
-            "status": "completed" if execution_completed else "failed",
-            "experiment": config.get("name")
-            or previous.get("experiment"),
-            "topology": (config.get("topology") or {}).get("kind"),
-            "result_json": (
-                str(result_jsons[0]) if len(result_jsons) == 1 else None
-            ),
-            "result_jsons": [str(path) for path in result_jsons],
-            "reports": [str(path) for path in reports],
-            "mobility_trajectory": str(mobility) if mobility else None,
-            "mobility_trajectories": [
-                str(path) for path in mobility_paths
-            ],
-            "posthoc_audit": {
-                "schema_version": 1,
-                "started_at": started_at,
-                "completed_at": utc_now(),
-                "passed": passed,
-                "execution_completed": execution_completed,
-                "semantics": "advisory_non_destructive",
-                "check_flags": check_flags,
-                "screening_advice": [str(path) for path in screening_paths],
-                "reports": [str(path) for path in reports],
-                "inference_rerun": False,
-                "result_count": len(result_jsons),
-                "previous_worker_status": prior_status,
-                "previous_error_type": prior_error_type,
-                "previous_error": prior_error,
-            },
-        }
-    )
+    prior_posthoc = previous.get("posthoc_audit")
+    prior_execution_status = prior_status
+    if (
+        prior_status == "failed"
+        and isinstance(prior_posthoc, dict)
+        and prior_posthoc.get("execution_completed") is False
+    ):
+        recovered = prior_posthoc.get("previous_worker_status")
+        if recovered in {"completed", "running", "failed"}:
+            prior_execution_status = recovered
+    posthoc_record = {
+        "schema_version": 2,
+        "started_at": started_at,
+        "completed_at": utc_now(),
+        "passed": passed,
+        "execution_completed": execution_completed,
+        "semantics": "advisory_non_destructive",
+        "check_flags": check_flags,
+        "screening_advice": [str(path) for path in screening_paths],
+        "reports": [str(path) for path in reports],
+        "inference_rerun": False,
+        "reports_reused": reuse_reports,
+        "result_count": len(result_jsons),
+        "previous_worker_status": prior_execution_status,
+        "previous_error_type": prior_error_type,
+        "previous_error": prior_error,
+        "audit_error_type": type(failure).__name__ if failure else None,
+        "audit_error": str(failure) if failure else None,
+    }
     if execution_completed:
+        summary.update(
+            {
+                "status": "completed",
+                "experiment": config.get("name")
+                or previous.get("experiment"),
+                "topology": (config.get("topology") or {}).get("kind"),
+                "result_json": (
+                    str(result_jsons[0]) if len(result_jsons) == 1 else None
+                ),
+                "result_jsons": [str(path) for path in result_jsons],
+                "reports": [str(path) for path in reports],
+                "mobility_trajectory": str(mobility) if mobility else None,
+                "mobility_trajectories": [
+                    str(path) for path in mobility_paths
+                ],
+                "posthoc_audit": posthoc_record,
+            }
+        )
         summary.pop("error", None)
         summary.pop("error_type", None)
     else:
-        summary["error_type"] = type(failure).__name__
-        summary["error"] = str(failure)
+        # Audit execution is diagnostic work performed after inference.  A
+        # killed or resource-limited audit must not rewrite a previously
+        # generated run as an inference failure or discard its last valid
+        # report set and design counters.
+        summary.update(
+            {
+                "status": prior_execution_status or "completed",
+                "experiment": config.get("name")
+                or previous.get("experiment"),
+                "topology": (config.get("topology") or {}).get("kind"),
+                "posthoc_audit": posthoc_record,
+            }
+        )
+        if summary["status"] == "completed":
+            summary.pop("error", None)
+            summary.pop("error_type", None)
     _write_json(summary_path, summary)
+    indexed_state = str(summary["status"])
+    if indexed_state not in {"completed", "running", "failed"}:
+        indexed_state = "completed" if result_jsons else "failed"
     _update_index(
         config,
         root,
-        state="completed" if execution_completed else "failed",
-        error=None if execution_completed else str(failure),
+        state=indexed_state,
+        error=(
+            str(failure)
+            if failure is not None and indexed_state == "failed"
+            else None
+        ),
     )
     return PosthocAuditResult(
         run_directory=root,
