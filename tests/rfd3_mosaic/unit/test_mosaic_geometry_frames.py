@@ -1,3 +1,5 @@
+"""Tests for Mosaic-specific interface reference-frame geometry."""
+
 import unittest
 
 import numpy as np
@@ -7,7 +9,6 @@ from rfd3_mosaic.geometry import (
     principal_axis_anchor_frame,
     reference_interface_pca_frame,
 )
-
 
 PORT_COORDINATES = np.array(
     [
@@ -24,9 +25,7 @@ class InterfaceFrameTestCase(unittest.TestCase):
     def test_explicit_anchor_frame_uses_declared_directions(self) -> None:
         frame = anchor_interface_frame(
             origin_coordinates=np.array([[1.0, 2.0, 3.0]]),
-            x_axis_coordinates=np.array(
-                [[1.0, 2.0, 3.0], [3.0, 2.0, 3.2]]
-            ),
+            x_axis_coordinates=np.array([[1.0, 2.0, 3.0], [3.0, 2.0, 3.2]]),
             xy_plane_coordinates=np.array(
                 [
                     [1.0, 2.0, 3.0],
@@ -46,9 +45,7 @@ class InterfaceFrameTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "plane normal"):
             anchor_interface_frame(
                 origin_coordinates=np.array([[0.0, 0.0, 0.0]]),
-                x_axis_coordinates=np.array(
-                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
-                ),
+                x_axis_coordinates=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
                 xy_plane_coordinates=np.array(
                     [
                         [0.0, 0.0, 0.0],
@@ -153,9 +150,7 @@ class InterfaceFrameTestCase(unittest.TestCase):
 
     def test_too_few_atoms_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            reference_interface_pca_frame(
-                np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-            )
+            reference_interface_pca_frame(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
 
 
 if __name__ == "__main__":
