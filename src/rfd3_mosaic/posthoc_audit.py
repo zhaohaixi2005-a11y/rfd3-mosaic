@@ -180,6 +180,7 @@ def audit_existing_run(
     failures: list[Exception] = []
     check_flags: list[str] = []
     screening_paths: list[Path] = []
+    reaudited_designs: list[dict[str, Any]] = []
     for result_json in result_jsons:
         try:
             input_path = input_for_result(result_json)
@@ -206,6 +207,8 @@ def audit_existing_run(
             reports_list.extend(outcome.reports)
             if outcome.mobility_trajectory is not None:
                 mobility_paths.append(outcome.mobility_trajectory)
+            required_audits_met = True
+            rejection_reason = None
             try:
                 gate_result_audits(outcome.reports, python=python)
             except RuntimeError as error:
@@ -213,17 +216,35 @@ def audit_existing_run(
                 # Preserve the legacy aggregate check while the advisory
                 # record distinguishes contracts from scientific proxies.
                 check_flags.append(str(error))
+                required_audits_met = False
+                rejection_reason = str(error)
             screening = config.get("sampling", {}).get("screening") or {}
             screening_path = (
                 report_directory(result_json) / "screening_advice.json"
             )
-            write_advisory_screening(
+            screening_payload = write_advisory_screening(
                 screening_path,
                 outcome.reports,
                 mode=str(screening.get("mode", "advisory")),
                 protocol=str(screening.get("protocol", "auto")),
             )
             screening_paths.append(screening_path)
+            reaudited_designs.append(
+                {
+                    "result_json": str(result_json),
+                    "compiled_input": str(input_path),
+                    "reports": [str(path) for path in outcome.reports],
+                    "mobility_trajectory": (
+                        str(outcome.mobility_trajectory)
+                        if outcome.mobility_trajectory is not None
+                        else None
+                    ),
+                    "screening_advice": str(screening_path),
+                    "screening": screening_payload,
+                    "accepted": required_audits_met,
+                    "rejection_reason": rejection_reason,
+                }
+            )
         except Exception as error:  # Audit execution itself remains strict.
             failures.append(error)
 
@@ -240,6 +261,88 @@ def audit_existing_run(
     prior_status = previous.get("status")
     prior_error = previous.get("error")
     prior_error_type = previous.get("error_type")
+    if execution_completed:
+        previous_designs = [
+            dict(record)
+            for record in previous.get("design_results", [])
+            if isinstance(record, dict)
+        ]
+
+        def previous_design_for(
+            result_json: str,
+            design_index: int,
+        ) -> dict[str, Any]:
+            exact = [
+                record
+                for record in previous_designs
+                if str(record.get("result_json")) == result_json
+            ]
+            if len(exact) == 1:
+                return exact[0]
+            result_name = Path(result_json).name
+            by_name = [
+                record
+                for record in previous_designs
+                if Path(str(record.get("result_json", ""))).name
+                == result_name
+            ]
+            if len(by_name) == 1:
+                return by_name[0]
+            return {
+                "design_index": design_index,
+                "design_id": Path(result_json).stem.removesuffix("_model_0"),
+            }
+
+        refreshed_designs: list[dict[str, Any]] = []
+        for design_index, audited in enumerate(reaudited_designs):
+            result_json = str(audited["result_json"])
+            record = previous_design_for(result_json, design_index)
+            screening_payload = audited["screening"]
+            contract_met = screening_payload["contract_status"] in {
+                "met",
+                "not_evaluated",
+            }
+            record.update(
+                {
+                    "result_json": result_json,
+                    "compiled_input": audited["compiled_input"],
+                    "generated": True,
+                    "contract_met": contract_met,
+                    "recommendation": screening_payload["recommendation"],
+                    "screening_advice": audited["screening_advice"],
+                    "accepted": audited["accepted"],
+                    "rejection_reason": audited["rejection_reason"],
+                    "reports": audited["reports"],
+                    "mobility_trajectory": audited["mobility_trajectory"],
+                }
+            )
+            refreshed_designs.append(record)
+
+        contract_met_count = sum(
+            bool(record["contract_met"]) for record in refreshed_designs
+        )
+        accepted_count = sum(
+            bool(record["accepted"]) for record in refreshed_designs
+        )
+        recommended_count = sum(
+            record["recommendation"] == "recommended_for_next_stage"
+            for record in refreshed_designs
+        )
+        summary.update(
+            {
+                "produced_designs": len(refreshed_designs),
+                "generated_designs": len(refreshed_designs),
+                "contract_met_designs": contract_met_count,
+                "contract_flagged_designs": (
+                    len(refreshed_designs) - contract_met_count
+                ),
+                "recommended_designs": recommended_count,
+                "review_designs": len(refreshed_designs) - recommended_count,
+                "accepted_designs": accepted_count,
+                "rejected_designs": len(refreshed_designs) - accepted_count,
+                "design_results": refreshed_designs,
+            }
+        )
     summary.update(
         {
             "status": "completed" if execution_completed else "failed",

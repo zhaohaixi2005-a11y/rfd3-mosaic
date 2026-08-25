@@ -83,6 +83,32 @@ class RunReportingTestCase(unittest.TestCase):
         )
         self.assertFalse(failed["passed"])
 
+    def test_declared_reaudit_reports_override_stale_nested_audits(self) -> None:
+        run = self._completed_run("12346")
+        stale = run / "audits" / "old_design"
+        stale.mkdir(parents=True)
+        self._write_json(
+            stale / "scaffold_validity_audit.json",
+            {
+                "passed": False,
+                "summary": {"passed_continuity": False},
+            },
+        )
+
+        status = collect_run_status(
+            RunReference(job_id="12346", run_directory=run),
+            include_scheduler=False,
+        )
+
+        self.assertTrue(status["passed"])
+        scaffold_audits = [
+            audit
+            for audit in status["audits"]
+            if audit["name"] == "scaffold_validity_audit.json"
+        ]
+        self.assertEqual(len(scaffold_audits), 1)
+        self.assertTrue(scaffold_audits[0]["passed"])
+
     def test_relocated_run_resolves_frozen_absolute_audit_paths(self) -> None:
         source = self._completed_run("24681")
         target = self.root / "2026-08-19" / "design" / "24681"

@@ -247,7 +247,8 @@ def query_scheduler(job_id: str | None) -> dict[str, Any] | None:
 
 def _audit_paths(run_directory: Path, worker: dict[str, Any]) -> list[Path]:
     paths: dict[Path, None] = {}
-    for value in worker.get("reports") or []:
+    declared_reports = list(worker.get("reports") or [])
+    for value in declared_reports:
         path = Path(str(value)).expanduser()
         if not path.is_absolute():
             path = run_directory / path
@@ -263,10 +264,29 @@ def _audit_paths(run_directory: Path, worker: dict[str, Any]) -> list[Path]:
             if len(matches) == 1:
                 path = matches[0]
         paths[path.resolve()] = None
-    for pattern in AUDIT_GLOBS:
+    # Once a worker or post-hoc audit writes an authoritative report list,
+    # older same-named audits may still remain elsewhere in the immutable run
+    # tree.  Do not mix those stale decisions back into current status.  The
+    # prevalidation report is not part of result-audit lists, so retain one
+    # canonical (shallowest) instance for execution provenance.
+    patterns = ("rfd3_prevalidation.json",) if declared_reports else AUDIT_GLOBS
+    for pattern in patterns:
+        candidates: list[Path] = []
         for path in run_directory.rglob(pattern):
             if "software" not in path.parts:
-                paths[path.resolve()] = None
+                candidates.append(path.resolve())
+        if pattern == "rfd3_prevalidation.json" and candidates:
+            canonical = min(
+                candidates,
+                key=lambda path: (
+                    len(path.relative_to(run_directory).parts),
+                    str(path),
+                ),
+            )
+            paths[canonical] = None
+        else:
+            for path in candidates:
+                paths[path] = None
     return sorted(paths)
 
 

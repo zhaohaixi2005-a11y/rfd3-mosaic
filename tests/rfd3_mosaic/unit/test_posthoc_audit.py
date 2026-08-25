@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import yaml
@@ -241,6 +241,21 @@ class PosthocAuditTestCase(unittest.TestCase):
                     "experiment": "posthoc-test",
                     "error_type": "ValueError",
                     "error": "old audit could not map chains",
+                    "produced_designs": 1,
+                    "contract_met_designs": 0,
+                    "contract_flagged_designs": 1,
+                    "recommended_designs": 0,
+                    "review_designs": 1,
+                    "design_results": [
+                        {
+                            "design_index": 0,
+                            "design_id": "result",
+                            "result_json": str(self.result),
+                            "generated": True,
+                            "contract_met": False,
+                            "recommendation": "review_contract",
+                        }
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -272,6 +287,15 @@ class PosthocAuditTestCase(unittest.TestCase):
         self.assertEqual(summary["status"], "completed")
         self.assertNotIn("error", summary)
         self.assertFalse(summary["posthoc_audit"]["inference_rerun"])
+        self.assertEqual(summary["contract_met_designs"], 1)
+        self.assertEqual(summary["contract_flagged_designs"], 0)
+        self.assertEqual(summary["recommended_designs"], 1)
+        self.assertEqual(summary["review_designs"], 0)
+        self.assertTrue(summary["design_results"][0]["contract_met"])
+        self.assertEqual(
+            summary["design_results"][0]["recommendation"],
+            "recommended_for_next_stage",
+        )
         self.assertEqual(
             summary["posthoc_audit"]["previous_error"],
             "old audit could not map chains",
