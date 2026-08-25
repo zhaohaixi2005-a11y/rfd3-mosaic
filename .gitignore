@@ -200,6 +200,7 @@ lib
 *.gif
 *.bmp
 *.tiff
+!docs/rfd3_mosaic/assets/rfd3_mosaic_architecture.svg
 
 # Molecular-visualization and local diagnostic artifacts
 *.pse
