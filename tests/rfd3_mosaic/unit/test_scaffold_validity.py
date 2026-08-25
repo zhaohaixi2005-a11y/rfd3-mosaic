@@ -1,6 +1,6 @@
-from dataclasses import replace
 import math
 import unittest
+from dataclasses import replace
 
 import numpy as np
 
@@ -32,6 +32,45 @@ def _atom(
 
 
 class ScaffoldValidityTestCase(unittest.TestCase):
+    def test_cross_chain_backbone_segment_collision_is_a_hard_contract(
+        self,
+    ) -> None:
+        atoms = (
+            _atom(1, "CA", 1, -2.0, 0.0, chain="A"),
+            _atom(2, "CA", 2, 2.0, 0.0, chain="A"),
+            _atom(3, "CA", 1, 0.0, -2.0, chain="B"),
+            _atom(4, "CA", 2, 0.0, 2.0, chain="B"),
+        )
+
+        report = audit_scaffold_geometry(atoms)
+
+        self.assertFalse(report["summary"]["passed_cross_chain_topology"])
+        self.assertEqual(
+            report["summary"]["cross_chain_ca_segment_collision_count"],
+            1,
+        )
+        self.assertAlmostEqual(
+            report["summary"]["minimum_cross_chain_ca_segment_distance"],
+            0.0,
+        )
+        self.assertFalse(report["passed"])
+
+    def test_separated_cross_chain_segments_pass_topology_contract(self) -> None:
+        atoms = (
+            _atom(1, "CA", 1, -2.0, 0.0, chain="A"),
+            _atom(2, "CA", 2, 2.0, 0.0, chain="A"),
+            _atom(3, "CA", 1, -2.0, 5.0, chain="B"),
+            _atom(4, "CA", 2, 2.0, 5.0, chain="B"),
+        )
+
+        report = audit_scaffold_geometry(atoms)
+
+        self.assertTrue(report["summary"]["passed_cross_chain_topology"])
+        self.assertEqual(
+            report["summary"]["cross_chain_ca_segment_collision_count"],
+            0,
+        )
+
     def test_compact_continuous_chain_passes(self) -> None:
         atoms = (
             _atom(1, "N", 1, 0.00),

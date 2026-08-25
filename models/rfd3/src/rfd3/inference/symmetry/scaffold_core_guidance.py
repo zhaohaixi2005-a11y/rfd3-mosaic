@@ -29,6 +29,8 @@ class ScaffoldCoreChain:
     ca_atom_indices: torch.Tensor
     residue_indices: torch.Tensor
     generated_ca_mask: torch.Tensor
+    ca_segment_atom_pairs: torch.Tensor
+    generated_segment_mask: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -116,12 +118,14 @@ class ScaffoldCoreEnergy:
     tertiary_support: torch.Tensor
     inter_chain_excess: torch.Tensor
     clash: torch.Tensor
+    cross_chain_segment_clash: torch.Tensor
     continuity: torch.Tensor
     mean_normalized_rg: torch.Tensor
     mean_tertiary_support_fraction: torch.Tensor
     generated_inter_chain_contact_pairs: torch.Tensor
     generated_inter_chain_contact_coverage: torch.Tensor
     minimum_generated_inter_chain_distance: torch.Tensor
+    minimum_cross_chain_segment_distance: torch.Tensor
 
     def detached_dict(self) -> dict[str, float]:
         return {
@@ -133,12 +137,14 @@ class ScaffoldCoreEnergy:
                 "tertiary_support",
                 "inter_chain_excess",
                 "clash",
+                "cross_chain_segment_clash",
                 "continuity",
                 "mean_normalized_rg",
                 "mean_tertiary_support_fraction",
                 "generated_inter_chain_contact_pairs",
                 "generated_inter_chain_contact_coverage",
                 "minimum_generated_inter_chain_distance",
+                "minimum_cross_chain_segment_distance",
             )
         }
 
@@ -215,13 +221,12 @@ def build_scaffold_core_topology(
         consecutive = (
             residue_index[selected_tokens][1:] - residue_index[selected_tokens][:-1]
         ) == 1
+        consecutive_indices = torch.nonzero(
+            consecutive,
+            as_tuple=False,
+        ).reshape(-1)
         for pair_index in (
-            torch.nonzero(
-                consecutive,
-                as_tuple=False,
-            )
-            .reshape(-1)
-            .tolist()
+            consecutive_indices.tolist()
         ):
             left_token = int(selected_tokens[pair_index].item())
             right_token = int(selected_tokens[pair_index + 1].item())
@@ -236,6 +241,17 @@ def build_scaffold_core_topology(
                 ca_atom_indices=selected_atoms,
                 residue_indices=residue_index[selected_tokens],
                 generated_ca_mask=token_generated[selected_tokens],
+                ca_segment_atom_pairs=torch.stack(
+                    (
+                        selected_atoms[consecutive_indices],
+                        selected_atoms[consecutive_indices + 1],
+                    ),
+                    dim=-1,
+                ).reshape(-1, 2),
+                generated_segment_mask=(
+                    token_generated[selected_tokens[consecutive_indices]]
+                    | token_generated[selected_tokens[consecutive_indices + 1]]
+                ),
             )
         )
     if not chains:
@@ -274,6 +290,114 @@ def _clamp_step(vector: torch.Tensor, maximum_norm: float) -> torch.Tensor:
     )
 
 
+def _point_to_segment_distances(
+    points: torch.Tensor,
+    segment_start: torch.Tensor,
+    segment_end: torch.Tensor,
+) -> torch.Tensor:
+    """Return all pairwise point-to-segment distances.
+
+    ``points`` has shape ``[P, 3]`` and both segment tensors have shape
+    ``[S, 3]``.  The result has shape ``[P, S]``.
+    """
+
+    direction = segment_end - segment_start
+    offset = points[:, None, :] - segment_start[None, :, :]
+    denominator = torch.sum(torch.square(direction), dim=-1).clamp_min(1e-8)
+    fraction = torch.sum(offset * direction[None, :, :], dim=-1) / denominator
+    fraction = torch.clamp(fraction, min=0.0, max=1.0)
+    closest = segment_start[None, :, :] + fraction[..., None] * direction[None, :, :]
+    return torch.linalg.vector_norm(points[:, None, :] - closest, dim=-1)
+
+
+def _segment_to_segment_distances(
+    left_start: torch.Tensor,
+    left_end: torch.Tensor,
+    right_start: torch.Tensor,
+    right_end: torch.Tensor,
+) -> torch.Tensor:
+    """Return differentiable pairwise finite-segment distances.
+
+    Endpoint-to-segment candidates cover boundary optima.  A fifth candidate
+    covers an interior/interior closest approach, including the important case
+    where two backbone chords cross even though none of their CA endpoints is
+    atomically close.  Near-parallel segments safely fall back to the endpoint
+    candidates.
+    """
+
+    left_start_to_right = _point_to_segment_distances(
+        left_start,
+        right_start,
+        right_end,
+    )
+    left_end_to_right = _point_to_segment_distances(
+        left_end,
+        right_start,
+        right_end,
+    )
+    right_start_to_left = _point_to_segment_distances(
+        right_start,
+        left_start,
+        left_end,
+    ).transpose(0, 1)
+    right_end_to_left = _point_to_segment_distances(
+        right_end,
+        left_start,
+        left_end,
+    ).transpose(0, 1)
+
+    left_direction = left_end - left_start
+    right_direction = right_end - right_start
+    relative = left_start[:, None, :] - right_start[None, :, :]
+    a = torch.sum(torch.square(left_direction), dim=-1)[:, None]
+    b = torch.sum(
+        left_direction[:, None, :] * right_direction[None, :, :],
+        dim=-1,
+    )
+    c = torch.sum(torch.square(right_direction), dim=-1)[None, :]
+    d = torch.sum(left_direction[:, None, :] * relative, dim=-1)
+    e = torch.sum(right_direction[None, :, :] * relative, dim=-1)
+    determinant = a * c - torch.square(b)
+    safe_determinant = determinant.clamp_min(1e-8)
+    left_fraction = (b * e - c * d) / safe_determinant
+    right_fraction = (a * e - b * d) / safe_determinant
+    interior_valid = (
+        (determinant > 1e-8)
+        & (left_fraction >= 0.0)
+        & (left_fraction <= 1.0)
+        & (right_fraction >= 0.0)
+        & (right_fraction <= 1.0)
+    )
+    left_closest = (
+        left_start[:, None, :]
+        + left_fraction[..., None] * left_direction[:, None, :]
+    )
+    right_closest = (
+        right_start[None, :, :]
+        + right_fraction[..., None] * right_direction[None, :, :]
+    )
+    interior_distance = torch.linalg.vector_norm(
+        left_closest - right_closest,
+        dim=-1,
+    )
+    infinity = torch.full_like(interior_distance, float("inf"))
+    interior_distance = torch.where(
+        interior_valid,
+        interior_distance,
+        infinity,
+    )
+    return torch.stack(
+        (
+            left_start_to_right,
+            left_end_to_right,
+            right_start_to_left,
+            right_end_to_left,
+            interior_distance,
+        ),
+        dim=0,
+    ).min(dim=0).values
+
+
 def scaffold_core_energy(
     coordinates: torch.Tensor,
     topology: ScaffoldCoreTopology,
@@ -291,6 +415,8 @@ def scaffold_core_energy(
     support_fractions: list[torch.Tensor] = []
     continuity_terms: list[torch.Tensor] = []
     clash_terms: list[torch.Tensor] = []
+    cross_chain_segment_clash_terms: list[torch.Tensor] = []
+    cross_chain_segment_minimums: list[torch.Tensor] = []
 
     for chain in topology.chains:
         xyz = coordinates[chain.ca_atom_indices]
@@ -388,30 +514,58 @@ def scaffold_core_energy(
     inter_minimums: list[torch.Tensor] = []
     for left_index, left_chain in enumerate(topology.chains):
         left_atoms = left_chain.ca_atom_indices[left_chain.generated_ca_mask]
-        if not len(left_atoms):
-            continue
         for right_chain in topology.chains[left_index + 1 :]:
             right_atoms = right_chain.ca_atom_indices[right_chain.generated_ca_mask]
-            if not len(right_atoms):
-                continue
-            distances = torch.cdist(coordinates[left_atoms], coordinates[right_atoms])
-            soft = _soft_contacts(distances, config)
-            scale = float(min(len(left_atoms), len(right_atoms)))
-            allowance = config.incidental_inter_chain_fraction * scale
-            excess = torch.relu(soft.sum() - allowance) / max(scale, 1.0)
-            inter_terms.append(torch.square(excess))
-            hard = distances < config.contact_distance
-            inter_pairs_hard.append(hard.sum().to(coordinates.dtype))
-            left_covered = hard.any(dim=1).to(coordinates.dtype).mean()
-            right_covered = hard.any(dim=0).to(coordinates.dtype).mean()
-            inter_coverages.append(0.5 * (left_covered + right_covered))
-            inter_minimums.append(distances.min())
+            if len(left_atoms) and len(right_atoms):
+                distances = torch.cdist(
+                    coordinates[left_atoms],
+                    coordinates[right_atoms],
+                )
+                soft = _soft_contacts(distances, config)
+                scale = float(min(len(left_atoms), len(right_atoms)))
+                allowance = config.incidental_inter_chain_fraction * scale
+                excess = torch.relu(soft.sum() - allowance) / max(scale, 1.0)
+                inter_terms.append(torch.square(excess))
+                hard = distances < config.contact_distance
+                inter_pairs_hard.append(hard.sum().to(coordinates.dtype))
+                left_covered = hard.any(dim=1).to(coordinates.dtype).mean()
+                right_covered = hard.any(dim=0).to(coordinates.dtype).mean()
+                inter_coverages.append(0.5 * (left_covered + right_covered))
+                inter_minimums.append(distances.min())
 
-            # Hard safety rejects atomically overlapping generated chains,
-            # while ordinary interface-distance contacts remain soft.
-            clash_terms.append(
-                torch.mean(torch.square(torch.relu(config.clash_distance - distances)))
-            )
+                # Hard safety rejects atomically overlapping generated chains,
+                # while ordinary interface-distance contacts remain soft.
+                clash_terms.append(
+                    torch.mean(
+                        torch.square(
+                            torch.relu(config.clash_distance - distances)
+                        )
+                    )
+                )
+
+            left_segments = left_chain.ca_segment_atom_pairs
+            right_segments = right_chain.ca_segment_atom_pairs
+            if len(left_segments) and len(right_segments):
+                left_generated = left_chain.generated_segment_mask
+                right_generated = right_chain.generated_segment_mask
+                relevant = left_generated[:, None] | right_generated[None, :]
+                if torch.any(relevant):
+                    segment_distances = _segment_to_segment_distances(
+                        coordinates[left_segments[:, 0]],
+                        coordinates[left_segments[:, 1]],
+                        coordinates[right_segments[:, 0]],
+                        coordinates[right_segments[:, 1]],
+                    )[relevant]
+                    cross_chain_segment_minimums.append(segment_distances.min())
+                    cross_chain_segment_clash_terms.append(
+                        torch.max(
+                            torch.square(
+                                torch.relu(
+                                    config.clash_distance - segment_distances
+                                )
+                            )
+                        )
+                    )
 
     def mean(items: list[torch.Tensor], default: torch.Tensor = zero):
         return torch.stack(items).mean() if items else default
@@ -421,6 +575,7 @@ def scaffold_core_energy(
     tertiary_support = mean(support_terms)
     inter_excess = mean(inter_terms)
     clash = mean(clash_terms)
+    cross_chain_segment_clash = mean(cross_chain_segment_clash_terms)
     continuity = mean(continuity_terms)
     total = (
         config.intra_chain_weight
@@ -432,7 +587,7 @@ def scaffold_core_energy(
         + config.inter_chain_excess_penalty
         * config.inter_chain_excess_weight
         * inter_excess
-        + config.clash_weight * clash
+        + config.clash_weight * (clash + cross_chain_segment_clash)
         + config.continuity_weight * continuity
     )
     inf = torch.full(
@@ -445,6 +600,7 @@ def scaffold_core_energy(
         tertiary_support=tertiary_support,
         inter_chain_excess=inter_excess,
         clash=clash,
+        cross_chain_segment_clash=cross_chain_segment_clash,
         continuity=continuity,
         mean_normalized_rg=mean(normalized_rgs),
         mean_tertiary_support_fraction=mean(support_fractions),
@@ -454,6 +610,11 @@ def scaffold_core_energy(
         generated_inter_chain_contact_coverage=mean(inter_coverages),
         minimum_generated_inter_chain_distance=torch.stack(inter_minimums).min()
         if inter_minimums
+        else inf,
+        minimum_cross_chain_segment_distance=torch.stack(
+            cross_chain_segment_minimums
+        ).min()
+        if cross_chain_segment_minimums
         else inf,
     )
 
@@ -609,6 +770,8 @@ def apply_scaffold_core_guidance(
             continue
         safety_ok = (
             float(trial.clash.item()) <= float(initial.clash.item()) + 1e-7
+            and float(trial.cross_chain_segment_clash.item())
+            <= float(initial.cross_chain_segment_clash.item()) + 1e-7
             and float(trial.continuity.item())
             <= float(initial.continuity.item()) + 1e-7
         )

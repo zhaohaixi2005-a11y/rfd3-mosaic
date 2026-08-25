@@ -39,6 +39,7 @@ from rfd3_mosaic.sampling_plan import (
     pose_plan_is_stochastic,
 )
 from rfd3_mosaic.schema import load_user_design
+from rfd3_mosaic.structure_archive import create_generated_cif_archive
 
 _AUTHORING_SOURCE_ROLES = frozenset(
     {
@@ -735,6 +736,11 @@ def execute(
         record["recommendation"] == "recommended_for_next_stage"
         for record in design_results
     )
+    structure_archive = create_generated_cif_archive(
+        result_jsons,
+        run_dir / "generated_structures_cif.zip",
+        requested_designs=expected_designs,
+    )
 
     completion = {
         "status": "completed",
@@ -764,6 +770,7 @@ def execute(
             str(result_jsons[0]) if len(result_jsons) == 1 else None
         ),
         "result_jsons": [str(path) for path in result_jsons],
+        "structure_archive": structure_archive,
         "reports": [str(path) for path in all_reports],
         "runtime_provenance": str(runtime_provenance_path),
         "mobility_trajectory": (

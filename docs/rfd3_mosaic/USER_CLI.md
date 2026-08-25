@@ -96,6 +96,13 @@ create one authoring YAML per design.
 For very large campaigns, choose a scheduler walltime that can accommodate the
 requested count or split the total across several seeds/jobs.
 
+Every completed run also writes `generated_structures_cif.zip`. The ZIP
+contains only plain `.cif` members—no configuration, logs, audits or source
+snapshot—so a run with `sampling.designs: 1000` and 1000 produced outputs has
+exactly 1000 CIF members. The adjacent
+`generated_structures_cif_manifest.json` records the requested/produced counts
+and archive SHA256 without being placed inside the structure-only ZIP.
+
 ### `examples` and `profiles`
 
 ```bash

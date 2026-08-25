@@ -1,5 +1,24 @@
 # RFD3-Mosaic project status
 
+## 2026-08-25 cross-chain topology safety (CPU implementation)
+
+- Scaffold-core sampling now measures finite CA--CA backbone segments across
+  chains, rather than relying only on CA endpoint distances. A generated
+  segment crossing can therefore receive a differentiable repulsive gradient
+  even when all four endpoints are farther apart than the point-clash radius.
+- Supplied fixed--fixed interface geometry remains excluded from that runtime
+  term. Generated--fixed and generated--generated segment approaches remain
+  covered, and exact motif/symmetry projection remains authoritative.
+- The final scaffold audit records broad segment proximities as advisory
+  measurements but treats a sub-angstrom interior/interior backbone-segment
+  collision as a topology contract violation.
+- Every completed run writes a structure-only ZIP of plain CIF members plus a
+  separate count/hash manifest. A PyMOL helper loads a CIF directory into one
+  discrete multi-state object for keyboard navigation.
+- Python compilation, archive streaming, and the complete 927-test CPU unit
+  suite pass locally. A matched GPU canary remains required before calling the
+  new sampling protection GPU-validated.
+
 ## Release stage
 
 RFD3-Mosaic is an actively developed **research preview**. It is installable,

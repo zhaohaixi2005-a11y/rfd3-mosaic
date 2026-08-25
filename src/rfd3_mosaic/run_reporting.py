@@ -571,6 +571,9 @@ def collect_run_status(
         "artifacts": {
             "structures": structures,
             "logs": logs,
+            "structure_archive": (
+                worker.get("structure_archive") if worker else None
+            ),
             "mobility_trajectory": (
                 worker.get("mobility_trajectory") if worker else None
             ),
@@ -794,6 +797,15 @@ def format_status_text(status: dict[str, Any]) -> str:
     )
     for path in structures:
         lines.append(f"  - {path}")
+    structure_archive = (status.get("artifacts") or {}).get(
+        "structure_archive"
+    )
+    if isinstance(structure_archive, dict) and structure_archive.get("archive"):
+        lines.append(
+            "CIF archive: "
+            f"{structure_archive['archive']} "
+            f"({structure_archive.get('member_count', 0)} plain CIF files)"
+        )
     if worker.get("error"):
         lines.append(
             f"failure:     {worker.get('error_type', 'Error')}: " f"{worker['error']}"

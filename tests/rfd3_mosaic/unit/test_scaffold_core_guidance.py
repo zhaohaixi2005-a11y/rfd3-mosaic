@@ -29,6 +29,75 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_crossing_backbone_segments_are_detected_without_ca_point_clash(
+        self,
+    ) -> None:
+        topology = build_scaffold_core_topology(
+            features(tokens_per_chain=2),
+            torch.zeros(4, dtype=torch.bool),
+        )
+        coordinates = torch.tensor(
+            [
+                [-3.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [0.0, -3.0, 0.0],
+                [0.0, 3.0, 0.0],
+            ]
+        )
+        energy = scaffold_core_energy(
+            coordinates,
+            topology,
+            ScaffoldCoreGuidanceConfig(
+                intra_chain_weight=0.0,
+                inter_chain_excess_penalty=0.0,
+                continuity_weight=0.0,
+                clash_distance=3.2,
+            ),
+        )
+
+        self.assertEqual(energy.clash.item(), 0.0)
+        self.assertAlmostEqual(
+            energy.cross_chain_segment_clash.item(),
+            3.2**2,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            energy.minimum_cross_chain_segment_distance.item(),
+            0.0,
+        )
+        self.assertGreater(energy.total.item(), 0.0)
+
+    def test_fixed_fixed_segments_are_not_repulsed(self) -> None:
+        f = {
+            "atom_to_token_map": torch.arange(5),
+            "asym_id": torch.tensor([0, 0, 1, 1, 1]),
+            "residue_index": torch.tensor([0, 1, 0, 1, 2]),
+            "is_ca": torch.ones(5, dtype=torch.bool),
+            "is_protein": torch.ones(5, dtype=torch.bool),
+        }
+        fixed = torch.tensor([True, True, True, True, False])
+        topology = build_scaffold_core_topology(f, fixed)
+        coordinates = torch.tensor(
+            [
+                [-3.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [0.0, -3.0, 0.0],
+                [0.0, 3.0, 0.0],
+                [10.0, 3.0, 0.0],
+            ]
+        )
+        energy = scaffold_core_energy(
+            coordinates,
+            topology,
+            ScaffoldCoreGuidanceConfig(
+                intra_chain_weight=0.0,
+                continuity_weight=0.0,
+                clash_distance=1.0,
+            ),
+        )
+
+        self.assertEqual(energy.cross_chain_segment_clash.item(), 0.0)
+
     def test_result_writer_preserves_core_diagnostics_for_every_design(
         self,
     ) -> None:

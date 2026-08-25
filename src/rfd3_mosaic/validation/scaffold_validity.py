@@ -13,6 +13,81 @@ from rfd3_mosaic.validation.assembly_morphology import (
 )
 
 
+def _point_to_segment_distances(
+    points: np.ndarray,
+    segment_start: np.ndarray,
+    segment_end: np.ndarray,
+) -> np.ndarray:
+    direction = segment_end - segment_start
+    offset = points[:, None, :] - segment_start[None, :, :]
+    denominator = np.maximum(np.sum(direction * direction, axis=-1), 1e-12)
+    fraction = np.sum(offset * direction[None, :, :], axis=-1) / denominator
+    fraction = np.clip(fraction, 0.0, 1.0)
+    closest = segment_start[None, :, :] + fraction[..., None] * direction[None, :, :]
+    return np.linalg.norm(points[:, None, :] - closest, axis=-1)
+
+
+def _segment_to_segment_distances(
+    left_start: np.ndarray,
+    left_end: np.ndarray,
+    right_start: np.ndarray,
+    right_end: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return distance plus the unconstrained interior closest approach."""
+
+    candidates = [
+        _point_to_segment_distances(left_start, right_start, right_end),
+        _point_to_segment_distances(left_end, right_start, right_end),
+        _point_to_segment_distances(
+            right_start,
+            left_start,
+            left_end,
+        ).T,
+        _point_to_segment_distances(
+            right_end,
+            left_start,
+            left_end,
+        ).T,
+    ]
+    left_direction = left_end - left_start
+    right_direction = right_end - right_start
+    relative = left_start[:, None, :] - right_start[None, :, :]
+    a = np.sum(left_direction * left_direction, axis=-1)[:, None]
+    b = np.sum(
+        left_direction[:, None, :] * right_direction[None, :, :],
+        axis=-1,
+    )
+    c = np.sum(right_direction * right_direction, axis=-1)[None, :]
+    d = np.sum(left_direction[:, None, :] * relative, axis=-1)
+    e = np.sum(right_direction[None, :, :] * relative, axis=-1)
+    determinant = a * c - b * b
+    safe_determinant = np.maximum(determinant, 1e-12)
+    left_fraction = (b * e - c * d) / safe_determinant
+    right_fraction = (a * e - b * d) / safe_determinant
+    valid = (
+        (determinant > 1e-12)
+        & (left_fraction >= 0.0)
+        & (left_fraction <= 1.0)
+        & (right_fraction >= 0.0)
+        & (right_fraction <= 1.0)
+    )
+    left_closest = (
+        left_start[:, None, :]
+        + left_fraction[..., None] * left_direction[:, None, :]
+    )
+    right_closest = (
+        right_start[None, :, :]
+        + right_fraction[..., None] * right_direction[None, :, :]
+    )
+    interior = np.linalg.norm(left_closest - right_closest, axis=-1)
+    candidates.append(np.where(valid, interior, np.inf))
+    return (
+        np.min(np.stack(candidates, axis=0), axis=0),
+        interior,
+        valid,
+    )
+
+
 def audit_scaffold_geometry(
     atoms: tuple[AtomRecord, ...],
     *,
@@ -21,6 +96,7 @@ def audit_scaffold_geometry(
     max_ca_step: float = 4.5,
     max_chain_ca_rg: float = 25.0,
     ca_clash_distance: float = 3.0,
+    ca_segment_collision_distance: float = 1.0,
     expected_symmetry_multiplicity: int | None = None,
     expected_symmetry_transforms: tuple[np.ndarray, ...] | None = None,
     expected_symmetry_chain_layout: tuple[dict[str, Any], ...] | None = None,
@@ -53,6 +129,10 @@ def audit_scaffold_geometry(
 
     chains: list[dict[str, Any]] = []
     ca_coordinates_by_chain: dict[str, np.ndarray] = {}
+    ca_segments_by_chain: dict[
+        str,
+        list[tuple[int, int, np.ndarray, np.ndarray]],
+    ] = {}
     ca_records: list[tuple[str, int, np.ndarray]] = []
     # Preserve the chain order emitted by the compiler.  Lexicographic
     # sorting is incorrect once chain identifiers pass Z (AA sorts before B)
@@ -63,6 +143,7 @@ def audit_scaffold_geometry(
         ca_steps: list[float] = []
         breaks: list[dict[str, Any]] = []
         ca_coordinates: list[np.ndarray] = []
+        ca_segments: list[tuple[int, int, np.ndarray, np.ndarray]] = []
         for index, (residue_id, backbone) in enumerate(chain_residues):
             if "CA" in backbone:
                 ca_coordinates.append(backbone["CA"])
@@ -89,6 +170,15 @@ def audit_scaffold_geometry(
                 cn_distances.append(cn)
             if ca is not None:
                 ca_steps.append(ca)
+                if residue_numbers_are_contiguous and ca <= max_ca_step:
+                    ca_segments.append(
+                        (
+                            previous_id[1],
+                            residue_id[1],
+                            previous["CA"],
+                            backbone["CA"],
+                        )
+                    )
             failed = (
                 not residue_numbers_are_contiguous
                 or cn is None
@@ -110,6 +200,7 @@ def audit_scaffold_geometry(
                 )
         ca_array = np.asarray(ca_coordinates, dtype=float)
         ca_coordinates_by_chain[chain_id] = ca_array
+        ca_segments_by_chain[chain_id] = ca_segments
         ca_rg = (
             float(
                 np.sqrt(
@@ -162,6 +253,71 @@ def audit_scaffold_geometry(
         chain["passed_compactness"] for chain in chains
     )
     passed_clashes = not ca_clashes
+    cross_chain_ca_segment_proximities: list[dict[str, Any]] = []
+    cross_chain_ca_segment_collisions: list[dict[str, Any]] = []
+    minimum_cross_chain_ca_segment_distance = float("inf")
+    chain_ids = list(ca_segments_by_chain)
+    for left_chain_index, left_chain in enumerate(chain_ids):
+        left_segments = ca_segments_by_chain[left_chain]
+        if not left_segments:
+            continue
+        left_start = np.asarray([item[2] for item in left_segments])
+        left_end = np.asarray([item[3] for item in left_segments])
+        for right_chain in chain_ids[left_chain_index + 1 :]:
+            right_segments = ca_segments_by_chain[right_chain]
+            if not right_segments:
+                continue
+            right_start = np.asarray([item[2] for item in right_segments])
+            right_end = np.asarray([item[3] for item in right_segments])
+            distances, interior_distances, interior_valid = (
+                _segment_to_segment_distances(
+                    left_start,
+                    left_end,
+                    right_start,
+                    right_end,
+                )
+            )
+            minimum_cross_chain_ca_segment_distance = min(
+                minimum_cross_chain_ca_segment_distance,
+                float(np.min(distances)),
+            )
+            for left_segment_index, right_segment_index in np.argwhere(
+                distances < ca_clash_distance
+            ):
+                left_item = left_segments[int(left_segment_index)]
+                right_item = right_segments[int(right_segment_index)]
+                cross_chain_ca_segment_proximities.append(
+                    {
+                        "left_chain": left_chain,
+                        "left_residues": [left_item[0], left_item[1]],
+                        "right_chain": right_chain,
+                        "right_residues": [right_item[0], right_item[1]],
+                        "distance": float(
+                            distances[left_segment_index, right_segment_index]
+                        ),
+                    }
+                )
+            for left_segment_index, right_segment_index in np.argwhere(
+                interior_valid
+                & (interior_distances < ca_segment_collision_distance)
+            ):
+                left_item = left_segments[int(left_segment_index)]
+                right_item = right_segments[int(right_segment_index)]
+                cross_chain_ca_segment_collisions.append(
+                    {
+                        "left_chain": left_chain,
+                        "left_residues": [left_item[0], left_item[1]],
+                        "right_chain": right_chain,
+                        "right_residues": [right_item[0], right_item[1]],
+                        "distance": float(
+                            interior_distances[
+                                left_segment_index,
+                                right_segment_index,
+                            ]
+                        ),
+                    }
+                )
+    passed_cross_chain_topology = not cross_chain_ca_segment_collisions
     copy_internal_comparisons: list[dict[str, Any]] = []
     transform_comparisons: list[dict[str, Any]] = []
     symmetry_failures: list[str] = []
@@ -450,6 +606,7 @@ def audit_scaffold_geometry(
             passed_continuity
             and passed_compactness
             and passed_clashes
+            and passed_cross_chain_topology
             and passed_symmetry
         ),
         "summary": {
@@ -465,9 +622,22 @@ def audit_scaffold_geometry(
                 default=float("inf"),
             ),
             "ca_clash_count": len(ca_clashes),
+            "cross_chain_ca_segment_proximity_count": len(
+                cross_chain_ca_segment_proximities
+            ),
+            "minimum_cross_chain_ca_segment_distance": (
+                minimum_cross_chain_ca_segment_distance
+                if np.isfinite(minimum_cross_chain_ca_segment_distance)
+                else None
+            ),
+            "cross_chain_ca_segment_proximity_is_advisory": True,
+            "cross_chain_ca_segment_collision_count": len(
+                cross_chain_ca_segment_collisions
+            ),
             "passed_continuity": passed_continuity,
             "passed_compactness": passed_compactness,
             "passed_clashes": passed_clashes,
+            "passed_cross_chain_topology": passed_cross_chain_topology,
             "passed_symmetry": passed_symmetry,
             "maximum_copy_internal_distance_matrix_rmsd": max(
                 (
@@ -532,6 +702,9 @@ def audit_scaffold_geometry(
             "max_ca_step": max_ca_step,
             "max_chain_ca_radius_of_gyration": max_chain_ca_rg,
             "ca_clash_distance": ca_clash_distance,
+            "ca_segment_collision_distance": (
+                ca_segment_collision_distance
+            ),
             "expected_symmetry_multiplicity": (
                 expected_symmetry_multiplicity
             ),
@@ -555,6 +728,12 @@ def audit_scaffold_geometry(
         },
         "chains": chains,
         "ca_clashes": ca_clashes,
+        "cross_chain_ca_segment_proximities": (
+            cross_chain_ca_segment_proximities
+        ),
+        "cross_chain_ca_segment_collisions": (
+            cross_chain_ca_segment_collisions
+        ),
         "symmetry": {
             "enabled": expected_symmetry_multiplicity is not None,
             "passed": passed_symmetry,

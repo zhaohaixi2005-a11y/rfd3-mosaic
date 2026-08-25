@@ -4,6 +4,24 @@ The supported user entry point is the `rfd3-mosaic` CLI. Scripts in this
 directory are development, validation or historical research helpers; their
 presence does not make every script a current product path.
 
+## Review many CIF structures in PyMOL
+
+Loading many CIF files as separate PyMOL objects does not create a trajectory,
+so frame/state keyboard shortcuts cannot switch between them. Load them as
+independent states of one discrete object instead:
+
+```text
+run /path/to/rfd3-mosaic/scripts/rfd3_mosaic/load_cif_ensemble.py
+load_cif_ensemble /path/to/cif_directory, mosaic_batch
+load_cif_ensemble /path/to/generated_structures_cif.zip, mosaic_batch_zip
+```
+
+The loader accepts a directory/glob of `.cif` and `.cif.gz`, or the
+`generated_structures_cif.zip` written by Mosaic. It searches directories
+recursively by default and binds Left/Right and PageUp/PageDown to the
+previous/next design. It refuses to overwrite an existing PyMOL object with
+the requested name.
+
 ## Maintained campaign and collection helpers
 
 - `submit_gpu_release_gates.py`: freezes and submits the non-redundant current
