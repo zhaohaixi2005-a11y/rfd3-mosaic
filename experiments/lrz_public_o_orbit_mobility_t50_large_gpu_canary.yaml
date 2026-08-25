@@ -1,0 +1,72 @@
+schema_version: 1
+name: public-o-orbit-mobility-t50-s976
+input: ../examples/rfd3_mosaic/inputs/Prism_C3_G2_fixed_motif.pdb
+symmetry:
+  id: O
+  axis: [0.0, 0.0, 1.0]
+  secondary_axis: [1.0, 0.0, 0.0]
+  center: [0.0, 0.0, 0.0]
+
+generation:
+  - kind: between
+    from_selector: A12-20
+    to_selector: A26-37
+    length: 30
+
+# Dynamic counterpart of the closed 24-copy static O gate. Each motif fragment
+# remains internally exact; only its master rigid-body pose is updated and all
+# copies are reconstructed by the declared O operators. A between-linker keeps
+# this an isolated mobility/continuity test rather than implicitly asking the
+# central-motif interface workflow to create a new O interface.
+constraints:
+  - kind: fixed_xyz
+    selector: A12-20
+    atoms: all
+    coupling_group: o_mobile_orbit_alpha
+    pose: &o_mobile_pose
+      mode: bounded_mobile
+      subspace: bounded_se3
+      proposal: scaffold_objectives
+      max_translation: 3.0
+      max_rotation_deg: 10.0
+      start_fraction: 0.05
+      end_fraction: 0.75
+      response: 0.2
+      max_step_translation: 0.25
+      max_step_rotation_deg: 1.0
+
+  - kind: fixed_xyz
+    selector: A26-37
+    atoms: all
+    coupling_group: o_mobile_orbit_beta
+    pose: *o_mobile_pose
+
+sampling:
+  initial_poses:
+    o_mobile_orbit_alpha:
+      radius: {minimum: 110.0, maximum: 110.0}
+      axial_offset: {minimum: 0.0, maximum: 0.0}
+      radial_direction: [0.9396926, 0.3420201, 0.0]
+      orientation: {method: fixed, rotation_deg: [0.0, 0.0, 0.0]}
+      seed: 97601
+    o_mobile_orbit_beta:
+      radius: {minimum: 140.0, maximum: 140.0}
+      axial_offset: {minimum: 0.0, maximum: 0.0}
+      radial_direction: [0.7071068, 0.7071068, 0.0]
+      orientation: {method: fixed, rotation_deg: [0.0, 0.0, 0.0]}
+      seed: 97602
+  timesteps: 50
+  designs: 1
+  seed: 976
+  preset: exact_mosaic
+  low_memory_mode: true
+  execution_backend: explicit_all_copy
+  scaffold_packing: "off"
+
+resources:
+  profile: large_gpu
+  walltime: "08:00:00"
+
+output:
+  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  campaign: public-o-orbit-mobility-t50-canary

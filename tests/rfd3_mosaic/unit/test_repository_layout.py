@@ -52,6 +52,30 @@ class RepositoryLayoutTestCase(unittest.TestCase):
                 self.assertTrue(design.is_file(), design)
                 self.assertNotIn("archive", design.parts)
 
+    def test_remaining_closure_gates_record_acceptance_contracts(self) -> None:
+        namespace = runpy.run_path(
+            str(SCRIPT_ROOT / "submit_gpu_release_gates.py")
+        )
+        gates = namespace["GATES"]
+        closure = {
+            name: gate
+            for name, gate in gates.items()
+            if gate["tier"] == "closure"
+        }
+        self.assertEqual(
+            set(closure),
+            {
+                "cross-chain-topology",
+                "c4-c2-quotient",
+                "t-dynamic",
+                "o-dynamic",
+                "i-continuity",
+            },
+        )
+        for gate_name, gate in closure.items():
+            with self.subTest(gate=gate_name):
+                self.assertTrue(gate.get("acceptance"))
+
     def test_superseded_experiments_are_not_in_active_directory(self) -> None:
         superseded = EXPERIMENT_ROOT / "archive" / "superseded"
         self.assertTrue(superseded.is_dir())
@@ -67,4 +91,3 @@ class RepositoryLayoutTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

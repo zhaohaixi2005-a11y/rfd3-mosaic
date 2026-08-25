@@ -25,7 +25,9 @@ the requested name.
 ## Maintained campaign and collection helpers
 
 - `submit_gpu_release_gates.py`: freezes and submits the non-redundant current
-  GPU evidence matrix through `rfd3-mosaic run/submit`.
+  GPU evidence matrix through `rfd3-mosaic run/submit`. The `closure` tier and
+  every gate's machine-readable acceptance list are maintained in
+  `docs/internal/GPU_ACCEPTANCE_MATRIX_2026_08_25.md`.
 - `submit_packing_replicates.py`: creates matched independent-pose
   locked/guided C3 packing evidence through the normal CLI. On memory-limited
   Slurm login nodes, `--defer-runtime-preflight` keeps lightweight planning

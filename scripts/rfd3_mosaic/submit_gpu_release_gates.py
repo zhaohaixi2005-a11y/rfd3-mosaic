@@ -21,6 +21,26 @@ LARGE_PROFILE = "configs/rfd3_mosaic/sites/lrz/large_gpu.yaml"
 # expressed by a comma-separated Slurm partition list, not by duplicating the
 # same trajectory on four accelerator models.
 GATES: dict[str, dict[str, Any]] = {
+    "cross-chain-topology": {
+        "tier": "closure",
+        "design": (
+            "experiments/"
+            "lrz_mosaic_lhd101_c3_guided_50step_template.yaml"
+        ),
+        "profile": SMALL_PROFILE,
+        "designs": 6,
+        "claim": (
+            "current-revision C3 supplied-interface sampling remains "
+            "continuous and free of cross-chain backbone-segment collisions"
+        ),
+        "acceptance": [
+            "six raw coordinate outputs are produced",
+            "the supplied joint-rigid interface is recovered in every output",
+            "chain_break_count is zero in every output",
+            "cross_chain_ca_segment_collision_count is zero in every output",
+            "exact C3 symmetry and the CA-clash hard contracts are met",
+        ],
+    },
     "fixed-components": {
         "tier": "core",
         "design": "experiments/lrz_public_fixed_components_v100_canary.yaml",
@@ -35,11 +55,16 @@ GATES: dict[str, dict[str, Any]] = {
             "lrz_public_c3_locked_packing_patch_capture_v100_50step.yaml"
         ),
         "profile": SMALL_PROFILE,
-        "designs": 2,
+        "designs": 4,
         "claim": (
             "generated-only interface packing from independently instantiated "
             "poses that remain locked during diffusion"
         ),
+        "acceptance": [
+            "four independently instantiated raw coordinate outputs are produced",
+            "fixed, symmetry, continuity, clash and topology contracts meet",
+            "runtime and post-hoc interface metrics are retained as advisory evidence",
+        ],
     },
     "guided-packing": {
         "tier": "core",
@@ -48,11 +73,17 @@ GATES: dict[str, dict[str, Any]] = {
             "lrz_public_c3_joint_packing_patch_capture_v100_50step.yaml"
         ),
         "profile": SMALL_PROFILE,
-        "designs": 2,
+        "designs": 4,
         "claim": (
             "matched initial poses plus joint radial/axial/rotation packing "
             "transaction"
         ),
+        "acceptance": [
+            "four matched-pose raw coordinate outputs are produced",
+            "bounded rigid-orbit proposals execute inside declared limits",
+            "fixed, symmetry, continuity, clash and topology contracts meet",
+            "contact changes versus locked controls are reported without user-level rejection",
+        ],
     },
     "d3-dynamic": {
         "tier": "core",
@@ -63,9 +94,15 @@ GATES: dict[str, dict[str, Any]] = {
         "profile": SMALL_PROFILE,
         "designs": 1,
         "claim": "six-action D3 dynamic multi-orbit control",
+        "acceptance": [
+            "the complete six-action output is produced",
+            "both rigid motif orbits remain internally exact",
+            "bounded mobility executes and remains inside declared limits",
+            "symmetry, continuity, clash and cross-chain topology contracts meet",
+        ],
     },
     "c4-c2-quotient": {
-        "tier": "core",
+        "tier": "closure",
         "design": (
             "experiments/"
             "lrz_public_c4_c2_quotient_orbit_v100_canary_s943.yaml"
@@ -73,6 +110,11 @@ GATES: dict[str, dict[str, Any]] = {
         "profile": SMALL_PROFILE,
         "designs": 1,
         "claim": "physical C4/C2 quotient orbit execution",
+        "acceptance": [
+            "the quotient design produces a raw coordinate output",
+            "physical interface multiplicity matches the compiled quotient orbit",
+            "constraint, symmetry, continuity, clash and topology contracts meet",
+        ],
     },
     "t-static": {
         "tier": "core",
@@ -93,6 +135,29 @@ GATES: dict[str, dict[str, Any]] = {
         "profile": LARGE_PROFILE,
         "designs": 1,
         "claim": "tetrahedral graph-guidance and final interface audit",
+        "acceptance": [
+            "a complete twelve-action coordinate output is produced",
+            "exact motif and symmetry contracts meet",
+            "the interface-guidance runtime contract executes",
+            "final physical-interface metrics are reported as advisory evidence",
+        ],
+    },
+    "t-dynamic": {
+        "tier": "closure",
+        "design": (
+            "experiments/"
+            "lrz_public_t_two_orbit_mobility_t50_large_gpu_canary.yaml"
+        ),
+        "profile": LARGE_PROFILE,
+        "designs": 1,
+        "defer_runtime_preflight": True,
+        "claim": "twelve-action tetrahedral bounded multi-orbit mobility",
+        "acceptance": [
+            "the complete twelve-action output is produced",
+            "both rigid motif orbits remain internally exact",
+            "bounded mobility executes and remains inside declared limits",
+            "symmetry, continuity, clash and cross-chain topology contracts meet",
+        ],
     },
     "o-static": {
         "tier": "extended",
@@ -104,6 +169,23 @@ GATES: dict[str, dict[str, Any]] = {
         "designs": 1,
         "defer_runtime_preflight": True,
         "claim": "50-step twenty-four-action octahedral runtime closure",
+    },
+    "o-dynamic": {
+        "tier": "closure",
+        "design": (
+            "experiments/"
+            "lrz_public_o_orbit_mobility_t50_large_gpu_canary.yaml"
+        ),
+        "profile": LARGE_PROFILE,
+        "designs": 1,
+        "defer_runtime_preflight": True,
+        "claim": "50-step twenty-four-action octahedral bounded mobility",
+        "acceptance": [
+            "the complete twenty-four-action output is produced",
+            "both rigid motif orbits remain internally exact",
+            "bounded mobility executes and remains inside declared limits",
+            "symmetry, continuity, clash and cross-chain topology contracts meet",
+        ],
     },
     "i-static": {
         "tier": "extended",
@@ -129,6 +211,27 @@ GATES: dict[str, dict[str, Any]] = {
             "50-step sixty-action longer-scaffold continuity and "
             "backbone-morphology follow-up"
         ),
+    },
+    "i-continuity": {
+        "tier": "closure",
+        "design": (
+            "experiments/"
+            "lrz_public_i_alternative_motif_continuity_t50_large_gpu.yaml"
+        ),
+        "profile": LARGE_PROFILE,
+        "designs": 2,
+        "defer_runtime_preflight": True,
+        "claim": (
+            "current-revision 50-step sixty-action generated-polymer "
+            "continuity projection"
+        ),
+        "acceptance": [
+            "two complete sixty-action coordinate outputs are produced",
+            "the fixed orbit and exact I symmetry contracts meet",
+            "chain_break_count is zero in both outputs",
+            "cross_chain_ca_segment_collision_count is zero in both outputs",
+            "the CA-clash hard contract meets in both outputs",
+        ],
     },
 }
 
@@ -174,7 +277,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--tier",
-        choices=("core", "extended", "all"),
+        choices=("core", "extended", "closure", "all"),
         default="core",
     )
     parser.add_argument(
@@ -263,6 +366,7 @@ def main() -> None:
             "gate": gate_name,
             "tier": gate["tier"],
             "claim": gate["claim"],
+            "acceptance": list(gate.get("acceptance", ())),
             "design": str(frozen),
             "profile": profile,
             "requested_designs": gate["designs"],
