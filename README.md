@@ -1,76 +1,119 @@
 # RFD3-Mosaic
 
-Constraint-compiled design of symmetric protein assemblies with
-RFdiffusion3.
+Assembly-aware constraint compilation and symmetry-controlled protein backbone
+generation with RFdiffusion3.
 
 > [!IMPORTANT]
-> **Project status: research preview.** RFD3-Mosaic is under active
-> development. Its supported Cn/Dn workflows are usable and covered by
-> automated compiler, runtime and audit tests, but the project is not yet a
-> stable production release. Experimental capabilities are identified
-> explicitly and may change before the first stable version.
+> RFD3-Mosaic is research software in the benchmark phase. The compiler,
+> execution pipeline and result-audit contracts have extensive automated test
+> coverage; scientific performance is still being quantified across larger
+> backbone cohorts. See [Project status](docs/rfd3_mosaic/PROJECT_STATUS.md)
+> for the current evidence boundary.
 
-This repository is the canonical development repository for RFD3-Mosaic.
+RFD3-Mosaic extends Foundry/RFdiffusion3 with an explicit representation of
+symmetric assemblies. A user declares the intended symmetry, structural
+components, fixed motifs or supplied interfaces, and generated polymer
+connections. Mosaic then compiles that declaration into replayable RFD3
+inputs, executes constrained sampling, and audits the resulting structures.
 
-RFD3-Mosaic extends the open-source Foundry/RFdiffusion3 stack with an
-assembly-aware compiler and constrained sampler. It is designed for workflows
-that must preserve supplied motifs or interface seeds while generating the
-remaining protein scaffold under exact symmetry.
+```text
+design YAML + seed structures
+             |
+             v
+assembly compiler -> constraint and symmetry plan -> RFD3 sampling
+             |                                      |
+             +-------- frozen provenance -----------+
+                                                    |
+                                                    v
+                                      structures + contract audits
+```
 
-## What it provides
+The software does not infer a supposedly optimal cage architecture from an
+arbitrary structure. Users define the scientific design problem; Mosaic makes
+that problem executable, reproducible and auditable.
 
-- exact preservation of fixed motifs and supplied interface geometry;
-- Cn and Dn symmetric assembly generation;
-- fixed, bounded-mobile and jointly guided rigid components;
-- generated-interface packing guidance with translation and rotation;
-- tunable intra-chain scaffold-core versus inter-chain packing guidance,
-  with soft suppression of unintended secondary interfaces;
-- multiple components, interface seeds and polymer connections;
-- deterministic configuration lowering and replayable RFD3 inputs;
-- post-generation audits for motif recovery, symmetry, interfaces, clashes
-  and chain continuity;
-- site-independent execution: the scientific compiler and sampler are not
-  tied to a particular server, institution or GPU model.
+## Core capabilities
 
-Tetrahedral, octahedral and icosahedral compiler paths are available for
-research evaluation, but are not part of the current supported release scope.
-Fully automatic arbitrary cage solving and downstream sequence/refolding
-workflows also remain under development.
+- exact preservation of fixed motifs and complete supplied-interface seeds;
+- exact cyclic and dihedral symmetry, with research paths for tetrahedral,
+  octahedral and icosahedral assemblies;
+- locked, bounded-mobile and jointly rigid component semantics;
+- multiple components, motif orbits, interface identities and polymer
+  connections;
+- independently instantiated assembly poses and diffusion seeds for
+  multi-design campaigns;
+- optional generated-interface packing and scaffold-core guidance;
+- deterministic lowering to RFD3 inputs with frozen configuration and source
+  provenance;
+- post-generation checks for motif recovery, symmetry, interface relations,
+  clashes, continuity and cross-chain scaffold topology;
+- direct and Slurm-backed execution through the same compiler, worker and
+  audit path.
+
+Sequence design, independent refolding and experimental validation are
+deliberately outside the current package scope.
+
+## Design workflows
+
+RFD3-Mosaic supports two complementary starting points.
+
+| Workflow | User supplies | Mosaic preserves | Mosaic generates |
+| --- | --- | --- | --- |
+| Supplied interface | A complete interface seed | Internal seed geometry | Connecting scaffold under the declared symmetry |
+| Central motif | A fixed structural motif | Motif geometry | Scaffold and a symmetry-related interface |
+
+A complete supplied interface can move as one joint-rigid body when the design
+allows it; its two sides are never rearranged independently. A central motif
+can instead be locked or assigned bounded translation and rotation while
+packing guidance acts on the generated regions.
 
 ## Installation
 
-Python 3.12 is required. Install a PyTorch build appropriate for the local
-CPU or CUDA runtime first, then install RFD3-Mosaic:
+Python 3.12 and an RFD3-compatible PyTorch installation are required. Install
+PyTorch for the target CPU or CUDA environment first, then install the current
+development branch:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install \
-  "rfd3-mosaic[rfd3] @ git+https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git@refactor/product-core-v1"
+  "rfd3-mosaic[rfd3] @ git+https://github.com/Khmelinskaia-Lab/foundry.git@hx/rfd3-mosaic-product-core"
 ```
 
-RFD3 model weights are not distributed by this repository. Place an
-authorized `rfd3_latest.ckpt` at `~/.foundry/checkpoints/` or provide its path
-through a custom execution profile.
+RFD3 model weights are not distributed with this repository. Place an
+authorized `rfd3_latest.ckpt` in `~/.foundry/checkpoints/`, or provide its
+location in an execution profile.
 
-Verify the installation without running inference:
+Check the installation without launching inference:
 
 ```bash
 rfd3-mosaic doctor --profile local
 rfd3-mosaic capabilities
 ```
 
-See the [installation guide](docs/rfd3_mosaic/INSTALLATION.md) for editable
-development installs and execution-environment configuration.
+For editable installations, checkpoint configuration and cluster profiles,
+see the [installation guide](docs/rfd3_mosaic/INSTALLATION.md).
 
 ## Quick start
 
-Create a design directly from a structure and selectors. For a central motif
-whose surrounding symmetric interface should be generated:
+Create a design that preserves a complete two-sided interface seed:
 
 ```bash
-rfd3-mosaic init my-design.yaml \
+rfd3-mosaic init design.yaml \
+  --task supplied-interface \
+  --input interface-seed.pdb \
+  --side-a A165-194 \
+  --side-b B211-241 \
+  --symmetry C3 \
+  --designs 100
+```
+
+Or create a design in which a fixed central motif is surrounded by a newly
+generated symmetric interface:
+
+```bash
+rfd3-mosaic init design.yaml \
   --task central-motif \
   --input motif.pdb \
   --motif-selector A12-20 \
@@ -78,116 +121,91 @@ rfd3-mosaic init my-design.yaml \
   --designs 100
 ```
 
-For a complete two-sided interface seed that must remain unchanged:
+Review the resolved design before using GPU time:
 
 ```bash
-rfd3-mosaic init my-design.yaml \
-  --task supplied-interface \
-  --input interface-seed.pdb \
-  --side-a A165-194 \
-  --side-b B211-241 \
-  --symmetry C3
+rfd3-mosaic plan design.yaml
+rfd3-mosaic validate design.yaml
+rfd3-mosaic run design.yaml
 ```
 
-Then inspect, validate and run the generated YAML:
+For `designs: N`, movable-assembly workflows instantiate independent,
+reproducible assembly poses and diffusion seeds for the requested designs.
+Fully locked arrangements retain their declared pose. RFD3 multi-example
+execution reuses a model load while preserving per-design inputs.
+
+See the [quick-start guide](docs/rfd3_mosaic/QUICKSTART.md) for component
+motion, portable examples, Slurm profiles and result inspection.
+
+## Results and interpretation
+
+Each run records three separate outcomes:
+
+1. **Generation:** whether inference produced a finite coordinate file.
+2. **Contract checks:** whether declared invariants such as fixed geometry,
+   symmetry and backbone continuity were met.
+3. **Advisory measurements:** task-dependent structural descriptors intended
+   to support ranking and review.
+
+Generated structures are retained even when a contract is flagged. Advisory
+measurements are not presented as universal designability thresholds and do
+not replace sequence design, refolding or experimental assessment.
+
+Useful commands after a run are:
 
 ```bash
-rfd3-mosaic plan my-design.yaml
-rfd3-mosaic validate my-design.yaml
-rfd3-mosaic run my-design.yaml
+rfd3-mosaic status RUN_ID_OR_DIRECTORY
+rfd3-mosaic report RUN_ID_OR_DIRECTORY
+rfd3-mosaic audit RUN_ID_OR_DIRECTORY
 ```
 
-`rfd3-mosaic examples` lists maintained templates, and
-`rfd3-mosaic profiles` lists execution profiles. Both commands can copy a
-portable starting file without requiring a source checkout.
-
-The bundled synchronous executor can run on any compatible machine. Slurm is
-also supported through a site-defined profile. These are launch mechanisms,
-not restrictions on the server or GPU that may be used.
-
-## User workflows
-
-RFD3-Mosaic currently exposes two primary workflows:
-
-1. **Preserve supplied interfaces.** The user supplies one or more complete
-   interface seeds. Mosaic preserves each seed's internal geometry and
-   generates the requested polymer connections and scaffold.
-2. **Create a symmetric interface around a motif.** The user supplies a
-   central motif. Mosaic keeps the motif fixed internally and guides generated
-   regions toward a symmetric, clash-aware interface. Component translation
-   and rotation can be locked or bounded by the selected motion policy.
-
-Ordinary-user configurations describe the intended assembly and seed usage.
-Expert configurations may additionally specify components, ports, group
-relations, mobility subspaces and packing controls. Both modes compile to the
-same internal assembly representation and RFD3 runtime.
-
-## Generation, contracts and advisory screening
-
-Mosaic reports three distinct facts instead of collapsing them into one
-``PASS/FAIL`` label. ``GENERATED`` means inference wrote a finite coordinate
-file. ``CONTRACT_MET/CONTRACT_FLAGGED`` covers explicit invariants such as
-fixed-motif recovery, continuity and declared symmetry. Advisory screening
-then summarizes task-dependent quality proxies without deleting the output or
-claiming experimental success/failure. Audits measure:
-
-- fixed-motif completeness and joint rigid recovery;
-- declared symmetry and component-orbit consistency;
-- supplied or generated interface relations;
-- backbone continuity, clashes and compactness;
-- runtime packing-guidance execution when enabled.
-
-Every generated coordinate file is retained. Sequence design and independent
-refolding remain necessary before calling a backbone designable.
+Campaign outputs also include a structure-only ZIP of plain CIF files for
+batch review.
 
 ## Documentation
 
-- [Installation and environment setup](docs/rfd3_mosaic/INSTALLATION.md)
-- [Quick start and user workflows](docs/rfd3_mosaic/QUICKSTART.md)
-- [Implemented capabilities and limitations](DEVELOPMENT_STATUS.md)
-- [Current research status](docs/rfd3_mosaic/PROJECT_STATUS.md)
-- [Ho-Yeung LHD101 backbone comparison](docs/rfd3_mosaic/HOYEUNG_BACKBONE_COMPARISON.md)
-- [Structure metric provenance and interpretation](docs/rfd3_mosaic/STRUCTURE_METRIC_PROVENANCE.md)
-- [Evidence-backed backbone evaluation formulas](docs/rfd3_mosaic/BACKBONE_EVALUATION_EVIDENCE.md)
+- [Documentation index](docs/rfd3_mosaic/README.md)
+- [Installation and execution environments](docs/rfd3_mosaic/INSTALLATION.md)
+- [Quick start](docs/rfd3_mosaic/QUICKSTART.md)
+- [Command-line reference](docs/rfd3_mosaic/USER_CLI.md)
+- [Capability boundary](DEVELOPMENT_STATUS.md)
+- [Current project status](docs/rfd3_mosaic/PROJECT_STATUS.md)
+- [Packing guidance](docs/rfd3_mosaic/PACKING_GUIDANCE.md)
+- [Metric provenance](docs/rfd3_mosaic/STRUCTURE_METRIC_PROVENANCE.md)
+- [Backbone-evaluation evidence](docs/rfd3_mosaic/BACKBONE_EVALUATION_EVIDENCE.md)
 
-Detailed architecture plans, experiment records and site-specific deployment
-notes are retained as development evidence, but are not prerequisites for
-installing or using the public software.
+Historical implementation notes, root-cause analyses and site-specific
+validation records are retained under `docs/internal/` as development
+provenance. They are not user instructions.
 
-## Development
-
-For an editable installation:
+## Development and validation
 
 ```bash
-git clone --branch refactor/product-core-v1 \
-  https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git
+git clone --branch hx/rfd3-mosaic-product-core \
+  https://github.com/Khmelinskaia-Lab/foundry.git rfd3-mosaic
 cd rfd3-mosaic
 python -m pip install -e ".[rfd3,dev]"
 make local-test
-```
-
-Build and test an installable artifact with:
-
-```bash
 make mosaic-release-smoke
 ```
 
-Contributions should preserve backward compatibility for validated workflows
-and include focused regression tests. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Changes should preserve validated workflows, include focused regression tests
+and distinguish CPU evidence from GPU evidence. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Upstream and attribution
+## Upstream software and citation
 
-RFD3-Mosaic is derived from the open-source
-[Foundry](https://github.com/RosettaCommons/foundry) and RFdiffusion3 codebase.
-It is an independent research extension and is not an official Rosetta
-Commons or Institute for Protein Design release. Upstream model documentation
-is available in [models/rfd3/README.md](models/rfd3/README.md).
+RFD3-Mosaic is an independent research extension of the open-source
+[Foundry](https://github.com/RosettaCommons/foundry) and RFdiffusion3 stack; it
+is not an official Rosetta Commons or Institute for Protein Design release.
+The upstream model documentation is retained in
+[models/rfd3/README.md](models/rfd3/README.md).
 
-If you use this software, cite the relevant upstream RFdiffusion3, Foundry,
-AtomWorks and model publications in addition to any future RFD3-Mosaic
-release citation.
+Until a dedicated RFD3-Mosaic publication is available, users should cite the
+relevant RFdiffusion3, Foundry, AtomWorks and model publications associated
+with the components used in their workflow.
 
 ## License
 
-This repository retains the upstream BSD 3-Clause license. See
+RFD3-Mosaic retains the upstream BSD 3-Clause license. See
 [LICENSE.md](LICENSE.md).

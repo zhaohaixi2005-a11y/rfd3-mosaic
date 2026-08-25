@@ -1,8 +1,9 @@
-# Script classification
+# Developer and validation scripts
 
-The supported user entry point is the `rfd3-mosaic` CLI. Scripts in this
-directory are development, validation or historical research helpers; their
-presence does not make every script a current product path.
+The supported user entry point is the `rfd3-mosaic` CLI. This directory
+contains campaign launchers, result collectors, release checks and historical
+research helpers. A script is not part of the public execution contract unless
+this document identifies it as maintained.
 
 ## Review many CIF structures in PyMOL
 

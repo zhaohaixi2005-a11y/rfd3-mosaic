@@ -21,7 +21,7 @@ supplied-interface, generated-interface packing and bounded-mobility path.
 Polyhedral compiler paths and advanced automatic cage solving remain research
 features and are not installation prerequisites.
 
-## Install from GitHub
+## Install from the development repository
 
 Python 3.12 is required. Install PyTorch for the target CUDA runtime first,
 then install the Mosaic branch:
@@ -31,15 +31,15 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install \
-  "rfd3-mosaic[rfd3] @ git+https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git@refactor/product-core-v1"
+  "rfd3-mosaic[rfd3] @ git+https://github.com/Khmelinskaia-Lab/foundry.git@hx/rfd3-mosaic-product-core"
 ```
 
 For development, clone the repository and install it editable. HTTPS requires
 no GitHub SSH-key configuration:
 
 ```bash
-git clone --branch refactor/product-core-v1 \
-  https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git
+git clone --branch hx/rfd3-mosaic-product-core \
+  https://github.com/Khmelinskaia-Lab/foundry.git rfd3-mosaic
 cd rfd3-mosaic
 python -m pip install -e ".[rfd3,dev]"
 ```

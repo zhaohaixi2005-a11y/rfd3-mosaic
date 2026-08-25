@@ -128,9 +128,11 @@ rfd3-mosaic status RUN_ID_OR_DIRECTORY
 rfd3-mosaic report RUN_ID_OR_DIRECTORY
 ```
 
-A completed inference is not automatically a passed design. The final verdict
-also requires every task-specific geometry, symmetry, interface and scaffold
-audit to pass.
+A completed inference and its structural checks are reported separately.
+`GENERATED` means that a coordinate output exists; contract checks report
+whether declared geometry, symmetry and continuity invariants were met; and
+advisory measurements support subsequent ranking without deleting outputs or
+claiming experimental success.
 
 ## Supported scope
 

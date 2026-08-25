@@ -1,20 +1,29 @@
 # RFD3-Mosaic documentation
 
-Maintained public documentation:
+This directory contains the maintained, user-facing documentation for
+RFD3-Mosaic.
 
-- [Installation](INSTALLATION.md)
-- [Quick start](QUICKSTART.md)
-- [Command-line reference](USER_CLI.md)
-- [Project status](PROJECT_STATUS.md)
-- [Packing guidance](PACKING_GUIDANCE.md)
-- [Structure metric provenance](STRUCTURE_METRIC_PROVENANCE.md)
-- [Backbone evaluation evidence and formulas](BACKBONE_EVALUATION_EVIDENCE.md)
-- [Development status](../../DEVELOPMENT_STATUS.md)
+## Start here
 
-RFD3-Mosaic is a research preview under active development. The public
-documentation is site-independent: examples do not require access to a
-particular institution or server.
+1. [Install RFD3-Mosaic](INSTALLATION.md).
+2. Follow the [quick-start workflow](QUICKSTART.md).
+3. Consult the [command-line reference](USER_CLI.md) for complete command and
+   configuration details.
 
-Chronological implementation plans, root-cause reports and site-specific
-validation records are kept under `docs/internal/`. They are provenance for
-developers, not current user instructions.
+## Scientific scope
+
+- [Current project status](PROJECT_STATUS.md)
+- [Capability boundary](../../DEVELOPMENT_STATUS.md)
+- [Packing-guidance semantics](PACKING_GUIDANCE.md)
+- [Structure-metric provenance](STRUCTURE_METRIC_PROVENANCE.md)
+- [Evidence for backbone-evaluation formulas](BACKBONE_EVALUATION_EVIDENCE.md)
+- [Ho-Yeung backbone-comparison protocol](HOYEUNG_BACKBONE_COMPARISON.md)
+
+The public guides describe portable software behavior and do not assume a
+particular institution, filesystem, scheduler or GPU model. Hardware-specific
+resource requirements are properties of individual designs and execution
+profiles, not restrictions imposed by Mosaic.
+
+Chronological plans, root-cause analyses and site-specific validation records
+are retained under `docs/internal/` as development provenance. They are not
+the current user manual.

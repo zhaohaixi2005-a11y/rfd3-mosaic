@@ -49,9 +49,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zhaohaixi2005-a11y/rfd3-mosaic"
-Repository = "https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git"
-Issues = "https://github.com/zhaohaixi2005-a11y/rfd3-mosaic/issues"
+Homepage = "https://github.com/Khmelinskaia-Lab/foundry/tree/hx/rfd3-mosaic-product-core"
+Repository = "https://github.com/Khmelinskaia-Lab/foundry.git"
+Issues = "https://github.com/Khmelinskaia-Lab/foundry/issues"
 
 
 [project.optional-dependencies]

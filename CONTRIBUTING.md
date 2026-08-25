@@ -6,7 +6,8 @@ welcome while the project is under active development.
 ## Development setup
 
 ```bash
-git clone https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git
+git clone --branch hx/rfd3-mosaic-product-core \
+  https://github.com/Khmelinskaia-Lab/foundry.git rfd3-mosaic
 cd rfd3-mosaic
 python -m venv .venv
 source .venv/bin/activate
@@ -62,6 +63,10 @@ useful outside Mosaic, consider proposing it independently to the upstream
 Foundry project.
 
 ## Pull requests
+
+Create a descriptively named development branch in the
+`Khmelinskaia-Lab/foundry` repository. Do not commit directly to its default
+branch.
 
 Describe:
 
