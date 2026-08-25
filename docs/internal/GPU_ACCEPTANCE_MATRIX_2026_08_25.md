@@ -10,6 +10,12 @@ Every submission must be frozen from one clean Git revision. The generated
 `gpu_validation_manifest.json` records that revision, the exact YAML, profile,
 design count, submission output and the acceptance criteria below.
 
+The C3 topology and C4/C2 quotient gates defer complete RFD3 feature
+prevalidation to the allocated worker because the LRZ login-node memory limit
+can kill AtomWorks/RFD3 input construction. Lightweight planning still runs
+before `sbatch`; complete prevalidation remains mandatory and inference cannot
+start if it fails.
+
 ## Gates
 
 | gate | question | accelerator | outputs | closure condition |

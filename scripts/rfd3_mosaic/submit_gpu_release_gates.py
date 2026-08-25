@@ -29,6 +29,7 @@ GATES: dict[str, dict[str, Any]] = {
         ),
         "profile": SMALL_PROFILE,
         "designs": 6,
+        "defer_runtime_preflight": True,
         "claim": (
             "current-revision C3 supplied-interface sampling remains "
             "continuous and free of cross-chain backbone-segment collisions"
@@ -109,6 +110,7 @@ GATES: dict[str, dict[str, Any]] = {
         ),
         "profile": SMALL_PROFILE,
         "designs": 1,
+        "defer_runtime_preflight": True,
         "claim": "physical C4/C2 quotient orbit execution",
         "acceptance": [
             "the quotient design produces a raw coordinate output",
