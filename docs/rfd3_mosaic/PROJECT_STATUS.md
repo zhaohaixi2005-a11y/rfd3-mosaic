@@ -140,8 +140,9 @@ I generated-scaffold continuity not yet closed.”
 - stable schema migration and long-term release compatibility;
 - polished tutorials and a broader public example library.
 
-Sequence design and refolding are intentionally outside the current release
-scope.
+Sequence design and independent refolding are planned downstream workflow
+stages. Their integration remains under development and is evaluated
+separately from the current backbone-generation release gates.
 
 The following are also intentionally outside the current product plan and do
 not count as incomplete release work: automatic inference of symmetry/order,

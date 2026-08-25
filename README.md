@@ -1,14 +1,29 @@
-# RFD3-Mosaic
+<h1 align="center">RFD3-Mosaic</h1>
 
-Assembly-aware constraint compilation and symmetry-controlled protein backbone
-generation with RFdiffusion3.
+<p align="center">
+  <strong>Constraint-compiled design of symmetric protein assemblies with RFdiffusion3</strong>
+</p>
 
-> [!IMPORTANT]
-> RFD3-Mosaic is research software in the benchmark phase. The compiler,
-> execution pipeline and result-audit contracts have extensive automated test
-> coverage; scientific performance is still being quantified across larger
-> backbone cohorts. See [Project status](docs/rfd3_mosaic/PROJECT_STATUS.md)
-> for the current evidence boundary.
+<p align="center">
+  <a href="docs/rfd3_mosaic/PROJECT_STATUS.md"><img alt="Project status: research preview" src="https://img.shields.io/badge/status-research_preview-465A65?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white"></a>
+  <a href="LICENSE.md"><img alt="License: BSD 3-Clause" src="https://img.shields.io/badge/license-BSD--3--Clause-0F766E?style=flat-square"></a>
+  <a href="models/rfd3/README.md"><img alt="Backend: RFdiffusion3" src="https://img.shields.io/badge/backend-RFdiffusion3-6D5BD0?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <a href="#overview">Overview</a> ·
+  <a href="#design-workflows">Workflows</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="docs/rfd3_mosaic/PROJECT_STATUS.md">Project status</a>
+</p>
+
+> **Status — benchmark phase.** Engineering contracts are covered by
+> automated compiler, runtime and audit tests. Scientific performance is now
+> being quantified across larger backbone cohorts.
+
+## Overview
 
 RFD3-Mosaic extends Foundry/RFdiffusion3 with an explicit representation of
 symmetric assemblies. A user declares the intended symmetry, structural
@@ -16,16 +31,26 @@ components, fixed motifs or supplied interfaces, and generated polymer
 connections. Mosaic then compiles that declaration into replayable RFD3
 inputs, executes constrained sampling, and audits the resulting structures.
 
-```text
-design YAML + seed structures
-             |
-             v
-assembly compiler -> constraint and symmetry plan -> RFD3 sampling
-             |                                      |
-             +-------- frozen provenance -----------+
-                                                    |
-                                                    v
-                                      structures + contract audits
+```mermaid
+flowchart LR
+    A["Design intent<br/>YAML"]:::source
+    B["Motifs & interface seeds<br/>PDB · mmCIF"]:::source
+    C["Assembly compiler<br/>components · constraints · symmetry"]:::mosaic
+    D["Pose ensemble<br/>independent SE(3) states"]:::mosaic
+    E["RFdiffusion3<br/>constrained sampling"]:::model
+    F["Generated structures<br/>mmCIF"]:::result
+    G["Contract audits<br/>geometry · symmetry · topology"]:::result
+
+    A --> C
+    B --> C
+    C --> D --> E --> F
+    C -. frozen provenance .-> G
+    F --> G
+
+    classDef source fill:#EEF4FF,stroke:#4F6B95,color:#172033,stroke-width:1px
+    classDef mosaic fill:#E8F7F4,stroke:#168477,color:#102A27,stroke-width:2px
+    classDef model fill:#F0EDFF,stroke:#7665C1,color:#211B3A,stroke-width:1px
+    classDef result fill:#F6F7F9,stroke:#64748B,color:#172033,stroke-width:1px
 ```
 
 The software does not infer a supposedly optimal cage architecture from an
@@ -34,24 +59,21 @@ that problem executable, reproducible and auditable.
 
 ## Core capabilities
 
-- exact preservation of fixed motifs and complete supplied-interface seeds;
-- exact cyclic and dihedral symmetry, with research paths for tetrahedral,
-  octahedral and icosahedral assemblies;
-- locked, bounded-mobile and jointly rigid component semantics;
-- multiple components, motif orbits, interface identities and polymer
-  connections;
-- independently instantiated assembly poses and diffusion seeds for
-  multi-design campaigns;
-- optional generated-interface packing and scaffold-core guidance;
-- deterministic lowering to RFD3 inputs with frozen configuration and source
-  provenance;
-- post-generation checks for motif recovery, symmetry, interface relations,
-  clashes, continuity and cross-chain scaffold topology;
-- direct and Slurm-backed execution through the same compiler, worker and
-  audit path.
+| Domain | Capability |
+| --- | --- |
+| Geometry | Exact fixed-motif and complete supplied-interface preservation |
+| Symmetry | Exact Cn/Dn execution; T/O/I paths for controlled research evaluation |
+| Components | Locked, bounded-mobile and jointly rigid component semantics |
+| Assembly | Multiple components, motif orbits, interface identities and polymer connections |
+| Sampling | Independent, reproducible assembly poses and diffusion seeds per design |
+| Guidance | Optional generated-interface packing and scaffold-core objectives |
+| Reproducibility | Deterministic RFD3 lowering, frozen configuration and source provenance |
+| Quality control | Geometry, symmetry, interface, clash, continuity and cross-chain topology audits |
+| Execution | Identical compiler, worker and audit path for direct and Slurm-backed runs |
 
-Sequence design, independent refolding and experimental validation are
-deliberately outside the current package scope.
+Sequence design, independent refolding and experimental validation are planned
+downstream stages of the Mosaic workflow. They are not yet integrated in the
+current development branch.
 
 ## Design workflows
 

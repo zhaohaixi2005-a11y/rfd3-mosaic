@@ -72,8 +72,9 @@ Unrestricted quotient/path generalization is likewise not a v0.1 completion
 requirement. Existing implementations remain available for validated research
 cases; they are not being deleted or rewritten.
 
-Sequence design and refolding are intentionally deferred and are not part of
-the current release target.
+Sequence design and independent refolding are planned downstream workflow
+stages. Their integration is under development and is not a requirement for
+the current backbone-generation release gate.
 
 ## Validation policy
 
