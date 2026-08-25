@@ -227,6 +227,21 @@ def _symmetric_scaffold_packing_runtime(rfd3_input: Path) -> bool:
     return isinstance(plan, dict) and plan.get("mode") == "symmetric_generated"
 
 
+def _generated_polymer_continuity_runtime(
+    rfd3_input: Path,
+) -> dict[str, Any] | None:
+    """Resolve compiler-owned generated-chain geometry protection."""
+
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    plan = (example.get("extra") or {}).get(
+        "generated_polymer_continuity_guidance"
+    )
+    if not isinstance(plan, dict) or not bool(plan.get("enabled")):
+        return None
+    return plan
+
+
 def _resolved_guidance_overrides(
     rfd3_input: Path,
 ) -> tuple[str, ...]:
@@ -563,6 +578,9 @@ def execute(
     scaffold_packing_enabled = _symmetric_scaffold_packing_runtime(
         assemblies[0].input_path
     )
+    polymer_continuity = _generated_polymer_continuity_runtime(
+        assemblies[0].input_path
+    )
     if interface_guidance_enabled and scaffold_packing_enabled:
         raise ValueError(
             "Compiled input cannot enable graph interfaces and automatic "
@@ -606,11 +624,25 @@ def execute(
         + str(interface_guidance_enabled),
         "++inference_sampler.enable_symmetric_scaffold_packing="
         + str(scaffold_packing_enabled),
+        "++inference_sampler.enable_generated_polymer_continuity_guidance="
+        + str(polymer_continuity is not None),
         f"low_memory_mode={sampling['low_memory_mode']}",
         "skip_existing=False",
         "dump_trajectories=False",
         "prevalidate_inputs=True",
     ]
+    if polymer_continuity is not None:
+        inference_command.extend(
+            (
+                "++inference_sampler."
+                "generated_polymer_continuity_target_ca_distance="
+                + str(polymer_continuity.get("target_ca_distance", 3.8)),
+                "++inference_sampler.generated_polymer_continuity_tolerance="
+                + str(polymer_continuity.get("tolerance", 0.5)),
+                "++inference_sampler.generated_polymer_continuity_iterations="
+                + str(polymer_continuity.get("projection_iterations", 64)),
+            )
+        )
     # Resolved preferences also carry the independent intra/inter scaffold
     # field.  Do not couple those overrides to graph-interface activation:
     # supplied-interface jobs may legitimately request a compact monomer core

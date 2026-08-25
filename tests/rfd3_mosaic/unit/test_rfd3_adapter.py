@@ -704,6 +704,16 @@ class RFD3AdapterTestCase(unittest.TestCase):
             "local_fixed_anchor",
         )
         self.assertEqual(
+            emitted["extra"]["generated_polymer_continuity_guidance"],
+            {
+                "enabled": True,
+                "scope": "adjacent_generated_protein_tokens",
+                "target_ca_distance": 3.8,
+                "tolerance": 0.5,
+                "projection_iterations": 64,
+            },
+        )
+        self.assertEqual(
             emitted["extra"]["full_symmetry_multiplicity"],
             4,
         )

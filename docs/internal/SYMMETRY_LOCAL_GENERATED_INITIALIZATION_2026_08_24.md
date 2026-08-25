@@ -72,3 +72,37 @@ expected first-order signal is removal of the repeated large
 fixed-to-generated radial junction. A generated coordinate file remains a
 usable output even when downstream advisory screens flag it; continuity and
 scientific quality must be reported separately.
+
+## GPU finding: initialization alone was insufficient
+
+Jobs `5760856` and `5760861` proved that the parser correction executed for
+all 1,200 generated residues across 60 chains.  Nevertheless, their final
+break patterns were numerically indistinguishable from pre-correction job
+`5760519`: design 0 retained a 46.64 A CA fixed/generated junction and design
+1 retained a 31.90 A junction.  Therefore local initialization was necessary
+provenance but not an effective runtime closure.  The high-sigma first
+diffusion state erased the local-frame displacement before the denoiser had a
+polymer-path constraint capable of retaining it.
+
+The follow-up implementation separates polymer geometry from packing:
+
+- every Mosaic exact-symmetry input declares an independent generated-polymer
+  continuity runtime;
+- after each diffusion update and once after final interface polishing,
+  adjacent protein CA constraints are projected while only generated tokens
+  move;
+- terminal runs propagate their own chain-local fixed anchor through the
+  generated path, rather than using the global group origin;
+- internal fixed geometry, exact symmetry, interface packing preferences and
+  pore morphology are unchanged;
+- diagnostics record the initial/final maximum CA error for every step.
+
+This runtime correction is CPU-closed but remains GPU-pending.  It must not be
+described as I continuity closure until a new frozen 50-step canary removes
+the repeated junction defects and the post-hoc scaffold audit passes.
+
+The same investigation exposed a reporting scalability defect: the new
+cross-chain segment audit attempted to serialize an unbounded number of
+symmetry-repeated observations and was killed on a 60-copy result.  Counts
+are now exact while JSON detail is capped at 1,000 records, with explicit
+truncation metadata.

@@ -253,8 +253,15 @@ def audit_scaffold_geometry(
         chain["passed_compactness"] for chain in chains
     )
     passed_clashes = not ca_clashes
+    # A high-order assembly can contain millions of advisory segment pairs.
+    # Counts remain exact, but JSON detail is deliberately bounded so a
+    # report for I symmetry cannot consume all host memory merely by
+    # materialising repeated symmetry-equivalent observations.
+    segment_detail_limit = 1_000
     cross_chain_ca_segment_proximities: list[dict[str, Any]] = []
     cross_chain_ca_segment_collisions: list[dict[str, Any]] = []
+    cross_chain_ca_segment_proximity_count = 0
+    cross_chain_ca_segment_collision_count = 0
     minimum_cross_chain_ca_segment_distance = float("inf")
     chain_ids = list(ca_segments_by_chain)
     for left_chain_index, left_chain in enumerate(chain_ids):
@@ -281,9 +288,15 @@ def audit_scaffold_geometry(
                 minimum_cross_chain_ca_segment_distance,
                 float(np.min(distances)),
             )
-            for left_segment_index, right_segment_index in np.argwhere(
-                distances < ca_clash_distance
-            ):
+            proximity_indices = np.argwhere(distances < ca_clash_distance)
+            cross_chain_ca_segment_proximity_count += len(proximity_indices)
+            remaining_proximity_details = max(
+                segment_detail_limit - len(cross_chain_ca_segment_proximities),
+                0,
+            )
+            for left_segment_index, right_segment_index in proximity_indices[
+                :remaining_proximity_details
+            ]:
                 left_item = left_segments[int(left_segment_index)]
                 right_item = right_segments[int(right_segment_index)]
                 cross_chain_ca_segment_proximities.append(
@@ -297,10 +310,18 @@ def audit_scaffold_geometry(
                         ),
                     }
                 )
-            for left_segment_index, right_segment_index in np.argwhere(
+            collision_indices = np.argwhere(
                 interior_valid
                 & (interior_distances < ca_segment_collision_distance)
-            ):
+            )
+            cross_chain_ca_segment_collision_count += len(collision_indices)
+            remaining_collision_details = max(
+                segment_detail_limit - len(cross_chain_ca_segment_collisions),
+                0,
+            )
+            for left_segment_index, right_segment_index in collision_indices[
+                :remaining_collision_details
+            ]:
                 left_item = left_segments[int(left_segment_index)]
                 right_item = right_segments[int(right_segment_index)]
                 cross_chain_ca_segment_collisions.append(
@@ -317,7 +338,7 @@ def audit_scaffold_geometry(
                         ),
                     }
                 )
-    passed_cross_chain_topology = not cross_chain_ca_segment_collisions
+    passed_cross_chain_topology = cross_chain_ca_segment_collision_count == 0
     copy_internal_comparisons: list[dict[str, Any]] = []
     transform_comparisons: list[dict[str, Any]] = []
     symmetry_failures: list[str] = []
@@ -622,8 +643,12 @@ def audit_scaffold_geometry(
                 default=float("inf"),
             ),
             "ca_clash_count": len(ca_clashes),
-            "cross_chain_ca_segment_proximity_count": len(
-                cross_chain_ca_segment_proximities
+            "cross_chain_ca_segment_proximity_count": (
+                cross_chain_ca_segment_proximity_count
+            ),
+            "cross_chain_ca_segment_proximity_details_truncated": (
+                cross_chain_ca_segment_proximity_count
+                > len(cross_chain_ca_segment_proximities)
             ),
             "minimum_cross_chain_ca_segment_distance": (
                 minimum_cross_chain_ca_segment_distance
@@ -631,8 +656,12 @@ def audit_scaffold_geometry(
                 else None
             ),
             "cross_chain_ca_segment_proximity_is_advisory": True,
-            "cross_chain_ca_segment_collision_count": len(
-                cross_chain_ca_segment_collisions
+            "cross_chain_ca_segment_collision_count": (
+                cross_chain_ca_segment_collision_count
+            ),
+            "cross_chain_ca_segment_collision_details_truncated": (
+                cross_chain_ca_segment_collision_count
+                > len(cross_chain_ca_segment_collisions)
             ),
             "passed_continuity": passed_continuity,
             "passed_compactness": passed_compactness,
@@ -705,6 +734,7 @@ def audit_scaffold_geometry(
             "ca_segment_collision_distance": (
                 ca_segment_collision_distance
             ),
+            "cross_chain_ca_segment_detail_limit": segment_detail_limit,
             "expected_symmetry_multiplicity": (
                 expected_symmetry_multiplicity
             ),

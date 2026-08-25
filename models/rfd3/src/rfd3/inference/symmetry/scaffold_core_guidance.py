@@ -40,6 +40,9 @@ class ScaffoldCoreTopology:
     generated_token_mask: torch.Tensor
     generated_atom_mask: torch.Tensor
     adjacent_token_pairs: torch.Tensor
+    adjacent_ca_atom_pairs: torch.Tensor
+    adjacent_pair_colors: torch.Tensor
+    directed_continuity_groups: tuple[torch.Tensor, ...]
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,10 @@ def build_scaffold_core_topology(
     ca_tokens = atom_to_token[ca_atom_indices]
     chains: list[ScaffoldCoreChain] = []
     adjacent_token_pairs: list[tuple[int, int]] = []
+    adjacent_ca_atom_pairs: list[tuple[int, int]] = []
+    adjacent_pair_colors: list[int] = []
+    directed_forward_groups: dict[int, list[tuple[int, int, int, int]]] = {}
+    directed_reverse_groups: dict[int, list[tuple[int, int, int, int]]] = {}
     for chain_id in torch.unique(asym_id[ca_tokens], sorted=True).tolist():
         select = asym_id[ca_tokens] == int(chain_id)
         selected_atoms = ca_atom_indices[select]
@@ -218,6 +225,7 @@ def build_scaffold_core_topology(
         selected_tokens = selected_tokens[protein]
         if len(selected_atoms) < 2:
             continue
+        selected_generated = token_generated[selected_tokens]
         consecutive = (
             residue_index[selected_tokens][1:] - residue_index[selected_tokens][:-1]
         ) == 1
@@ -235,6 +243,59 @@ def build_scaffold_core_topology(
                 or token_generated[right_token].item()
             ):
                 adjacent_token_pairs.append((left_token, right_token))
+                adjacent_ca_atom_pairs.append(
+                    (
+                        int(selected_atoms[pair_index].item()),
+                        int(selected_atoms[pair_index + 1].item()),
+                    )
+                )
+                adjacent_pair_colors.append(
+                    int(residue_index[left_token].item()) % 2
+                )
+        # Terminal generated runs have an unambiguous polymer anchor.  Record
+        # a breadth/depth schedule so one vectorized forward (or reverse)
+        # sweep can propagate that anchor through every symmetry copy.  This
+        # avoids hundreds of slow Laplacian iterations for a 180-A shell.
+        generated_values = selected_generated.tolist()
+        run_start = 0
+        while run_start < len(generated_values):
+            if not generated_values[run_start]:
+                run_start += 1
+                continue
+            run_end = run_start
+            while (
+                run_end + 1 < len(generated_values)
+                and generated_values[run_end + 1]
+            ):
+                run_end += 1
+            left_fixed = run_start > 0 and not generated_values[run_start - 1]
+            right_fixed = (
+                run_end + 1 < len(generated_values)
+                and not generated_values[run_end + 1]
+            )
+            if left_fixed:
+                for depth, pair_index in enumerate(range(run_start - 1, run_end)):
+                    directed_forward_groups.setdefault(depth, []).append(
+                        (
+                            int(selected_atoms[pair_index].item()),
+                            int(selected_atoms[pair_index + 1].item()),
+                            int(selected_tokens[pair_index + 1].item()),
+                            -1,
+                        )
+                    )
+            if right_fixed:
+                for depth, pair_index in enumerate(
+                    range(run_end, run_start - 1, -1)
+                ):
+                    directed_reverse_groups.setdefault(depth, []).append(
+                        (
+                            int(selected_atoms[pair_index].item()),
+                            int(selected_atoms[pair_index + 1].item()),
+                            int(selected_tokens[pair_index].item()),
+                            1,
+                        )
+                    )
+            run_start = run_end + 1
         chains.append(
             ScaffoldCoreChain(
                 asym_id=int(chain_id),
@@ -268,7 +329,182 @@ def build_scaffold_core_topology(
             dtype=torch.long,
             device=device,
         ).reshape(-1, 2),
+        adjacent_ca_atom_pairs=torch.tensor(
+            adjacent_ca_atom_pairs,
+            dtype=torch.long,
+            device=device,
+        ).reshape(-1, 2),
+        adjacent_pair_colors=torch.tensor(
+            adjacent_pair_colors,
+            dtype=torch.long,
+            device=device,
+        ).reshape(-1),
+        directed_continuity_groups=tuple(
+            torch.tensor(
+                group,
+                dtype=torch.long,
+                device=device,
+            ).reshape(-1, 4)
+            for group in (
+                *(
+                    directed_forward_groups[depth]
+                    for depth in sorted(directed_forward_groups)
+                ),
+                *(
+                    directed_reverse_groups[depth]
+                    for depth in sorted(directed_reverse_groups)
+                ),
+            )
+        ),
     )
+
+
+def project_generated_polymer_continuity(
+    coordinates: torch.Tensor,
+    topology: ScaffoldCoreTopology,
+    *,
+    target_ca_distance: float = 3.8,
+    tolerance: float = 0.5,
+    iterations: int = 64,
+    relaxation: float = 1.0,
+    projector: Callable[[torch.Tensor], torch.Tensor] | None = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Project generated protein tokens onto adjacent-CA geometry.
+
+    This is a kinematic safety projection, not a packing score.  Fixed tokens
+    never move.  Generated tokens receive rigid translations (all atoms in a
+    token move together), and a final Mosaic projector restores exact motif
+    and symmetry constraints.  Directed anchor sweeps plus bounded constraint
+    iterations propagate a fixed boundary through an arbitrarily long
+    generated run without prescribing compactness, pore size, or interface
+    shape.
+    """
+
+    if coordinates.ndim != 3 or coordinates.shape[-1] != 3:
+        raise ValueError("Polymer continuity projection requires [D, L, 3]")
+    if target_ca_distance <= 0.0 or tolerance < 0.0:
+        raise ValueError("Polymer continuity distances must be positive")
+    if iterations < 1:
+        raise ValueError("Polymer continuity iterations must be positive")
+    if not 0.0 < relaxation <= 1.0:
+        raise ValueError("Polymer continuity relaxation must be in (0, 1]")
+    if not len(topology.adjacent_token_pairs):
+        return coordinates, {
+            "applied": False,
+            "pair_count": 0,
+            "iterations": 0,
+            "maximum_initial_ca_error": 0.0,
+            "maximum_final_ca_error": 0.0,
+            "within_tolerance": True,
+        }
+
+    token_pairs = topology.adjacent_token_pairs
+    atom_pairs = topology.adjacent_ca_atom_pairs
+    generated = topology.generated_token_mask
+    atom_to_token = topology.atom_to_token
+    result = coordinates.detach().clone()
+
+    def errors(value: torch.Tensor) -> torch.Tensor:
+        vectors = value[:, atom_pairs[:, 1]] - value[:, atom_pairs[:, 0]]
+        return torch.abs(
+            torch.linalg.vector_norm(vectors, dim=-1) - target_ca_distance
+        )
+
+    initial_errors = errors(result)
+    applied_iterations = 0
+
+    # First propagate every unambiguous terminal anchor through its generated
+    # run.  A group contains at most one operation per chain, so assignments
+    # are collision-free and remain fully vectorized across symmetry copies.
+    directed_sweeps = 4 if topology.directed_continuity_groups else 0
+    for _ in range(directed_sweeps):
+        for group in topology.directed_continuity_groups:
+            left_atoms = group[:, 0]
+            right_atoms = group[:, 1]
+            moving_tokens = group[:, 2]
+            signs = group[:, 3].to(dtype=result.dtype)
+            vectors = result[:, right_atoms] - result[:, left_atoms]
+            distances = torch.linalg.vector_norm(vectors, dim=-1).clamp_min(1e-8)
+            unit = vectors / distances[..., None]
+            correction = (
+                relaxation
+                * (distances - target_ca_distance)[..., None]
+                * unit
+                * signs[None, :, None]
+            )
+            for batch_index in range(result.shape[0]):
+                token_delta = torch.zeros(
+                    (len(generated), 3),
+                    dtype=result.dtype,
+                    device=result.device,
+                )
+                token_delta[moving_tokens] = correction[batch_index]
+                result[batch_index] += token_delta[atom_to_token]
+
+    for iteration in range(iterations):
+        if torch.all(errors(result) <= tolerance):
+            break
+        # Adjacent constraints are two-coloured by residue parity.  No token
+        # occurs twice within one colour, so each half-sweep is vectorized
+        # Gauss-Seidel rather than a slowly diffusing Jacobi average.  This is
+        # important when an I-symmetry shell starts hundreds of Angstroms from
+        # the global origin.
+        for color in (0, 1):
+            selected = topology.adjacent_pair_colors == color
+            selected_tokens = token_pairs[selected]
+            selected_atoms = atom_pairs[selected]
+            if not len(selected_tokens):
+                continue
+            vectors = (
+                result[:, selected_atoms[:, 1]]
+                - result[:, selected_atoms[:, 0]]
+            )
+            distances = torch.linalg.vector_norm(vectors, dim=-1).clamp_min(1e-8)
+            violation = torch.abs(distances - target_ca_distance) > tolerance
+            unit = vectors / distances[..., None]
+            correction = (
+                relaxation
+                * (distances - target_ca_distance)[..., None]
+                * unit
+            )
+            left = selected_tokens[:, 0]
+            right = selected_tokens[:, 1]
+            left_generated = generated[left]
+            right_generated = generated[right]
+            for batch_index in range(result.shape[0]):
+                token_delta = torch.zeros(
+                    (len(generated), 3),
+                    dtype=result.dtype,
+                    device=result.device,
+                )
+                active = violation[batch_index]
+                both = active & left_generated & right_generated
+                left_only = active & left_generated & ~right_generated
+                right_only = active & ~left_generated & right_generated
+                value = correction[batch_index]
+                token_delta[left[both]] = 0.5 * value[both]
+                token_delta[right[both]] = -0.5 * value[both]
+                token_delta[left[left_only]] = value[left_only]
+                token_delta[right[right_only]] = -value[right_only]
+                result[batch_index] += token_delta[atom_to_token]
+        applied_iterations = iteration + 1
+
+    if projector is not None:
+        result = projector(result)
+    final_errors = errors(result)
+    maximum_initial = float(initial_errors.max().detach().cpu().item())
+    maximum_final = float(final_errors.max().detach().cpu().item())
+    return result.detach(), {
+        "applied": bool(topology.directed_continuity_groups)
+        or applied_iterations > 0,
+        "pair_count": int(len(token_pairs)),
+        "directed_group_count": len(topology.directed_continuity_groups),
+        "directed_sweeps": directed_sweeps,
+        "iterations": applied_iterations,
+        "maximum_initial_ca_error": maximum_initial,
+        "maximum_final_ca_error": maximum_final,
+        "within_tolerance": maximum_final <= tolerance + 1e-6,
+    }
 
 
 def _soft_contacts(distances: torch.Tensor, config: ScaffoldCoreGuidanceConfig):
@@ -802,6 +1038,7 @@ __all__ = [
     "ScaffoldCoreTopology",
     "apply_scaffold_core_guidance",
     "build_scaffold_core_topology",
+    "project_generated_polymer_continuity",
     "scaffold_core_energy",
     "scaffold_core_window",
 ]

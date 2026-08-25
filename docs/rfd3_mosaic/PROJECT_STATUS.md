@@ -116,6 +116,13 @@ geometry-scaffolding milestones; dynamic T/O/I mobility and production-
 quality generated-interface polyhedral cages are separate, still-unvalidated
 scientific capabilities.
 
+The first local-anchor correction was shown by two GPU reruns to execute but
+to be erased by the high-noise diffusion lifecycle.  A superseding,
+packing-independent generated-polymer continuity projection is now CPU
+validated and awaits one frozen I 50-step rerun.  Until that rerun passes,
+the product status remains “I inference and exact-orbit execution available;
+I generated-scaffold continuity not yet closed.”
+
 ## Known incomplete areas
 
 - repeated multi-seed GPU validation across diverse real inputs;

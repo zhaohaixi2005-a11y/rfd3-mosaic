@@ -34,6 +34,7 @@ _SAMPLER_DIAGNOSTIC_KEYS = (
     "motif_mobility_diagnostics",
     "graph_interface_guidance_diagnostics",
     "scaffold_core_guidance_diagnostics",
+    "generated_polymer_continuity_diagnostics",
     "constraint_runtime_diagnostics",
 )
 

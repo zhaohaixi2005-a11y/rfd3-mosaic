@@ -17,6 +17,7 @@ from rfd3_mosaic.experiment import (
     resolve_experiment,
 )
 from rfd3_mosaic.experiment_worker import (
+    _generated_polymer_continuity_runtime,
     _graph_interface_guidance_runtime,
     _motif_mobility_runtime,
     _symmetric_scaffold_packing_runtime,
@@ -25,6 +26,29 @@ from rfd3_mosaic.experiment_worker import (
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
+    def test_worker_reads_independent_polymer_continuity_contract(self) -> None:
+        plan = {
+            "enabled": True,
+            "scope": "adjacent_generated_protein_tokens",
+            "target_ca_distance": 3.8,
+            "tolerance": 0.5,
+            "projection_iterations": 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "rfd3_input.json"
+            path.write_text(
+                json.dumps(
+                    {"example": {"extra": {
+                        "generated_polymer_continuity_guidance": plan
+                    }}}
+                ),
+                encoding="utf-8",
+            )
+
+            resolved = _generated_polymer_continuity_runtime(path)
+
+        self.assertEqual(resolved, plan)
+
     def test_profile_path_survives_public_request_materialization(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         with tempfile.TemporaryDirectory() as temporary:

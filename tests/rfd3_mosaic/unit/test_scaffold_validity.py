@@ -71,6 +71,51 @@ class ScaffoldValidityTestCase(unittest.TestCase):
             0,
         )
 
+    def test_high_order_segment_details_are_bounded_but_counts_are_exact(
+        self,
+    ) -> None:
+        atoms = []
+        serial = 1
+        chain_count = 50
+        for chain_index in range(chain_count):
+            angle = math.pi * chain_index / chain_count
+            direction = np.asarray([math.cos(angle), math.sin(angle), 0.0])
+            for residue, coordinate in (
+                (1, -2.0 * direction),
+                (2, 2.0 * direction),
+            ):
+                atoms.append(
+                    _atom(
+                        serial,
+                        "CA",
+                        residue,
+                        float(coordinate[0]),
+                        float(coordinate[1]),
+                        chain=f"chain_{chain_index}",
+                    )
+                )
+                serial += 1
+
+        report = audit_scaffold_geometry(
+            tuple(atoms),
+            ca_clash_distance=1e-6,
+        )
+
+        expected = chain_count * (chain_count - 1) // 2
+        self.assertEqual(
+            report["summary"]["cross_chain_ca_segment_collision_count"],
+            expected,
+        )
+        self.assertTrue(
+            report["summary"][
+                "cross_chain_ca_segment_collision_details_truncated"
+            ]
+        )
+        self.assertEqual(
+            len(report["cross_chain_ca_segment_collisions"]),
+            report["thresholds"]["cross_chain_ca_segment_detail_limit"],
+        )
+
     def test_compact_continuous_chain_passes(self) -> None:
         atoms = (
             _atom(1, "N", 1, 0.00),

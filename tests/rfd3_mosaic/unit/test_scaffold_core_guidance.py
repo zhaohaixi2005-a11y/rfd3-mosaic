@@ -8,6 +8,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
+    project_generated_polymer_continuity,
     scaffold_core_energy,
 )
 from rfd3.trainer.rfd3 import _copy_sampler_diagnostics
@@ -29,6 +30,69 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_polymer_projection_restores_generated_path_without_moving_fixed(
+        self,
+    ) -> None:
+        f = {
+            "atom_to_token_map": torch.arange(5),
+            "asym_id": torch.zeros(5, dtype=torch.long),
+            "residue_index": torch.arange(5),
+            "is_ca": torch.ones(5, dtype=torch.bool),
+            "is_protein": torch.ones(5, dtype=torch.bool),
+        }
+        fixed = torch.tensor([True, False, False, False, False])
+        topology = build_scaffold_core_topology(f, fixed)
+        coordinates = torch.tensor(
+            [[[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [41.0, 0.0, 0.0],
+              [42.0, 0.0, 0.0], [43.0, 0.0, 0.0]]]
+        )
+
+        projected, diagnostics = project_generated_polymer_continuity(
+            coordinates,
+            topology,
+            iterations=128,
+            projector=lambda value: value,
+        )
+
+        distances = torch.linalg.vector_norm(
+            projected[0, 1:] - projected[0, :-1],
+            dim=-1,
+        )
+        self.assertTrue(diagnostics["applied"])
+        self.assertTrue(diagnostics["within_tolerance"])
+        self.assertTrue(torch.equal(projected[0, 0], coordinates[0, 0]))
+        self.assertTrue(torch.all(torch.abs(distances - 3.8) <= 0.5 + 1e-6))
+
+    def test_polymer_projection_respects_both_fixed_linker_anchors(self) -> None:
+        f = {
+            "atom_to_token_map": torch.arange(5),
+            "asym_id": torch.zeros(5, dtype=torch.long),
+            "residue_index": torch.arange(5),
+            "is_ca": torch.ones(5, dtype=torch.bool),
+            "is_protein": torch.ones(5, dtype=torch.bool),
+        }
+        fixed = torch.tensor([True, False, False, False, True])
+        topology = build_scaffold_core_topology(f, fixed)
+        coordinates = torch.tensor(
+            [[[0.0, 0.0, 0.0], [20.0, 8.0, 0.0], [21.0, -4.0, 0.0],
+              [18.0, 2.0, 0.0], [15.2, 0.0, 0.0]]]
+        )
+
+        projected, diagnostics = project_generated_polymer_continuity(
+            coordinates,
+            topology,
+            iterations=128,
+            projector=lambda value: value,
+        )
+
+        distances = torch.linalg.vector_norm(
+            projected[0, 1:] - projected[0, :-1],
+            dim=-1,
+        )
+        self.assertTrue(diagnostics["within_tolerance"])
+        self.assertTrue(torch.equal(projected[0, fixed], coordinates[0, fixed]))
+        self.assertTrue(torch.all(torch.abs(distances - 3.8) <= 0.5 + 1e-6))
+
     def test_crossing_backbone_segments_are_detected_without_ca_point_clash(
         self,
     ) -> None:
@@ -105,7 +169,11 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
             "scaffold_core_guidance_diagnostics": {
                 "runtime_active": True,
                 "applied_steps": 3,
-            }
+            },
+            "generated_polymer_continuity_diagnostics": {
+                "runtime_active": True,
+                "all_steps_within_tolerance": True,
+            },
         }
         metadata = {0: {"metrics": {}}, 1: {"metrics": {}}}
 
@@ -115,6 +183,10 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
             self.assertIs(
                 design["scaffold_core_guidance_diagnostics"],
                 payload["scaffold_core_guidance_diagnostics"],
+            )
+            self.assertIs(
+                design["generated_polymer_continuity_diagnostics"],
+                payload["generated_polymer_continuity_diagnostics"],
             )
 
     def test_explicit_soft_inter_penalty_distinguishes_broad_contact(

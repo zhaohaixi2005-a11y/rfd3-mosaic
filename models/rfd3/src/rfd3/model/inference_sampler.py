@@ -39,6 +39,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
+    project_generated_polymer_continuity,
     scaffold_core_energy,
 )
 from rfd3.inference.symmetry.scaffold_guidance import (
@@ -169,6 +170,13 @@ class SampleDiffusionConfig:
     scaffold_core_intra_chain_weight: float = 0.0
     scaffold_core_inter_chain_weight: float = 1.0
     scaffold_core_inter_chain_excess_penalty: float = 0.0
+    # Mosaic may request an independent kinematic safety projection for
+    # generated peptide paths.  It does not imply intra-chain compaction or
+    # inter-chain interface creation.
+    enable_generated_polymer_continuity_guidance: bool = False
+    generated_polymer_continuity_target_ca_distance: float = 3.8
+    generated_polymer_continuity_tolerance: float = 0.5
+    generated_polymer_continuity_iterations: int = 64
     graph_interface_guidance_weight: float = 1.0
     graph_interface_guidance_coverage_weight: float = 1.0
     graph_interface_guidance_continuity_weight: float = 1.0
@@ -631,10 +639,30 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             float(self.scaffold_core_intra_chain_weight) > 0.0
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
         )
+        polymer_continuity_active = bool(
+            self.enable_generated_polymer_continuity_guidance
+        )
         if scaffold_core_active and not exact_state:
             raise ValueError(
                 "Scaffold intra/inter guidance requires exact orbit-average "
                 "state and coupled-noise modes"
+            )
+        if polymer_continuity_active and not exact_state:
+            raise ValueError(
+                "Generated polymer continuity guidance requires exact "
+                "orbit-average state and coupled-noise modes"
+            )
+        if float(self.generated_polymer_continuity_target_ca_distance) <= 0.0:
+            raise ValueError(
+                "generated_polymer_continuity_target_ca_distance must be positive"
+            )
+        if float(self.generated_polymer_continuity_tolerance) < 0.0:
+            raise ValueError(
+                "generated_polymer_continuity_tolerance cannot be negative"
+            )
+        if int(self.generated_polymer_continuity_iterations) < 1:
+            raise ValueError(
+                "generated_polymer_continuity_iterations must be positive"
             )
         if float(self.scaffold_core_intra_chain_weight) < 0.0:
             raise ValueError("scaffold_core_intra_chain_weight cannot be negative")
@@ -1679,9 +1707,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         scaffold_core_topology = None
         scaffold_core_guidance_config = None
         scaffold_core_diagnostics: list[dict[str, Any]] = []
+        polymer_continuity_diagnostics: list[dict[str, Any]] = []
         scaffold_core_active = (
             float(self.scaffold_core_intra_chain_weight) > 0.0
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
+        )
+        polymer_continuity_active = bool(
+            self.enable_generated_polymer_continuity_guidance
         )
         joint_packing_mobility = False
         mobility_schedule_diagnostics = None
@@ -1716,11 +1748,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Automatic symmetric scaffold packing initialized: "
                 f"edges={len(graph_interface_topology.edges)}"
             )
-        if scaffold_core_active:
+        if scaffold_core_active or polymer_continuity_active:
             scaffold_core_topology = build_scaffold_core_topology(
                 f,
                 is_motif_atom_with_fixed_coord,
             )
+        if scaffold_core_active:
             scaffold_core_guidance_config = self._scaffold_core_guidance_config()
             ranked_logger.info(
                 "Scaffold intra/inter guidance initialized: "
@@ -1956,7 +1989,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 coordinates=proposed_coordinates,
                             )
                         core_pose_energy = None
-                        if scaffold_core_topology is not None:
+                        if scaffold_core_active:
+                            if scaffold_core_topology is None:
+                                raise RuntimeError(
+                                    "Scaffold core topology was not initialized"
+                                )
                             if scaffold_core_guidance_config is None:
                                 raise RuntimeError(
                                     "Scaffold core guidance config was not initialized"
@@ -2301,7 +2338,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 interface_step["step_num"] = step_num
                 graph_interface_diagnostics.append(interface_step)
 
-            if scaffold_core_topology is not None:
+            if scaffold_core_active:
+                if scaffold_core_topology is None:
+                    raise RuntimeError(
+                        "Scaffold core topology was not initialized"
+                    )
                 if scaffold_core_guidance_config is None:
                     raise RuntimeError(
                         "Scaffold core guidance config was not initialized"
@@ -2341,6 +2382,53 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )
                 core_step["step_num"] = step_num
                 scaffold_core_diagnostics.append(core_step)
+
+            if polymer_continuity_active:
+                if scaffold_core_topology is None:
+                    raise RuntimeError(
+                        "Polymer continuity topology was not initialized"
+                    )
+                if constraint_runtime is not None:
+
+                    def continuity_projector(
+                        candidate,
+                        *,
+                        active_step_num=step_num,
+                    ):
+                        return constraint_runtime.project_post_guidance(
+                            candidate,
+                            step_num=active_step_num,
+                        )
+                else:
+
+                    def continuity_projector(
+                        candidate,
+                        *,
+                        active_fixed_target=fixed_target,
+                    ):
+                        return self._project_stepwise_updated_coordinates(
+                            candidate,
+                            f,
+                            is_motif_atom_with_fixed_coord,
+                            active_fixed_target,
+                        )
+
+                X_L, continuity_step = project_generated_polymer_continuity(
+                    X_L,
+                    scaffold_core_topology,
+                    target_ca_distance=float(
+                        self.generated_polymer_continuity_target_ca_distance
+                    ),
+                    tolerance=float(
+                        self.generated_polymer_continuity_tolerance
+                    ),
+                    iterations=int(
+                        self.generated_polymer_continuity_iterations
+                    ),
+                    projector=continuity_projector,
+                )
+                continuity_step["step_num"] = step_num
+                polymer_continuity_diagnostics.append(continuity_step)
 
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
@@ -2445,6 +2533,39 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )
                 graph_interface_diagnostics.append(interface_step)
 
+        if polymer_continuity_active:
+            if scaffold_core_topology is None:
+                raise RuntimeError("Polymer continuity topology was not initialized")
+            if constraint_runtime is not None:
+
+                def final_continuity_projector(candidate):
+                    return constraint_runtime.project_post_guidance(
+                        candidate,
+                        step_num=max(len(noise_schedule) - 2, 0),
+                    )
+            else:
+
+                def final_continuity_projector(candidate):
+                    return self._project_stepwise_updated_coordinates(
+                        candidate,
+                        f,
+                        is_motif_atom_with_fixed_coord,
+                        fixed_target,
+                    )
+
+            X_L, final_continuity_step = project_generated_polymer_continuity(
+                X_L,
+                scaffold_core_topology,
+                target_ca_distance=float(
+                    self.generated_polymer_continuity_target_ca_distance
+                ),
+                tolerance=float(self.generated_polymer_continuity_tolerance),
+                iterations=int(self.generated_polymer_continuity_iterations),
+                projector=final_continuity_projector,
+            )
+            final_continuity_step["phase"] = "final_projection"
+            polymer_continuity_diagnostics.append(final_continuity_step)
+
         if constraint_runtime is not None:
             X_L = constraint_runtime.finalize(X_L)
         elif torch.any(is_motif_atom_with_fixed_coord) and self.allow_realignment:
@@ -2480,7 +2601,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
 
         final_scaffold_core_energy = None
-        if scaffold_core_topology is not None:
+        if scaffold_core_active:
+            if scaffold_core_topology is None:
+                raise RuntimeError("Scaffold core topology was not initialized")
             if scaffold_core_guidance_config is None:
                 raise RuntimeError("Scaffold core guidance config was not initialized")
             final_scaffold_core_energy = scaffold_core_energy(
@@ -2618,7 +2741,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 ),
                 "final_proxy": final_proxy,
             }
-        if scaffold_core_topology is not None:
+        if scaffold_core_active:
+            if scaffold_core_topology is None:
+                raise RuntimeError("Scaffold core topology was not initialized")
             if (
                 scaffold_core_guidance_config is None
                 or final_scaffold_core_energy is None
@@ -2634,6 +2759,23 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     bool(step.get("applied")) for step in scaffold_core_diagnostics
                 ),
                 "final_metrics": final_scaffold_core_energy.detached_dict(),
+            }
+        if polymer_continuity_active:
+            result["generated_polymer_continuity_diagnostics"] = {
+                "schema_version": 1,
+                "runtime_active": True,
+                "target_ca_distance": float(
+                    self.generated_polymer_continuity_target_ca_distance
+                ),
+                "tolerance": float(self.generated_polymer_continuity_tolerance),
+                "configured_iterations": int(
+                    self.generated_polymer_continuity_iterations
+                ),
+                "steps": polymer_continuity_diagnostics,
+                "all_steps_within_tolerance": all(
+                    bool(step["within_tolerance"])
+                    for step in polymer_continuity_diagnostics
+                ),
             }
         return result
 
@@ -2675,6 +2817,7 @@ class ConditionalDiffusionSampler:
                 "enable_orbit_rigid_motif_mobility",
                 "enable_graph_interface_guidance",
                 "enable_symmetric_scaffold_packing",
+                "enable_generated_polymer_continuity_guidance",
             ):
                 if kwargs.get(flag, False):
                     unsupported.append(flag)
