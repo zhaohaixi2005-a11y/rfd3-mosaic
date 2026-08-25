@@ -204,7 +204,7 @@ class AssemblyMorphologyTestCase(unittest.TestCase):
         )
 
         self.assertTrue(report["passed"])
-        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["schema_version"], 3)
         self.assertTrue(
             report["summary"]["assembly_morphology_available"]
         )

@@ -335,6 +335,10 @@ def main() -> None:
     print(f"chains:              {summary['chain_count']}")
     print(f"chain breaks:        {summary['chain_break_count']}")
     print(
+        "peptide geometry:    "
+        f"{summary.get('peptide_geometry_flag_count', 0)} advisory flag(s)"
+    )
+    print(
         "maximum chain CA Rg: "
         f"{summary['maximum_chain_ca_radius_of_gyration']:.3f} A"
     )

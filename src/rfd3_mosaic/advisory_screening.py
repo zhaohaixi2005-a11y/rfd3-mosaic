@@ -196,7 +196,11 @@ def build_advisory_screening(
             contract_flags.extend(
                 _false_summary_flags(
                     summary,
-                    ("passed_continuity", "passed_symmetry"),
+                    (
+                        "passed_backbone_atom_completeness",
+                        "passed_continuity",
+                        "passed_symmetry",
+                    ),
                     report=path,
                     prefix="contract.scaffold",
                 )
@@ -207,6 +211,7 @@ def build_advisory_screening(
                     (
                         "passed_clashes",
                         "passed_compactness",
+                        "passed_peptide_geometry",
                         "passed_assembly_shape",
                     ),
                     report=path,

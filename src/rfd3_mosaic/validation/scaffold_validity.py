@@ -72,8 +72,7 @@ def _segment_to_segment_distances(
         & (right_fraction <= 1.0)
     )
     left_closest = (
-        left_start[:, None, :]
-        + left_fraction[..., None] * left_direction[:, None, :]
+        left_start[:, None, :] + left_fraction[..., None] * left_direction[:, None, :]
     )
     right_closest = (
         right_start[None, :, :]
@@ -107,17 +106,13 @@ def audit_scaffold_geometry(
 ) -> dict[str, Any]:
     """Audit continuity, compactness, clashes, and optional orbit closure."""
 
-    residues: dict[
-        tuple[str, int, str], dict[str, np.ndarray]
-    ] = defaultdict(dict)
+    residues: dict[tuple[str, int, str], dict[str, np.ndarray]] = defaultdict(dict)
     for atom in atoms:
         if atom.record_type != "ATOM":
             continue
         name = atom.atom_name.upper()
         if name in {"N", "CA", "C"}:
-            residues[atom.residue_id][name] = np.asarray(
-                atom.coordinate, dtype=float
-            )
+            residues[atom.residue_id][name] = np.asarray(atom.coordinate, dtype=float)
 
     by_chain: dict[str, list[tuple[tuple[str, int, str], dict[str, np.ndarray]]]] = (
         defaultdict(list)
@@ -139,12 +134,29 @@ def audit_scaffold_geometry(
     # and breaks the one-to-one correspondence with a preexpanded mixed-orbit
     # layout.
     for chain_id, chain_residues in by_chain.items():
+        backbone_atom_completeness_evaluated = any(
+            "N" in backbone or "C" in backbone for _, backbone in chain_residues
+        )
         cn_distances: list[float] = []
         ca_steps: list[float] = []
         breaks: list[dict[str, Any]] = []
+        peptide_geometry_flags: list[dict[str, Any]] = []
+        missing_backbone_atoms: list[dict[str, Any]] = []
         ca_coordinates: list[np.ndarray] = []
         ca_segments: list[tuple[int, int, np.ndarray, np.ndarray]] = []
         for index, (residue_id, backbone) in enumerate(chain_residues):
+            missing = (
+                sorted({"N", "CA", "C"} - set(backbone))
+                if backbone_atom_completeness_evaluated
+                else []
+            )
+            if missing:
+                missing_backbone_atoms.append(
+                    {
+                        "residue": residue_id[1],
+                        "missing_atoms": missing,
+                    }
+                )
             if "CA" in backbone:
                 ca_coordinates.append(backbone["CA"])
                 ca_records.append((chain_id, index, backbone["CA"]))
@@ -179,14 +191,10 @@ def audit_scaffold_geometry(
                             backbone["CA"],
                         )
                     )
-            failed = (
-                not residue_numbers_are_contiguous
-                or cn is None
-                or ca is None
-                or not min_cn_distance <= cn <= max_cn_distance
-                or ca > max_ca_step
+            failed_continuity = (
+                not residue_numbers_are_contiguous or ca is None or ca > max_ca_step
             )
-            if failed:
+            if failed_continuity:
                 breaks.append(
                     {
                         "previous_residue": previous_id[1],
@@ -194,6 +202,19 @@ def audit_scaffold_geometry(
                         "residue_numbers_are_contiguous": (
                             residue_numbers_are_contiguous
                         ),
+                        "cn_distance": cn,
+                        "ca_distance": ca,
+                    }
+                )
+            if (
+                residue_numbers_are_contiguous
+                and cn is not None
+                and not min_cn_distance <= cn <= max_cn_distance
+            ):
+                peptide_geometry_flags.append(
+                    {
+                        "previous_residue": previous_id[1],
+                        "next_residue": residue_id[1],
                         "cn_distance": cn,
                         "ca_distance": ca,
                     }
@@ -224,7 +245,14 @@ def audit_scaffold_geometry(
                 "maximum_cn_distance": max(cn_distances, default=None),
                 "maximum_ca_step": max(ca_steps, default=None),
                 "chain_breaks": breaks,
+                "peptide_geometry_flags": peptide_geometry_flags,
+                "missing_backbone_atoms": missing_backbone_atoms,
                 "passed_continuity": not breaks,
+                "passed_peptide_geometry": not peptide_geometry_flags,
+                "backbone_atom_completeness_evaluated": (
+                    backbone_atom_completeness_evaluated
+                ),
+                "passed_backbone_atom_completeness": (not missing_backbone_atoms),
                 "passed_compactness": ca_rg <= max_chain_ca_rg,
             }
         )
@@ -248,6 +276,12 @@ def audit_scaffold_geometry(
 
     passed_continuity = bool(chains) and all(
         chain["passed_continuity"] for chain in chains
+    )
+    passed_peptide_geometry = bool(chains) and all(
+        chain["passed_peptide_geometry"] for chain in chains
+    )
+    passed_backbone_atom_completeness = bool(chains) and all(
+        chain["passed_backbone_atom_completeness"] for chain in chains
     )
     passed_compactness = bool(chains) and all(
         chain["passed_compactness"] for chain in chains
@@ -311,8 +345,7 @@ def audit_scaffold_geometry(
                     }
                 )
             collision_indices = np.argwhere(
-                interior_valid
-                & (interior_distances < ca_segment_collision_distance)
+                interior_valid & (interior_distances < ca_segment_collision_distance)
             )
             cross_chain_ca_segment_collision_count += len(collision_indices)
             remaining_collision_details = max(
@@ -345,17 +378,10 @@ def audit_scaffold_geometry(
     validated_symmetry_transforms: tuple[np.ndarray, ...] | None = None
     if expected_symmetry_multiplicity is not None:
         if expected_symmetry_multiplicity < 2:
-            raise ValueError(
-                "expected_symmetry_multiplicity must be at least two"
-            )
+            raise ValueError("expected_symmetry_multiplicity must be at least two")
         if expected_symmetry_transforms is None:
-            symmetry_failures.append(
-                "expected symmetry transforms were not provided"
-            )
-        elif (
-            len(expected_symmetry_transforms)
-            != expected_symmetry_multiplicity
-        ):
+            symmetry_failures.append("expected symmetry transforms were not provided")
+        elif len(expected_symmetry_transforms) != expected_symmetry_multiplicity:
             symmetry_failures.append(
                 "symmetry transform count does not match expected "
                 f"multiplicity {expected_symmetry_multiplicity}"
@@ -367,10 +393,7 @@ def audit_scaffold_geometry(
                 expected_symmetry_transforms
             ):
                 transform = np.asarray(raw_transform, dtype=float)
-                if (
-                    transform.shape != (4, 4)
-                    or not np.isfinite(transform).all()
-                ):
+                if transform.shape != (4, 4) or not np.isfinite(transform).all():
                     symmetry_failures.append(
                         "expected symmetry transform "
                         f"{transform_index} must be a finite 4x4 matrix"
@@ -378,11 +401,7 @@ def audit_scaffold_geometry(
                     continue
                 rotation = transform[:3, :3]
                 orthogonality_error = float(
-                    np.max(
-                        np.abs(
-                            rotation.T @ rotation - np.eye(3)
-                        )
-                    )
+                    np.max(np.abs(rotation.T @ rotation - np.eye(3)))
                 )
                 determinant = float(np.linalg.det(rotation))
                 if not np.allclose(
@@ -395,23 +414,15 @@ def audit_scaffold_geometry(
                         f"{transform_index} has an invalid homogeneous row"
                     )
                     continue
-                if (
-                    orthogonality_error > 1e-5
-                    or abs(determinant - 1.0) > 1e-5
-                ):
+                if orthogonality_error > 1e-5 or abs(determinant - 1.0) > 1e-5:
                     symmetry_failures.append(
                         "expected symmetry transform "
                         f"{transform_index} is not a proper rigid rotation"
                     )
                     continue
                 normalized_transforms.append(transform)
-            if (
-                len(normalized_transforms)
-                == expected_symmetry_multiplicity
-            ):
-                validated_symmetry_transforms = tuple(
-                    normalized_transforms
-                )
+            if len(normalized_transforms) == expected_symmetry_multiplicity:
+                validated_symmetry_transforms = tuple(normalized_transforms)
         ordered_chain_ids = list(ca_coordinates_by_chain)
         orbit_chain_layouts: list[list[tuple[str, int, bool]]] = []
         if expected_symmetry_chain_layout is not None:
@@ -422,9 +433,7 @@ def audit_scaffold_geometry(
                     f"!= {len(ordered_chain_ids)}"
                 )
             else:
-                by_entity: dict[int, list[tuple[str, int, bool]]] = (
-                    defaultdict(list)
-                )
+                by_entity: dict[int, list[tuple[str, int, bool]]] = defaultdict(list)
                 for chain_id, record in zip(
                     ordered_chain_ids,
                     expected_symmetry_chain_layout,
@@ -468,8 +477,7 @@ def audit_scaffold_geometry(
                         continue
                     reference = asu_records[0]
                     orbit_chain_layouts.append(
-                        [reference]
-                        + [item for item in records if item != reference]
+                        [reference] + [item for item in records if item != reference]
                     )
         elif (
             len(ordered_chain_ids) == 0
@@ -480,9 +488,7 @@ def audit_scaffold_geometry(
                 f"multiplicity {expected_symmetry_multiplicity}"
             )
         else:
-            asu_chain_count = (
-                len(ordered_chain_ids) // expected_symmetry_multiplicity
-            )
+            asu_chain_count = len(ordered_chain_ids) // expected_symmetry_multiplicity
             orbit_chain_layouts = [
                 [
                     (
@@ -498,38 +504,27 @@ def audit_scaffold_geometry(
             ]
 
         for orbit_chain_layout in orbit_chain_layouts:
-            reference_id, reference_transform_index, _ = (
-                orbit_chain_layout[0]
-            )
-            reference_coordinates = ca_coordinates_by_chain[
-                reference_id
-            ]
+            reference_id, reference_transform_index, _ = orbit_chain_layout[0]
+            reference_coordinates = ca_coordinates_by_chain[reference_id]
             if not len(reference_coordinates):
                 symmetry_failures.append(
                     f"reference chain {reference_id} has no CA atoms"
                 )
                 continue
             reference_distances = np.linalg.norm(
-                reference_coordinates[:, None, :]
-                - reference_coordinates[None, :, :],
+                reference_coordinates[:, None, :] - reference_coordinates[None, :, :],
                 axis=-1,
             )
             for observed_id, transform_index, _ in orbit_chain_layout[1:]:
-                observed_coordinates = ca_coordinates_by_chain[
-                    observed_id
-                ]
-                if (
-                    observed_coordinates.shape
-                    != reference_coordinates.shape
-                ):
+                observed_coordinates = ca_coordinates_by_chain[observed_id]
+                if observed_coordinates.shape != reference_coordinates.shape:
                     symmetry_failures.append(
                         f"chains {reference_id} and {observed_id} "
                         "have different CA counts"
                     )
                     continue
                 observed_distances = np.linalg.norm(
-                    observed_coordinates[:, None, :]
-                    - observed_coordinates[None, :, :],
+                    observed_coordinates[:, None, :] - observed_coordinates[None, :, :],
                     axis=-1,
                 )
                 difference = observed_distances - reference_distances
@@ -552,17 +547,15 @@ def audit_scaffold_geometry(
                 if validated_symmetry_transforms is None:
                     continue
                 reference_transform = np.asarray(
-                    validated_symmetry_transforms[
-                        reference_transform_index
-                    ],
+                    validated_symmetry_transforms[reference_transform_index],
                     dtype=float,
                 )
                 observed_transform = np.asarray(
                     validated_symmetry_transforms[transform_index],
                     dtype=float,
                 )
-                relative_transform = (
-                    observed_transform @ np.linalg.inv(reference_transform)
+                relative_transform = observed_transform @ np.linalg.inv(
+                    reference_transform
                 )
                 expected_coordinates = (
                     reference_coordinates @ relative_transform[:3, :3].T
@@ -572,9 +565,7 @@ def audit_scaffold_geometry(
                     observed_coordinates - expected_coordinates,
                     axis=-1,
                 )
-                coordinate_rmsd = float(
-                    np.sqrt(np.mean(np.square(coordinate_errors)))
-                )
+                coordinate_rmsd = float(np.sqrt(np.mean(np.square(coordinate_errors))))
                 coordinate_maximum = float(np.max(coordinate_errors))
                 transform_passed = (
                     coordinate_rmsd <= max_symmetry_coordinate_rmsd
@@ -599,8 +590,7 @@ def audit_scaffold_geometry(
     passed_symmetry = (
         True
         if expected_symmetry_multiplicity is None
-        else not symmetry_failures
-        and bool(transform_comparisons)
+        else not symmetry_failures and bool(transform_comparisons)
     )
     morphology: dict[str, Any] = {
         "enabled": False,
@@ -622,9 +612,10 @@ def audit_scaffold_geometry(
         "audit": "rfd3_mosaic.scaffold_geometry",
         # Morphology is an additive diagnostics block; keep the existing
         # scaffold-report schema compatible for old run consumers.
-        "schema_version": 2,
+        "schema_version": 3,
         "passed": (
             passed_continuity
+            and passed_backbone_atom_completeness
             and passed_compactness
             and passed_clashes
             and passed_cross_chain_topology
@@ -632,14 +623,17 @@ def audit_scaffold_geometry(
         ),
         "summary": {
             "chain_count": len(chains),
-            "chain_break_count": sum(
-                len(chain["chain_breaks"]) for chain in chains
+            "chain_break_count": sum(len(chain["chain_breaks"]) for chain in chains),
+            "peptide_geometry_flag_count": sum(
+                len(chain["peptide_geometry_flags"]) for chain in chains
+            ),
+            "missing_backbone_atom_count": sum(
+                len(item["missing_atoms"])
+                for chain in chains
+                for item in chain["missing_backbone_atoms"]
             ),
             "maximum_chain_ca_radius_of_gyration": max(
-                (
-                    chain["ca_radius_of_gyration"]
-                    for chain in chains
-                ),
+                (chain["ca_radius_of_gyration"] for chain in chains),
                 default=float("inf"),
             ),
             "ca_clash_count": len(ca_clashes),
@@ -664,6 +658,12 @@ def audit_scaffold_geometry(
                 > len(cross_chain_ca_segment_collisions)
             ),
             "passed_continuity": passed_continuity,
+            "passed_peptide_geometry": passed_peptide_geometry,
+            "peptide_geometry_is_advisory": True,
+            "passed_backbone_atom_completeness": (passed_backbone_atom_completeness),
+            "backbone_atom_completeness_evaluated": any(
+                chain["backbone_atom_completeness_evaluated"] for chain in chains
+            ),
             "passed_compactness": passed_compactness,
             "passed_clashes": passed_clashes,
             "passed_cross_chain_topology": passed_cross_chain_topology,
@@ -683,10 +683,7 @@ def audit_scaffold_geometry(
                 default=0.0,
             ),
             "maximum_symmetry_coordinate_rmsd": max(
-                (
-                    comparison["coordinate_rmsd"]
-                    for comparison in transform_comparisons
-                ),
+                (comparison["coordinate_rmsd"] for comparison in transform_comparisons),
                 default=0.0,
             ),
             "maximum_symmetry_coordinate_error": max(
@@ -697,8 +694,7 @@ def audit_scaffold_geometry(
                 default=0.0,
             ),
             "assembly_morphology_available": bool(
-                morphology.get("enabled")
-                and morphology.get("summary") is not None
+                morphology.get("enabled") and morphology.get("summary") is not None
             ),
             "assembly_morphology_measurement_only": bool(
                 morphology.get("measurement_only", True)
@@ -731,39 +727,23 @@ def audit_scaffold_geometry(
             "max_ca_step": max_ca_step,
             "max_chain_ca_radius_of_gyration": max_chain_ca_rg,
             "ca_clash_distance": ca_clash_distance,
-            "ca_segment_collision_distance": (
-                ca_segment_collision_distance
-            ),
+            "ca_segment_collision_distance": (ca_segment_collision_distance),
             "cross_chain_ca_segment_detail_limit": segment_detail_limit,
-            "expected_symmetry_multiplicity": (
-                expected_symmetry_multiplicity
-            ),
+            "expected_symmetry_multiplicity": (expected_symmetry_multiplicity),
             "expected_symmetry_chain_layout": (
                 list(expected_symmetry_chain_layout)
                 if expected_symmetry_chain_layout is not None
                 else None
             ),
-            "max_chain_distance_matrix_rmsd": (
-                max_chain_distance_matrix_rmsd
-            ),
-            "max_chain_distance_matrix_error": (
-                max_chain_distance_matrix_error
-            ),
-            "max_symmetry_coordinate_rmsd": (
-                max_symmetry_coordinate_rmsd
-            ),
-            "max_symmetry_coordinate_error": (
-                max_symmetry_coordinate_error
-            ),
+            "max_chain_distance_matrix_rmsd": (max_chain_distance_matrix_rmsd),
+            "max_chain_distance_matrix_error": (max_chain_distance_matrix_error),
+            "max_symmetry_coordinate_rmsd": (max_symmetry_coordinate_rmsd),
+            "max_symmetry_coordinate_error": (max_symmetry_coordinate_error),
         },
         "chains": chains,
         "ca_clashes": ca_clashes,
-        "cross_chain_ca_segment_proximities": (
-            cross_chain_ca_segment_proximities
-        ),
-        "cross_chain_ca_segment_collisions": (
-            cross_chain_ca_segment_collisions
-        ),
+        "cross_chain_ca_segment_proximities": (cross_chain_ca_segment_proximities),
+        "cross_chain_ca_segment_collisions": (cross_chain_ca_segment_collisions),
         "symmetry": {
             "enabled": expected_symmetry_multiplicity is not None,
             "passed": passed_symmetry,

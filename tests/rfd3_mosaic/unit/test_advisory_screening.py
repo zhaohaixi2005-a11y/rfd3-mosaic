@@ -79,6 +79,32 @@ class AdvisoryScreeningTestCase(unittest.TestCase):
         self.assertEqual(len(result["contract_flags"]), 2)
         self.assertTrue(result["generated_output_retained"])
 
+    def test_peptide_geometry_is_backbone_advice_not_execution_contract(self) -> None:
+        scaffold = self.report(
+            "scaffold_validity_audit.json",
+            {
+                "passed": True,
+                "summary": {
+                    "passed_backbone_atom_completeness": True,
+                    "passed_continuity": True,
+                    "passed_symmetry": True,
+                    "passed_clashes": True,
+                    "passed_compactness": True,
+                    "passed_peptide_geometry": False,
+                },
+            },
+        )
+
+        result = build_advisory_screening((scaffold,))
+
+        self.assertEqual(result["contract_status"], "met")
+        self.assertEqual(result["recommendation"], "review_advisory_metrics")
+        self.assertFalse(result["contract_flags"])
+        self.assertEqual(
+            result["advisory_flags"][0]["code"],
+            "advisory.scaffold.passed_peptide_geometry",
+        )
+
     def test_writes_self_describing_advice_without_removing_reports(self) -> None:
         report = self.report("constraint_orbit_audit.json", {"passed": True})
         output = self.root / "screening_advice.json"
@@ -116,9 +142,7 @@ class AdvisoryScreeningTestCase(unittest.TestCase):
                     "name": "screening-delete",
                     "input": "motif.pdb",
                     "symmetry": "C3",
-                    "sampling": {
-                        "screening": {"retain_all_outputs": False}
-                    },
+                    "sampling": {"screening": {"retain_all_outputs": False}},
                 }
             )
 

@@ -107,9 +107,7 @@ class ScaffoldValidityTestCase(unittest.TestCase):
             expected,
         )
         self.assertTrue(
-            report["summary"][
-                "cross_chain_ca_segment_collision_details_truncated"
-            ]
+            report["summary"]["cross_chain_ca_segment_collision_details_truncated"]
         )
         self.assertEqual(
             len(report["cross_chain_ca_segment_collisions"]),
@@ -153,6 +151,59 @@ class ScaffoldValidityTestCase(unittest.TestCase):
         self.assertEqual(report["summary"]["chain_break_count"], 1)
         self.assertFalse(report["summary"]["passed_compactness"])
 
+    def test_ca_continuous_cn_outlier_is_advisory(self) -> None:
+        atoms = (
+            _atom(1, "N", 1, -1.45),
+            _atom(2, "CA", 1, 0.0),
+            _atom(3, "C", 1, 1.50),
+            _atom(4, "N", 2, 3.619),
+            _atom(5, "CA", 2, 3.80),
+            _atom(6, "C", 2, 5.30),
+        )
+
+        report = audit_scaffold_geometry(atoms)
+
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["summary"]["passed_continuity"])
+        self.assertEqual(report["summary"]["chain_break_count"], 0)
+        self.assertFalse(report["summary"]["passed_peptide_geometry"])
+        self.assertTrue(report["summary"]["peptide_geometry_is_advisory"])
+        self.assertEqual(report["summary"]["peptide_geometry_flag_count"], 1)
+        self.assertEqual(len(report["chains"][0]["chain_breaks"]), 0)
+        self.assertEqual(
+            len(report["chains"][0]["peptide_geometry_flags"]),
+            1,
+        )
+
+    def test_missing_backbone_atoms_remain_a_hard_contract(self) -> None:
+        atoms = (
+            _atom(1, "N", 1, 0.0),
+            _atom(2, "CA", 1, 1.45),
+            _atom(3, "C", 1, 2.45),
+            _atom(4, "CA", 2, 5.10),
+            _atom(5, "C", 2, 6.20),
+        )
+
+        report = audit_scaffold_geometry(atoms)
+
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["summary"]["passed_backbone_atom_completeness"])
+        self.assertEqual(report["summary"]["missing_backbone_atom_count"], 1)
+
+    def test_ca_only_representation_does_not_invent_missing_atom_failure(
+        self,
+    ) -> None:
+        atoms = (
+            _atom(1, "CA", 1, 0.0),
+            _atom(2, "CA", 2, 3.8),
+        )
+
+        report = audit_scaffold_geometry(atoms)
+
+        self.assertTrue(report["passed"])
+        self.assertFalse(report["summary"]["backbone_atom_completeness_evaluated"])
+        self.assertTrue(report["summary"]["passed_backbone_atom_completeness"])
+
     def test_declared_c3_transforms_are_the_symmetry_hard_gate(
         self,
     ) -> None:
@@ -182,8 +233,7 @@ class ScaffoldValidityTestCase(unittest.TestCase):
                     (base + 2.45, 0.0, 0.0),
                 )
                 transformed = [
-                    np.asarray(coordinate)
-                    @ transforms[chain_index][:3, :3].T
+                    np.asarray(coordinate) @ transforms[chain_index][:3, :3].T
                     for coordinate in source_coordinates
                 ]
                 atoms.extend(
@@ -245,13 +295,9 @@ class ScaffoldValidityTestCase(unittest.TestCase):
             expected_symmetry_multiplicity=3,
             expected_symmetry_transforms=tuple(transforms),
         )
-        self.assertFalse(
-            translated_report["summary"]["passed_symmetry"]
-        )
+        self.assertFalse(translated_report["summary"]["passed_symmetry"])
         self.assertLess(
-            translated_report["summary"][
-                "maximum_copy_internal_distance_matrix_rmsd"
-            ],
+            translated_report["summary"]["maximum_copy_internal_distance_matrix_rmsd"],
             1e-10,
         )
 

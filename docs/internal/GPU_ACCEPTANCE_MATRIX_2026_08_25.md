@@ -16,6 +16,19 @@ can kill AtomWorks/RFD3 input construction. Lightweight planning still runs
 before `sbatch`; complete prevalidation remains mandatory and inference cannot
 start if it fails.
 
+In this matrix, `chain_break_count` means a non-contiguous or broken CA trace,
+matching the native RFD3 raw-backbone chain-break measurement. Missing
+backbone atoms remain a hard contract. Numeric C--N outliers are retained as
+advisory peptide-geometry observations; they are not relabelled as raw
+generation failure before sequence design, refolding or relaxation.
+
+Current C4/C2 evidence: job `5761820` generated one 50-step `C4 x2` result,
+met the complete fixed-orbit contract, retained exact symmetry
+(`8.40e-5 A` coordinate RMSD) and had zero CA clashes. Its two CA traces were
+continuous. Each copy contained the same `2.119 A` C--N advisory outlier at
+residues 44--45; the earlier schema incorrectly counted those two
+stereochemical observations as CA chain breaks.
+
 ## Gates
 
 | gate | question | accelerator | outputs | closure condition |

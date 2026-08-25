@@ -68,6 +68,16 @@ CA-window continuity and stricter post-hoc backbone-heavy-atom continuity are
 now reported separately, because they are different measurements and must not
 be collapsed into one acceptance label.
 
+The current-revision C4/C2 quotient gate produced the declared two physical
+quotient copies, preserved the complete fixed orbit and exact symmetry, and
+contained no CA clash. Both chains had a CA-continuous trace;
+the previous audit nevertheless classified one `2.119 A` C--N outlier per
+copy as a hard chain break. The scaffold audit now follows the native RFD3
+generation-stage distinction: non-contiguous numbering, missing backbone
+atoms and broken CA traces remain contracts, while numeric C--N outliers are
+reported as peptide-geometry advice for downstream relaxation. This changes
+reporting, not the generated coordinates or quotient implementation.
+
 The historical 20-structure packing evidence all reused one supplied input
 pose within each job and therefore did not test the per-design assembly-pose
 sampler. A subsequent four-output paired gate used two independent 20--30 A,

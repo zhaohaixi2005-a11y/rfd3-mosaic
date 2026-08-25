@@ -175,6 +175,15 @@ operates on inverse-folded/refolded designs, not raw backbone coordinates.
 
 ### Raw-coordinate stereochemistry
 
+RFD3's native raw-backbone chain-break metric is CA-based: it flags an
+adjacent CA--CA distance whose deviation from the standard CA spacing exceeds
+`0.75 A`.  Mosaic uses the corresponding CA continuity as a generation-stage
+contract and separately reports numeric C--N peptide-geometry outliers.  A
+C--N outlier is stereochemical advice for later relaxation and does not by
+itself erase a finite, CA-continuous generated backbone.  Missing backbone
+atoms, non-contiguous residue numbering and a broken CA trace remain hard
+software-contract flags.
+
 MolProbity defines a serious all-atom clash as a non-bonded overlap greater
 than `0.4 A` after adding hydrogens, and
 
