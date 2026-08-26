@@ -52,7 +52,9 @@ sampling:
     o_mobile_orbit_beta:
       radius: {minimum: 140.0, maximum: 140.0}
       axial_offset: {minimum: 0.0, maximum: 0.0}
-      radial_direction: [0.7071068, 0.7071068, 0.0]
+      # Generic direction: unlike [1,1,0], this is not stabilized by an O
+      # two-fold action, so all 24 physical copies remain distinct.
+      radial_direction: [0.74285724, 0.52000009, 0.42161954]
       orientation: {method: fixed, rotation_deg: [0.0, 0.0, 0.0]}
       seed: 97602
   timesteps: 50

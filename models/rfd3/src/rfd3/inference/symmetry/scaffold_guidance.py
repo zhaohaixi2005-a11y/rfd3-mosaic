@@ -643,7 +643,7 @@ def scaffold_orbit_energy(
     motif_coordinates: torch.Tensor,
     scaffold_coordinates: torch.Tensor,
     topology: BoundaryTopology,
-    axis: CyclicAxis,
+    axis: CyclicAxis | None,
     *,
     principal_axis: torch.Tensor | None = None,
     pose_rotation: torch.Tensor | None = None,
@@ -751,6 +751,11 @@ def scaffold_orbit_energy(
         tilt_term = _zero_like_energy(motif)
         tilt_degrees = _zero_like_energy(motif)
     else:
+        if axis is None:
+            raise ValueError(
+                "A motif principal-axis tilt objective requires a Cn/Dn "
+                "symmetry axis"
+            )
         initial_direction = _normalize_direction(
             _as_tensor(
                 principal_axis,

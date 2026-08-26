@@ -71,6 +71,62 @@ logging.basicConfig(level=logging.INFO)
 ranked_logger = RankedLogger(__name__, rank_zero_only=True)
 
 
+_AXIS_DEPENDENT_MOTIF_SUBSPACES = frozenset(
+    {
+        "radial",
+        "radial_axial",
+        "tilt_only",
+        "radial_rotation",
+        "radial_axial_rotation",
+    }
+)
+
+
+def _scaffold_guidance_requires_primary_axis(
+    symmetry_id: str | None,
+    mobility_subspaces: tuple[str, ...],
+) -> bool:
+    """Resolve whether scaffold-driven mobility has one physical main axis.
+
+    Cn and Dn have a declared primary cyclic axis. Polyhedral groups do not:
+    their bounded SE(3) orbits remain fully executable, but a radial, axial or
+    tilt-only subspace would be ambiguous and therefore fails closed.
+    """
+
+    normalized_id = str(symmetry_id or "").strip().upper()
+    if (
+        len(normalized_id) >= 2
+        and normalized_id[0] in {"C", "D"}
+        and normalized_id[1:].isdigit()
+        and int(normalized_id[1:]) >= 2
+    ):
+        return True
+    if normalized_id in {"T", "O", "I"}:
+        requested = sorted(
+            set(mobility_subspaces) & _AXIS_DEPENDENT_MOTIF_SUBSPACES
+        )
+        if requested:
+            raise ValueError(
+                f"{normalized_id} has no single global primary axis; "
+                "axis-dependent motif mobility is undefined for subspaces: "
+                + ", ".join(requested)
+            )
+        unsupported = sorted(
+            set(mobility_subspaces) - {"bounded_se3"}
+        )
+        if unsupported:
+            raise ValueError(
+                f"Unsupported {normalized_id} scaffold-driven motif mobility "
+                "subspaces: "
+                + ", ".join(unsupported)
+            )
+        return False
+    raise ValueError(
+        "Scaffold-driven motif mobility requires a runtime Cn, Dn, T, O or I "
+        "symmetry_id"
+    )
+
+
 def _motif_mobility_proposal_schedule(
     *,
     total_steps: int,
@@ -1853,24 +1909,42 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         f,
                         is_motif_atom_with_fixed_coord,
                     )
-                    scaffold_guidance_axis = extract_symmetry_primary_axis(
-                        f["sym_transform"],
-                        symmetry_id=f.get("symmetry_id"),
-                    )
                     is_ca = torch.as_tensor(
                         f["is_ca"],
                         dtype=torch.bool,
                         device=fixed_target.device,
                     )
-                    scaffold_guidance_principal_axes = tuple(
-                        principal_axis_from_points(
-                            mobile_motif.template_master[
-                                0,
-                                is_ca[mobile_motif.master_atom_indices],
-                            ]
-                        )
-                        for mobile_motif in (motif_mobility_controller.motifs)
+                    mobile_motifs = tuple(
+                        motif_mobility_controller.motifs
                     )
+                    uses_primary_axis = (
+                        _scaffold_guidance_requires_primary_axis(
+                            f.get("symmetry_id"),
+                            tuple(
+                                str(motif.mobility_subspace)
+                                for motif in mobile_motifs
+                            ),
+                        )
+                    )
+                    if uses_primary_axis:
+                        scaffold_guidance_axis = extract_symmetry_primary_axis(
+                            f["sym_transform"],
+                            symmetry_id=f.get("symmetry_id"),
+                        )
+                        scaffold_guidance_principal_axes = tuple(
+                            principal_axis_from_points(
+                                mobile_motif.template_master[
+                                    0,
+                                    is_ca[mobile_motif.master_atom_indices],
+                                ]
+                            )
+                            for mobile_motif in mobile_motifs
+                        )
+                    else:
+                        scaffold_guidance_axis = None
+                        scaffold_guidance_principal_axes = tuple(
+                            None for _ in mobile_motifs
+                        )
                     scaffold_guidance_config = self._scaffold_guidance_config()
                     ranked_logger.info(
                         "Scaffold-derived motif guidance initialized: "
@@ -1908,7 +1982,6 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     if self.motif_mobility_proposal_source == "scaffold_boundary":
                         if (
                             scaffold_guidance_topology is None
-                            or scaffold_guidance_axis is None
                             or scaffold_guidance_principal_axes is None
                             or scaffold_guidance_config is None
                         ):

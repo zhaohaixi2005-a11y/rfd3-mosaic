@@ -873,6 +873,42 @@ class MotifMobilityTestCase(unittest.TestCase):
                 torch.allclose(canonical, master, atol=1e-6)
             )
 
+    def test_axis_free_bounded_se3_scaffold_update_executes(self) -> None:
+        (
+            _,
+            target,
+            transforms,
+            controller,
+            scaffold,
+            topology,
+            _,
+            config,
+        ) = self._scaffold_guidance_case()
+
+        observed = controller.update_orbits_from_scaffold(
+            scaffold,
+            progress=0.5,
+            topology=topology,
+            axis=None,
+            principal_axes=(None,),
+            config=config,
+            apply_update=True,
+        )
+
+        self.assertTrue(controller.last_update_applied)
+        self.assertFalse(torch.allclose(observed[:, :4], target[:, :4]))
+        master = observed[:, :4]
+        for transform_id in range(3):
+            group = observed[
+                :,
+                4 * transform_id : 4 * (transform_id + 1),
+            ]
+            rotation, translation = transforms[str(transform_id)]
+            canonical = (group - translation) @ rotation
+            self.assertTrue(
+                torch.allclose(canonical, master, atol=1e-6)
+            )
+
     def test_scaffold_pose_prior_scales_with_declared_orbit_bounds(
         self,
     ) -> None:

@@ -14,6 +14,7 @@ from rfd3.model.inference_sampler import (
     ConditionalDiffusionSampler,
     SampleDiffusionWithSymmetry,
     _motif_mobility_proposal_schedule,
+    _scaffold_guidance_requires_primary_axis,
 )
 
 
@@ -56,6 +57,7 @@ class _RecordingScaffoldController:
             SimpleNamespace(
                 master_atom_indices=torch.tensor([0, 1]),
                 template_master=fixed_target[:, :2].clone(),
+                mobility_subspace="bounded_se3",
             )
         ]
 
@@ -82,7 +84,8 @@ class _RecordingScaffoldController:
                 "topology": topology,
                 "axis": axis,
                 "principal_axes": tuple(
-                    value.clone() for value in principal_axes
+                    value.clone() if value is not None else None
+                    for value in principal_axes
                 ),
                 "config": config,
             }
@@ -221,6 +224,7 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 torch.zeros(3),
             )
         return {
+            "symmetry_id": "C3",
             "sym_entity_id": torch.zeros(6, dtype=torch.long),
             "sym_transform_id": torch.tensor([0, 0, 1, 1, 2, 2]),
             "is_sym_asu": torch.tensor(
@@ -234,6 +238,40 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 dtype=torch.bool,
             ),
         }
+
+    def test_polyhedral_bounded_se3_does_not_require_primary_axis(
+        self,
+    ) -> None:
+        for symmetry_id in ("T", "O", "I"):
+            with self.subTest(symmetry_id=symmetry_id):
+                self.assertFalse(
+                    _scaffold_guidance_requires_primary_axis(
+                        symmetry_id,
+                        ("bounded_se3", "bounded_se3"),
+                    )
+                )
+
+    def test_polyhedral_axis_dependent_mobility_fails_closed(self) -> None:
+        for symmetry_id in ("T", "O", "I"):
+            with self.subTest(symmetry_id=symmetry_id):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "no single global primary axis",
+                ):
+                    _scaffold_guidance_requires_primary_axis(
+                        symmetry_id,
+                        ("bounded_se3", "radial"),
+                    )
+
+    def test_cyclic_and_dihedral_guidance_keep_primary_axis(self) -> None:
+        for symmetry_id in ("C3", "D4"):
+            with self.subTest(symmetry_id=symmetry_id):
+                self.assertTrue(
+                    _scaffold_guidance_requires_primary_axis(
+                        symmetry_id,
+                        ("bounded_se3",),
+                    )
+                )
 
     def test_exact_orbit_mode_requires_coupled_noise(self) -> None:
         with self.assertRaisesRegex(
@@ -870,6 +908,91 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                     lifecycle["conditioning_refresh_count"],
                     expected_refreshes,
                 )
+
+    def test_polyhedral_bounded_se3_runtime_skips_cyclic_axis_solver(
+        self,
+    ) -> None:
+        features = self._c3_features()
+        # The coordinate fixture only needs an exact finite orbit for this
+        # initialization regression. The runtime symmetry label exercises the
+        # polyhedral branch that previously called the Cn/Dn-only axis solver.
+        features["symmetry_id"] = "T"
+        canonical = torch.tensor(
+            [[[5.0, 0.0, 0.0], [7.0, 1.0, 0.5]]]
+        )
+        coordinates = apply_symmetry_to_xyz_atomwise(
+            canonical.repeat(1, 3, 1),
+            features,
+            partial_diffusion=True,
+        )
+        features.update(
+            {
+                "is_motif_atom_with_fixed_coord": torch.ones(
+                    6,
+                    dtype=torch.bool,
+                ),
+                "ref_element": torch.zeros(6, dtype=torch.long),
+                "motif_pos": coordinates[0].clone(),
+                "motif_constraint_orbit_mobility_mode": torch.tensor([1]),
+                "is_ca": torch.ones(6, dtype=torch.bool),
+            }
+        )
+        controller = _RecordingScaffoldController(coordinates)
+        topology = SimpleNamespace(junction_pairs=torch.tensor([[0, 1]]))
+        module = _AsymmetricFakeDiffusion()
+        sampler = SampleDiffusionWithSymmetry(
+            gamma_0=0.6,
+            num_timesteps=3,
+            preserve_fixed_motif_during_symmetry=True,
+            require_motif_constraint_groups=True,
+            symmetry_state_mode="orbit_average",
+            symmetry_noise_mode="coupled",
+            enable_orbit_rigid_motif_mobility=True,
+            motif_mobility_proposal_source="scaffold_boundary",
+            motif_mobility_apply_updates=False,
+            motif_mobility_update_interval=1,
+            motif_mobility_target_update_count=0,
+        )
+
+        with (
+            mock.patch(
+                "rfd3.model.inference_sampler."
+                "OrbitRigidMotifController.from_features",
+                return_value=controller,
+            ),
+            mock.patch(
+                "rfd3.model.inference_sampler.build_boundary_topology",
+                return_value=topology,
+            ),
+            mock.patch(
+                "rfd3.model.inference_sampler."
+                "extract_symmetry_primary_axis"
+            ) as axis_solver,
+            torch.no_grad(),
+        ):
+            sampler.sample_diffusion_like_af3(
+                f=features,
+                diffusion_module=module,
+                diffusion_batch_size=1,
+                coord_atom_lvl_to_be_noised=coordinates,
+                initializer_outputs={
+                    "chunked_pairwise_embedder": object()
+                },
+                ref_initializer_outputs=None,
+                f_ref=None,
+            )
+
+        axis_solver.assert_not_called()
+        self.assertTrue(controller.calls)
+        self.assertTrue(
+            all(call["axis"] is None for call in controller.calls)
+        )
+        self.assertTrue(
+            all(
+                call["principal_axes"] == (None,)
+                for call in controller.calls
+            )
+        )
 
     def test_compactness_moves_generated_tokens_but_not_fixed_motif(
         self,

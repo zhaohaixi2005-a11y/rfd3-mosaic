@@ -691,8 +691,8 @@ class OrbitRigidMotifController:
         scaffold: torch.Tensor,
         *,
         topology: BoundaryTopology,
-        axis: CyclicAxis,
-        principal_axes: tuple[torch.Tensor, ...],
+        axis: CyclicAxis | None,
+        principal_axes: tuple[torch.Tensor | None, ...],
         rotations: tuple[torch.Tensor, ...],
         translations: tuple[torch.Tensor, ...],
         config: ScaffoldGuidanceConfig,
@@ -878,8 +878,8 @@ class OrbitRigidMotifController:
         *,
         progress: float,
         topology: BoundaryTopology,
-        axis: CyclicAxis,
-        principal_axes: tuple[torch.Tensor, ...],
+        axis: CyclicAxis | None,
+        principal_axes: tuple[torch.Tensor | None, ...],
         config: ScaffoldGuidanceConfig,
         apply_update: bool,
         pose_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
@@ -901,6 +901,27 @@ class OrbitRigidMotifController:
             raise ValueError(
                 "principal_axes must contain one axis per mobile motif orbit"
             )
+        axis_dependent_subspaces = {
+            "radial",
+            "radial_axial",
+            "tilt_only",
+            "radial_rotation",
+            "radial_axial_rotation",
+        }
+        if axis is None:
+            requested = sorted(
+                {
+                    motif.mobility_subspace
+                    for motif in self.motifs
+                    if motif.mobility_subspace in axis_dependent_subspaces
+                }
+            )
+            if requested:
+                raise ValueError(
+                    "Axis-dependent motif mobility requires a runtime Cn/Dn "
+                    "primary axis; requested subspaces: "
+                    + ", ".join(requested)
+                )
         if self.base_target.shape[0] != 1:
             raise ValueError("Scaffold-derived motif guidance supports one pose batch")
         scaffold = scaffold_coordinates.to(
@@ -1365,8 +1386,8 @@ class OrbitRigidMotifController:
         *,
         progress: float,
         topology: BoundaryTopology,
-        axis: CyclicAxis,
-        principal_axes: tuple[torch.Tensor, ...],
+        axis: CyclicAxis | None,
+        principal_axes: tuple[torch.Tensor | None, ...],
         scaffold_config: ScaffoldGuidanceConfig,
         interface_topology: GraphInterfaceTopology,
         interface_config: GraphInterfaceGuidanceConfig,

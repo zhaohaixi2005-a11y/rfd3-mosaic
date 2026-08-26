@@ -29,6 +29,17 @@ continuous. Each copy contained the same `2.119 A` C--N advisory outlier at
 residues 44--45; the earlier schema incorrectly counted those two
 stereochemical observations as CA chain breaks.
 
+The first dynamic polyhedral submissions did not constitute scientific
+failures. Job `5761813` (T) reached valid 12-copy runtime features but stopped
+before diffusion because scaffold-driven mobility unconditionally invoked a
+Cn/Dn-only primary-axis solver. Job `5761814` (O) failed preflight because its
+`[1, 1, 0]` master direction has an O-group two-fold stabilizer, producing
+only 12 unique placements. The 2026-08-26 correction makes axis-free
+polyhedral `bounded_se3` explicit and changes the O canary to a generic
+24-image direction. Both YAMLs now pass complete local compile/RFD3 input
+validation; the same two gates must be resubmitted from the corrected frozen
+revision.
+
 ## Gates
 
 | gate | question | accelerator | outputs | closure condition |

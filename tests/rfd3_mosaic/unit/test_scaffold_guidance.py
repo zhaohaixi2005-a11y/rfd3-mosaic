@@ -481,6 +481,33 @@ class ScaffoldOrbitEnergyTestCase(unittest.TestCase):
         self.assertGreater(float(tilted.tilt_degrees), 60.0)
         self.assertLess(float(aligned.tilt), float(tilted.tilt))
 
+    def test_axis_free_energy_keeps_non_tilt_terms(self) -> None:
+        topology, _, motif, scaffold = self._energy_case()
+        energy = scaffold_orbit_energy(
+            motif,
+            scaffold,
+            topology,
+            None,
+        )
+
+        self.assertTrue(torch.isfinite(energy.total))
+        self.assertEqual(float(energy.tilt), 0.0)
+        self.assertEqual(float(energy.tilt_degrees), 0.0)
+
+    def test_principal_axis_without_symmetry_axis_is_rejected(self) -> None:
+        topology, _, motif, scaffold = self._energy_case()
+        with self.assertRaisesRegex(ValueError, "requires a Cn/Dn"):
+            scaffold_orbit_energy(
+                motif,
+                scaffold,
+                topology,
+                None,
+                principal_axis=torch.tensor(
+                    [0.0, 0.0, 1.0],
+                    dtype=torch.float64,
+                ),
+            )
+
 
 class BoundedSE3ProposalTestCase(unittest.TestCase):
     def test_proposal_lowers_energy_and_respects_step_and_total_bounds(

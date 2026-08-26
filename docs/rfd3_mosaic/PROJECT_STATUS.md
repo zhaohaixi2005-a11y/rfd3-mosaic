@@ -1,5 +1,21 @@
 # RFD3-Mosaic project status
 
+## 2026-08-26 polyhedral bounded-mobility correction (CPU implementation)
+
+- Dynamic T/O `bounded_se3` no longer asks the runtime to invent one global
+  cyclic primary axis. Polyhedral groups have several equivalent axes; the
+  previous unconditional Cn/Dn axis extraction stopped T before diffusion.
+- The polyhedral path retains junction, clash, pose-prior, exact-orbit and
+  atomic-transaction terms. Only the physically undefined global-axis tilt
+  term is absent. Axis-dependent radial, axial and tilt-only mobility remains
+  restricted to Cn/Dn and fails closed for T/O/I.
+- The dynamic O canary now uses a generic master direction with 24 distinct O
+  images. Its former `[1, 1, 0]` direction lies on a two-fold stabilizer and
+  collapsed the nominal 24-copy orbit to 12 unique placements.
+- Targeted sampler/controller tests and complete CPU input validation pass for
+  both dynamic T (12 copies) and dynamic O (24 copies). Frozen GPU reruns are
+  still required before either dynamic gate is called GPU-closed.
+
 ## 2026-08-25 cross-chain topology safety (CPU implementation)
 
 - Scaffold-core sampling now measures finite CA--CA backbone segments across
@@ -15,7 +31,7 @@
 - Every completed run writes a structure-only ZIP of plain CIF members plus a
   separate count/hash manifest. A PyMOL helper loads a CIF directory into one
   discrete multi-state object for keyboard navigation.
-- Python compilation, archive streaming, and the complete 927-test CPU unit
+- Python compilation, archive streaming, and the complete 946-test CPU unit
   suite pass locally. A matched GPU canary remains required before calling the
   new sampling protection GPU-validated.
 
@@ -122,8 +138,10 @@ five ASU-local generated/fixed boundary defects were reproduced across all
 copies, so I scaffold-continuity closure remains open. Exact run identifiers
 and paths are retained only in the internal validation history. These are
 static execution and fixed-
-geometry-scaffolding milestones; dynamic T/O/I mobility and production-
-quality generated-interface polyhedral cages are separate, still-unvalidated
+geometry-scaffolding milestones. Dynamic T/O bounded mobility is now CPU-
+closed after correcting the polyhedral-axis and O-stabilizer initialization
+errors, but still awaits frozen GPU reruns. Dynamic I mobility and production-
+quality generated-interface polyhedral cages remain separate, unvalidated
 scientific capabilities.
 
 The first local-anchor correction was shown by two GPU reruns to execute but
