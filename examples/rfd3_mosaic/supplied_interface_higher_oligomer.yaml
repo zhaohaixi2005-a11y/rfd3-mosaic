@@ -1,0 +1,61 @@
+schema_version: 1
+name: supplied-interface-higher-oligomer-c3
+input: lhd101_c3/inputs/7mwr_interface.pdb
+symmetry: C3
+task: preserve_supplied_geometry
+
+# A and B are one non-covalent interface seed. Their relative geometry is
+# exact; no generated peptide bond is introduced between the two partners.
+preferences:
+  packing: balanced
+  interface_area: auto
+  cavity: auto
+  diversity: high
+  component_motion: guided
+
+constraints:
+  - kind: fixed_xyz
+    selector: A165-194
+    coupling_group: supplied_interface
+  - kind: fixed_xyz
+    selector: B211-241
+    coupling_group: supplied_interface
+
+# Grow scaffold independently from the natural termini of both interface
+# partners. This is distinct from a between-linker, which creates a covalent
+# polymer connection.
+generation:
+  - {kind: terminal, anchor: A165-194, terminus: n, length: 30}
+  - {kind: terminal, anchor: A165-194, terminus: c, length: 30}
+  - {kind: terminal, anchor: B211-241, terminus: n, length: 30}
+  - {kind: terminal, anchor: B211-241, terminus: c, length: 30}
+
+# Optional native RFD3 treatment. "masked" preserves backbone coordinates
+# but does not expose the supplied amino-acid identities to the model.
+conditioning:
+  sequence:
+    - {selector: A165-194, mode: masked}
+    - {selector: B211-241, mode: masked}
+  # Optional: retain the exact supplied backbone while letting RFD3 redesign
+  # the motif side chains together with the masked sequence.
+  redesign_motif_sidechains: true
+
+sampling:
+  timesteps: 50
+  designs: 8
+  seed: 42
+  # Explicit opt-in: preserve the supplied A/B interface and additionally
+  # ask generated residues to form a new C3 oligomerization interface.
+  scaffold_packing: symmetric_generated
+  initial_pose:
+    radius: {minimum: 20.0, maximum: 32.0}
+    axial_offset: {minimum: -4.0, maximum: 4.0}
+    orientation: {method: uniform_so3}
+    seed: 1000
+
+resources:
+  profile: local
+
+output:
+  root: /path/to/runs
+  campaign: supplied-interface-higher-oligomer

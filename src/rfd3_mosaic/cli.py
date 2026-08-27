@@ -150,6 +150,48 @@ def _parser() -> argparse.ArgumentParser:
     )
     initialize.add_argument("--side-a", help="First supplied interface side.")
     initialize.add_argument("--side-b", help="Second supplied interface side.")
+    initialize.add_argument(
+        "--interface-scaffold",
+        choices=("adjacent-linker", "terminal-extensions"),
+        default="adjacent-linker",
+        help=(
+            "For a supplied interface, either connect symmetry-neighbour "
+            "motifs with one linker or grow independent terminal scaffold "
+            "from both non-covalent partners."
+        ),
+    )
+    initialize.add_argument(
+        "--new-oligomer-interface",
+        action="store_true",
+        help=(
+            "Explicitly ask generated scaffold to form a second Cn "
+            "oligomerization interface while preserving the supplied one."
+        ),
+    )
+    initialize.add_argument(
+        "--sequence-conditioning",
+        choices=("fixed", "masked", "glycine"),
+        default="fixed",
+        help="Native RFD3 sequence treatment for supplied interface sides.",
+    )
+    initialize.add_argument(
+        "--redesign-motif-sidechains",
+        action="store_true",
+        help=(
+            "Keep supplied protein backbones fixed while allowing native "
+            "RFD3 motif side-chain and sequence redesign. This may be used "
+            "with --sequence-conditioning masked."
+        ),
+    )
+    initialize.add_argument(
+        "--ligand-selector",
+        action="append",
+        default=[],
+        help=(
+            "One non-polymer residue coupled rigidly to the supplied "
+            "interface; repeat for several ligands."
+        ),
+    )
     initialize.add_argument("--n-length", type=int, default=35)
     initialize.add_argument("--c-length", type=int, default=35)
     initialize.add_argument("--linker-minimum", type=int, default=70)
@@ -166,6 +208,36 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     initialize.add_argument("--seed", type=int, default=42)
+    initialize.add_argument(
+        "--replicates-per-pose",
+        type=int,
+        default=1,
+        help=(
+            "Diffusion replicates sharing one compiled pose. The default "
+            "of one gives every design an independent pose when stochastic "
+            "initial-pose sampling is declared."
+        ),
+    )
+    initialize.add_argument("--pose-radius-minimum", type=float)
+    initialize.add_argument("--pose-radius-maximum", type=float)
+    initialize.add_argument("--pose-axial-minimum", type=float, default=0.0)
+    initialize.add_argument("--pose-axial-maximum", type=float, default=0.0)
+    initialize.add_argument(
+        "--pose-orientation",
+        choices=("fixed", "uniform_so3", "principal_axis_cone"),
+        default="fixed",
+        help=(
+            "Pre-diffusion rigid orientation distribution. It is active "
+            "only with an explicit pose-radius interval."
+        ),
+    )
+    initialize.add_argument(
+        "--pose-maximum-tilt-deg",
+        type=float,
+        default=30.0,
+        help="Tilt-cone half angle for principal_axis_cone orientation.",
+    )
+    initialize.add_argument("--pose-seed", type=int, default=0)
     initialize.add_argument(
         "--packing", choices=("loose", "balanced", "tight"), default="balanced"
     )
@@ -193,7 +265,14 @@ def _parser() -> argparse.ArgumentParser:
         "examples",
         help="List or copy maintained, portable user examples.",
     )
-    examples.add_argument("--copy", choices=("central-motif", "supplied-interface"))
+    examples.add_argument(
+        "--copy",
+        choices=(
+            "central-motif",
+            "supplied-interface",
+            "supplied-interface-oligomer",
+        ),
+    )
     examples.add_argument("--output", type=Path)
     examples.add_argument("--force", action="store_true")
     examples.add_argument("--format", choices=("text", "json"), default="text")
@@ -727,6 +806,8 @@ def _write_public_experiment(
             "initial_pose",
             "initial_poses",
             "scaffold_core_quality",
+            "is_non_loopy",
+            "plddt_enhanced",
         },
     )
     payload = {
@@ -1525,11 +1606,17 @@ def _print_public_design_plan(
         "retain_all_outputs=true"
     )
     if design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
-        print(
-            "new-interface guidance: off (the supplied interface is checked "
-            "at the input stage; intra/inter scaffold guidance remains "
-            "independent)"
-        )
+        if sampling.diffusion.scaffold_packing == "symmetric_generated":
+            print(
+                "new-interface guidance: automatic generated Cn interface "
+                "packing is active; the supplied interface remains exact"
+            )
+        else:
+            print(
+                "new-interface guidance: off (the supplied interface is "
+                "checked at the input stage; intra-chain scaffold guidance "
+                "remains independent)"
+            )
     print(
         "generation: " f"{len(design.generation) + len(design.connections)} region(s)"
     )
@@ -1754,6 +1841,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                 motif_selector=arguments.motif_selector,
                 side_a=arguments.side_a,
                 side_b=arguments.side_b,
+                interface_scaffold=arguments.interface_scaffold,
+                new_oligomer_interface=arguments.new_oligomer_interface,
+                sequence_conditioning=arguments.sequence_conditioning,
+                redesign_motif_sidechains=(
+                    arguments.redesign_motif_sidechains
+                ),
+                ligand_selectors=tuple(arguments.ligand_selector),
                 n_length=arguments.n_length,
                 c_length=arguments.c_length,
                 linker_minimum=arguments.linker_minimum,
@@ -1761,6 +1855,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                 timesteps=arguments.timesteps,
                 designs=arguments.designs,
                 seed=arguments.seed,
+                pose_radius_minimum=arguments.pose_radius_minimum,
+                pose_radius_maximum=arguments.pose_radius_maximum,
+                pose_axial_minimum=arguments.pose_axial_minimum,
+                pose_axial_maximum=arguments.pose_axial_maximum,
+                pose_orientation=arguments.pose_orientation,
+                pose_maximum_tilt_deg=arguments.pose_maximum_tilt_deg,
+                pose_seed=arguments.pose_seed,
+                replicates_per_pose=arguments.replicates_per_pose,
                 packing=arguments.packing,
                 cavity=arguments.cavity,
                 diversity=arguments.diversity,

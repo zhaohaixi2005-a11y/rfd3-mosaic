@@ -14,14 +14,15 @@ if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
 fi
 
 WHEEL=$(find "$REPOSITORY/dist" -maxdepth 1 -name 'rfd3_mosaic-*.whl' \
-    -print | sort | tail -n 1)
+    -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d ' ' -f 2-)
 if [[ -z "$WHEEL" ]]; then
     echo "No RFD3-Mosaic wheel found below $REPOSITORY/dist" >&2
     exit 1
 fi
-SDIST=$(find "$REPOSITORY/dist" -maxdepth 1 -name 'rfd3_mosaic-*.tar.gz' \
-    -print | sort | tail -n 1)
-if [[ -z "$SDIST" ]]; then
+WHEEL_BASENAME=$(basename "$WHEEL")
+DIST_VERSION=${WHEEL_BASENAME%-py3-none-any.whl}
+SDIST="$REPOSITORY/dist/$DIST_VERSION.tar.gz"
+if [[ ! -f "$SDIST" ]]; then
     echo "No RFD3-Mosaic source distribution found below $REPOSITORY/dist" >&2
     exit 1
 fi
@@ -100,6 +101,9 @@ PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
     examples --copy central-motif \
     --output "$SMOKE_ROOT/example.yaml" >/dev/null
 PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
+    examples --copy supplied-interface-oligomer \
+    --output "$SMOKE_ROOT/interface-oligomer.yaml" >/dev/null
+PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
     profiles --format json >/dev/null
 PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli \
     profiles --copy-slurm "$SMOKE_ROOT/slurm.yaml" >/dev/null
@@ -107,7 +111,12 @@ PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli init \
     "$SMOKE_ROOT/design.yaml" \
     --task central-motif \
     --input "$SMOKE_ROOT/source.cif" \
-    --motif-selector A1 >/dev/null
+    --motif-selector A1 \
+    --designs 3 \
+    --pose-radius-minimum 12 \
+    --pose-radius-maximum 18 \
+    --pose-orientation uniform_so3 \
+    --pose-seed 100 >/dev/null
 PYTHONPATH="$SMOKE_ROOT/site-packages" "$PYTHON_BIN" -m rfd3_mosaic.cli render \
     "$SMOKE_ROOT/experiment.yaml" \
     --output-dir "$SMOKE_ROOT/rendered" >/dev/null

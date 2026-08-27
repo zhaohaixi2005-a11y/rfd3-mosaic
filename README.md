@@ -106,8 +106,24 @@ rfd3-mosaic status RUN_ID_OR_DIRECTORY
 rfd3-mosaic report RUN_ID_OR_DIRECTORY
 ```
 
+For a non-covalent interface seed that should form a new higher-order
+oligomer, start from the maintained compositional example:
+
+```bash
+rfd3-mosaic examples --copy supplied-interface-oligomer --output design.yaml
+```
+
+That example keeps both interface partners joint-rigid, grows their scaffold
+without adding an artificial peptide bond, and explicitly opts into a second
+generated Cn interface. Sequence masking, all-glycine conditioning, symmetric
+ligands, RASA, hotspots and H-bond conditioning are optional fields in the
+same public YAML rather than separate task-specific programs.
+
 The [quick-start guide](docs/rfd3_mosaic/QUICKSTART.md) covers portable
 examples, component motion, execution profiles and result inspection.
+The [native RFD3 capability matrix](docs/rfd3_mosaic/RFD3_NATIVE_CAPABILITIES.md)
+lists the supported conditioning controls and the few native mechanisms that
+remain fail-closed under exact assembly contracts.
 
 ## Design workflows
 

@@ -1,5 +1,34 @@
 # RFD3-Mosaic project status
 
+## 2026-08-27 public conditioning and interface-seed product closure
+
+- Supplied-interface scaffolding is a generic public workflow, not an
+  LHD101-specific template. Any two declared interface partners can be kept
+  in one joint-rigid component, grown as separate non-covalent polymer paths,
+  and optionally used as the building block of a second Cn oligomerization
+  interface.
+- `sampling.designs` retains its assembly-design meaning: movable tasks may
+  instantiate an independently seeded feasible SE(3) pose per design, while
+  `replicates_per_pose` explicitly requests several diffusion trajectories
+  from one pose. The generated multi-example input is executed with one RFD3
+  model load.
+- Public conditioning now covers native RFD3 sequence masking, all-glycine
+  backbone conditioning, symmetric ligands, RASA state, hotspots, hydrogen-
+  bond donors/acceptors, motif side-chain redesign, COM/hotspot origin,
+  non-loopy conditioning, pLDDT enhancement and optional trajectory output.
+  Side-chain redesign leaves the supplied protein backbone fixed and is not
+  silently cancelled by an all-atom fixed mask.
+- Raw native parser/frame controls that would invalidate a compiler-owned
+  exact assembly (`allow_realignment`, arbitrary `unindex`, raw `ori_token`
+  and `partial_t`) remain fail-closed rather than being exposed as unsafe
+  passthrough strings. The public native-capability matrix records both the
+  supported mappings and these deliberate boundaries.
+- The maintained example `supplied-interface-oligomer` and the `init` command
+  demonstrate the complete non-covalent interface-seed path. It remains a
+  scientific user choice whether to request a second generated interface,
+  mask/redesign the supplied surface, include a ligand or sample different
+  initial poses; none is enabled implicitly for existing designs.
+
 ## 2026-08-27 endpoint and route-ownership protection (CPU implementation)
 
 - Strict executable compilation now rejects any non-break generated link for
@@ -20,7 +49,7 @@
   a 45-degree cone the LHD or cyclic default.
 - The mathematical definitions, normalization, claim boundary and limitations
   are recorded in `RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md`. Static checks and
-  the complete 958-test CPU suite pass. A matched old/new GPU comparison is
+  the complete 978-test CPU suite pass. A matched old/new GPU comparison is
   still required before the route-ownership change is called scientifically
   validated.
 
@@ -59,7 +88,7 @@
 - Every completed run writes a structure-only ZIP of plain CIF members plus a
   separate count/hash manifest. A PyMOL helper loads a CIF directory into one
   discrete multi-state object for keyboard navigation.
-- Python compilation, archive streaming, and the complete 946-test CPU unit
+- Python compilation, archive streaming, and the complete 978-test CPU unit
   suite pass locally. A matched GPU canary remains required before calling the
   new sampling protection GPU-validated.
 
@@ -167,9 +196,9 @@ five ASU-local generated/fixed boundary defects were reproduced across all
 copies, so I scaffold-continuity closure remains open. Exact run identifiers
 and paths are retained only in the internal validation history. These are
 static execution and fixed-
-geometry-scaffolding milestones. Dynamic T/O bounded mobility is now CPU-
-closed after correcting the polyhedral-axis and O-stabilizer initialization
-errors, but still awaits frozen GPU reruns. Dynamic I mobility and production-
+geometry-scaffolding milestones. Dynamic T/O bounded mobility is GPU-closed
+after correcting the polyhedral-axis and O-stabilizer initialization errors.
+Dynamic I mobility and production-
 quality generated-interface polyhedral cages remain separate, unvalidated
 scientific capabilities.
 

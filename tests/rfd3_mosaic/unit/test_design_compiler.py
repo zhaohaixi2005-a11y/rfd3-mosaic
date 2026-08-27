@@ -177,6 +177,77 @@ class DesignCompilerTestCase(unittest.TestCase):
             3,
         )
 
+    def test_sequence_masking_is_orthogonal_to_joint_rigid_geometry(self) -> None:
+        lowered = lower_user_design(
+            self._design(
+                generation=[
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1-2",
+                        "terminus": "c",
+                        "length": 20,
+                    }
+                ],
+                constraints=[
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "interface_seed",
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "interface_seed",
+                    },
+                ],
+                conditioning={
+                    "sequence": [
+                        {"selector": "A1-2", "mode": "masked"},
+                        {"selector": "B1-2", "mode": "glycine"},
+                    ]
+                },
+            )
+        )
+
+        spec = lowered.specification
+        self.assertEqual(len(spec.motion_groups), 1)
+        by_selection = {
+            fragment.selection: fragment for fragment in spec.fragments.values()
+        }
+        self.assertEqual(by_selection["A/1-2/*"].fixed_atoms, "backbone")
+        self.assertEqual(
+            by_selection["A/1-2/*"].sequence_conditioning.value,
+            "masked",
+        )
+        self.assertEqual(by_selection["B/1-2/*"].fixed_atoms, "backbone")
+        self.assertEqual(
+            by_selection["B/1-2/*"].sequence_conditioning.value,
+            "glycine",
+        )
+
+    def test_sequence_conditioning_rejects_partial_implicit_fragment(self) -> None:
+        with self.assertRaisesRegex(ValueError, "complete materialized"):
+            lower_user_design(
+                self._design(
+                    generation=[
+                        {
+                            "kind": "terminal",
+                            "anchor": "A1-2",
+                            "terminus": "c",
+                            "length": 20,
+                        }
+                    ],
+                    constraints=[
+                        {"kind": "fixed_xyz", "selector": "A1-2"},
+                    ],
+                    conditioning={
+                        "sequence": [
+                            {"selector": "A1-1", "mode": "masked"},
+                        ]
+                    },
+                )
+            )
+
     def test_preserves_fixed_fragment_not_used_as_linker_endpoint(
         self,
     ) -> None:
@@ -1516,6 +1587,93 @@ class DesignCompilerTestCase(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cyclic orbit offsets"):
             lower_user_design(design)
+
+    def test_ligand_conditioning_joins_existing_rigid_component(self) -> None:
+        ligand_structure = self.root / "ligand-motif.pdb"
+        ligand_structure.write_text(
+            "".join(
+                (
+                    _atom_line(1, "N", "A", 1, 9.0),
+                    _atom_line(2, "CA", "A", 1, 10.0),
+                    _atom_line(3, "C", "A", 1, 11.0),
+                    _atom_line(4, "O", "A", 1, 12.0),
+                    "HETATM    5  C1  RET B   1      10.000   2.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "HETATM    6  C2  RET B   1      11.000   2.000   0.000"
+                    "  1.00 20.00           C  \n",
+                    "END\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "ligand-conditioned",
+                "input": str(ligand_structure),
+                "symmetry": "C3",
+                "generation": [
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1",
+                        "terminus": "c",
+                        "length": 5,
+                    }
+                ],
+                "constraints": [
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1",
+                        "coupling_group": "dimer_seed",
+                    }
+                ],
+                "conditioning": {
+                    "sequence": [{"selector": "A1", "mode": "masked"}],
+                    "ligands": [
+                        {
+                            "selector": "B1",
+                            "coupling_group": "dimer_seed",
+                        }
+                    ],
+                    "buried": [{"selector": "B1", "atoms": "ALL"}],
+                    "hotspots": [{"selector": "A1", "atoms": "CA"}],
+                    "hbond_acceptors": [
+                        {"selector": "B1", "atoms": "O1,O2"}
+                    ],
+                    "redesign_motif_sidechains": True,
+                    "origin_strategy": "hotspots",
+                },
+                "sampling": {
+                    "is_non_loopy": False,
+                    "plddt_enhanced": False,
+                },
+            }
+        )
+
+        lowered = lower_user_design(design)
+        ligand = lowered.specification.fragments["ligand_001"]
+        self.assertEqual(ligand.entity_type.value, "ligand")
+        motion_group = lowered.specification.motion_groups["fixed_component_001"]
+        self.assertEqual(
+            motion_group.members,
+            ["motif_001", "ligand_001"],
+        )
+        self.assertEqual(
+            lowered.runtime_constraint_metadata["ligand_conditioning"],
+            [{"selector": "B1-1", "coupling_group": "dimer_seed"}],
+        )
+        self.assertEqual(ligand.rfd3_conditioning.buried, "ALL")
+        self.assertEqual(ligand.rfd3_conditioning.hbond_acceptor, "O1,O2")
+        motif = lowered.specification.fragments["motif_001"]
+        self.assertEqual(motif.rfd3_conditioning.hotspots, "CA")
+        self.assertEqual(
+            lowered.runtime_constraint_metadata["rfd3_native_options"],
+            {
+                "redesign_motif_sidechains": True,
+                "infer_ori_strategy": "hotspots",
+                "is_non_loopy": False,
+                "plddt_enhanced": False,
+            },
+        )
 
     def test_lowering_emits_runtime_cylindrical_atom_contract(self) -> None:
         declared = self._design(

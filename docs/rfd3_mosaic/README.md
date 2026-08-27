@@ -14,6 +14,7 @@ RFD3-Mosaic.
 
 - [Current project status](PROJECT_STATUS.md)
 - [Capability boundary](../../DEVELOPMENT_STATUS.md)
+- [Native RFdiffusion3 capability mapping](RFD3_NATIVE_CAPABILITIES.md)
 - [Packing-guidance semantics](PACKING_GUIDANCE.md)
 - [Rigid-mobility mathematical contract](RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md)
 - [Structure-metric provenance](STRUCTURE_METRIC_PROVENANCE.md)

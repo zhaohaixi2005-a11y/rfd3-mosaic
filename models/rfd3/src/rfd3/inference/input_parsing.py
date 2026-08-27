@@ -238,6 +238,14 @@ class DesignInputSpecification(BaseModel):
     # Extra args:
     length:  Optional[str] = Field(None, description="Length range as 'min-max' or int. Constrains length of contig if provided")
     ligand:  Optional[str] = Field(None, description="Ligand name or index to include in design.")
+    symmetrize_ligand: bool = Field(
+        False,
+        description=(
+            "If True, treat the selected ligand as part of the asymmetric "
+            "unit and expand it with the declared symmetry. The default "
+            "keeps native RFD3's historical unsymmetrized-ligand behavior."
+        ),
+    )
     allow_ligand_on_existing_chain: bool = Field(False, description="If True, suppress the error when a ligand shares a chain ID with the built atom array. Use with caution — chain ID is leaked to the model.")
     cif_parser_args: Optional[Dict[str, Any]] = Field(None, description="CIF parser arguments")
     extra: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Extra metadata to include in output (useful for logging additional info in metadata)")
@@ -844,7 +852,7 @@ class DesignInputSpecification(BaseModel):
             atom_array = make_symmetric_atom_array(
                 atom_array,
                 self.symmetry,
-                sm=self.ligand,
+                sm=None if self.symmetrize_ligand else self.ligand,
                 src_atom_array=atom_array_input_annotated,
             )
         return atom_array

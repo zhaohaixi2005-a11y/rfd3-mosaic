@@ -609,7 +609,7 @@ def execute(
         + str(cross_chain_topology is not None),
         f"low_memory_mode={sampling['low_memory_mode']}",
         "skip_existing=False",
-        "dump_trajectories=False",
+        f"dump_trajectories={sampling['dump_trajectories']}",
         "prevalidate_inputs=True",
     ]
     if polymer_continuity is not None:

@@ -25,6 +25,7 @@ class DiffusionSamplingPlan(StrictModel):
     low_memory_mode: bool
     execution_backend: str
     neighbour_radius: int
+    dump_trajectories: bool
     scaffold_packing: str
     screening_mode: str
     screening_protocol: str
@@ -183,6 +184,7 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
             low_memory_mode=sampling.low_memory_mode,
             execution_backend=sampling.execution_backend,
             neighbour_radius=sampling.neighbour_radius,
+            dump_trajectories=sampling.dump_trajectories,
             scaffold_packing=sampling.scaffold_packing,
             screening_mode=sampling.screening.mode,
             screening_protocol=sampling.screening.protocol,

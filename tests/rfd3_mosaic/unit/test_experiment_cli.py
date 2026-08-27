@@ -789,6 +789,26 @@ class ExperimentConfigTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be true or false"):
             resolve_experiment(config)
 
+    def test_dump_trajectories_is_an_explicit_boolean(self) -> None:
+        config = self._write_experiment(
+            {
+                "schema_version": 1,
+                "name": "trajectory-test",
+                "topology": {
+                    "kind": "central_motif",
+                    "template_input": self.template_input.name,
+                    "fixed_selector": "B1-31",
+                },
+                "sampling": {"dump_trajectories": True},
+                "resources": {"profile": self.profile.name},
+                "output": {"root": "runs"},
+            }
+        )
+
+        resolved = resolve_experiment(config)
+
+        self.assertTrue(resolved.payload["sampling"]["dump_trajectories"])
+
     def test_invalid_declared_checkpoint_digest_is_rejected(self) -> None:
         profile = yaml.safe_load(self.profile.read_text(encoding="utf-8"))
         profile["checkpoint_sha256"] = "not-a-digest"

@@ -33,7 +33,12 @@ class SamplingPlanTestCase(unittest.TestCase):
 
     def test_compiles_user_requested_design_count(self) -> None:
         plan = compile_sampling_plan(
-            design(seed=17, timesteps=50, designs=1000)
+            design(
+                seed=17,
+                timesteps=50,
+                designs=1000,
+                dump_trajectories=True,
+            )
         )
 
         self.assertEqual(plan.diffusion.designs, 1000)
@@ -41,6 +46,7 @@ class SamplingPlanTestCase(unittest.TestCase):
         self.assertEqual(plan.diffusion.screening_mode, "advisory")
         self.assertEqual(plan.diffusion.screening_protocol, "auto")
         self.assertTrue(plan.diffusion.retain_all_outputs)
+        self.assertTrue(plan.diffusion.dump_trajectories)
 
     def test_variable_pose_is_resampled_per_design_by_default(self) -> None:
         plan = compile_sampling_plan(
@@ -151,36 +157,43 @@ class SamplingPlanTestCase(unittest.TestCase):
             "symmetric_generated",
         )
 
-    def test_supplied_interface_cannot_invent_second_generated_interface(
+    def test_supplied_interface_can_explicitly_request_second_interface(
         self,
     ) -> None:
-        with self.assertRaisesRegex(
-            ValidationError,
-            "incompatible with task=preserve_supplied_geometry",
-        ):
-            UserDesignSpec.model_validate(
-                {
-                    "name": "supplied-interface",
-                    "task": "preserve_supplied_geometry",
-                    "input": "seed.pdb",
-                    "symmetry": "C3",
-                    "generation": [
-                        {
-                            "kind": "between",
-                            "from_selector": "A1",
-                            "to_selector": "B1",
-                            "length": 20,
-                        }
-                    ],
-                    "constraints": [
-                        {"kind": "fixed_xyz", "selector": "A1"},
-                        {"kind": "fixed_xyz", "selector": "B1"},
-                    ],
-                    "sampling": {
-                        "scaffold_packing": "symmetric_generated"
+        design = UserDesignSpec.model_validate(
+            {
+                "name": "supplied-interface-higher-order-oligomer",
+                "task": "preserve_supplied_geometry",
+                "input": "seed.pdb",
+                "symmetry": "C3",
+                "generation": [
+                    {
+                        "kind": "terminal",
+                        "anchor": "A1",
+                        "terminus": "c",
+                        "length": 20,
+                    }
+                ],
+                "constraints": [
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1",
+                        "coupling_group": "supplied_interface",
                     },
-                }
-            )
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1",
+                        "coupling_group": "supplied_interface",
+                    },
+                ],
+                "sampling": {"scaffold_packing": "symmetric_generated"},
+            }
+        )
+
+        self.assertEqual(
+            compile_sampling_plan(design).diffusion.scaffold_packing,
+            "symmetric_generated",
+        )
 
     def test_rejects_nonpositive_design_count(self) -> None:
         with self.assertRaises(ValidationError):
@@ -189,6 +202,51 @@ class SamplingPlanTestCase(unittest.TestCase):
     def test_rejects_more_replicates_than_designs(self) -> None:
         with self.assertRaises(ValidationError):
             design(designs=2, replicates_per_pose=3)
+
+    def test_allows_masked_sequence_with_native_sidechain_redesign(self) -> None:
+        declared = UserDesignSpec.model_validate(
+            {
+                "name": "masked-redesign-conditioning",
+                "input": "motif.pdb",
+                "symmetry": "C3",
+                "conditioning": {
+                    "sequence": [
+                        {"selector": "A1-10", "mode": "masked"}
+                    ],
+                    "redesign_motif_sidechains": True,
+                },
+            }
+        )
+
+        self.assertTrue(declared.conditioning.redesign_motif_sidechains)
+        self.assertEqual(declared.conditioning.sequence[0].mode.value, "masked")
+
+    def test_rejects_glycine_with_native_sidechain_redesign(self) -> None:
+        with self.assertRaises(ValidationError):
+            UserDesignSpec.model_validate(
+                {
+                    "name": "glycine-redesign-conditioning",
+                    "input": "motif.pdb",
+                    "symmetry": "C3",
+                    "conditioning": {
+                        "sequence": [
+                            {"selector": "A1-10", "mode": "glycine"}
+                        ],
+                        "redesign_motif_sidechains": True,
+                    },
+                }
+            )
+
+    def test_hotspot_origin_requires_hotspots(self) -> None:
+        with self.assertRaises(ValidationError):
+            UserDesignSpec.model_validate(
+                {
+                    "name": "missing-hotspot-conditioning",
+                    "input": "motif.pdb",
+                    "symmetry": "C3",
+                    "conditioning": {"origin_strategy": "hotspots"},
+                }
+            )
 
     def test_compiles_static_radius_axial_and_uniform_so3(self) -> None:
         plan = compile_sampling_plan(

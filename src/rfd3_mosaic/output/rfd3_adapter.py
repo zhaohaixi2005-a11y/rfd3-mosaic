@@ -177,6 +177,41 @@ def _fragment_selector(
     return f"{chain_id}{residue_numbers[0]}-{residue_numbers[-1]}"
 
 
+def _fragment_runtime_source_components(
+    *,
+    spec,
+    mapping: dict[str, Any],
+    fragment_instance_id: str,
+) -> list[str]:
+    """Return the component labels that survive native RFD3 parsing.
+
+    Polymer components retain their contig selectors (``A12`` etc.). Native
+    RFD3 appends ligands separately and labels them by residue/component name
+    (``RET``), not by the ligand's input-chain selector. Constraint metadata
+    must use those parser-level labels so every ligand atom remains inside
+    the joint-rigid motif contract.
+    """
+
+    records = [
+        record
+        for record in mapping["atom_mappings"]
+        if record["instance"]["fragment_instance_id"] == fragment_instance_id
+    ]
+    if not records:
+        raise ValueError(
+            f"No atom mappings found for fragment {fragment_instance_id!r}"
+        )
+    source_fragment_id = records[0]["source"]["fragment_id"]
+    source_fragment = spec.fragments[source_fragment_id]
+    if source_fragment.entity_type.value == "ligand":
+        return list(
+            dict.fromkeys(record["source"]["residue_name"] for record in records)
+        )
+    return _selector_source_components(
+        _fragment_selector(mapping, fragment_instance_id)
+    )
+
+
 def _runtime_cylindrical_constraints(
     declarations: list[dict[str, Any]],
     *,
@@ -605,6 +640,7 @@ def _runtime_action_index(
 
 
 def _runtime_interface_constraint_groups(
+    spec,
     instances,
     mapping: dict[str, Any],
     links,
@@ -644,7 +680,21 @@ def _runtime_interface_constraint_groups(
 
     registry = build_transform_registry(transform_set)
 
+    def coupled_nonpolymer_fragments(fragment_instance_ids: tuple[str, ...]):
+        motion_group_instance_ids = {
+            instances.fragments[fragment_instance_id].motion_group_instance_id
+            for fragment_instance_id in fragment_instance_ids
+        }
+        return tuple(
+            fragment
+            for fragment in instances.fragments.values()
+            if fragment.motion_group_instance_id in motion_group_instance_ids
+            and spec.fragments[fragment.source_id].entity_type.value != "protein"
+        )
+
     def correspondence_components(fragment) -> list[str]:
+        if spec.fragments[fragment.source_id].entity_type.value != "protein":
+            return selector_by_source_id[fragment.source_id].split(",")
         if not preexpanded_mixed_orbits or compact_mixed_orbits:
             return _selector_source_components(
                 selector_by_source_id[fragment.source_id]
@@ -700,8 +750,23 @@ def _runtime_interface_constraint_groups(
             ),
         ):
             port = instances.ports[port_instance_id]
-            for fragment_instance_id in port.fragment_instance_ids:
-                fragment = instances.fragments[fragment_instance_id]
+            port_fragment_instance_ids = tuple(port.fragment_instance_ids)
+            coupled_fragments = coupled_nonpolymer_fragments(
+                port_fragment_instance_ids
+            )
+            member_fragment_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *port_fragment_instance_ids,
+                        *(fragment.id for fragment in coupled_fragments),
+                    )
+                )
+            )
+            member_fragments = tuple(
+                instances.fragments[item] for item in member_fragment_ids
+            )
+            for fragment in member_fragments:
+                fragment_instance_id = fragment.id
                 if preexpanded_mixed_orbits and not compact_mixed_orbits:
                     try:
                         source_component = selector_by_fragment_instance_id[
@@ -713,6 +778,29 @@ def _runtime_interface_constraint_groups(
                             "materialized by one physical scaffold path"
                         ) from error
                 else:
+                    if fragment.source_id not in selector_by_source_id:
+                        masters = [
+                            candidate
+                            for candidate in instances.fragments.values()
+                            if candidate.source_id == fragment.source_id
+                            and candidate.orbit_id == fragment.orbit_id
+                            and candidate.copy_index == 0
+                        ]
+                        if len(masters) != 1:
+                            raise ValueError(
+                                "Runtime ligand constraints require one "
+                                f"copy-zero fragment for {fragment.source_id!r}"
+                            )
+                        selector_by_source_id[fragment.source_id] = ",".join(
+                            _fragment_runtime_source_components(
+                                spec=spec,
+                                mapping=mapping,
+                                fragment_instance_id=masters[0].id,
+                            )
+                        )
+                        canonical_transform_by_source_id[fragment.source_id] = (
+                            masters[0].transform_id
+                        )
                     try:
                         source_component = selector_by_source_id[fragment.source_id]
                     except KeyError as error:
@@ -721,7 +809,12 @@ def _runtime_interface_constraint_groups(
                             "fragment source to be present in the canonical "
                             "ASU scaffold link"
                         ) from error
-                actual_components = _selector_source_components(source_component)
+                actual_components = (
+                    source_component.split(",")
+                    if spec.fragments[fragment.source_id].entity_type.value
+                    != "protein"
+                    else _selector_source_components(source_component)
+                )
                 stable_components = correspondence_components(fragment)
                 if len(actual_components) != len(stable_components):
                     raise ValueError(
@@ -972,6 +1065,7 @@ def _runtime_interface_constraint_orbits(
 
 def _runtime_fixed_motif_constraints(
     *,
+    spec,
     instances,
     mapping: dict[str, Any],
     anchor_fragment_instance_ids: str | tuple[str, ...],
@@ -1032,8 +1126,10 @@ def _runtime_fixed_motif_constraints(
         # those labels and records the relative group action separately in
         # ``sym_transform_id``.
         source_components = {
-            master.id: _selector_source_components(
-                _fragment_selector(mapping, master.id)
+            master.id: _fragment_runtime_source_components(
+                spec=spec,
+                mapping=mapping,
+                fragment_instance_id=master.id,
             )
             for master in component_masters
         }
@@ -2307,6 +2403,7 @@ def compile_assembly_rfd3_input(
     orphan_fragments = [
         fragment
         for fragment in instances.fragments.values()
+        if spec.fragments[fragment.source_id].entity_type.value == "protein"
         if fragment.source_id not in represented_source_ids
         and (
             (preexpanded_runtime_layout and not compact_mixed_runtime)
@@ -2650,6 +2747,7 @@ def compile_assembly_rfd3_input(
         }
 
     caller_extra = dict(extra_metadata or {})
+    native_options = dict(caller_extra.pop("rfd3_native_options", {}) or {})
     declared_cylindrical_constraints = list(
         caller_extra.pop("cylindrical_constraints", ()) or ()
     )
@@ -2659,7 +2757,32 @@ def compile_assembly_rfd3_input(
             "requires quotient-aware token correspondence and remains "
             "fail-closed"
         )
-    fixed_atoms: dict[str, str] = {}
+    selected_path_orbit_ids = {segment.orbit_id for segment in segments}
+    ligand_fragment_instance_ids = tuple(
+        fragment.id
+        for fragment in instances.fragments.values()
+        if fragment.copy_index == 0
+        and fragment.orbit_id in selected_path_orbit_ids
+        and spec.fragments[fragment.source_id].entity_type.value == "ligand"
+    )
+    ligand_selectors = tuple(
+        dict.fromkeys(
+            _fragment_selector(mapping, fragment_instance_id)
+            for fragment_instance_id in ligand_fragment_instance_ids
+        )
+    )
+    if ligand_selectors and (
+        preexpanded_chain_layout is not None or compact_chain_layout is not None
+    ):
+        raise NotImplementedError(
+            "Symmetric ligands are currently supported for native full-group "
+            "ASU expansion, not compiler-preexpanded or compact quotient layouts"
+        )
+    asu_chain_count += len(ligand_selectors)
+    fixed_atoms: dict[str, str] = {
+        ligand_selector: "ALL" for ligand_selector in ligand_selectors
+    }
+    unfixed_sequence_selectors: list[str] = []
     for segment in segments:
         for selector, fragment_instance_id in zip(
             segment.selectors,
@@ -2667,9 +2790,24 @@ def compile_assembly_rfd3_input(
             strict=True,
         ):
             fragment = instances.fragments[fragment_instance_id]
-            fixed_atoms[selector] = _rfd3_atom_selection(
-                spec.fragments[fragment.source_id].fixed_atoms
-            )
+            source_fragment = spec.fragments[fragment.source_id]
+            atom_selection = _rfd3_atom_selection(source_fragment.fixed_atoms)
+            if (
+                native_options.get("redesign_motif_sidechains", False)
+                and source_fragment.entity_type.value == "protein"
+                and atom_selection.upper() == "ALL"
+            ):
+                # Native RFD3 applies ``redesign_motif_sidechains`` before
+                # ``select_fixed_atoms``.  Re-emitting ALL here would silently
+                # fix the side-chain coordinates again and make the public
+                # option ineffective.  The explicit opt-in therefore keeps
+                # the motif backbone exact while allowing its side chains and
+                # sequence to be redesigned.  More specific user atom masks
+                # remain authoritative.
+                atom_selection = "BKBN"
+            fixed_atoms[selector] = atom_selection
+            if source_fragment.sequence_conditioning.value == "masked":
+                unfixed_sequence_selectors.append(selector)
     path_fragment_instance_ids = tuple(
         dict.fromkeys(
             fragment_id
@@ -2677,6 +2815,33 @@ def compile_assembly_rfd3_input(
             for fragment_id in segment.fragment_instance_ids
         )
     )
+    conditioned_fragment_instance_ids = tuple(
+        dict.fromkeys(path_fragment_instance_ids + ligand_fragment_instance_ids)
+    )
+    native_selection_fields = {
+        "buried": "select_buried",
+        "partially_buried": "select_partially_buried",
+        "exposed": "select_exposed",
+        "hotspots": "select_hotspots",
+        "hbond_acceptor": "select_hbond_acceptor",
+        "hbond_donor": "select_hbond_donor",
+    }
+    native_selections: dict[str, dict[str, str]] = {}
+    for fragment_instance_id in conditioned_fragment_instance_ids:
+        instance = instances.fragments[fragment_instance_id]
+        conditioning = spec.fragments[instance.source_id].rfd3_conditioning
+        selector = _fragment_selector(mapping, fragment_instance_id)
+        for attribute, payload_field in native_selection_fields.items():
+            atom_selection = getattr(conditioning, attribute)
+            if atom_selection is None:
+                continue
+            selection = native_selections.setdefault(payload_field, {})
+            if selector in selection:
+                raise ValueError(
+                    f"Duplicate native RFD3 conditioning for {selector!r} "
+                    f"in {payload_field}"
+                )
+            selection[selector] = atom_selection
     use_interface_constraint_groups = (
         spec.constraint_group_strategy == "interface_edges"
         or (spec.constraint_group_strategy == "auto" and bool(instances.interfaces))
@@ -2696,6 +2861,7 @@ def compile_assembly_rfd3_input(
         )
     elif use_interface_constraint_groups and not (declared_cylindrical_constraints):
         motif_constraint_groups = _runtime_interface_constraint_groups(
+            spec,
             instances,
             mapping,
             list(compiled_links),
@@ -2724,23 +2890,49 @@ def compile_assembly_rfd3_input(
         ).lower()
         != "none"
     )
+    # Native RFD3 treats declared ligands as fixed motif atoms even though
+    # they are not part of the polymer contig.  They must therefore travel in
+    # the same explicit rigid constraint groups as the protein fragments in
+    # their motion group.  Omitting them produces a superficially complete
+    # CIF/``ligand=`` declaration that native prevalidation correctly rejects
+    # because some fixed atoms have no constraint-group owner.
+    path_orbit_ids = {
+        instances.fragments[fragment_id].orbit_id
+        for fragment_id in path_fragment_instance_ids
+    }
+    fixed_nonpolymer_fragment_instance_ids = tuple(
+        fragment.id
+        for fragment in instances.fragments.values()
+        if fragment.copy_index == 0
+        and fragment.orbit_id in path_orbit_ids
+        and spec.fragments[fragment.source_id].entity_type.value != "protein"
+    )
+    fixed_constraint_fragment_instance_ids = tuple(
+        dict.fromkeys(
+            (
+                *fixed_path_fragment_instance_ids,
+                *fixed_nonpolymer_fragment_instance_ids,
+            )
+        )
+    )
     if (
         not preexpanded_stabilizer_asu
         and (not use_interface_constraint_groups or declared_cylindrical_constraints)
-        and fixed_path_fragment_instance_ids
+        and fixed_constraint_fragment_instance_ids
     ):
         (
             motif_constraint_groups,
             motif_constraint_orbits,
         ) = _runtime_fixed_motif_constraints(
+            spec=spec,
             instances=instances,
             mapping=mapping,
-            anchor_fragment_instance_ids=(fixed_path_fragment_instance_ids),
+            anchor_fragment_instance_ids=(fixed_constraint_fragment_instance_ids),
             transform_set=transform_set,
             runtime_transform_order=registry_transform_order,
             transform_to_runtime_representative=(transform_to_runtime_representative),
         )
-    elif not fixed_path_fragment_instance_ids:
+    elif not fixed_constraint_fragment_instance_ids:
         motif_constraint_groups = []
         motif_constraint_orbits = []
 
@@ -2997,12 +3189,26 @@ def compile_assembly_rfd3_input(
             "input": adapter_structure_path.name,
             "contig": contig,
             "select_fixed_atoms": fixed_atoms,
-            "redesign_motif_sidechains": False,
-            "is_non_loopy": is_non_loopy,
+            "redesign_motif_sidechains": bool(
+                native_options.get("redesign_motif_sidechains", False)
+            ),
+            "is_non_loopy": native_options.get("is_non_loopy", is_non_loopy),
+            "plddt_enhanced": bool(native_options.get("plddt_enhanced", True)),
             "symmetry": symmetry,
             "extra": adapter_extra,
         }
     }
+    infer_ori_strategy = native_options.get("infer_ori_strategy")
+    if infer_ori_strategy is not None:
+        payload[example_id]["infer_ori_strategy"] = str(infer_ori_strategy)
+    payload[example_id].update(native_selections)
+    if unfixed_sequence_selectors:
+        payload[example_id]["select_unfixed_sequence"] = ",".join(
+            dict.fromkeys(unfixed_sequence_selectors)
+        )
+    if ligand_selectors:
+        payload[example_id]["ligand"] = ",".join(ligand_selectors)
+        payload[example_id]["symmetrize_ligand"] = True
     if finite_action is not None or preexpanded_mixed_orbits:
         # RFD3 otherwise centers fixed-motif inputs on their fixed-atom COM.
         # A complete group orbit has its COM at the group origin, whereas a
@@ -3010,6 +3216,12 @@ def compile_assembly_rfd3_input(
         # without conjugating the declared frames changes the represented
         # action and invalidates exact fixed-target projection.  The compiler
         # registry matrices are expressed about the group-frame origin.
+        if infer_ori_strategy is not None:
+            raise ValueError(
+                "conditioning.origin_strategy cannot be combined with a "
+                "quotient/preexpanded symmetry input whose compiler-owned "
+                "origin is fixed"
+            )
         payload[example_id]["ori_token"] = [0.0, 0.0, 0.0]
     input_path = output / "rfd3_input.json"
     input_path.write_text(

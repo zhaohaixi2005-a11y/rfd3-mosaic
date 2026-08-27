@@ -17,6 +17,9 @@ from rfd3_mosaic.schema import UserDesignSpec
 EXAMPLES = {
     "central-motif": Path("examples/rfd3_mosaic/simple_central_motif.yaml"),
     "supplied-interface": Path("examples/rfd3_mosaic/simple_interface_seed.yaml"),
+    "supplied-interface-oligomer": Path(
+        "examples/rfd3_mosaic/supplied_interface_higher_oligomer.yaml"
+    ),
 }
 PUBLIC_PROFILES = {
     "local": Path("configs/rfd3_mosaic/execution/local.yaml"),
@@ -65,6 +68,11 @@ def initialize_design(
     motif_selector: str | None = None,
     side_a: str | None = None,
     side_b: str | None = None,
+    interface_scaffold: str = "adjacent-linker",
+    new_oligomer_interface: bool = False,
+    sequence_conditioning: str = "fixed",
+    redesign_motif_sidechains: bool = False,
+    ligand_selectors: tuple[str, ...] = (),
     n_length: int = 35,
     c_length: int = 35,
     linker_minimum: int = 70,
@@ -72,6 +80,14 @@ def initialize_design(
     timesteps: int = 200,
     designs: int = 1,
     seed: int = 42,
+    pose_radius_minimum: float | None = None,
+    pose_radius_maximum: float | None = None,
+    pose_axial_minimum: float = 0.0,
+    pose_axial_maximum: float = 0.0,
+    pose_orientation: str = "fixed",
+    pose_maximum_tilt_deg: float = 30.0,
+    pose_seed: int = 0,
+    replicates_per_pose: int = 1,
     packing: str = "balanced",
     cavity: str = "auto",
     diversity: str = "medium",
@@ -88,10 +104,40 @@ def initialize_design(
         raise ValueError("timesteps must be between 2 and 200")
     if designs < 1 or designs > 10000:
         raise ValueError("designs must be between 1 and 10000")
+    if replicates_per_pose < 1 or replicates_per_pose > designs:
+        raise ValueError(
+            "replicates_per_pose must satisfy 1 <= value <= designs"
+        )
     if n_length < 1 or c_length < 1:
         raise ValueError("terminal generation lengths must be positive")
     if linker_minimum < 1 or linker_maximum < linker_minimum:
         raise ValueError("linker range must satisfy 1 <= minimum <= maximum")
+    pose_radius_values = (pose_radius_minimum, pose_radius_maximum)
+    if any(value is not None for value in pose_radius_values) and not all(
+        value is not None for value in pose_radius_values
+    ):
+        raise ValueError(
+            "pose radius requires both minimum and maximum"
+        )
+    if pose_radius_minimum is None and (
+        pose_axial_minimum != 0.0
+        or pose_axial_maximum != 0.0
+        or pose_orientation != "fixed"
+        or pose_seed != 0
+    ):
+        raise ValueError(
+            "pose axial/orientation/seed options require an explicit pose "
+            "radius interval"
+        )
+    if pose_orientation not in {
+        "fixed",
+        "uniform_so3",
+        "principal_axis_cone",
+    }:
+        raise ValueError(
+            "pose_orientation must be fixed, uniform_so3 or "
+            "principal_axis_cone"
+        )
 
     design_name = _safe_name(name or output.stem)
     common: dict[str, Any] = {
@@ -139,21 +185,62 @@ def initialize_design(
                 "symmetry only; use an explicit design graph for non-cyclic "
                 "copy relations"
             )
+        if interface_scaffold == "adjacent-linker":
+            generation = [
+                {
+                    "kind": "between",
+                    "from_selector": side_b,
+                    "to_selector": side_a,
+                    "orbit_offset": "nearest_adjacent",
+                    "length": {
+                        "minimum": linker_minimum,
+                        "maximum": linker_maximum,
+                    },
+                }
+            ]
+        elif interface_scaffold == "terminal-extensions":
+            generation = [
+                {
+                    "kind": "terminal",
+                    "anchor": selector,
+                    "terminus": terminus,
+                    "length": n_length if terminus == "n" else c_length,
+                }
+                for selector in (side_a, side_b)
+                for terminus in ("n", "c")
+            ]
+        else:
+            raise ValueError(
+                "interface_scaffold must be adjacent-linker or "
+                "terminal-extensions"
+            )
+        conditioning: dict[str, Any] = {}
+        if sequence_conditioning != "fixed":
+            if sequence_conditioning not in {"masked", "glycine"}:
+                raise ValueError(
+                    "sequence_conditioning must be fixed, masked or glycine"
+                )
+            conditioning["sequence"] = [
+                {"selector": selector, "mode": sequence_conditioning}
+                for selector in (side_a, side_b)
+            ]
+        if ligand_selectors:
+            conditioning["ligands"] = [
+                {
+                    "selector": selector,
+                    "coupling_group": "supplied_interface",
+                }
+                for selector in ligand_selectors
+            ]
+        if redesign_motif_sidechains:
+            conditioning["redesign_motif_sidechains"] = True
+        sampling_overrides: dict[str, Any] = {}
+        if new_oligomer_interface:
+            sampling_overrides["scaffold_packing"] = "symmetric_generated"
         common.update(
             {
                 "task": "preserve_supplied_geometry",
-                "generation": [
-                    {
-                        "kind": "between",
-                        "from_selector": side_b,
-                        "to_selector": side_a,
-                        "orbit_offset": "nearest_adjacent",
-                        "length": {
-                            "minimum": linker_minimum,
-                            "maximum": linker_maximum,
-                        },
-                    }
-                ],
+                "generation": generation,
                 "constraints": [
                     {
                         "kind": "fixed_xyz",
@@ -166,18 +253,43 @@ def initialize_design(
                         "coupling_group": "supplied_interface",
                     },
                 ],
+                **({"conditioning": conditioning} if conditioning else {}),
             }
         )
     else:
         raise ValueError(f"Unknown initialization task: {task!r}")
 
+    sampling: dict[str, Any] = {
+        "timesteps": timesteps,
+        "designs": designs,
+        "replicates_per_pose": replicates_per_pose,
+        "seed": seed,
+        **(
+            sampling_overrides
+            if task == "supplied-interface"
+            else {}
+        ),
+    }
+    if pose_radius_minimum is not None:
+        orientation: dict[str, Any] = {"method": pose_orientation}
+        if pose_orientation == "principal_axis_cone":
+            orientation["maximum_tilt_deg"] = pose_maximum_tilt_deg
+        sampling["initial_pose"] = {
+            "radius": {
+                "minimum": pose_radius_minimum,
+                "maximum": pose_radius_maximum,
+            },
+            "axial_offset": {
+                "minimum": pose_axial_minimum,
+                "maximum": pose_axial_maximum,
+            },
+            "orientation": orientation,
+            "seed": pose_seed,
+        }
+
     common.update(
         {
-            "sampling": {
-                "timesteps": timesteps,
-                "designs": designs,
-                "seed": seed,
-            },
+            "sampling": sampling,
             "resources": {"profile": profile},
             "output": {
                 "root": str(run_root.expanduser().resolve()),

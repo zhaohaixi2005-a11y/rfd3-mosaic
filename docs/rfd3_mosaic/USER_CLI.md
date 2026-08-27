@@ -50,6 +50,25 @@ The two tasks are:
 - `supplied-interface`: preserve both sides of a complete supplied interface
   as one joint rigid geometric seed.
 
+For supplied interfaces, `--interface-scaffold` distinguishes covalent
+topology from non-covalent scaffolding. `adjacent-linker` creates one declared
+symmetry-neighbour linker. `terminal-extensions` grows N/C scaffold from both
+partners without connecting the partners to one another. Add
+`--new-oligomer-interface` only when the preserved interface seed should form
+an additional Cn oligomerization interface. The default remains off.
+
+Native RFD3 sequence and ligand conditioning can be initialized with
+`--sequence-conditioning fixed|masked|glycine` and repeatable
+`--ligand-selector`. `masked` keeps selected backbone coordinates but unfixes
+sequence through RFD3's `select_unfixed_sequence`; `glycine` writes a
+backbone-only all-glycine conditioning fragment. Selected ligands are attached
+to the same joint-rigid motion group and are expanded with the declared Cn
+symmetry.
+
+Add `--redesign-motif-sidechains` when the supplied protein backbone must stay
+fixed but RFD3 should redesign its sequence and side-chain coordinates. This
+can be combined with `--sequence-conditioning masked`.
+
 For `central-motif`, `--component-motion locked|guided|free` selects whether
 the supplied arrangement stays fixed, moves in the calibrated constrained
 subspace, or uses bounded SE(3). High-level `--packing`, `--interface-area`,
@@ -69,11 +88,23 @@ sampling:
   designs: 100
   replicates_per_pose: 1  # default: one trajectory per variable pose
   seed: 42
+  dump_trajectories: false  # optional; trajectory files can be large
+  initial_pose:
+    radius: {minimum: 20.0, maximum: 32.0}
+    axial_offset: {minimum: -4.0, maximum: 4.0}
+    orientation: {method: uniform_so3}
+    seed: 1000
   screening:
     mode: advisory
     protocol: auto
     retain_all_outputs: true
 ```
+
+The corresponding `init` arguments are `--pose-radius-minimum`,
+`--pose-radius-maximum`, `--pose-axial-minimum`, `--pose-axial-maximum`,
+`--pose-orientation`, `--pose-maximum-tilt-deg`, `--pose-seed` and
+`--replicates-per-pose`. Mosaic does not silently invent a task-specific
+radius or orientation prior.
 
 Set `replicates_per_pose` above one only when intentionally comparing several
 diffusion trajectories from the same assembly hypothesis. Mosaic samples pose
@@ -115,6 +146,7 @@ and archive SHA256 without being placed inside the structure-only ZIP.
 ```bash
 rfd3-mosaic examples
 rfd3-mosaic examples --copy supplied-interface --output design.yaml
+rfd3-mosaic examples --copy supplied-interface-oligomer --output oligomer.yaml
 rfd3-mosaic profiles
 rfd3-mosaic profiles --copy-slurm my-cluster.yaml
 ```
@@ -123,6 +155,52 @@ These discovery commands work from both source checkouts and installed
 packages. Copied examples resolve their bundled input and run paths; copied
 Slurm profiles are generic site templates. Both support `--format json`, and
 neither overwrites an existing file unless `--force` is supplied.
+
+## Public YAML reference
+
+A normal user configuration has seven conceptual sections. Only `name`,
+`input`, `symmetry`, one or more generated regions and their fixed selectors
+are essential; all conditioning and execution controls are optional.
+
+| Section | Purpose |
+| --- | --- |
+| `task` | preserve a supplied interface or create a new symmetric interface |
+| `generation` | terminal extensions or explicit between-linkers and lengths |
+| `constraints` | fixed selectors and joint-rigid `coupling_group` identity |
+| `conditioning` | optional native RFD3 sequence, ligand, RASA, hotspot and H-bond inputs |
+| `sampling` | timesteps, design count, independent pose distribution and RFD3 global conditioning |
+| `resources` | local or Slurm execution profile |
+| `output` | run root and campaign name |
+
+The maintained complete examples are the normative templates. In particular,
+`supplied-interface-oligomer` demonstrates a preserved non-covalent dimer,
+independent terminal scaffold, an optional second generated interface and
+per-design SE(3) pose sampling.
+
+### Native RFdiffusion3 conditioning
+
+The public `conditioning` block supports:
+
+- `sequence`: `masked` or `glycine` treatment of a complete materialized
+  protein fragment;
+- `ligands`: one-residue non-polymers coupled to a named rigid group;
+- `buried`, `partially_buried`, `exposed`;
+- `hotspots`;
+- `hbond_acceptors`, `hbond_donors`;
+- `redesign_motif_sidechains`;
+- `origin_strategy: com|hotspots`.
+
+The public `sampling` block additionally exposes `is_non_loopy` and
+`plddt_enhanced`. Mosaic maps source selectors to the compiled RFD3 input and
+then invokes RFD3's own parser during prevalidation. Unsupported combinations
+(for example a user-selected origin on a quotient input whose group origin is
+compiler-owned) fail before inference rather than being silently ignored.
+
+RFdiffusion3 partial diffusion is not represented as symmetric motif
+scaffolding: it changes the coordinates supplied as the starting structure and
+conflicts with Mosaic's exact fixed-geometry contract. Users needing an
+unmodified native partial-diffusion experiment should run that native RFD3
+workflow rather than assuming Mosaic applied it.
 
 ### `plan`
 
@@ -308,6 +386,34 @@ preferences:
 
 This compiles both sides into one coupling group with bounded full SE(3)
 motion; it never allows the two supplied interface sides to move independently.
+
+#### Sequence conditioning on a fixed interface seed
+
+Coordinate geometry and amino-acid identity are separate contracts.  By
+default, a fixed motif keeps both.  When an existing polar surface should be
+repacked, native RFD3 sequence conditioning can be requested explicitly:
+
+```yaml
+conditioning:
+  sequence:
+    - selector: A1-153
+      mode: masked
+    - selector: B1-26
+      mode: masked
+```
+
+`masked` emits RFD3's `select_unfixed_sequence` and fixes only backbone atoms;
+the joint-rigid backbone geometry is preserved while residue identities may
+change.  `glycine` instead writes an explicit glycine-backbone conditioning
+fragment and keeps that glycine identity fixed, reproducing the traditional
+all-Gly surface-conditioning control.  Conditioning selectors must be
+complete materialized `fixed_xyz` selectors.  Split a `fixed_xyz` declaration
+when only a defined residue range should be masked or converted to glycine.
+
+Omitting `conditioning` is byte-compatible with earlier designs: all motif
+atoms and sequence identities remain fixed.  Mosaic fails validation if a
+masked/Gly selector would retain fixed side-chain atoms, so an input cannot
+claim that sequence is free while leaking the original side chains.
 
 `task: preserve_supplied_geometry` never invents a second generated interface.
 The supplied interface remains the oligomeric contact; generated residues are

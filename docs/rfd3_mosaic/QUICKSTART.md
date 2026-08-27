@@ -15,6 +15,10 @@ selected executor and checkpoint without running inference.
 
 ## 2. Choose a design task
 
+The user writes **one YAML file per scientific design request**, not one YAML
+per generated structure. `sampling.designs: 1000` remains one request and
+produces up to 1000 independently named outputs in the run directory.
+
 ### Preserve a supplied interface
 
 Use this workflow when the input already contains the interface geometry that
@@ -34,6 +38,49 @@ does not independently rearrange the two sides of that interface.
 Use `--component-motion free` when that complete object may translate and
 rotate relative to the symmetry axis while its internal interface remains
 exact.
+
+There are two distinct ways to scaffold a supplied interface:
+
+- `adjacent-linker` creates a declared covalent polymer connection between
+  symmetry-neighbour motifs;
+- `terminal-extensions` grows each non-covalent partner independently and
+  never joins the supplied interface sides with a peptide bond.
+
+For a joint-rigid dimer that should assemble into a new higher-order Cn
+oligomer, create the second form explicitly:
+
+```bash
+rfd3-mosaic init dimer-oligomer.yaml \
+  --task supplied-interface \
+  --input light-dependent-dimer.cif \
+  --side-a A1-153 \
+  --side-b C1-26 \
+  --symmetry C3 \
+  --interface-scaffold terminal-extensions \
+  --new-oligomer-interface \
+  --sequence-conditioning masked \
+  --redesign-motif-sidechains \
+  --ligand-selector B1 \
+  --component-motion guided \
+  --pose-radius-minimum 20 \
+  --pose-radius-maximum 32 \
+  --pose-axial-minimum -4 \
+  --pose-axial-maximum 4 \
+  --pose-orientation uniform_so3 \
+  --pose-seed 1000 \
+  --designs 50
+```
+
+The supplied A/C interface and ligand remain one rigid seed. The explicit
+`--new-oligomer-interface` switch asks only the generated residues to form an
+additional C3 interface. Omitting it preserves the supplied interface without
+inventing a second one.
+
+The pose interval is explicit rather than inferred from a protein-specific
+template. With the default `--replicates-per-pose 1`, the command above
+compiles 50 independent rigid assembly poses and gives each pose one RFD3
+diffusion trajectory. Omit all pose options to retain the supplied assembly
+placement exactly.
 
 ### Create a new interface around a motif
 
@@ -78,6 +125,34 @@ it remains valid outside a source checkout.
 - generation lengths;
 - output directory;
 - whether supplied geometry must be preserved or a new interface created.
+
+Optional native RFdiffusion3 conditioning is placed under `conditioning`:
+
+```yaml
+conditioning:
+  sequence:
+    - {selector: A1-153, mode: masked}  # or glycine
+  ligands:
+    - {selector: B1, coupling_group: supplied_interface}
+  buried:
+    - {selector: B1, atoms: ALL}
+  hotspots:
+    - {selector: A42-45, atoms: TIP}
+  hbond_acceptors:
+    - {selector: B1, atoms: O1,O2}
+  redesign_motif_sidechains: false
+  origin_strategy: hotspots
+
+sampling:
+  is_non_loopy: true
+  plddt_enhanced: true
+```
+
+`buried`, `partially_buried`, `exposed`, `hotspots`, `hbond_acceptors` and
+`hbond_donors` use RFdiffusion3's documented atom-selection vocabulary.
+Mosaic remaps the selected source fragments after symmetry compilation and
+RFD3 validates atom names during `validate`. These fields are optional; their
+omission retains the standard RFD3 defaults.
 
 Ordinary users should not need to select group-transform identifiers or tune
 individual low-level packing losses. Expert declarations remain available for

@@ -673,11 +673,29 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
             f"({report['fixed_coordinate_atom_count']}/"
             f"{report['motif_atom_count']})"
         )
-    if report["fixed_sequence_atom_count"] != report["motif_atom_count"]:
+    declared_unfixed_sequence = bool(report.get("declared_unfixed_sequence"))
+    declared_sequence_redesign = bool(
+        report.get("declared_redesign_motif_sidechains")
+    )
+    sequence_is_declared_variable = (
+        declared_unfixed_sequence or declared_sequence_redesign
+    )
+    if (
+        not sequence_is_declared_variable
+        and report["fixed_sequence_atom_count"] != report["motif_atom_count"]
+    ):
         failures.append(
             "not every motif atom has fixed sequence identity "
             f"({report['fixed_sequence_atom_count']}/"
             f"{report['motif_atom_count']})"
+        )
+    if (
+        sequence_is_declared_variable
+        and report["fixed_sequence_atom_count"] >= report["motif_atom_count"]
+    ):
+        failures.append(
+            "variable motif sequence was declared but RFD3 kept every motif "
+            "atom sequence-fixed"
         )
     if report["asu_atom_count"] <= 0:
         failures.append("RFD3 did not mark an asymmetric unit")
@@ -965,6 +983,10 @@ def prevalidate_rfd3_input(
         ),
         "fixed_sequence_atom_count": int(
             atom_array.is_motif_atom_with_fixed_seq.astype(bool).sum()
+        ),
+        "declared_unfixed_sequence": raw_spec.get("select_unfixed_sequence"),
+        "declared_redesign_motif_sidechains": bool(
+            raw_spec.get("redesign_motif_sidechains", False)
         ),
         "declared_cylindrical_constraint_count": len(
             cylindrical_constraints

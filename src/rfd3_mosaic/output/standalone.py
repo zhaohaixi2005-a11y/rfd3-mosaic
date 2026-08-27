@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -936,7 +936,12 @@ def _chain_id(index: int) -> str:
     return "".join(reversed(characters))
 
 
-def _continuous_fragment_paths(scaffold_graph) -> tuple[tuple[str, ...], ...]:
+def _continuous_fragment_paths(
+    scaffold_graph,
+    *,
+    spec,
+    instances,
+) -> tuple[tuple[str, ...], ...]:
     """Return every physical polymer path in deterministic N-to-C order.
 
     Fixed fragments joined by generated scaffold links are pieces of one
@@ -945,6 +950,28 @@ def _continuous_fragment_paths(scaffold_graph) -> tuple[tuple[str, ...], ...]:
     cages fail once they contained more than 52 fragments.  This topology is
     already proven linear and acyclic by ``compile_scaffold_graph``.
     """
+
+    polymer_nodes = {
+        fragment.id
+        for fragment in instances.fragments.values()
+        if spec.fragments[fragment.source_id].entity_type.value == "protein"
+    }
+    non_polymer_link_endpoints = sorted(
+        {
+            endpoint
+            for link in scaffold_graph.links.values()
+            for endpoint in (
+                link.from_fragment_instance_id,
+                link.to_fragment_instance_id,
+            )
+            if endpoint not in polymer_nodes
+        }
+    )
+    if non_polymer_link_endpoints:
+        raise ValueError(
+            "Generated polymer links cannot use ligand/non-protein endpoints: "
+            + ", ".join(non_polymer_link_endpoints)
+        )
 
     incoming: dict[str, str] = {}
     outgoing: dict[str, str] = {}
@@ -957,6 +984,8 @@ def _continuous_fragment_paths(scaffold_graph) -> tuple[tuple[str, ...], ...]:
     paths: list[tuple[str, ...]] = []
     visited: set[str] = set()
     for start in scaffold_graph.nodes:
+        if start not in polymer_nodes:
+            continue
         if start in incoming or start in visited:
             continue
         path: list[str] = []
@@ -968,7 +997,7 @@ def _continuous_fragment_paths(scaffold_graph) -> tuple[tuple[str, ...], ...]:
                 break
             current = outgoing[current]
         paths.append(tuple(path))
-    if visited != set(scaffold_graph.nodes):
+    if visited != polymer_nodes:
         raise RuntimeError(
             "Validated scaffold graph could not be partitioned into "
             "continuous polymer paths"
@@ -1022,14 +1051,32 @@ def _compile_atoms(
         spec,
         base_directory=base_directory,
     )
-    source_atoms = {
-        fragment_id: load_selected_atoms(
+    source_atoms: dict[str, tuple[AtomRecord, ...]] = {}
+    for fragment_id, fragment_spec in spec.fragments.items():
+        atoms = load_selected_atoms(
             fragment_spec,
             base_directory=base_directory,
         )
-        for fragment_id, fragment_spec in spec.fragments.items()
-    }
-    polymer_paths = _continuous_fragment_paths(scaffold_graph)
+        if fragment_spec.sequence_conditioning.value == "glycine":
+            # An all-glycine conditioning fragment must not retain source
+            # side-chain atoms: doing so would leak the original identities
+            # while claiming that the surface had been neutralized.
+            atoms = tuple(
+                replace(atom, residue_name="GLY")
+                for atom in atoms
+                if atom.atom_name.upper() in {"N", "CA", "C", "O"}
+            )
+            if not atoms:
+                raise ValueError(
+                    f"Glycine-conditioned fragment {fragment_id!r} has no "
+                    "backbone atoms"
+                )
+        source_atoms[fragment_id] = atoms
+    polymer_paths = _continuous_fragment_paths(
+        scaffold_graph,
+        spec=spec,
+        instances=instances,
+    )
     source_entity_ids = {
         fragment_id: str(index + 1) for index, fragment_id in enumerate(spec.fragments)
     }
@@ -1053,6 +1100,19 @@ def _compile_atoms(
             for path_index, path in enumerate(polymer_paths)
             for fragment_id in path
         }
+        non_polymer_ids = [
+            fragment_id
+            for fragment_id in fragment_order
+            if fragment_id not in chain_id_by_fragment
+        ]
+        for offset, fragment_id in enumerate(
+            non_polymer_ids,
+            start=len(polymer_paths),
+        ):
+            chain_id_by_fragment[fragment_id] = _chain_id(offset)
+            entity_id_by_fragment[fragment_id] = source_entity_ids[
+                instances.fragments[fragment_id].source_id
+            ]
     else:
         # Preserve the historical small-assembly representation byte for
         # byte: one source fragment per input chain and source entity.
@@ -1432,6 +1492,11 @@ def compile_standalone(
         "port_frames": compilation["frames"],
         "master_transforms": compilation["master_transforms"],
         "initialization_samples": compilation["initialization_samples"],
+        "sequence_conditioning": {
+            fragment_id: fragment.sequence_conditioning.value
+            for fragment_id, fragment in spec.fragments.items()
+            if fragment.sequence_conditioning.value != "fixed"
+        },
         "atom_mappings": [_atom_mapping(atom) for atom in atoms],
     }
     mapping_path.write_text(

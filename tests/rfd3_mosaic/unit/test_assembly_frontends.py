@@ -205,6 +205,58 @@ sampling:
             request.audit_requirements,
         )
 
+    def test_supplied_interface_can_opt_into_higher_order_packing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "seed.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       8.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA B   1       8.000   4.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: supplied-interface-higher-oligomer
+input: seed.pdb
+symmetry: C3
+task: preserve_supplied_geometry
+generation:
+  - {kind: terminal, anchor: A1, terminus: c, length: 20}
+  - {kind: terminal, anchor: B1, terminus: c, length: 20}
+constraints:
+  - {kind: fixed_xyz, selector: A1, coupling_group: seed}
+  - {kind: fixed_xyz, selector: B1, coupling_group: seed}
+sampling:
+  scaffold_packing: symmetric_generated
+""",
+                encoding="utf-8",
+            )
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "supplied-interface-higher-oligomer",
+                },
+                root / "output",
+                project_directory=root,
+                experiment_name="supplied-interface-higher-oligomer",
+            )
+
+        self.assertIn(
+            AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+            request.audit_requirements,
+        )
+        self.assertEqual(
+            request.audit_metadata["automatic_symmetric_scaffold_packing"][
+                "mode"
+            ],
+            "symmetric_generated",
+        )
+
     def test_central_frontend_writes_a_native_assembly_specification(
         self,
     ) -> None:

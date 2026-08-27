@@ -29,9 +29,13 @@ from rfd3_mosaic.schema import (
     TerminalGeneration,
     UserDesignSpec,
     UserDesignTask,
+    UserSequenceConditioningMode,
     UserSymmetrySpec,
 )
-from rfd3_mosaic.schema.specs import CopyRelationSpec
+from rfd3_mosaic.schema.specs import (
+    CopyRelationSpec,
+    RFD3FragmentConditioningSpec,
+)
 from rfd3_mosaic.structure import AtomRecord, read_structure_atoms
 
 _PUBLIC_RANGE = re.compile(
@@ -1185,10 +1189,105 @@ def lower_user_design(
             continue
         generation_segments.extend(parse_public_selector(operator.selector))
     ordered_segments = tuple(dict.fromkeys(generation_segments))
+    sequence_conditioning_by_segment: dict[
+        SelectorSegment,
+        UserSequenceConditioningMode,
+    ] = {}
+    for clause in design.conditioning.sequence:
+        segment = _one_segment(
+            clause.selector,
+            label="sequence conditioning selector",
+        )
+        if segment not in ordered_segments:
+            raise ValueError(
+                "sequence conditioning must address one complete materialized "
+                "fixed motif selector; split the fixed_xyz declaration at "
+                f"{segment.public_expression!r} if residue-level treatment is "
+                "required"
+            )
+        previous = sequence_conditioning_by_segment.setdefault(
+            segment,
+            clause.mode,
+        )
+        if previous != clause.mode:
+            raise ValueError(
+                "conflicting sequence conditioning for "
+                f"{segment.public_expression!r}"
+            )
     source_atoms = read_structure_atoms(
         design.input,
         mmcif_identifier_namespace="label",
     )
+    ligand_entries: list[tuple[object, SelectorSegment]] = []
+    seen_ligand_segments: set[SelectorSegment] = set()
+    for clause in design.conditioning.ligands:
+        segment = _one_segment(clause.selector, label="ligand selector")
+        if segment in seen_ligand_segments:
+            raise ValueError(
+                f"duplicate ligand conditioning selector {clause.selector!r}"
+            )
+        matching_atoms = [
+            atom
+            for atom in source_atoms
+            if atom.chain_id == segment.chain_id
+            and segment.residue_start <= atom.residue_number <= segment.residue_end
+        ]
+        if not matching_atoms:
+            raise ValueError(
+                f"Ligand selector {clause.selector!r} resolved to zero atoms"
+            )
+        if any(atom.record_type != "HETATM" for atom in matching_atoms):
+            raise ValueError(
+                f"Ligand selector {clause.selector!r} includes polymer ATOM "
+                "records; declare only one non-polymer ligand residue"
+            )
+        residue_ids = {atom.residue_id for atom in matching_atoms}
+        if len(residue_ids) != 1:
+            raise ValueError(
+                f"Ligand selector {clause.selector!r} must identify exactly "
+                "one residue"
+            )
+        seen_ligand_segments.add(segment)
+        ligand_entries.append((clause, segment))
+    materialized_conditioning_segments = set(ordered_segments) | set(
+        seen_ligand_segments
+    )
+    native_conditioning_by_segment: dict[
+        SelectorSegment,
+        dict[str, str],
+    ] = {}
+    native_channels = {
+        "buried": design.conditioning.buried,
+        "partially_buried": design.conditioning.partially_buried,
+        "exposed": design.conditioning.exposed,
+        "hotspots": design.conditioning.hotspots,
+        "hbond_acceptor": design.conditioning.hbond_acceptors,
+        "hbond_donor": design.conditioning.hbond_donors,
+    }
+    for channel, clauses in native_channels.items():
+        for clause in clauses:
+            segment = _one_segment(
+                clause.selector,
+                label=f"RFD3 {channel} conditioning selector",
+            )
+            if segment not in materialized_conditioning_segments:
+                raise ValueError(
+                    f"RFD3 {channel} conditioning must address one complete "
+                    "materialized motif or ligand selector; split the "
+                    f"declaration at {segment.public_expression!r}"
+                )
+            channels = native_conditioning_by_segment.setdefault(segment, {})
+            if channel in channels:
+                raise ValueError(
+                    f"duplicate RFD3 {channel} conditioning for "
+                    f"{segment.public_expression!r}"
+                )
+            channels[channel] = clause.atoms
+    # Validate mutually exclusive RASA channels before writing Assembly IR.
+    native_conditioning = {
+        segment: RFD3FragmentConditioningSpec.model_validate(channels)
+        for segment, channels in native_conditioning_by_segment.items()
+    }
     _validate_component_finite_actions(
         design,
         source_atoms,
@@ -1238,6 +1337,15 @@ def lower_user_design(
                 f"{segment.public_expression!r} has {len(covering)}"
             )
         operator_by_segment[segment] = covering[0]
+        if (
+            segment in sequence_conditioning_by_segment
+            and covering[0].plan.operator != "fixed_xyz"
+        ):
+            raise ValueError(
+                "sequence conditioning requires fixed_xyz backbone geometry; "
+                f"{segment.public_expression!r} is controlled by "
+                f"{covering[0].plan.operator}"
+            )
 
     if not structural_operators:
         raise ValueError(
@@ -1259,13 +1367,44 @@ def lower_user_design(
             # Cartesian fixed mask; cylindrical reference coordinates travel
             # through a separate runtime feature contract below.
             "fixed_atoms": (
-                "all"
+                "backbone"
+                if segment in sequence_conditioning_by_segment
+                else "all"
                 if operator_by_segment[segment].plan.operator == "fixed_xyz"
                 else "none"
             ),
+            "sequence_conditioning": sequence_conditioning_by_segment.get(
+                segment,
+                UserSequenceConditioningMode.MASKED,
+            ).value
+            if segment in sequence_conditioning_by_segment
+            else "fixed",
+            "rfd3_conditioning": native_conditioning.get(
+                segment,
+                RFD3FragmentConditioningSpec(),
+            ).model_dump(mode="json", exclude_none=True),
         }
         for segment, fragment_id in segment_ids.items()
     }
+    ligand_fragment_ids = {
+        segment: f"ligand_{index:03d}"
+        for index, (_, segment) in enumerate(ligand_entries, start=1)
+    }
+    fragments.update(
+        {
+            ligand_fragment_ids[segment]: {
+                "source": str(design.input),
+                "selection": segment.assembly_expression,
+                "entity_type": "ligand",
+                "role": "functional_component",
+                "rfd3_conditioning": native_conditioning.get(
+                    segment,
+                    RFD3FragmentConditioningSpec(),
+                ).model_dump(mode="json", exclude_none=True),
+            }
+            for _, segment in ligand_entries
+        }
+    )
     component_by_segment: dict[SelectorSegment, str] = {}
     for segment in ordered_segments:
         operator = operator_by_segment[segment].plan
@@ -1275,6 +1414,20 @@ def lower_user_design(
     for segment, fragment_id in segment_ids.items():
         component_members.setdefault(component_by_segment[segment], []).append(
             fragment_id
+        )
+    motion_group_members = {
+        component_id: list(members)
+        for component_id, members in component_members.items()
+    }
+    for clause, segment in ligand_entries:
+        if clause.coupling_group not in motion_group_members:
+            raise ValueError(
+                "Ligand conditioning coupling_group "
+                f"{clause.coupling_group!r} does not match a fixed_xyz "
+                "coupling group"
+            )
+        motion_group_members[clause.coupling_group].append(
+            ligand_fragment_ids[segment]
         )
     component_ids = tuple(component_members)
     motion_group_ids = {
@@ -1540,7 +1693,15 @@ def lower_user_design(
     # joins supplied fixed fragments and therefore does not invent a new
     # interface objective.  Explicit graph interfaces remain available for
     # advanced multi-face cages and take precedence over this inference.
-    infer_terminal_interfaces = design.task != UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
+    # A supplied interface normally asks Mosaic only to preserve the given
+    # non-covalent contact.  Some designs deliberately use that complete
+    # joint-rigid dimer as a motif for a *second*, generated oligomerization
+    # interface.  That opt-in is expressed by symmetric_generated; omission
+    # retains the established supplied-interface behavior.
+    infer_terminal_interfaces = (
+        design.task != UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
+        and design.sampling.scaffold_packing != "symmetric_generated"
+    )
     if not design.interfaces and infer_terminal_interfaces:
         terminal_components: list[str] = []
         for clause in design.generation:
@@ -1724,7 +1885,7 @@ def lower_user_design(
                     "members": members,
                     "mode": "fixed",
                 }
-                for component_id, members in component_members.items()
+                for component_id, members in motion_group_members.items()
             },
             "symmetry": {
                 "transform_sets": {"declared": _symmetry_payload(design)},
@@ -1801,6 +1962,35 @@ def lower_user_design(
         runtime_constraint_metadata={
             "cylindrical_constraints": cylindrical_constraints,
             "automatic_copy_relations": automatic_relation_provenance,
+            "sequence_conditioning": [
+                {
+                    "selector": segment.public_expression,
+                    "mode": mode.value,
+                }
+                for segment, mode in sequence_conditioning_by_segment.items()
+            ],
+            "ligand_conditioning": [
+                {
+                    "selector": segment.public_expression,
+                    "coupling_group": clause.coupling_group,
+                }
+                for clause, segment in ligand_entries
+            ],
+            "rfd3_native_options": {
+                "redesign_motif_sidechains": (
+                    design.conditioning.redesign_motif_sidechains
+                ),
+                "infer_ori_strategy": design.conditioning.origin_strategy,
+                "is_non_loopy": design.sampling.is_non_loopy,
+                "plddt_enhanced": design.sampling.plddt_enhanced,
+            },
+            "rfd3_fragment_conditioning": [
+                {
+                    "selector": segment.public_expression,
+                    **conditioning.model_dump(mode="json", exclude_none=True),
+                }
+                for segment, conditioning in native_conditioning.items()
+            ],
         },
     )
 

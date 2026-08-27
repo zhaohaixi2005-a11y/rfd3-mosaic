@@ -33,6 +33,67 @@ class AtomScope(str, Enum):
     CA = "ca"
 
 
+class UserSequenceConditioningMode(str, Enum):
+    """Per-motif sequence treatment passed to native RFD3."""
+
+    MASKED = "masked"
+    GLYCINE = "glycine"
+
+
+class UserSequenceConditioningClause(StrictModel):
+    """Apply sequence conditioning to one complete fixed motif selector."""
+
+    selector: Selector
+    mode: UserSequenceConditioningMode
+
+
+class UserLigandConditioningClause(StrictModel):
+    """Attach one selected ligand to an existing rigid coupling group."""
+
+    selector: Selector
+    coupling_group: Identifier
+
+
+class UserRFD3AtomConditioningClause(StrictModel):
+    """Apply one native RFD3 conditioning channel to a selected fragment."""
+
+    selector: Selector
+    atoms: Annotated[str, Field(min_length=1)] = "ALL"
+
+
+class UserConditioningSpec(StrictModel):
+    """Optional generator conditioning; omission preserves legacy behavior."""
+
+    sequence: tuple[UserSequenceConditioningClause, ...] = ()
+    ligands: tuple[UserLigandConditioningClause, ...] = ()
+    buried: tuple[UserRFD3AtomConditioningClause, ...] = ()
+    partially_buried: tuple[UserRFD3AtomConditioningClause, ...] = ()
+    exposed: tuple[UserRFD3AtomConditioningClause, ...] = ()
+    hotspots: tuple[UserRFD3AtomConditioningClause, ...] = ()
+    hbond_acceptors: tuple[UserRFD3AtomConditioningClause, ...] = ()
+    hbond_donors: tuple[UserRFD3AtomConditioningClause, ...] = ()
+    redesign_motif_sidechains: bool = False
+    origin_strategy: Literal["com", "hotspots"] | None = None
+
+    @model_validator(mode="after")
+    def reject_conflicting_native_conditioning(self) -> "UserConditioningSpec":
+        if self.redesign_motif_sidechains and any(
+            clause.mode == UserSequenceConditioningMode.GLYCINE
+            for clause in self.sequence
+        ):
+            raise ValueError(
+                "conditioning.redesign_motif_sidechains cannot be combined "
+                "with glycine sequence conditioning; use masked when RFD3 "
+                "should redesign motif sequence and side chains"
+            )
+        if self.origin_strategy == "hotspots" and not self.hotspots:
+            raise ValueError(
+                "conditioning.origin_strategy=hotspots requires at least "
+                "one conditioning.hotspots selection"
+            )
+        return self
+
+
 class ConstraintOrbitScope(str, Enum):
     """Whether a declaration addresses one selection or its complete orbit."""
 
@@ -550,6 +611,9 @@ class UserSamplingSpec(StrictModel):
         "local_neighbourhood",
     ] = "explicit_all_copy"
     neighbour_radius: Annotated[int, Field(ge=0)] = 1
+    dump_trajectories: bool = False
+    is_non_loopy: bool | None = True
+    plddt_enhanced: bool = True
     scaffold_packing: Literal["off", "symmetric_generated"] = "off"
     scaffold_core_quality: ScaffoldCoreQualitySpec = Field(
         default_factory=ScaffoldCoreQualitySpec
@@ -906,6 +970,7 @@ class UserDesignSpec(StrictModel):
     fixed_arrangement: FixedArrangementPolicy = FixedArrangementPolicy.LOCKED
     preferences: UserDesignPreferences = Field(default_factory=UserDesignPreferences)
     guidance: ExpertPackingGuidanceSpec | None = None
+    conditioning: UserConditioningSpec = Field(default_factory=UserConditioningSpec)
     assembly_shape: UserAssemblyShapeSpec | None = None
     generation: tuple[GenerationClause, ...] = ()
     constraints: tuple[ConstraintClause, ...] = ()
@@ -1063,13 +1128,6 @@ class UserDesignSpec(StrictModel):
 
         motion = self.preferences.component_motion
         if self.sampling.scaffold_packing == "symmetric_generated":
-            if self.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
-                raise ValueError(
-                    "sampling.scaffold_packing=symmetric_generated creates a "
-                    "new generated--generated interface and is incompatible "
-                    "with task=preserve_supplied_geometry; use intra/inter "
-                    "guidance alone to shape the generated monomer scaffold"
-                )
             symmetry_id = (
                 self.symmetry if isinstance(self.symmetry, str) else self.symmetry.id
             )
@@ -1078,12 +1136,10 @@ class UserDesignSpec(StrictModel):
                     "sampling.scaffold_packing=symmetric_generated currently "
                     "requires Cn symmetry"
                 )
-            if not any(
-                getattr(region, "kind", None) == "between" for region in self.generation
-            ):
+            if not self.generation:
                 raise ValueError(
                     "sampling.scaffold_packing=symmetric_generated requires "
-                    "a between generation region"
+                    "at least one generated polymer region"
                 )
             if self.sampling.execution_backend != "explicit_all_copy":
                 raise ValueError(

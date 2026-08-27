@@ -60,6 +60,40 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         ),
     ),
     CapabilityRecord(
+        id="native_rfd3_conditioning",
+        title="Native RFdiffusion3 conditioning bridge",
+        maturity=CapabilityMaturity.CPU_VALIDATED,
+        public_interface=True,
+        summary=(
+            "Map public source selectors through assembly compilation into "
+            "RFD3 sequence masking, glycine conditioning, symmetric ligands, "
+            "RASA, hotspots, hydrogen-bond, side-chain redesign, non-loopy "
+            "and pLDDT conditioning, plus optional denoising trajectories."
+        ),
+        dependencies=("public_fixed_xyz",),
+        evidence=(
+            "compiler, adapter and native RFD3 parser prevalidation tests",
+        ),
+    ),
+    CapabilityRecord(
+        id="supplied_interface_higher_oligomer",
+        title="Supplied interface seed with a second generated Cn interface",
+        maturity=CapabilityMaturity.CPU_VALIDATED,
+        public_interface=True,
+        summary=(
+            "Preserve a complete non-covalent joint-rigid interface while "
+            "independent generated terminal scaffold forms an explicitly "
+            "requested higher-order cyclic oligomerization interface."
+        ),
+        dependencies=(
+            "c3_fixed_xyz_interface",
+            "graph_interface_guidance",
+        ),
+        evidence=(
+            "public schema, compiler and automatic scaffold-packing runtime tests",
+        ),
+    ),
+    CapabilityRecord(
         id="public_fixed_xyz",
         title="Public fixed_xyz design lowering",
         maturity=CapabilityMaturity.ENGINEERING,
@@ -530,8 +564,26 @@ def required_capabilities_for_design(
             require("joint_packing_mobility")
     if design.sampling.scaffold_packing == "symmetric_generated":
         require("graph_interface_guidance")
+        if design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
+            require("supplied_interface_higher_oligomer")
         if has_mobile_constraint:
             require("joint_packing_mobility")
+    if (
+        design.conditioning.sequence
+        or design.conditioning.ligands
+        or design.conditioning.buried
+        or design.conditioning.partially_buried
+        or design.conditioning.exposed
+        or design.conditioning.hotspots
+        or design.conditioning.hbond_acceptors
+        or design.conditioning.hbond_donors
+        or design.conditioning.redesign_motif_sidechains
+        or design.conditioning.origin_strategy is not None
+        or design.sampling.is_non_loopy is not True
+        or not design.sampling.plddt_enhanced
+        or design.sampling.dump_trajectories
+    ):
+        require("native_rfd3_conditioning")
     if design.assembly_shape is not None:
         require("assembly_shape_contract")
     if (

@@ -1053,6 +1053,9 @@ constraints:
                     "sampling": {
                         "timesteps": 50,
                         "seed": 7,
+                        "dump_trajectories": True,
+                        "is_non_loopy": False,
+                        "plddt_enhanced": False,
                         "scaffold_core_quality": {
                             "required": False,
                             "maximum_mean_normalized_rg": 2.5,
@@ -1095,6 +1098,9 @@ constraints:
         self.assertEqual(payload["sampling"]["timesteps"], 50)
         self.assertNotIn("initial_pose", payload["sampling"])
         self.assertNotIn("scaffold_core_quality", payload["sampling"])
+        self.assertNotIn("is_non_loopy", payload["sampling"])
+        self.assertNotIn("plddt_enhanced", payload["sampling"])
+        self.assertTrue(payload["sampling"]["dump_trajectories"])
         self.assertEqual(payload["resources"]["profile"], "h100")
         self.assertEqual(deferred_payload["topology"], payload["topology"])
 

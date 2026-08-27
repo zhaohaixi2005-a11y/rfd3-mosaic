@@ -39,6 +39,21 @@ class EntityType(str, Enum):
     RNA = "rna"
 
 
+class SequenceConditioningMode(str, Enum):
+    """How a source protein sequence conditions backbone generation.
+
+    Geometry and sequence are deliberately orthogonal contracts.  ``masked``
+    keeps the selected backbone coordinates while allowing RFD3 to infer new
+    residue identities.  ``glycine`` reproduces the explicit all-glycine
+    conditioning commonly used when a polar supplied surface should not leak
+    its original side-chain identities into interface generation.
+    """
+
+    FIXED = "fixed"
+    MASKED = "masked"
+    GLYCINE = "glycine"
+
+
 class FragmentRole(str, Enum):
     INTERFACE_MOTIF = "interface_motif"
     FUNCTIONAL_MOTIF = "functional_motif"
@@ -83,6 +98,36 @@ class FrameMethod(str, Enum):
     PRECOMPUTED = "precomputed"
 
 
+class RFD3FragmentConditioningSpec(StrictModel):
+    """Native RFdiffusion3 atom-conditioning attached to one fragment.
+
+    Values use RFdiffusion3's documented atom mini-language (for example
+    ``ALL``, ``TIP`` or ``N7,O6``).  Mosaic owns only selector remapping after
+    assembly compilation; RFdiffusion3 remains the authority that validates
+    atom names against the materialized input.
+    """
+
+    buried: str | None = None
+    partially_buried: str | None = None
+    exposed: str | None = None
+    hotspots: str | None = None
+    hbond_acceptor: str | None = None
+    hbond_donor: str | None = None
+
+    @model_validator(mode="after")
+    def rasa_states_are_exclusive(self) -> "RFD3FragmentConditioningSpec":
+        rasa = (self.buried, self.partially_buried, self.exposed)
+        if sum(item is not None for item in rasa) > 1:
+            raise ValueError(
+                "A fragment cannot be buried, partially_buried and exposed "
+                "at the same time; split the selector into disjoint fragments"
+            )
+        for name, value in self.model_dump().items():
+            if value is not None and not str(value).strip():
+                raise ValueError(f"RFD3 fragment conditioning {name} is empty")
+        return self
+
+
 class FragmentSpec(StrictModel):
     """Describes what a structural fragment is."""
 
@@ -91,7 +136,35 @@ class FragmentSpec(StrictModel):
     entity_type: EntityType
     role: FragmentRole
     fixed_atoms: str | list[str] | None = None
+    sequence_conditioning: SequenceConditioningMode = (
+        SequenceConditioningMode.FIXED
+    )
+    rfd3_conditioning: RFD3FragmentConditioningSpec = Field(
+        default_factory=RFD3FragmentConditioningSpec
+    )
     provenance_tags: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_sequence_conditioning(self) -> "FragmentSpec":
+        if (
+            self.entity_type != EntityType.PROTEIN
+            and self.sequence_conditioning != SequenceConditioningMode.FIXED
+        ):
+            raise ValueError(
+                "sequence conditioning is currently defined only for protein "
+                "fragments"
+            )
+        if self.sequence_conditioning != SequenceConditioningMode.FIXED:
+            fixed = self.fixed_atoms
+            if fixed is None or (
+                isinstance(fixed, str)
+                and fixed.lower() not in {"backbone", "bkbn"}
+            ):
+                raise ValueError(
+                    "masked/glycine sequence conditioning requires "
+                    "fixed_atoms=backbone so side-chain identity is not leaked"
+                )
+        return self
 
 
 class MotionBounds(StrictModel):

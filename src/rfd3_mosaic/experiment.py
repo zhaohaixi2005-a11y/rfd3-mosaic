@@ -532,6 +532,7 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "seed_role": "rfd3_diffusion_rng",
             "execution_backend": sampling["execution_backend"],
             "neighbour_radius": sampling["neighbour_radius"],
+            "dump_trajectories": sampling["dump_trajectories"],
             "scaffold_packing": sampling["scaffold_packing"],
             "low_memory_mode": sampling["low_memory_mode"],
             "effective_sampler": sampling["sampler"],
@@ -707,6 +708,7 @@ def resolve_experiment(
             "low_memory_mode",
             "execution_backend",
             "neighbour_radius",
+            "dump_trajectories",
             "scaffold_packing",
             "screening",
         },
@@ -748,6 +750,10 @@ def resolve_experiment(
         "neighbour_radius": _nonnegative_integer(
             sampling.get("neighbour_radius", 1),
             "sampling.neighbour_radius",
+        ),
+        "dump_trajectories": _boolean(
+            sampling.get("dump_trajectories", False),
+            "sampling.dump_trajectories",
         ),
         "scaffold_packing": str(
             sampling.get("scaffold_packing", "off")

@@ -426,6 +426,191 @@ class RFD3AdapterTestCase(unittest.TestCase):
                     (symmetry_id, multiplicity),
                 )
 
+    def test_native_sequence_mask_and_glycine_conditioning(self) -> None:
+        source = self.output_directory / "conditioned.pdb"
+        source.write_text(
+            "".join(
+                (
+                    "ATOM      1  N   LYS A   1       9.000   0.000   0.000  1.00 20.00           N  \n",
+                    "ATOM      2  CA  LYS A   1      10.000   0.000   0.000  1.00 20.00           C  \n",
+                    "ATOM      3  C   LYS A   1      11.000   0.000   0.000  1.00 20.00           C  \n",
+                    "ATOM      4  O   LYS A   1      11.500   0.000   0.000  1.00 20.00           O  \n",
+                    "ATOM      5  CB  LYS A   1      10.000   1.000   0.000  1.00 20.00           C  \n",
+                    "END\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        def compile_mode(mode: str):
+            config = self.output_directory / f"{mode}.yaml"
+            config.write_text(
+                yaml.safe_dump(
+                    {
+                        "assembly": {
+                            "schema_version": 2,
+                            "fragments": {
+                                "motif": {
+                                    "source": str(source),
+                                    "selection": "A/1-1/*",
+                                    "entity_type": "protein",
+                                    "role": "interface_motif",
+                                    "fixed_atoms": "backbone",
+                                    "sequence_conditioning": mode,
+                                }
+                            },
+                            "motion_groups": {
+                                "seed": {"members": ["motif"], "mode": "fixed"}
+                            },
+                            "symmetry": {
+                                "transform_sets": {
+                                    "ring": {"type": "cyclic", "order": 3}
+                                },
+                                "orbits": {
+                                    "seed_orbit": {
+                                        "transform_set": "ring",
+                                        "master_groups": ["seed"],
+                                    }
+                                },
+                            },
+                            "generated_segments": {
+                                "extension": {
+                                    "anchor": {
+                                        "fragment": "motif",
+                                        "terminus": "C",
+                                    },
+                                    "length": {"minimum": 5, "maximum": 5},
+                                }
+                            },
+                        }
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            return compile_rfd3_input(
+                config,
+                self.output_directory / f"{mode}-output",
+                example_id=mode,
+            )
+
+        masked = compile_mode("masked")
+        masked_payload = json.loads(masked.input_path.read_text())["masked"]
+        self.assertEqual(masked_payload["select_fixed_atoms"], {"A1-1": "BKBN"})
+        self.assertEqual(masked_payload["select_unfixed_sequence"], "A1-1")
+        masked_report = prevalidate_rfd3_input(masked.input_path)
+        self.assertEqual(masked_report["status"], "passed")
+        self.assertEqual(masked_report["declared_unfixed_sequence"], "A1-1")
+
+        glycine = compile_mode("glycine")
+        glycine_payload = json.loads(glycine.input_path.read_text())["glycine"]
+        self.assertNotIn("select_unfixed_sequence", glycine_payload)
+        glycine_text = glycine.structure_path.read_text(encoding="utf-8")
+        self.assertIn(" GLY ", glycine_text)
+        self.assertNotIn(" CB ", glycine_text)
+        self.assertEqual(prevalidate_rfd3_input(glycine.input_path)["status"], "passed")
+
+    def test_native_ligand_is_preserved_with_symmetric_motif(self) -> None:
+        source = self.output_directory / "ligand-seed.pdb"
+        source.write_text(
+            "".join(
+                (
+                    "ATOM      1  N   ALA A   1       9.000   0.000   0.000  1.00 20.00           N  \n",
+                    "ATOM      2  CA  ALA A   1      10.000   0.000   0.000  1.00 20.00           C  \n",
+                    "ATOM      3  C   ALA A   1      11.000   0.000   0.000  1.00 20.00           C  \n",
+                    "ATOM      4  O   ALA A   1      11.500   0.000   0.000  1.00 20.00           O  \n",
+                    "HETATM    5  C1  RET B   1      10.000   2.000   0.000  1.00 20.00           C  \n",
+                    "HETATM    6  C2  RET B   1      11.000   2.000   0.000  1.00 20.00           C  \n",
+                    "END\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+        config = self.output_directory / "ligand-seed.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "assembly": {
+                        "schema_version": 2,
+                        "fragments": {
+                            "motif": {
+                                "source": str(source),
+                                "selection": "A/1-1/*",
+                                "entity_type": "protein",
+                                "role": "interface_motif",
+                                "fixed_atoms": "all",
+                            },
+                            "retinal": {
+                                "source": str(source),
+                                "selection": "B/1-1/*",
+                                "entity_type": "ligand",
+                                "role": "functional_component",
+                                "rfd3_conditioning": {
+                                    "buried": "ALL",
+                                    "hotspots": "C1,C2",
+                                    "hbond_acceptor": "C1,C2",
+                                },
+                            },
+                        },
+                        "motion_groups": {
+                            "seed": {
+                                "members": ["motif", "retinal"],
+                                "mode": "fixed",
+                            }
+                        },
+                        "symmetry": {
+                            "transform_sets": {
+                                "ring": {"type": "cyclic", "order": 3}
+                            },
+                            "orbits": {
+                                "seed_orbit": {
+                                    "transform_set": "ring",
+                                    "master_groups": ["seed"],
+                                }
+                            },
+                        },
+                        "generated_segments": {
+                            "extension": {
+                                "anchor": {"fragment": "motif", "terminus": "C"},
+                                "length": {"minimum": 5, "maximum": 5},
+                            }
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        outputs = compile_rfd3_input(
+            config,
+            self.output_directory / "ligand-output",
+            example_id="ligand-c3",
+            extra_metadata={
+                "rfd3_native_options": {
+                    "redesign_motif_sidechains": True,
+                    "is_non_loopy": False,
+                    "plddt_enhanced": False,
+                }
+            },
+        )
+        payload = json.loads(outputs.input_path.read_text())["ligand-c3"]
+        self.assertEqual(payload["ligand"], "B1-1")
+        self.assertTrue(payload["symmetrize_ligand"])
+        self.assertEqual(payload["select_buried"], {"B1-1": "ALL"})
+        self.assertEqual(payload["select_hotspots"], {"B1-1": "C1,C2"})
+        self.assertEqual(
+            payload["select_hbond_acceptor"],
+            {"B1-1": "C1,C2"},
+        )
+        self.assertTrue(payload["redesign_motif_sidechains"])
+        self.assertEqual(payload["select_fixed_atoms"]["A1-1"], "BKBN")
+        self.assertEqual(payload["select_fixed_atoms"]["B1-1"], "ALL")
+        self.assertFalse(payload["is_non_loopy"])
+        self.assertFalse(payload["plddt_enhanced"])
+        report = prevalidate_rfd3_input(outputs.input_path)
+        self.assertEqual(report["status"], "passed")
+
     def test_polyhedral_symmetry_uses_complete_declared_multiplicity(
         self,
     ) -> None:

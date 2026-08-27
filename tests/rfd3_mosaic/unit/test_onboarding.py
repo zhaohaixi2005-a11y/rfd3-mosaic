@@ -91,6 +91,75 @@ class OnboardingTestCase(unittest.TestCase):
                 side_b="B211-241",
             )
 
+    def test_init_supplied_interface_higher_oligomer_is_non_covalent(self) -> None:
+        path = initialize_design(
+            self.root / "higher-oligomer.yaml",
+            task="supplied-interface",
+            input_path=self.structure,
+            symmetry="C3",
+            name=None,
+            profile="local",
+            run_root=self.root / "runs",
+            side_a="A1-10",
+            side_b="B1-20",
+            interface_scaffold="terminal-extensions",
+            new_oligomer_interface=True,
+            sequence_conditioning="masked",
+            redesign_motif_sidechains=True,
+            ligand_selectors=("L1",),
+            designs=8,
+            pose_radius_minimum=20.0,
+            pose_radius_maximum=32.0,
+            pose_axial_minimum=-4.0,
+            pose_axial_maximum=4.0,
+            pose_orientation="uniform_so3",
+            pose_seed=1000,
+        )
+
+        design = load_user_design(path)
+
+        self.assertEqual(len(design.generation), 4)
+        self.assertTrue(all(item.kind == "terminal" for item in design.generation))
+        self.assertEqual(design.sampling.scaffold_packing, "symmetric_generated")
+        self.assertEqual(
+            {item.mode.value for item in design.conditioning.sequence},
+            {"masked"},
+        )
+        self.assertTrue(design.conditioning.redesign_motif_sidechains)
+        self.assertEqual(design.conditioning.ligands[0].selector, "L1")
+        self.assertEqual(design.sampling.replicates_per_pose, 1)
+        self.assertEqual(design.sampling.initial_pose.radius.minimum, 20.0)
+        self.assertEqual(
+            design.sampling.initial_pose.orientation.method,
+            "uniform_so3",
+        )
+
+    def test_init_pose_options_are_explicit_and_complete(self) -> None:
+        with self.assertRaisesRegex(ValueError, "both minimum and maximum"):
+            initialize_design(
+                self.root / "bad-pose.yaml",
+                task="central-motif",
+                input_path=self.structure,
+                symmetry="C3",
+                name=None,
+                profile="local",
+                run_root=self.root / "runs",
+                motif_selector="A1",
+                pose_radius_minimum=10.0,
+            )
+        with self.assertRaisesRegex(ValueError, "require an explicit"):
+            initialize_design(
+                self.root / "bad-orientation.yaml",
+                task="central-motif",
+                input_path=self.structure,
+                symmetry="C3",
+                name=None,
+                profile="local",
+                run_root=self.root / "runs",
+                motif_selector="A1",
+                pose_orientation="uniform_so3",
+            )
+
     def test_init_refuses_unsafe_or_destructive_requests(self) -> None:
         output = self.root / "design.yaml"
         initialize_design(
@@ -138,7 +207,14 @@ class OnboardingTestCase(unittest.TestCase):
 
     def test_examples_are_listable_and_copied_portably(self) -> None:
         identifiers = {item["id"] for item in available_examples()}
-        self.assertEqual(identifiers, {"central-motif", "supplied-interface"})
+        self.assertEqual(
+            identifiers,
+            {
+                "central-motif",
+                "supplied-interface",
+                "supplied-interface-oligomer",
+            },
+        )
 
         path = copy_example(
             "central-motif",
@@ -177,11 +253,19 @@ class OnboardingTestCase(unittest.TestCase):
                 "A1-10",
                 "--component-motion",
                 "guided",
+                "--pose-radius-minimum",
+                "18",
+                "--pose-radius-maximum",
+                "30",
+                "--pose-orientation",
+                "uniform_so3",
             ]
         )
         self.assertEqual(arguments.profile, "local")
         self.assertEqual(arguments.component_motion, "guided")
         self.assertEqual(arguments.designs, 1)
+        self.assertEqual(arguments.pose_radius_minimum, 18.0)
+        self.assertEqual(arguments.pose_orientation, "uniform_so3")
 
         output = StringIO()
         with redirect_stdout(output):
@@ -189,7 +273,11 @@ class OnboardingTestCase(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(
             {item["id"] for item in payload},
-            {"central-motif", "supplied-interface"},
+            {
+                "central-motif",
+                "supplied-interface",
+                "supplied-interface-oligomer",
+            },
         )
 
     def test_cli_init_reports_the_complete_next_lifecycle(self) -> None:

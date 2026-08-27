@@ -2,7 +2,11 @@ name: mosaic-release
 
 on:
   push:
-    branches: [main, production, refactor/product-core-v1]
+    branches:
+      - main
+      - production
+      - refactor/product-core-v1
+      - hx/rfd3-mosaic-product-core
   pull_request:
   workflow_dispatch:
 
