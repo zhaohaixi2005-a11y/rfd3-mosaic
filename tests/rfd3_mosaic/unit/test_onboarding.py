@@ -75,6 +75,21 @@ class OnboardingTestCase(unittest.TestCase):
         )
         self.assertEqual(design.generation[0].length.minimum, 70)
         self.assertEqual(design.generation[0].length.maximum, 100)
+        self.assertEqual(design.generation[0].orbit_offset, "nearest_adjacent")
+
+    def test_init_supplied_interface_requires_explicit_noncyclic_graph(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cyclic Cn symmetry only"):
+            initialize_design(
+                self.root / "interface-t.yaml",
+                task="supplied-interface",
+                input_path=self.structure,
+                symmetry="T",
+                name=None,
+                profile="local",
+                run_root=Path("runs"),
+                side_a="A165-194",
+                side_b="B211-241",
+            )
 
     def test_init_refuses_unsafe_or_destructive_requests(self) -> None:
         output = self.root / "design.yaml"

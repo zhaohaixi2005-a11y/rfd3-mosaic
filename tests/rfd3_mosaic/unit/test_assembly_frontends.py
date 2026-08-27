@@ -10,6 +10,8 @@ from rfd3_mosaic.assembly_frontends import (
 )
 from rfd3_mosaic.compile import load_assembly_config
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
 
 def _c3_registry() -> tuple[list[str], dict[str, list[list[float]]]]:
     order = ["C3:e", "C3:r1", "C3:r2"]
@@ -37,6 +39,52 @@ def _c3_registry() -> tuple[list[str], dict[str, list[list[float]]]]:
 
 
 class AssemblyFrontendTestCase(unittest.TestCase):
+    def test_user_frontend_freezes_pose_specific_cyclic_wiring(self) -> None:
+        design = (
+            REPOSITORY_ROOT
+            / "experiments"
+            / "lrz_mosaic_lhd101_c3_guided_50step_template.yaml"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            forward = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "lhd101-forward",
+                },
+                root / "forward",
+                project_directory=REPOSITORY_ROOT,
+                experiment_name="lhd101-forward",
+                pose_seed=10001,
+            )
+            reverse = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "lhd101-reverse",
+                },
+                root / "reverse",
+                project_directory=REPOSITORY_ROOT,
+                experiment_name="lhd101-reverse",
+                pose_seed=10002,
+            )
+            forward_spec = load_assembly_config(forward.specification_path)
+            reverse_spec = load_assembly_config(reverse.specification_path)
+
+        self.assertEqual(
+            forward_spec.generated_segments[
+                "generated_001"
+            ].copy_relation.orbit_offset,
+            1,
+        )
+        self.assertEqual(
+            reverse_spec.generated_segments[
+                "generated_001"
+            ].copy_relation.orbit_offset,
+            -1,
+        )
+
     def test_scaffold_intra_inter_balance_is_independent_of_new_interface(
         self,
     ) -> None:

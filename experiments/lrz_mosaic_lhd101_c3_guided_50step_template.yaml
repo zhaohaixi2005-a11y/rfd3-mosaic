@@ -25,7 +25,10 @@ generation:
   - kind: between
     from_selector: B211-241
     to_selector: A165-194
-    orbit_offset: 1
+    # Each sampled SO(3) pose can reverse which cyclic neighbour is closest.
+    # Resolve +1 versus -1 independently per design, then freeze the selected
+    # integer relation in that design's compiled Assembly IR and provenance.
+    orbit_offset: nearest_adjacent
     length: {minimum: 70, maximum: 100}
 
 constraints:

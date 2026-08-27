@@ -181,6 +181,7 @@ def compile_experiment_assembly(
         output,
         project_directory=project,
         experiment_name=experiment_name,
+        pose_seed=pose_seed,
     )
     effective_pose_seed = (
         request.pose_seed if pose_seed is None else pose_seed

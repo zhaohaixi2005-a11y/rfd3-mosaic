@@ -14,7 +14,7 @@ from rfd3_mosaic.constraint_plan import (
     ConstraintPlan,
     compile_constraint_plan,
 )
-from rfd3_mosaic.geometry import build_transform_registry
+from rfd3_mosaic.geometry import apply_transform, build_transform_registry
 from rfd3_mosaic.sampling_plan import (
     SamplingPlan,
     assembly_initialization_payload,
@@ -31,6 +31,7 @@ from rfd3_mosaic.schema import (
     UserDesignTask,
     UserSymmetrySpec,
 )
+from rfd3_mosaic.schema.specs import CopyRelationSpec
 from rfd3_mosaic.structure import AtomRecord, read_structure_atoms
 
 _PUBLIC_RANGE = re.compile(
@@ -849,7 +850,223 @@ def _initialization_center(
     return symmetry_center + radial * direction + axial * axis
 
 
-def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
+def _resolve_nearest_adjacent_copy_relations(
+    specification: AssemblySpecification,
+    design: UserDesignSpec,
+    *,
+    relation_segments: dict[str, tuple[SelectorSegment, SelectorSegment]],
+    segment_ids: dict[SelectorSegment, str],
+    generation_atom_ids: dict[SelectorSegment, frozenset[AtomIdentity]],
+    source_atoms: tuple[AtomRecord, ...],
+    pose_seed: int | None,
+) -> tuple[AssemblySpecification, list[dict[str, object]]]:
+    """Freeze pose-dependent cyclic wiring into explicit Assembly IR.
+
+    Interface-seeded cyclic oligomers preserve each supplied interface as a
+    non-covalent same-copy pair, while one designed protomer joins halves from
+    adjacent copies.  A sampled SO(3) pose can reverse which adjacent copy is
+    geometrically nearer.  Resolve that ambiguity after pose instantiation,
+    then store one ordinary integer offset so every downstream compiler and
+    replay path remains deterministic.
+    """
+
+    if not relation_segments:
+        return specification, []
+    symmetry_id = (
+        design.symmetry if isinstance(design.symmetry, str) else design.symmetry.id
+    )
+    if not symmetry_id.startswith("C"):
+        raise ValueError(
+            "orbit_offset=nearest_adjacent currently requires cyclic Cn "
+            "symmetry; use an explicit orbit_offset or named transform for "
+            f"{symmetry_id}"
+        )
+    order = int(symmetry_id[1:])
+    if order < 2:
+        raise ValueError("nearest_adjacent requires at least C2 symmetry")
+
+    # Local imports avoid introducing a design-compiler/instance-compiler
+    # initialization cycle.
+    from rfd3_mosaic.compile import (
+        build_master_group_transforms,
+        expand_symmetry_instances,
+    )
+
+    master_transforms = build_master_group_transforms(
+        specification,
+        base_directory=design.input.parent,
+        random_seed=pose_seed,
+    )
+    instances = expand_symmetry_instances(
+        specification,
+        master_transforms=master_transforms,
+    )
+
+    atoms_by_segment = {
+        segment: tuple(
+            atom
+            for atom in source_atoms
+            if _atom_identity(atom) in generation_atom_ids[segment]
+        )
+        for pair in relation_segments.values()
+        for segment in pair
+    }
+
+    def fragment_instance(fragment_id: str, copy_index: int):
+        matches = [
+            fragment
+            for fragment in instances.fragments.values()
+            if fragment.source_id == fragment_id
+            and fragment.copy_index == copy_index
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected one physical instance of {fragment_id!r} at "
+                f"copy {copy_index}, observed {len(matches)}"
+            )
+        return matches[0]
+
+    def reference_coordinates(
+        segment: SelectorSegment,
+        fragment_id: str,
+        copy_index: int,
+    ) -> np.ndarray:
+        atoms = atoms_by_segment[segment]
+        # RFdiffusion Interface-Seed selected the neighbouring fragment using
+        # a per-fragment backbone-atom COM.  CA is the stable representation
+        # available across PDB/mmCIF inputs; fall back to all non-hydrogens.
+        selected = tuple(atom for atom in atoms if atom.atom_name == "CA")
+        if not selected:
+            selected = tuple(atom for atom in atoms if atom.element.upper() != "H")
+        coordinates = np.asarray(
+            [atom.coordinate for atom in selected],
+            dtype=np.float64,
+        )
+        return apply_transform(
+            coordinates,
+            np.asarray(
+                fragment_instance(fragment_id, copy_index).transform,
+                dtype=np.float64,
+            ),
+        )
+
+    def endpoint_coordinate(
+        segment: SelectorSegment,
+        fragment_id: str,
+        copy_index: int,
+        *,
+        terminus: str,
+    ) -> np.ndarray:
+        atoms = atoms_by_segment[segment]
+        residue_number = (
+            max(atom.residue_number for atom in atoms)
+            if terminus == "C"
+            else min(atom.residue_number for atom in atoms)
+        )
+        atom_name = "C" if terminus == "C" else "N"
+        selected = [
+            atom
+            for atom in atoms
+            if atom.residue_number == residue_number and atom.atom_name == atom_name
+        ]
+        if not selected:
+            selected = [
+                atom
+                for atom in atoms
+                if atom.residue_number == residue_number and atom.atom_name == "CA"
+            ]
+        if len(selected) != 1:
+            raise ValueError(
+                f"Cannot identify one {terminus}-terminal endpoint atom for "
+                f"{segment.public_expression!r}"
+            )
+        return apply_transform(
+            np.asarray([selected[0].coordinate], dtype=np.float64),
+            np.asarray(
+                fragment_instance(fragment_id, copy_index).transform,
+                dtype=np.float64,
+            ),
+        )[0]
+
+    resolved_segments = dict(specification.generated_segments)
+    provenance: list[dict[str, object]] = []
+    candidates = tuple(dict.fromkeys((1, -1 % order)))
+    for segment_id, (left, right) in relation_segments.items():
+        left_fragment_id = segment_ids[left]
+        right_fragment_id = segment_ids[right]
+        left_coordinates = reference_coordinates(left, left_fragment_id, 0)
+        left_endpoint = endpoint_coordinate(
+            left,
+            left_fragment_id,
+            0,
+            terminus="C",
+        )
+        evaluated: list[dict[str, object]] = []
+        for raw_offset in candidates:
+            offset = raw_offset if raw_offset == 1 else -1
+            target_copy_index = offset % order
+            right_coordinates = reference_coordinates(
+                right,
+                right_fragment_id,
+                target_copy_index,
+            )
+            right_endpoint = endpoint_coordinate(
+                right,
+                right_fragment_id,
+                target_copy_index,
+                terminus="N",
+            )
+            evaluated.append(
+                {
+                    "orbit_offset": offset,
+                    "target_copy_index": target_copy_index,
+                    "fragment_com_distance": float(
+                        np.linalg.norm(
+                            left_coordinates.mean(axis=0)
+                            - right_coordinates.mean(axis=0)
+                        )
+                    ),
+                    "endpoint_distance": float(
+                        np.linalg.norm(left_endpoint - right_endpoint)
+                    ),
+                }
+            )
+        selected = min(
+            evaluated,
+            key=lambda item: (
+                float(item["fragment_com_distance"]),
+                float(item["endpoint_distance"]),
+                int(item["orbit_offset"]) < 0,
+            ),
+        )
+        segment = resolved_segments[segment_id]
+        resolved_segments[segment_id] = segment.model_copy(
+            update={
+                "copy_relation": CopyRelationSpec(
+                    orbit_offset=int(selected["orbit_offset"])
+                )
+            }
+        )
+        provenance.append(
+            {
+                "generated_segment_id": segment_id,
+                "policy": "nearest_adjacent",
+                "selection_metric": "fixed_fragment_ca_com_distance",
+                "selected_orbit_offset": int(selected["orbit_offset"]),
+                "evaluated_relations": evaluated,
+            }
+        )
+    return (
+        specification.model_copy(update={"generated_segments": resolved_segments}),
+        provenance,
+    )
+
+
+def lower_user_design(
+    design: UserDesignSpec,
+    *,
+    pose_seed: int | None = None,
+) -> LoweredUserDesign:
     """Lower public hard-coordinate constraints to the shared Assembly IR.
 
     Cartesian fixed motifs and per-atom cylindrical coordinates are distinct
@@ -1095,6 +1312,10 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             },
         }
     generated_segments: dict[str, object] = {}
+    automatic_relation_segments: dict[
+        str,
+        tuple[SelectorSegment, SelectorSegment],
+    ] = {}
     for index, clause in enumerate(design.generation, start=1):
         segment_id = f"generated_{index:03d}"
         if isinstance(clause, TerminalGeneration):
@@ -1116,6 +1337,11 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 clause.to_selector,
                 label="between to_selector",
             )
+            if clause.orbit_offset == "nearest_adjacent":
+                automatic_relation_segments[segment_id] = (left, right)
+                explicit_orbit_offset = 1
+            else:
+                explicit_orbit_offset = clause.orbit_offset
             generated_segments[segment_id] = {
                 "from_endpoint": {
                     "fragment": segment_ids[left],
@@ -1127,7 +1353,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
                 },
                 "length": _length_payload(clause.length),
                 "tie_group": clause.tie_group,
-                "copy_relation": {"orbit_offset": clause.orbit_offset},
+                "copy_relation": {"orbit_offset": explicit_orbit_offset},
             }
     for connection in design.connections:
         left = _graph_endpoint_segment(
@@ -1511,6 +1737,17 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
             "objectives": _assembly_shape_objectives(design),
         }
     )
+    specification, automatic_relation_provenance = (
+        _resolve_nearest_adjacent_copy_relations(
+            specification,
+            design,
+            relation_segments=automatic_relation_segments,
+            segment_ids=segment_ids,
+            generation_atom_ids=generation_atom_ids,
+            source_atoms=source_atoms,
+            pose_seed=pose_seed,
+        )
+    )
     interface_usage = _resolve_interface_usage(design, specification)
     symmetry_payload = _symmetry_payload(design)
     cylindrical_constraints: list[dict[str, object]] = []
@@ -1563,6 +1800,7 @@ def lower_user_design(design: UserDesignSpec) -> LoweredUserDesign:
         interface_usage=interface_usage,
         runtime_constraint_metadata={
             "cylindrical_constraints": cylindrical_constraints,
+            "automatic_copy_relations": automatic_relation_provenance,
         },
     )
 

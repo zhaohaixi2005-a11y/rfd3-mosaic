@@ -304,6 +304,7 @@ def lower_experiment_topology(
     *,
     project_directory: str | Path,
     experiment_name: str,
+    pose_seed: int | None = None,
 ) -> AssemblyCompilationRequest:
     """Normalize supported user frontends without compiling RFD3 features."""
 
@@ -335,7 +336,7 @@ def lower_experiment_topology(
     if kind == "user_design":
         design_path = Path(str(topology["config"])).resolve()
         design = load_user_design(design_path)
-        lowered = lower_user_design(design)
+        lowered = lower_user_design(design, pose_seed=pose_seed)
         output = Path(output_directory)
         output.mkdir(parents=True, exist_ok=True)
         specification_path = output / "assembly_specification.yaml"

@@ -133,6 +133,12 @@ def initialize_design(
     elif task == "supplied-interface":
         if not side_a or not side_b:
             raise ValueError("supplied-interface requires both --side-a and --side-b")
+        if not symmetry.startswith("C") or not symmetry[1:].isdigit():
+            raise ValueError(
+                "The short supplied-interface initializer supports cyclic Cn "
+                "symmetry only; use an explicit design graph for non-cyclic "
+                "copy relations"
+            )
         common.update(
             {
                 "task": "preserve_supplied_geometry",
@@ -141,7 +147,7 @@ def initialize_design(
                         "kind": "between",
                         "from_selector": side_b,
                         "to_selector": side_a,
-                        "orbit_offset": 1,
+                        "orbit_offset": "nearest_adjacent",
                         "length": {
                             "minimum": linker_minimum,
                             "maximum": linker_maximum,

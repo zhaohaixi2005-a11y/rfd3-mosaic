@@ -386,7 +386,7 @@ class BetweenGeneration(StrictModel):
     to_selector: Selector
     length: RequestedLength
     tie_group: Identifier | None = None
-    orbit_offset: int = 0
+    orbit_offset: int | Literal["nearest_adjacent"] = 0
 
     @model_validator(mode="after")
     def reject_self_link(self) -> "BetweenGeneration":

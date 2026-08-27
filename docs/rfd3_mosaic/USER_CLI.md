@@ -308,6 +308,29 @@ shaped as a monomer scaffold. `sampling.scaffold_packing: symmetric_generated`
 is rejected for this task because it has the different meaning “create a new
 generated--generated symmetry-neighbour interface”.
 
+For a cyclic interface seed, the two physical sides of one supplied interface
+remain a **non-covalent same-copy pair**. A generated protomer may instead join
+one side to the opposite side of an adjacent symmetry copy. When the sampled
+SO(3) pose can reverse which adjacent copy is nearer, use:
+
+```yaml
+generation:
+  - kind: between
+    from_selector: B211-241
+    to_selector: A165-194
+    orbit_offset: nearest_adjacent
+    length: {minimum: 70, maximum: 100}
+```
+
+The compiler compares only the two non-zero cyclic neighbours (`+1` and
+`-1`), selects the smaller fixed-fragment CA-COM separation for that design's
+sampled pose, and freezes the resulting integer offset in the compiled
+Assembly IR. It never considers offset `0`, so it cannot turn the supplied
+non-covalent interface itself into a peptide connection. The evaluated
+distances and selected offset are recorded as `automatic_copy_relations` in
+the RFD3 provenance. Non-cyclic groups continue to require an explicit named
+group relation.
+
 The same guidance path exposes an RFdiffusion-style intra/inter balance; this
 is a pair of weights, not another workflow mode:
 

@@ -12,7 +12,9 @@ generation:
   - kind: between
     from_selector: B211-241
     to_selector: A165-194
-    orbit_offset: 1
+    # Keep A/B as a non-covalent same-copy interface. The generated protomer
+    # links B(k) only to the nearer adjacent A(k+1) or A(k-1), never A(k).
+    orbit_offset: nearest_adjacent
     length: {minimum: 70, maximum: 100}
 
 constraints:

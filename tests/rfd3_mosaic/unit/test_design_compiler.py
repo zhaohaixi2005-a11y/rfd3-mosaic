@@ -947,6 +947,77 @@ class DesignCompilerTestCase(unittest.TestCase):
         self.assertEqual(transform.type, "dihedral")
         self.assertEqual(transform.order, 3)
 
+    def test_lhd101_nearest_adjacent_relation_is_resolved_per_pose(self) -> None:
+        design = load_user_design(
+            REPOSITORY_ROOT
+            / "experiments"
+            / "lrz_mosaic_lhd101_c3_guided_50step_template.yaml"
+        )
+
+        forward = lower_user_design(design, pose_seed=10001)
+        reverse = lower_user_design(design, pose_seed=10002)
+
+        self.assertEqual(
+            forward.specification.generated_segments[
+                "generated_001"
+            ].copy_relation.orbit_offset,
+            1,
+        )
+        self.assertEqual(
+            reverse.specification.generated_segments[
+                "generated_001"
+            ].copy_relation.orbit_offset,
+            -1,
+        )
+        for lowered in (forward, reverse):
+            relation = lowered.runtime_constraint_metadata[
+                "automatic_copy_relations"
+            ][0]
+            self.assertEqual(relation["policy"], "nearest_adjacent")
+            self.assertEqual(
+                relation["selected_orbit_offset"],
+                lowered.specification.generated_segments[
+                    "generated_001"
+                ].copy_relation.orbit_offset,
+            )
+            self.assertEqual(len(relation["evaluated_relations"]), 2)
+            self.assertNotIn(
+                0,
+                {
+                    item["orbit_offset"]
+                    for item in relation["evaluated_relations"]
+                },
+            )
+            instances = expand_symmetry_instances(lowered.specification)
+            links = tuple(instances.generated_segments.values())
+            self.assertTrue(links)
+            self.assertTrue(
+                all(link.copy_index != link.target_copy_index for link in links)
+            )
+
+    def test_nearest_adjacent_is_rejected_outside_cyclic_symmetry(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cyclic orbit offsets"):
+            lower_user_design(
+                self._design(
+                    symmetry="T",
+                    generation=[
+                        {
+                            "kind": "between",
+                            "from_selector": "A1-2",
+                            "to_selector": "B1-2",
+                            "length": 30,
+                            "orbit_offset": "nearest_adjacent",
+                        }
+                    ],
+                    constraints=[
+                        {
+                            "kind": "fixed_xyz",
+                            "selector": "A1-2,B1-2",
+                        }
+                    ],
+                )
+            )
+
     def test_lowers_two_independent_mobile_components_for_d3(self) -> None:
         pose = {
             "mode": "bounded_mobile",
