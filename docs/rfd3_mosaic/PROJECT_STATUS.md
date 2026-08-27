@@ -38,10 +38,11 @@
   collapsed the nominal 24-copy orbit to 12 unique placements.
 - Targeted sampler/controller tests and complete CPU input validation pass for
   both dynamic T (12 copies) and dynamic O (24 copies). Corrected 50-step GPU
-  jobs `5762800` (T x12) and `5762801` (O x24) subsequently closed both
-  engineering gates: bounded mobility executed, the complete fixed orbits and
-  exact symmetry were retained, and both written CA traces had zero breaks and
-  zero clashes. Their single outputs are not secondary-structure benchmarks.
+  canaries subsequently closed both engineering gates: bounded mobility
+  executed, the complete fixed orbits and exact symmetry were retained, and
+  both written CA traces had zero breaks and zero clashes. Exact run identifiers
+  remain in the internal GPU evidence matrix; the single outputs are not
+  secondary-structure benchmarks.
 
 ## 2026-08-25 cross-chain topology safety (CPU implementation)
 
