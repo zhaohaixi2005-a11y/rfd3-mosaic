@@ -61,7 +61,8 @@ class StructureArchiveTestCase(unittest.TestCase):
             root = Path(directory)
             destination = root / "generated_structures_cif"
             source = root / "design_00000_model_0.cif.gz"
-            source.write_bytes(b"\x1f\x8b")
+            with gzip.open(source, "wb"):
+                pass
             mirror = GeneratedCifMirror(root, destination)
 
             self.assertEqual(
@@ -78,6 +79,24 @@ class StructureArchiveTestCase(unittest.TestCase):
 
             self.assertEqual(len(produced), 1)
             self.assertEqual(produced[0].read_text(), "data_design_0\n")
+
+    def test_incremental_mirror_refreshes_when_source_gzip_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "generated_structures_cif"
+            source = root / "design_00000_model_0.cif.gz"
+            mirror = GeneratedCifMirror(root, destination)
+
+            with gzip.open(source, "wt") as handle:
+                handle.write("data_first\n")
+            first = mirror.scan(tolerate_incomplete_gzip=False)[0]
+            self.assertEqual(first.read_text(), "data_first\n")
+
+            with gzip.open(source, "wt") as handle:
+                handle.write("data_final_structure\n")
+            final = mirror.scan(tolerate_incomplete_gzip=False)[0]
+
+            self.assertEqual(final.read_text(), "data_final_structure\n")
 
     def test_archive_contains_only_plain_cif_members(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

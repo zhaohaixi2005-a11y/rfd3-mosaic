@@ -68,6 +68,8 @@ def materialize_plain_cif(
         opener = gzip.open if source.name.endswith(".cif.gz") else Path.open
         with opener(source, "rb") as input_handle, temporary.open("wb") as target:
             shutil.copyfileobj(input_handle, target, length=1024 * 1024)
+        if temporary.stat().st_size == 0:
+            raise EOFError(f"Generated structure is still empty: {source}")
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
@@ -114,6 +116,12 @@ class GeneratedCifMirror:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._error: BaseException | None = None
+        self._mirrored_signatures: dict[Path, tuple[int, int]] = {}
+
+    @staticmethod
+    def _source_signature(source: Path) -> tuple[int, int]:
+        stat = source.stat()
+        return (stat.st_size, stat.st_mtime_ns)
 
     def _candidates(self) -> tuple[Path, ...]:
         return tuple(
@@ -130,7 +138,12 @@ class GeneratedCifMirror:
         changed = False
         for source in self._candidates():
             destination = self.destination_directory / _plain_cif_name(source)
-            if destination.is_file():
+            signature_before = self._source_signature(source)
+            if (
+                destination.is_file()
+                and destination.stat().st_size > 0
+                and self._mirrored_signatures.get(source) == signature_before
+            ):
                 produced.append(destination)
                 continue
             try:
@@ -140,8 +153,17 @@ class GeneratedCifMirror:
                 )
             except (EOFError, gzip.BadGzipFile, OSError):
                 if tolerate_incomplete_gzip:
+                    if destination.exists():
+                        destination.unlink()
+                        changed = True
                     continue
                 raise
+            signature_after = self._source_signature(source)
+            if signature_after != signature_before:
+                destination.unlink(missing_ok=True)
+                changed = True
+                continue
+            self._mirrored_signatures[source] = signature_after
             produced.append(destination)
             changed = True
         if changed or not (self.destination_directory / "manifest.json").is_file():
