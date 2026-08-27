@@ -96,10 +96,17 @@ create one authoring YAML per design.
 For very large campaigns, choose a scheduler walltime that can accommodate the
 requested count or split the total across several seeds/jobs.
 
-Every completed run also writes `generated_structures_cif.zip`. The ZIP
-contains only plain `.cif` members—no configuration, logs, audits or source
-snapshot—so a run with `sampling.designs: 1000` and 1000 produced outputs has
-exactly 1000 CIF members. The adjacent
+Every run creates `generated_structures_cif/` when inference starts. As each
+compressed RFD3 result finishes, Mosaic validates and atomically mirrors it
+there as a plain `.cif`; `manifest.json` records the files already available.
+Users can therefore inspect completed designs while a long multi-design job is
+still running without opening a partially written gzip stream.
+
+After the full run completes, Mosaic also writes
+`generated_structures_cif.zip`. The ZIP contains only plain `.cif` members—no
+configuration, logs, audits or source snapshot—so a run with
+`sampling.designs: 1000` and 1000 produced outputs has exactly 1000 CIF
+members. The adjacent
 `generated_structures_cif_manifest.json` records the requested/produced counts
 and archive SHA256 without being placed inside the structure-only ZIP.
 

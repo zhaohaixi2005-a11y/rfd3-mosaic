@@ -199,8 +199,9 @@ This division of responsibility is deliberate:
 ## Outputs and interpretation
 
 Each run preserves the resolved configuration, compiled input, generated
-coordinates, runtime provenance and audit reports. Campaigns can also produce
-a structure-only ZIP containing plain CIF files for batch inspection.
+coordinates, runtime provenance and audit reports. Completed structures are
+mirrored incrementally into `generated_structures_cif/` as plain CIF files;
+the completed run also provides a structure-only ZIP for batch inspection.
 
 Mosaic reports three different outcomes:
 

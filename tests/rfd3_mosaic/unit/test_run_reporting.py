@@ -48,6 +48,9 @@ class RunReportingTestCase(unittest.TestCase):
         )
         structure = run / "result_model_0.cif.gz"
         structure.write_bytes(b"structure")
+        plain_directory = run / "generated_structures_cif"
+        plain_directory.mkdir()
+        self._write_json(plain_directory / "manifest.json", {"members": []})
         self._write_json(
             run / "experiment_summary.json",
             {
@@ -55,6 +58,8 @@ class RunReportingTestCase(unittest.TestCase):
                 "experiment": "design",
                 "reports": [str(constraint), str(scaffold)],
                 "result_json": str(run / "result_model_0.json"),
+                "plain_cif_directory": str(plain_directory),
+                "plain_cif_manifest": str(plain_directory / "manifest.json"),
             },
         )
         return run
@@ -71,7 +76,13 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertTrue(status["passed"])
         self.assertEqual(len(status["audits"]), 3)
         self.assertEqual(len(status["artifacts"]["structures"]), 1)
-        self.assertIn("result:     GENERATED", format_status_text(status))
+        text = format_status_text(status)
+        self.assertIn("result:     GENERATED", text)
+        self.assertIn("plain CIF directory:", text)
+        self.assertEqual(
+            status["artifacts"]["plain_cif_directory"],
+            str(run / "generated_structures_cif"),
+        )
 
         self._write_json(
             run / "scaffold_validity_audit.json",

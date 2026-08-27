@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import shutil
+import threading
 import zipfile
 from pathlib import Path
 from typing import Iterable
@@ -32,6 +33,155 @@ def _structure_for_result(result_json: Path) -> Path:
             f"{result_json}, observed {[str(path) for path in existing]}"
         )
     return existing[0]
+
+
+def _plain_cif_name(structure: Path) -> str:
+    name = structure.name
+    if name.endswith(".cif.gz"):
+        return name.removesuffix(".gz")
+    if name.endswith(".cif"):
+        return name
+    raise ValueError(f"Generated structure is not an mmCIF file: {structure}")
+
+
+def materialize_plain_cif(
+    structure: str | Path,
+    destination_directory: str | Path,
+) -> Path:
+    """Atomically copy or decompress one generated structure as plain mmCIF.
+
+    RFD3 writes compressed structures directly into the run directory.  The
+    temporary destination is deliberately kept beside the final plain CIF so
+    readers never observe a partially decompressed structure.  Reading a
+    still-growing gzip stream raises before ``replace()`` and is safe to retry.
+    """
+
+    source = Path(structure).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    output_directory = Path(destination_directory).resolve()
+    output_directory.mkdir(parents=True, exist_ok=True)
+    output = output_directory / _plain_cif_name(source)
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        opener = gzip.open if source.name.endswith(".cif.gz") else Path.open
+        with opener(source, "rb") as input_handle, temporary.open("wb") as target:
+            shutil.copyfileobj(input_handle, target, length=1024 * 1024)
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return output
+
+
+def _write_plain_cif_manifest(directory: Path) -> Path:
+    members = sorted(path.name for path in directory.glob("*model_0.cif"))
+    manifest = directory / "manifest.json"
+    temporary = directory / ".manifest.json.tmp"
+    temporary.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "format": "directory/plain_mmcif_members",
+                "produced_designs": len(members),
+                "members": members,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(manifest)
+    return manifest
+
+
+class GeneratedCifMirror:
+    """Incrementally mirror completed RFD3 gzip outputs as plain CIF files."""
+
+    def __init__(
+        self,
+        run_directory: str | Path,
+        destination_directory: str | Path,
+        *,
+        poll_interval_seconds: float = 0.5,
+    ) -> None:
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+        self.run_directory = Path(run_directory).resolve()
+        self.destination_directory = Path(destination_directory).resolve()
+        self.poll_interval_seconds = poll_interval_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._error: BaseException | None = None
+
+    def _candidates(self) -> tuple[Path, ...]:
+        return tuple(
+            sorted(
+                {
+                    *self.run_directory.glob("*model_0.cif.gz"),
+                    *self.run_directory.glob("*model_0.cif"),
+                }
+            )
+        )
+
+    def scan(self, *, tolerate_incomplete_gzip: bool) -> tuple[Path, ...]:
+        produced: list[Path] = []
+        changed = False
+        for source in self._candidates():
+            destination = self.destination_directory / _plain_cif_name(source)
+            if destination.is_file():
+                produced.append(destination)
+                continue
+            try:
+                destination = materialize_plain_cif(
+                    source,
+                    self.destination_directory,
+                )
+            except (EOFError, gzip.BadGzipFile, OSError):
+                if tolerate_incomplete_gzip:
+                    continue
+                raise
+            produced.append(destination)
+            changed = True
+        if changed or not (self.destination_directory / "manifest.json").is_file():
+            _write_plain_cif_manifest(self.destination_directory)
+        return tuple(produced)
+
+    def _watch(self) -> None:
+        try:
+            while not self._stop.wait(self.poll_interval_seconds):
+                self.scan(tolerate_incomplete_gzip=True)
+        except BaseException as error:  # Propagate background I/O errors on stop.
+            self._error = error
+            self._stop.set()
+
+    def start(self) -> "GeneratedCifMirror":
+        if self._thread is not None:
+            raise RuntimeError("Generated CIF mirror is already running")
+        self.destination_directory.mkdir(parents=True, exist_ok=True)
+        _write_plain_cif_manifest(self.destination_directory)
+        self._thread = threading.Thread(
+            target=self._watch,
+            name="rfd3-mosaic-plain-cif-mirror",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def stop(self, *, inference_succeeded: bool) -> tuple[Path, ...]:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        if self._error is not None:
+            raise RuntimeError("Generated CIF mirror failed") from self._error
+        return self.scan(tolerate_incomplete_gzip=not inference_succeeded)
+
+    def __enter__(self) -> "GeneratedCifMirror":
+        return self.start()
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:  # type: ignore[no-untyped-def]
+        self.stop(inference_succeeded=exc_type is None)
 
 
 def create_generated_cif_archive(
@@ -95,4 +245,8 @@ def create_generated_cif_archive(
     return {**manifest, "manifest": str(manifest_path)}
 
 
-__all__ = ["create_generated_cif_archive"]
+__all__ = [
+    "GeneratedCifMirror",
+    "create_generated_cif_archive",
+    "materialize_plain_cif",
+]

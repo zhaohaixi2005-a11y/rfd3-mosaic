@@ -39,7 +39,10 @@ from rfd3_mosaic.sampling_plan import (
     pose_plan_is_stochastic,
 )
 from rfd3_mosaic.schema import load_user_design
-from rfd3_mosaic.structure_archive import create_generated_cif_archive
+from rfd3_mosaic.structure_archive import (
+    GeneratedCifMirror,
+    create_generated_cif_archive,
+)
 
 _AUTHORING_SOURCE_ROLES = frozenset(
     {
@@ -631,7 +634,9 @@ def execute(
     # supplied-interface jobs may legitimately request a compact monomer core
     # while explicitly declining creation of a second generated interface.
     inference_command.extend(_resolved_guidance_overrides(assemblies[0].input_path))
-    _run(inference_command)
+    plain_cif_directory = run_dir / "generated_structures_cif"
+    with GeneratedCifMirror(run_dir, plain_cif_directory):
+        _run(inference_command)
 
     result_jsons = find_result_jsons(run_dir)
     expected_designs = requested_designs
@@ -776,6 +781,8 @@ def execute(
         "result_json": (str(result_jsons[0]) if len(result_jsons) == 1 else None),
         "result_jsons": [str(path) for path in result_jsons],
         "structure_archive": structure_archive,
+        "plain_cif_directory": str(plain_cif_directory),
+        "plain_cif_manifest": str(plain_cif_directory / "manifest.json"),
         "reports": [str(path) for path in all_reports],
         "runtime_provenance": str(runtime_provenance_path),
         "mobility_trajectory": (

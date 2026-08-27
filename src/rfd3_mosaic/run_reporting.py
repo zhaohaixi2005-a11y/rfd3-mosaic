@@ -594,6 +594,12 @@ def collect_run_status(
             "structure_archive": (
                 worker.get("structure_archive") if worker else None
             ),
+            "plain_cif_directory": (
+                worker.get("plain_cif_directory") if worker else None
+            ),
+            "plain_cif_manifest": (
+                worker.get("plain_cif_manifest") if worker else None
+            ),
             "mobility_trajectory": (
                 worker.get("mobility_trajectory") if worker else None
             ),
@@ -817,6 +823,11 @@ def format_status_text(status: dict[str, Any]) -> str:
     )
     for path in structures:
         lines.append(f"  - {path}")
+    plain_cif_directory = (status.get("artifacts") or {}).get(
+        "plain_cif_directory"
+    )
+    if plain_cif_directory:
+        lines.append(f"plain CIF directory: {plain_cif_directory}")
     structure_archive = (status.get("artifacts") or {}).get(
         "structure_archive"
     )
