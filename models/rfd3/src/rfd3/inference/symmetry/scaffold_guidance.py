@@ -9,8 +9,8 @@ subgroup of Cn or Dn; orbit materialization itself is group-agnostic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
@@ -75,9 +75,7 @@ class ScaffoldGuidanceConfig:
             if getattr(self, name) <= 0.0:
                 raise ValueError(f"{name} must be positive")
         if not 0.0 <= self.maximum_tilt_degrees < 90.0:
-            raise ValueError(
-                "maximum_tilt_degrees must be in [0, 90)"
-            )
+            raise ValueError("maximum_tilt_degrees must be in [0, 90)")
 
 
 @dataclass(frozen=True)
@@ -108,9 +106,7 @@ class ScaffoldGuidanceEnergy:
             "minimum_clash_distance": float(
                 self.minimum_clash_distance.detach().cpu().item()
             ),
-            "tilt_degrees": float(
-                self.tilt_degrees.detach().cpu().item()
-            ),
+            "tilt_degrees": float(self.tilt_degrees.detach().cpu().item()),
         }
 
 
@@ -126,6 +122,11 @@ class SE3Proposal:
     proposed_energy: torch.Tensor
     accepted: bool
     line_search_scale: float
+    rotation_gradient_norm: float
+    translation_gradient_norm: float
+    projected_rotation_gradient_norm: float
+    projected_translation_gradient_norm: float
+    line_search_trials: tuple[dict[str, float | bool | None], ...]
 
 
 def _as_tensor(
@@ -159,10 +160,7 @@ def build_boundary_topology(
     }
     missing = required - set(f)
     if missing:
-        raise ValueError(
-            "Scaffold guidance requires features "
-            f"{sorted(missing)}"
-        )
+        raise ValueError("Scaffold guidance requires features " f"{sorted(missing)}")
 
     fixed = _as_tensor(fixed_mask, dtype=torch.bool)
     if fixed.ndim != 1:
@@ -184,9 +182,7 @@ def build_boundary_topology(
         or atom_to_token.shape != fixed.shape
         or is_ca.shape != fixed.shape
     ):
-        raise ValueError(
-            "atom_to_token_map, is_ca, and fixed_mask must have shape [L]"
-        )
+        raise ValueError("atom_to_token_map, is_ca, and fixed_mask must have shape [L]")
     if atom_to_token.numel() == 0 or torch.any(atom_to_token < 0):
         raise ValueError("atom_to_token_map must contain non-negative tokens")
 
@@ -204,9 +200,7 @@ def build_boundary_topology(
     if asym_id.shape != (token_count,):
         raise ValueError("asym_id must have shape [N_tokens]")
     if token_bonds.shape != (token_count, token_count):
-        raise ValueError(
-            "token_bonds must have shape [N_tokens, N_tokens]"
-        )
+        raise ValueError("token_bonds must have shape [N_tokens, N_tokens]")
     is_protein = _as_tensor(
         f.get(
             "is_protein",
@@ -225,9 +219,7 @@ def build_boundary_topology(
             device=device,
         )
         if residue_index.shape != (token_count,):
-            raise ValueError(
-                "residue_index must have shape [N_tokens]"
-            )
+            raise ValueError("residue_index must have shape [N_tokens]")
     is_virtual = _as_tensor(
         f.get(
             "is_virtual",
@@ -256,15 +248,18 @@ def build_boundary_topology(
         atom_to_token,
         (fixed & considered_atom).to(dtype=torch.long),
     )
-    partially_fixed = (
-        (token_fixed_counts > 0)
-        & (token_fixed_counts < token_atom_counts)
+    partially_fixed = (token_fixed_counts > 0) & (
+        token_fixed_counts < token_atom_counts
     )
     if torch.any(partially_fixed):
-        tokens = torch.nonzero(
-            partially_fixed,
-            as_tuple=False,
-        ).flatten().tolist()
+        tokens = (
+            torch.nonzero(
+                partially_fixed,
+                as_tuple=False,
+            )
+            .flatten()
+            .tolist()
+        )
         raise ValueError(
             "Scaffold boundary topology requires whole-token fixed states; "
             f"partially fixed tokens: {tokens}"
@@ -311,12 +306,8 @@ def build_boundary_topology(
                 chain_ca_tokens,
                 chain_ca_tokens[1:],
             ):
-                left_residue = int(
-                    residue_index[left_token].item()
-                )
-                right_residue = int(
-                    residue_index[right_token].item()
-                )
+                left_residue = int(residue_index[left_token].item())
+                right_residue = int(residue_index[right_token].item())
                 if right_residue != left_residue + 1:
                     continue
                 candidate_pairs.add(
@@ -330,14 +321,9 @@ def build_boundary_topology(
     for left_token, right_token in sorted(candidate_pairs):
         if asym_id[left_token] != asym_id[right_token]:
             continue
-        if not (
-            bool(is_protein[left_token])
-            and bool(is_protein[right_token])
-        ):
+        if not (bool(is_protein[left_token]) and bool(is_protein[right_token])):
             continue
-        if bool(fixed_token[left_token]) == bool(
-            fixed_token[right_token]
-        ):
+        if bool(fixed_token[left_token]) == bool(fixed_token[right_token]):
             continue
         if left_token not in ca_by_token or right_token not in ca_by_token:
             raise ValueError(
@@ -394,13 +380,9 @@ def _normalized_transforms(
     for transform_id_raw, transform in sym_transforms.items():
         transform_id = int(transform_id_raw)
         if transform_id in normalized:
-            raise ValueError(
-                f"Duplicate symmetry transform ID {transform_id}"
-            )
+            raise ValueError(f"Duplicate symmetry transform ID {transform_id}")
         if not isinstance(transform, (tuple, list)) or len(transform) != 2:
-            raise ValueError(
-                "Each symmetry transform must be (rotation, translation)"
-            )
+            raise ValueError("Each symmetry transform must be (rotation, translation)")
         rotation = _as_tensor(transform[0])
         if not rotation.is_floating_point():
             rotation = rotation.to(dtype=torch.float64)
@@ -413,30 +395,28 @@ def _normalized_transforms(
             raise ValueError(
                 "Symmetry rotations/translations must have shapes [3,3]/[3]"
             )
-        if not (
-            torch.isfinite(rotation).all()
-            and torch.isfinite(translation).all()
-        ):
+        if not (torch.isfinite(rotation).all() and torch.isfinite(translation).all()):
             raise ValueError("Symmetry transform contains NaN or Inf")
         identity = torch.eye(
             3,
             dtype=rotation.dtype,
             device=rotation.device,
         )
-        if not torch.allclose(
-            rotation.T @ rotation,
-            identity,
-            atol=1e-5,
-            rtol=1e-5,
-        ) or float(torch.linalg.det(rotation).item()) <= 0.0:
+        if (
+            not torch.allclose(
+                rotation.T @ rotation,
+                identity,
+                atol=1e-5,
+                rtol=1e-5,
+            )
+            or float(torch.linalg.det(rotation).item()) <= 0.0
+        ):
             raise ValueError(
                 f"Symmetry transform {transform_id} is not a proper rotation"
             )
         normalized[transform_id] = (rotation, translation)
     if len(normalized) < 2:
-        raise ValueError(
-            "A cyclic transform set requires identity and a rotation"
-        )
+        raise ValueError("A cyclic transform set requires identity and a rotation")
     return normalized
 
 
@@ -467,9 +447,7 @@ def extract_cyclic_axis(
             reference_rotation = rotation
             reference_translation = translation
     if reference_rotation is None or reference_translation is None:
-        raise ValueError(
-            "A cyclic transform set requires a non-identity rotation"
-        )
+        raise ValueError("A cyclic transform set requires a non-identity rotation")
 
     _, _, vh = torch.linalg.svd(
         reference_rotation
@@ -521,14 +499,10 @@ def extract_cyclic_axis(
             if abs(float(torch.dot(candidate_direction, direction).item())) < (
                 1.0 - tolerance
             ):
-                raise ValueError(
-                    "Symmetry transforms do not share one cyclic axis"
-                )
+                raise ValueError("Symmetry transforms do not share one cyclic axis")
         residual = rotation @ point + translation - point
         if float(torch.linalg.vector_norm(residual).item()) > tolerance:
-            raise ValueError(
-                "Symmetry transforms do not share one cyclic fixed line"
-            )
+            raise ValueError("Symmetry transforms do not share one cyclic fixed line")
 
     return CyclicAxis(
         point=point,
@@ -580,10 +554,7 @@ def extract_symmetry_primary_axis(
         subgroup_ids = ordered_ids[:order]
 
     axis = extract_cyclic_axis(
-        {
-            transform_id: transforms[transform_id]
-            for transform_id in subgroup_ids
-        },
+        {transform_id: transforms[transform_id] for transform_id in subgroup_ids},
         tolerance=tolerance,
     )
     return CyclicAxis(
@@ -599,21 +570,15 @@ def principal_axis_from_points(points: torch.Tensor) -> torch.Tensor:
     coordinates = _as_tensor(points)
     if coordinates.ndim == 3:
         if coordinates.shape[0] != 1:
-            raise ValueError(
-                "principal-axis estimation supports one pose batch"
-            )
+            raise ValueError("principal-axis estimation supports one pose batch")
         coordinates = coordinates[0]
     if coordinates.ndim != 2 or coordinates.shape[1] != 3:
         raise ValueError("principal-axis points must have shape [M, 3]")
     if coordinates.shape[0] < 2:
-        raise ValueError(
-            "principal-axis estimation requires at least two points"
-        )
+        raise ValueError("principal-axis estimation requires at least two points")
     centered = coordinates - coordinates.mean(dim=0, keepdim=True)
     if float(torch.linalg.vector_norm(centered).item()) <= 1e-8:
-        raise ValueError(
-            "principal-axis points have degenerate coordinates"
-        )
+        raise ValueError("principal-axis points have degenerate coordinates")
     _, _, vh = torch.linalg.svd(centered, full_matrices=False)
     return _normalize_direction(vh[0], label="motif principal axis")
 
@@ -663,9 +628,7 @@ def scaffold_orbit_energy(
         label="scaffold_coordinates",
     )
     if motif.shape != scaffold.shape:
-        raise ValueError(
-            "motif and scaffold coordinate shapes must match"
-        )
+        raise ValueError("motif and scaffold coordinate shapes must match")
     device = motif.device
     dtype = motif.dtype
     junction_pairs = topology.junction_pairs.to(device=device)
@@ -674,9 +637,7 @@ def scaffold_orbit_energy(
     if not len(junction_pairs):
         raise ValueError("Scaffold guidance requires at least one junction")
     if not len(fixed_ca) or not len(generated_ca):
-        raise ValueError(
-            "Scaffold guidance requires fixed and generated CA atoms"
-        )
+        raise ValueError("Scaffold guidance requires fixed and generated CA atoms")
 
     fixed_junction = motif[junction_pairs[:, 0]]
     generated_junction = scaffold[junction_pairs[:, 1]]
@@ -684,23 +645,14 @@ def scaffold_orbit_energy(
         fixed_junction - generated_junction,
         dim=-1,
     )
-    junction_error = (
-        junction_distances - config.junction_target_distance
-    )
+    junction_error = junction_distances - config.junction_target_distance
     delta = torch.as_tensor(
         config.junction_huber_delta,
         dtype=dtype,
         device=device,
     )
     junction_term = torch.mean(
-        delta
-        * delta
-        * (
-            torch.sqrt(
-                1.0 + torch.square(junction_error / delta)
-            )
-            - 1.0
-        )
+        delta * delta * (torch.sqrt(1.0 + torch.square(junction_error / delta)) - 1.0)
     )
 
     clash_distances = torch.cdist(
@@ -709,8 +661,7 @@ def scaffold_orbit_energy(
     )
     bonded = torch.zeros_like(clash_distances, dtype=torch.bool)
     fixed_lookup = {
-        int(atom_index): row
-        for row, atom_index in enumerate(fixed_ca.tolist())
+        int(atom_index): row for row, atom_index in enumerate(fixed_ca.tolist())
     }
     generated_lookup = {
         int(atom_index): column
@@ -723,9 +674,7 @@ def scaffold_orbit_energy(
             bonded[fixed_row, generated_column] = True
     nonbonded_distances = clash_distances[~bonded]
     if nonbonded_distances.numel():
-        clash_penalty = torch.relu(
-            config.clash_distance - nonbonded_distances
-        )
+        clash_penalty = torch.relu(config.clash_distance - nonbonded_distances)
         clash_term = torch.mean(torch.square(clash_penalty))
         minimum_clash_distance = nonbonded_distances.min()
     else:
@@ -744,9 +693,7 @@ def scaffold_orbit_energy(
     rotation = _as_tensor(pose_rotation, dtype=dtype, device=device)
     translation = _as_tensor(pose_translation, dtype=dtype, device=device)
     if rotation.shape != (3, 3) or translation.shape != (3,):
-        raise ValueError(
-            "pose_rotation/pose_translation must have shapes [3,3]/[3]"
-        )
+        raise ValueError("pose_rotation/pose_translation must have shapes [3,3]/[3]")
     if principal_axis is None:
         tilt_term = _zero_like_energy(motif)
         tilt_degrees = _zero_like_energy(motif)
@@ -777,9 +724,7 @@ def scaffold_orbit_energy(
             0.0,
             1.0,
         )
-        maximum_tilt_cosine = math.cos(
-            math.radians(config.maximum_tilt_degrees)
-        )
+        maximum_tilt_cosine = math.cos(math.radians(config.maximum_tilt_degrees))
         tilt_excess = torch.relu(
             torch.as_tensor(
                 maximum_tilt_cosine,
@@ -793,16 +738,13 @@ def scaffold_orbit_energy(
 
     identity = torch.eye(3, dtype=dtype, device=device)
     translation_prior = torch.sum(
-        torch.square(
-            translation / config.translation_prior_scale
-        )
+        torch.square(translation / config.translation_prior_scale)
     )
     rotation_scale = 2.0 * math.sin(
         math.radians(config.rotation_prior_scale_degrees) / 2.0
     )
-    rotation_prior = (
-        torch.sum(torch.square(rotation - identity))
-        / (2.0 * rotation_scale * rotation_scale)
+    rotation_prior = torch.sum(torch.square(rotation - identity)) / (
+        2.0 * rotation_scale * rotation_scale
     )
     prior_term = translation_prior + rotation_prior
 
@@ -858,11 +800,7 @@ def _rotation_from_vector(vector: torch.Tensor) -> torch.Tensor:
         dtype=vector.dtype,
         device=vector.device,
     )
-    return (
-        identity
-        + sine_scale * skew
-        + cosine_scale * (skew @ skew)
-    )
+    return identity + sine_scale * skew + cosine_scale * (skew @ skew)
 
 
 def _rotation_axis_angle(
@@ -888,11 +826,14 @@ def _rotation_axis_angle(
         )
     )
     if float(torch.linalg.vector_norm(vector).detach().item()) < 1e-7:
-        _, _, vh = torch.linalg.svd(rotation - torch.eye(
-            3,
-            dtype=rotation.dtype,
-            device=rotation.device,
-        ))
+        _, _, vh = torch.linalg.svd(
+            rotation
+            - torch.eye(
+                3,
+                dtype=rotation.dtype,
+                device=rotation.device,
+            )
+        )
         axis = _normalize_direction(vh[-1], label="rotation axis")
     else:
         axis = vector / torch.linalg.vector_norm(vector)
@@ -905,9 +846,7 @@ def _clamp_vector(vector: torch.Tensor, maximum_norm: float) -> torch.Tensor:
     norm = torch.linalg.vector_norm(vector)
     if float(norm.detach().item()) <= maximum_norm:
         return vector
-    return vector * (
-        maximum_norm / max(float(norm.detach().item()), 1e-12)
-    )
+    return vector * (maximum_norm / max(float(norm.detach().item()), 1e-12))
 
 
 def _clamp_rotation(
@@ -921,7 +860,8 @@ def _clamp_rotation(
     if float(angle.detach().item()) <= maximum:
         return rotation
     return _rotation_from_vector(
-        axis * torch.as_tensor(
+        axis
+        * torch.as_tensor(
             maximum,
             dtype=rotation.dtype,
             device=rotation.device,
@@ -1013,9 +953,7 @@ def propose_bounded_se3_step(
         rotation_step_size_degrees = maximum_step_rotation_degrees
     if translation_step_size < 0.0 or rotation_step_size_degrees < 0.0:
         raise ValueError("proposal step sizes cannot be negative")
-    if not line_search_scales or any(
-        scale <= 0.0 for scale in line_search_scales
-    ):
+    if not line_search_scales or any(scale <= 0.0 for scale in line_search_scales):
         raise ValueError("line_search_scales must be positive")
 
     with torch.enable_grad():
@@ -1037,9 +975,7 @@ def propose_bounded_se3_step(
             energy_function(trial_rotation, trial_translation)
         )
         if not torch.isfinite(initial_energy):
-            raise ValueError(
-                "energy_function returned NaN or Inf at the current pose"
-            )
+            raise ValueError("energy_function returned NaN or Inf at the current pose")
         rotation_gradient, translation_gradient = torch.autograd.grad(
             initial_energy,
             (rotation_vector, translation_delta),
@@ -1060,7 +996,11 @@ def propose_bounded_se3_step(
         rotation_basis,
         label="rotation",
     )
+    rotation_gradient_norm = float(
+        torch.linalg.vector_norm(rotation_gradient.detach()).item()
+    )
     rotation_norm = torch.linalg.vector_norm(rotation_direction)
+    projected_rotation_gradient_norm = float(rotation_norm.item())
     if float(rotation_norm.item()) > 1e-12:
         rotation_direction = rotation_direction / rotation_norm
     translation_direction = _project_onto_basis(
@@ -1068,13 +1008,15 @@ def propose_bounded_se3_step(
         translation_basis,
         label="translation",
     )
+    translation_gradient_norm = float(
+        torch.linalg.vector_norm(translation_gradient.detach()).item()
+    )
     translation_norm = torch.linalg.vector_norm(translation_direction)
+    projected_translation_gradient_norm = float(translation_norm.item())
     if float(translation_norm.item()) > 1e-12:
         translation_direction = translation_direction / translation_norm
 
-    raw_rotation_vector = rotation_direction * math.radians(
-        rotation_step_size_degrees
-    )
+    raw_rotation_vector = rotation_direction * math.radians(rotation_step_size_degrees)
     raw_translation = translation_direction * translation_step_size
     raw_rotation_vector = _clamp_vector(
         raw_rotation_vector,
@@ -1091,10 +1033,9 @@ def propose_bounded_se3_step(
         dtype=rotation.dtype,
         device=rotation.device,
     )
+    line_search_trials: list[dict[str, float | bool | None]] = []
     for scale in line_search_scales:
-        delta_rotation = _rotation_from_vector(
-            raw_rotation_vector * scale
-        )
+        delta_rotation = _rotation_from_vector(raw_rotation_vector * scale)
         delta_translation = raw_translation * scale
         candidate_rotation = delta_rotation @ rotation
         candidate_translation = translation + delta_translation
@@ -1115,9 +1056,24 @@ def propose_bounded_se3_step(
                     candidate_translation,
                 )
             ).detach()
-        if not torch.isfinite(candidate_energy):
+        finite = bool(torch.isfinite(candidate_energy).item())
+        candidate_value = float(candidate_energy.item()) if finite else None
+        improves = bool(
+            finite
+            and candidate_value is not None
+            and candidate_value < float(initial_detached.item())
+        )
+        line_search_trials.append(
+            {
+                "scale": float(scale),
+                "energy": candidate_value,
+                "finite": finite,
+                "improves": improves,
+            }
+        )
+        if not finite:
             continue
-        if float(candidate_energy.item()) < float(initial_detached.item()):
+        if improves:
             return SE3Proposal(
                 rotation=candidate_rotation.detach(),
                 translation=candidate_translation.detach(),
@@ -1127,6 +1083,13 @@ def propose_bounded_se3_step(
                 proposed_energy=candidate_energy,
                 accepted=True,
                 line_search_scale=float(scale),
+                rotation_gradient_norm=rotation_gradient_norm,
+                translation_gradient_norm=translation_gradient_norm,
+                projected_rotation_gradient_norm=(projected_rotation_gradient_norm),
+                projected_translation_gradient_norm=(
+                    projected_translation_gradient_norm
+                ),
+                line_search_trials=tuple(line_search_trials),
             )
 
     return SE3Proposal(
@@ -1138,6 +1101,11 @@ def propose_bounded_se3_step(
         proposed_energy=initial_detached,
         accepted=False,
         line_search_scale=0.0,
+        rotation_gradient_norm=rotation_gradient_norm,
+        translation_gradient_norm=translation_gradient_norm,
+        projected_rotation_gradient_norm=projected_rotation_gradient_norm,
+        projected_translation_gradient_norm=(projected_translation_gradient_norm),
+        line_search_trials=tuple(line_search_trials),
     )
 
 
@@ -1158,9 +1126,7 @@ def expand_master_orbit(
     if master.ndim == 2:
         master = master[None, ...]
     if master.ndim != 3 or master.shape[-1] != 3:
-        raise ValueError(
-            "master_coordinates must have shape [M, 3] or [D, M, 3]"
-        )
+        raise ValueError("master_coordinates must have shape [M, 3] or [D, M, 3]")
     transforms = _normalized_transforms(sym_transforms)
     copies = []
     for transform_id in sorted(transforms):
@@ -1220,21 +1186,15 @@ def insert_master_orbit(
         or indices.shape[1] != master.shape[1]
         or transform_ids.shape != (indices.shape[0],)
     ):
-        raise ValueError(
-            "group indices/transform IDs do not match master coordinates"
-        )
+        raise ValueError("group indices/transform IDs do not match master coordinates")
     transforms = _normalized_transforms(sym_transforms)
     expanded = base.clone()
     for group_row, transform_id_tensor in enumerate(transform_ids):
         transform_id = int(transform_id_tensor.item())
         if transform_id not in transforms:
-            raise ValueError(
-                f"Unknown symmetry transform ID {transform_id}"
-            )
+            raise ValueError(f"Unknown symmetry transform ID {transform_id}")
         rotation, translation = transforms[transform_id]
         rotation = rotation.to(dtype=base.dtype, device=base.device)
         translation = translation.to(dtype=base.dtype, device=base.device)
-        expanded[:, indices[group_row], :] = (
-            master @ rotation.T + translation
-        )
+        expanded[:, indices[group_row], :] = master @ rotation.T + translation
     return expanded[0] if squeeze else expanded

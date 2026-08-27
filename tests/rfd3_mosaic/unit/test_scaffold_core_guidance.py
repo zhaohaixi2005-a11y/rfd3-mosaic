@@ -30,6 +30,98 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_routing_ownership_penalizes_generated_run_in_wrong_chain_cell(
+        self,
+    ) -> None:
+        topology = build_scaffold_core_topology(
+            features(tokens_per_chain=5),
+            torch.tensor(
+                [True, False, False, False, True] * 2,
+                dtype=torch.bool,
+            ),
+        )
+        coordinates = torch.tensor(
+            [
+                [0.0, 0.0, 0.0],
+                [2.0, 8.0, 0.0],
+                [4.0, 8.0, 0.0],
+                [6.0, 8.0, 0.0],
+                [8.0, 0.0, 0.0],
+                [0.0, 10.0, 0.0],
+                [2.0, 10.0, 0.0],
+                [4.0, 10.0, 0.0],
+                [6.0, 10.0, 0.0],
+                [8.0, 10.0, 0.0],
+            ]
+        )
+        config = ScaffoldCoreGuidanceConfig(
+            routing_ownership_weight=1.0,
+            clash_weight=0.0,
+            continuity_weight=0.0,
+        )
+
+        wrong = scaffold_core_energy(coordinates, topology, config)
+        corrected = coordinates.clone()
+        corrected[1:4, 1] = 0.0
+        right = scaffold_core_energy(corrected, topology, config)
+
+        self.assertEqual(len(topology.generated_runs), 2)
+        self.assertGreater(wrong.routing_ownership.item(), 0.0)
+        self.assertGreater(
+            wrong.routing_ownership_violation_fraction.item(),
+            0.0,
+        )
+        self.assertAlmostEqual(right.routing_ownership.item(), 0.0)
+
+    def test_routing_guidance_moves_only_generated_tokens_toward_own_cell(
+        self,
+    ) -> None:
+        fixed = torch.tensor(
+            [True, False, False, False, True] * 2,
+            dtype=torch.bool,
+        )
+        topology = build_scaffold_core_topology(
+            features(tokens_per_chain=5),
+            fixed,
+        )
+        coordinates = torch.tensor(
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [2.0, 8.0, 0.0],
+                    [4.0, 8.0, 0.0],
+                    [6.0, 8.0, 0.0],
+                    [8.0, 0.0, 0.0],
+                    [0.0, 10.0, 0.0],
+                    [2.0, 10.0, 0.0],
+                    [4.0, 10.0, 0.0],
+                    [6.0, 10.0, 0.0],
+                    [8.0, 10.0, 0.0],
+                ]
+            ]
+        )
+        config = ScaffoldCoreGuidanceConfig(
+            routing_ownership_weight=1.0,
+            clash_weight=0.0,
+            continuity_weight=0.0,
+            maximum_token_step=0.4,
+        )
+
+        guided, diagnostics = apply_scaffold_core_guidance(
+            coordinates,
+            topology,
+            progress=0.5,
+            config=config,
+            projector=lambda value: value,
+        )
+
+        self.assertTrue(diagnostics["accepted"])
+        self.assertLess(
+            diagnostics["final"]["routing_ownership"],
+            diagnostics["initial"]["routing_ownership"],
+        )
+        self.assertTrue(torch.equal(guided[0, fixed], coordinates[0, fixed]))
+
     def test_polymer_projection_restores_generated_path_without_moving_fixed(
         self,
     ) -> None:
@@ -43,8 +135,15 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
         fixed = torch.tensor([True, False, False, False, False])
         topology = build_scaffold_core_topology(f, fixed)
         coordinates = torch.tensor(
-            [[[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [41.0, 0.0, 0.0],
-              [42.0, 0.0, 0.0], [43.0, 0.0, 0.0]]]
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [40.0, 0.0, 0.0],
+                    [41.0, 0.0, 0.0],
+                    [42.0, 0.0, 0.0],
+                    [43.0, 0.0, 0.0],
+                ]
+            ]
         )
 
         projected, diagnostics = project_generated_polymer_continuity(
@@ -74,8 +173,15 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
         fixed = torch.tensor([True, False, False, False, True])
         topology = build_scaffold_core_topology(f, fixed)
         coordinates = torch.tensor(
-            [[[0.0, 0.0, 0.0], [20.0, 8.0, 0.0], [21.0, -4.0, 0.0],
-              [18.0, 2.0, 0.0], [15.2, 0.0, 0.0]]]
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [20.0, 8.0, 0.0],
+                    [21.0, -4.0, 0.0],
+                    [18.0, 2.0, 0.0],
+                    [15.2, 0.0, 0.0],
+                ]
+            ]
         )
 
         projected, diagnostics = project_generated_polymer_continuity(

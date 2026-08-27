@@ -56,10 +56,7 @@ ExpansionRecord: TypeAlias = tuple[
 
 
 def _matrix_to_tuple(matrix: np.ndarray) -> TransformMatrix:
-    return tuple(
-        tuple(float(value) for value in row)
-        for row in matrix
-    )  # type: ignore[return-value]
+    return tuple(tuple(float(value) for value in row) for row in matrix)  # type: ignore[return-value]
 
 
 def _instance_id(
@@ -144,25 +141,18 @@ def load_assembly_config(
     path = Path(config_path)
 
     if not path.is_file():
-        raise FileNotFoundError(
-            f"Assembly config does not exist: {path}"
-        )
+        raise FileNotFoundError(f"Assembly config does not exist: {path}")
 
     with path.open("r", encoding="utf-8") as handle:
         raw_config = yaml.safe_load(handle)
 
     if not isinstance(raw_config, dict):
-        raise ValueError(
-            "Assembly config must contain a YAML mapping"
-        )
+        raise ValueError("Assembly config must contain a YAML mapping")
 
-    wrapped_keys = [
-        key for key in ("assembly", "interface_seed") if key in raw_config
-    ]
+    wrapped_keys = [key for key in ("assembly", "interface_seed") if key in raw_config]
     if len(wrapped_keys) > 1:
         raise ValueError(
-            "Assembly config cannot define both 'assembly' and "
-            "'interface_seed'"
+            "Assembly config cannot define both 'assembly' and " "'interface_seed'"
         )
     payload = raw_config[wrapped_keys[0]] if wrapped_keys else raw_config
 
@@ -191,8 +181,7 @@ def expand_symmetry_instances(
 
     registries: dict[str, SymmetryTransformRegistry] = {
         transform_set_id: build_transform_registry(transform_set_spec)
-        for transform_set_id, transform_set_spec
-        in spec.symmetry.transform_sets.items()
+        for transform_set_id, transform_set_spec in spec.symmetry.transform_sets.items()
     }
     orbit_registries = {
         orbit_id: registries[orbit.transform_set]
@@ -206,8 +195,7 @@ def expand_symmetry_instances(
         if action is None:
             orbit_transform_ids[orbit_id] = registry.transform_ids
             orbit_transform_to_representative[orbit_id] = {
-                transform_id: transform_id
-                for transform_id in registry.transform_ids
+                transform_id: transform_id for transform_id in registry.transform_ids
             }
             continue
         representatives = action.coset_representative_ids
@@ -227,15 +215,11 @@ def expand_symmetry_instances(
                 "transform exactly once"
             )
         if registry.identity_id not in stabilizer:
-            raise ValueError(
-                f"Orbit {orbit_id!r} stabilizer omits group identity"
-            )
+            raise ValueError(f"Orbit {orbit_id!r} stabilizer omits group identity")
         for left_id in stabilizer:
             for right_id in stabilizer:
                 if registry.compose_ids(left_id, right_id) not in stabilizer:
-                    raise ValueError(
-                        f"Orbit {orbit_id!r} stabilizer is not closed"
-                    )
+                    raise ValueError(f"Orbit {orbit_id!r} stabilizer is not closed")
         assigned: set[str] = set()
         for representative in representatives:
             coset = {
@@ -243,9 +227,7 @@ def expand_symmetry_instances(
                 for stabilizer_id in stabilizer
             }
             if assigned.intersection(coset):
-                raise ValueError(
-                    f"Orbit {orbit_id!r} finite-action cosets overlap"
-                )
+                raise ValueError(f"Orbit {orbit_id!r} finite-action cosets overlap")
             if any(mapping[item] != representative for item in coset):
                 raise ValueError(
                     f"Orbit {orbit_id!r} transform map disagrees with "
@@ -269,9 +251,7 @@ def expand_symmetry_instances(
     ) -> int:
         if orbit_id is None:
             if orbit_offset != 0 or transform is not None:
-                raise ValueError(
-                    "An unsymmetrized object only supports orbit_offset 0"
-                )
+                raise ValueError("An unsymmetrized object only supports orbit_offset 0")
             return 0
         registry = orbit_registries[orbit_id]
         selected_transform_ids = orbit_transform_ids[orbit_id]
@@ -282,9 +262,9 @@ def expand_symmetry_instances(
                     source_copy_index=source_copy_index,
                 )
                 return registry.transform_ids.index(target_transform_id)
-            target_copy_index = (
-                source_copy_index + orbit_offset
-            ) % len(selected_transform_ids)
+            target_copy_index = (source_copy_index + orbit_offset) % len(
+                selected_transform_ids
+            )
             return target_copy_index
         else:
             assert transform is not None
@@ -329,9 +309,7 @@ def expand_symmetry_instances(
             return native
         reference = legacy[0][1]
         conflicting = [
-            edge_id
-            for edge_id, mobility in legacy[1:]
-            if mobility != reference
+            edge_id for edge_id, mobility in legacy[1:] if mobility != reference
         ]
         if conflicting:
             raise ValueError(
@@ -345,8 +323,7 @@ def expand_symmetry_instances(
     unknown_groups = set(provided_master_transforms) - set(spec.motion_groups)
     if unknown_groups:
         raise ValueError(
-            f"Master transforms reference unknown groups: "
-            f"{sorted(unknown_groups)}"
+            f"Master transforms reference unknown groups: " f"{sorted(unknown_groups)}"
         )
     expansions: dict[str, list[ExpansionRecord]] = {}
     for group_id in spec.motion_groups:
@@ -517,9 +494,7 @@ def expand_symmetry_instances(
                 )
             transform_set_id = left_orbit.transform_set
             registry = registries[transform_set_id]
-            relation_id = (
-                edge_spec.copy_relation.transform or registry.identity_id
-            )
+            relation_id = edge_spec.copy_relation.transform or registry.identity_id
             left_mapping = orbit_transform_to_representative[left_orbit_id]
             right_mapping = orbit_transform_to_representative[right_orbit_id]
             left_selected = orbit_transform_ids[left_orbit_id]
@@ -528,9 +503,7 @@ def expand_symmetry_instances(
                 tuple[int, int],
                 list[tuple[int, str, str, str]],
             ] = {}
-            for action_copy_index, action_id in enumerate(
-                registry.transform_ids
-            ):
+            for action_copy_index, action_id in enumerate(registry.transform_ids):
                 left_representative = left_mapping[action_id]
                 target_action_id = registry.compose_ids(
                     relation_id,
@@ -566,48 +539,46 @@ def expand_symmetry_instances(
                     edge_orbit_id,
                     action_copy_index,
                 )
-                interface_instances[edge_instance_id] = (
-                    InterfaceEdgeInstance(
-                        id=edge_instance_id,
-                        source_id=edge_id,
-                        hyperedge_id=edge_spec.hyperedge_id,
-                        left_port_instance_id=port_index[
-                            (
-                                edge_spec.left_port,
-                                left_orbit_id,
-                                left_copy_index,
-                            )
-                        ],
-                        right_port_instance_id=port_index[
-                            (
-                                edge_spec.right_port,
-                                right_orbit_id,
-                                right_copy_index,
-                            )
-                        ],
-                        required=edge_spec.required,
-                        satisfaction_stage=edge_spec.satisfaction_stage,
-                        target_geometry=edge_spec.target_geometry,
-                        orbit_id=edge_orbit_id,
-                        transform_set_id=transform_set_id,
-                        action_transform_id=action_id,
-                        action_copy_index=action_copy_index,
-                        physical_edge_index=physical_edge_index,
-                        equivalent_action_transform_ids=tuple(
-                            item[1] for item in equivalent_actions
-                        ),
-                        edge_stabilizer_order=len(equivalent_actions),
-                        left_orbit_id=left_orbit_id,
-                        right_orbit_id=right_orbit_id,
-                        left_transform_index=registry.transform_ids.index(
-                            left_representative
-                        ),
-                        right_transform_index=registry.transform_ids.index(
-                            right_representative
-                        ),
-                        source_copy_index=left_copy_index,
-                        target_copy_index=right_copy_index,
-                    )
+                interface_instances[edge_instance_id] = InterfaceEdgeInstance(
+                    id=edge_instance_id,
+                    source_id=edge_id,
+                    hyperedge_id=edge_spec.hyperedge_id,
+                    left_port_instance_id=port_index[
+                        (
+                            edge_spec.left_port,
+                            left_orbit_id,
+                            left_copy_index,
+                        )
+                    ],
+                    right_port_instance_id=port_index[
+                        (
+                            edge_spec.right_port,
+                            right_orbit_id,
+                            right_copy_index,
+                        )
+                    ],
+                    required=edge_spec.required,
+                    satisfaction_stage=edge_spec.satisfaction_stage,
+                    target_geometry=edge_spec.target_geometry,
+                    orbit_id=edge_orbit_id,
+                    transform_set_id=transform_set_id,
+                    action_transform_id=action_id,
+                    action_copy_index=action_copy_index,
+                    physical_edge_index=physical_edge_index,
+                    equivalent_action_transform_ids=tuple(
+                        item[1] for item in equivalent_actions
+                    ),
+                    edge_stabilizer_order=len(equivalent_actions),
+                    left_orbit_id=left_orbit_id,
+                    right_orbit_id=right_orbit_id,
+                    left_transform_index=registry.transform_ids.index(
+                        left_representative
+                    ),
+                    right_transform_index=registry.transform_ids.index(
+                        right_representative
+                    ),
+                    source_copy_index=left_copy_index,
+                    target_copy_index=right_copy_index,
                 )
             continue
         left_copy_keys = [
@@ -625,8 +596,7 @@ def expand_symmetry_instances(
             )
             if (orbit_id, target_copy_index) not in right_copy_keys:
                 raise ValueError(
-                    f"Interface {edge_id!r} connects incompatible symmetry "
-                    "orbits"
+                    f"Interface {edge_id!r} connects incompatible symmetry " "orbits"
                 )
             edge_instance_id = _instance_id(
                 edge_id,
@@ -657,9 +627,7 @@ def expand_symmetry_instances(
                     if orbit_id is not None
                     else None
                 ),
-                action_copy_index=(
-                    source_copy_index if orbit_id is not None else None
-                ),
+                action_copy_index=(source_copy_index if orbit_id is not None else None),
                 left_orbit_id=orbit_id,
                 right_orbit_id=orbit_id,
                 left_transform_index=(
@@ -693,12 +661,8 @@ def expand_symmetry_instances(
         to_group_id = fragment_to_group[to_fragment_id]
         from_expansions = expansions[from_group_id]
         to_expansions = expansions[to_group_id]
-        from_copy_keys = [
-            (record[0], record[2]) for record in from_expansions
-        ]
-        to_copy_keys = {
-            (record[0], record[2]) for record in to_expansions
-        }
+        from_copy_keys = [(record[0], record[2]) for record in from_expansions]
+        to_copy_keys = {(record[0], record[2]) for record in to_expansions}
         for orbit_id, copy_index in from_copy_keys:
             target_copy_index = resolve_copy_relation(
                 orbit_id,
@@ -716,26 +680,24 @@ def expand_symmetry_instances(
                 orbit_id,
                 copy_index,
             )
-            scaffold_link_instances[link_instance_id] = (
-                ScaffoldLinkInstance(
-                    id=link_instance_id,
-                    source_id=link_id,
-                    from_fragment_instance_id=fragment_index[
-                        (from_fragment_id, orbit_id, copy_index)
-                    ],
-                    from_terminus=link_spec.from_endpoint.terminus,
-                    to_fragment_instance_id=fragment_index[
-                        (to_fragment_id, orbit_id, target_copy_index)
-                    ],
-                    to_terminus=link_spec.to_endpoint.terminus,
-                    minimum_length=link_spec.length.minimum,
-                    maximum_length=link_spec.length.maximum,
-                    tie_group=link_spec.tie_group,
-                    chain_break=link_spec.chain_break,
-                    orbit_id=orbit_id,
-                    copy_index=copy_index,
-                    target_copy_index=target_copy_index,
-                )
+            scaffold_link_instances[link_instance_id] = ScaffoldLinkInstance(
+                id=link_instance_id,
+                source_id=link_id,
+                from_fragment_instance_id=fragment_index[
+                    (from_fragment_id, orbit_id, copy_index)
+                ],
+                from_terminus=link_spec.from_endpoint.terminus,
+                to_fragment_instance_id=fragment_index[
+                    (to_fragment_id, orbit_id, target_copy_index)
+                ],
+                to_terminus=link_spec.to_endpoint.terminus,
+                minimum_length=link_spec.length.minimum,
+                maximum_length=link_spec.length.maximum,
+                tie_group=link_spec.tie_group,
+                chain_break=link_spec.chain_break,
+                orbit_id=orbit_id,
+                copy_index=copy_index,
+                target_copy_index=target_copy_index,
             )
 
     generated_segment_instances: dict[
@@ -749,19 +711,15 @@ def expand_symmetry_instances(
             from_group_id = fragment_to_group[from_fragment_id]
             to_group_id = fragment_to_group[to_fragment_id]
             to_copy_keys = {
-                (record[0], record[2])
-                for record in expansions[to_group_id]
+                (record[0], record[2]) for record in expansions[to_group_id]
             }
             for orbit_id, copy_index in (
-                (record[0], record[2])
-                for record in expansions[from_group_id]
+                (record[0], record[2]) for record in expansions[from_group_id]
             ):
                 target_copy_index = resolve_copy_relation(
                     orbit_id,
                     copy_index,
-                    orbit_offset=(
-                        segment_spec.copy_relation.orbit_offset
-                    ),
+                    orbit_offset=(segment_spec.copy_relation.orbit_offset),
                     transform=segment_spec.copy_relation.transform,
                 )
                 if (orbit_id, target_copy_index) not in to_copy_keys:
@@ -774,32 +732,28 @@ def expand_symmetry_instances(
                     orbit_id,
                     copy_index,
                 )
-                generated_segment_instances[instance_id] = (
-                    ScaffoldLinkInstance(
-                        id=instance_id,
-                        source_id=segment_id,
-                        from_fragment_instance_id=fragment_index[
-                            (from_fragment_id, orbit_id, copy_index)
-                        ],
-                        from_terminus=(
-                            segment_spec.from_endpoint.terminus
-                        ),
-                        to_fragment_instance_id=fragment_index[
-                            (
-                                to_fragment_id,
-                                orbit_id,
-                                target_copy_index,
-                            )
-                        ],
-                        to_terminus=segment_spec.to_endpoint.terminus,
-                        minimum_length=segment_spec.length.minimum,
-                        maximum_length=segment_spec.length.maximum,
-                        tie_group=segment_spec.tie_group,
-                        chain_break=segment_spec.chain_break,
-                        orbit_id=orbit_id,
-                        copy_index=copy_index,
-                        target_copy_index=target_copy_index,
-                    )
+                generated_segment_instances[instance_id] = ScaffoldLinkInstance(
+                    id=instance_id,
+                    source_id=segment_id,
+                    from_fragment_instance_id=fragment_index[
+                        (from_fragment_id, orbit_id, copy_index)
+                    ],
+                    from_terminus=(segment_spec.from_endpoint.terminus),
+                    to_fragment_instance_id=fragment_index[
+                        (
+                            to_fragment_id,
+                            orbit_id,
+                            target_copy_index,
+                        )
+                    ],
+                    to_terminus=segment_spec.to_endpoint.terminus,
+                    minimum_length=segment_spec.length.minimum,
+                    maximum_length=segment_spec.length.maximum,
+                    tie_group=segment_spec.tie_group,
+                    chain_break=segment_spec.chain_break,
+                    orbit_id=orbit_id,
+                    copy_index=copy_index,
+                    target_copy_index=target_copy_index,
                 )
             continue
 
@@ -811,20 +765,18 @@ def expand_symmetry_instances(
                 orbit_id,
                 copy_index,
             )
-            generated_segment_instances[instance_id] = (
-                TerminalExtensionInstance(
-                    id=instance_id,
-                    source_id=segment_id,
-                    anchor_fragment_instance_id=fragment_index[
-                        (anchor_fragment_id, orbit_id, copy_index)
-                    ],
-                    anchor_terminus=segment_spec.anchor.terminus,
-                    minimum_length=segment_spec.length.minimum,
-                    maximum_length=segment_spec.length.maximum,
-                    tie_group=segment_spec.tie_group,
-                    orbit_id=orbit_id,
-                    copy_index=copy_index,
-                )
+            generated_segment_instances[instance_id] = TerminalExtensionInstance(
+                id=instance_id,
+                source_id=segment_id,
+                anchor_fragment_instance_id=fragment_index[
+                    (anchor_fragment_id, orbit_id, copy_index)
+                ],
+                anchor_terminus=segment_spec.anchor.terminus,
+                minimum_length=segment_spec.length.minimum,
+                maximum_length=segment_spec.length.maximum,
+                tie_group=segment_spec.tie_group,
+                orbit_id=orbit_id,
+                copy_index=copy_index,
             )
 
     return CompiledInstanceSet(
@@ -922,6 +874,134 @@ def _uniform_so3_rotation(
     return rotation, quaternion
 
 
+def _rotation_aligning_vectors(
+    source: np.ndarray,
+    target: np.ndarray,
+) -> np.ndarray:
+    """Return the shortest proper rotation mapping one unit vector to another."""
+
+    source = source / np.linalg.norm(source)
+    target = target / np.linalg.norm(target)
+    cosine = float(np.clip(np.dot(source, target), -1.0, 1.0))
+    if cosine >= 1.0 - 1e-12:
+        return np.eye(3, dtype=np.float64)
+    if cosine <= -1.0 + 1e-12:
+        reference = np.asarray((1.0, 0.0, 0.0), dtype=np.float64)
+        if abs(float(np.dot(source, reference))) > 0.9:
+            reference = np.asarray((0.0, 1.0, 0.0), dtype=np.float64)
+        perpendicular = np.cross(source, reference)
+        perpendicular /= np.linalg.norm(perpendicular)
+        return axis_angle_rotation(perpendicular, np.pi)
+    cross = np.cross(source, target)
+    sine = float(np.linalg.norm(cross))
+    skew = np.asarray(
+        (
+            (0.0, -cross[2], cross[1]),
+            (cross[2], 0.0, -cross[0]),
+            (-cross[1], cross[0], 0.0),
+        ),
+        dtype=np.float64,
+    )
+    return np.eye(3) + skew + skew @ skew * ((1.0 - cosine) / sine**2)
+
+
+def _rotation_matrix_quaternion_xyzw(rotation: np.ndarray) -> np.ndarray:
+    """Convert a proper rotation matrix to one deterministic unit quaternion."""
+
+    matrix = np.asarray(rotation, dtype=np.float64)
+    trace = float(np.trace(matrix))
+    if trace > 0.0:
+        scale = 2.0 * np.sqrt(trace + 1.0)
+        quaternion = np.asarray(
+            (
+                (matrix[2, 1] - matrix[1, 2]) / scale,
+                (matrix[0, 2] - matrix[2, 0]) / scale,
+                (matrix[1, 0] - matrix[0, 1]) / scale,
+                0.25 * scale,
+            )
+        )
+    else:
+        index = int(np.argmax(np.diag(matrix)))
+        if index == 0:
+            scale = 2.0 * np.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2])
+            quaternion = np.asarray(
+                (
+                    0.25 * scale,
+                    (matrix[0, 1] + matrix[1, 0]) / scale,
+                    (matrix[0, 2] + matrix[2, 0]) / scale,
+                    (matrix[2, 1] - matrix[1, 2]) / scale,
+                )
+            )
+        elif index == 1:
+            scale = 2.0 * np.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2])
+            quaternion = np.asarray(
+                (
+                    (matrix[0, 1] + matrix[1, 0]) / scale,
+                    0.25 * scale,
+                    (matrix[1, 2] + matrix[2, 1]) / scale,
+                    (matrix[0, 2] - matrix[2, 0]) / scale,
+                )
+            )
+        else:
+            scale = 2.0 * np.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1])
+            quaternion = np.asarray(
+                (
+                    (matrix[0, 2] + matrix[2, 0]) / scale,
+                    (matrix[1, 2] + matrix[2, 1]) / scale,
+                    0.25 * scale,
+                    (matrix[1, 0] - matrix[0, 1]) / scale,
+                )
+            )
+    quaternion /= np.linalg.norm(quaternion)
+    if quaternion[3] < 0.0:
+        quaternion *= -1.0
+    return quaternion
+
+
+def _principal_axis_cone_rotation(
+    source_axis: np.ndarray,
+    symmetry_axis: np.ndarray,
+    maximum_tilt_deg: float,
+    rng: np.random.Generator,
+    *,
+    unit_values: tuple[float, float, float] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample uniformly in axial solid angle and uniformly in axial roll.
+
+    The first two variates choose a direction inside the declared cone and
+    the third chooses roll about that direction.  A zero-width cone therefore
+    still retains the complete one-dimensional roll diversity.
+    """
+
+    if unit_values is None:
+        u_tilt, u_azimuth, u_roll = (float(value) for value in rng.random(3))
+    else:
+        u_tilt, u_azimuth, u_roll = (
+            _unit_interval_value(value, name="Axis-cone unit sample")
+            for value in unit_values
+        )
+    axis = symmetry_axis / np.linalg.norm(symmetry_axis)
+    reference = np.asarray((1.0, 0.0, 0.0), dtype=np.float64)
+    if abs(float(np.dot(axis, reference))) > 0.9:
+        reference = np.asarray((0.0, 1.0, 0.0), dtype=np.float64)
+    basis_x = reference - np.dot(reference, axis) * axis
+    basis_x /= np.linalg.norm(basis_x)
+    basis_y = np.cross(axis, basis_x)
+    maximum = np.deg2rad(float(maximum_tilt_deg))
+    cosine = 1.0 - u_tilt * (1.0 - np.cos(maximum))
+    sine = np.sqrt(max(0.0, 1.0 - cosine**2))
+    azimuth = 2.0 * np.pi * u_azimuth
+    target_axis = (
+        cosine * axis
+        + sine * np.cos(azimuth) * basis_x
+        + sine * np.sin(azimuth) * basis_y
+    )
+    alignment = _rotation_aligning_vectors(source_axis, target_axis)
+    roll = axis_angle_rotation(target_axis, 2.0 * np.pi * u_roll)
+    rotation = roll @ alignment
+    return rotation, _rotation_matrix_quaternion_xyzw(rotation)
+
+
 def _principal_axis(coordinates: np.ndarray) -> np.ndarray | None:
     """Return a deterministic longest PCA axis, or None when degenerate."""
 
@@ -979,13 +1059,9 @@ def build_master_group_transforms(
                 group_digest = hashlib.sha256(
                     f"{random_seed}:{group_id}".encode("utf-8")
                 ).digest()
-                group_seed = int.from_bytes(
-                    group_digest[:8], "big"
-                ) % (2**32)
+                group_seed = int.from_bytes(group_digest[:8], "big") % (2**32)
         rng = (
-            np.random.default_rng(group_seed)
-            if group_seed is not None
-            else shared_rng
+            np.random.default_rng(group_seed) if group_seed is not None else shared_rng
         )
         group_override = (sample_overrides or {}).get(group_id, {})
         group = spec.motion_groups[group_id]
@@ -999,6 +1075,7 @@ def build_master_group_transforms(
                 f"Motion group {group_id!r} has no atoms for initialization"
             )
         coordinates = _atom_coordinates(atoms)
+        principal_axis_source = _principal_axis(coordinates)
         if initialization.center_method == CenterMethod.NONE:
             source_center = np.zeros(3, dtype=np.float64)
         else:
@@ -1041,13 +1118,27 @@ def build_master_group_transforms(
             rng,
             unit_value=group_override.get("axial_offset_unit"),
         )
-        target_center = (
-            symmetry_center + radial * radius + axis * axial_offset
-        )
+        target_center = symmetry_center + radial * radius + axis * axial_offset
         quaternion: np.ndarray | None = None
         if initialization.orientation.method == "fixed":
-            rotation = _fixed_xyz_rotation(
-                initialization.orientation.rotation_deg
+            rotation = _fixed_xyz_rotation(initialization.orientation.rotation_deg)
+        elif initialization.orientation.method == "principal_axis_cone":
+            if principal_axis_source is None:
+                raise ValueError(
+                    "principal_axis_cone orientation requires one unique "
+                    f"longest PCA axis for motion group {group_id!r}"
+                )
+            so3_unit = group_override.get("so3_unit")
+            rotation, quaternion = _principal_axis_cone_rotation(
+                principal_axis_source,
+                axis,
+                initialization.orientation.maximum_tilt_deg,
+                rng,
+                unit_values=(
+                    tuple(float(value) for value in so3_unit)
+                    if so3_unit is not None
+                    else None
+                ),
             )
         else:
             so3_unit = group_override.get("so3_unit")
@@ -1062,7 +1153,6 @@ def build_master_group_transforms(
         translation = target_center - rotation @ source_center
         transforms[group_id] = make_transform(rotation, translation)
         if sample_metadata is not None:
-            principal_axis_source = _principal_axis(coordinates)
             principal_axis_world = (
                 rotation @ principal_axis_source
                 if principal_axis_source is not None
@@ -1085,20 +1175,21 @@ def build_master_group_transforms(
             )
             sample_metadata[group_id] = {
                 "random_seed": (
-                    group_seed
-                    if group_seed is not None
-                    else effective_seed
+                    group_seed if group_seed is not None else effective_seed
                 ),
                 "orientation_method": initialization.orientation.method,
+                "maximum_principal_axis_tilt_deg": getattr(
+                    initialization.orientation,
+                    "maximum_tilt_deg",
+                    None,
+                ),
                 "quaternion_xyzw": (
                     quaternion.tolist() if quaternion is not None else None
                 ),
                 "rotation_matrix": rotation.tolist(),
                 "unit_samples": {
                     "radius": group_override.get("radius_unit"),
-                    "axial_offset": group_override.get(
-                        "axial_offset_unit"
-                    ),
+                    "axial_offset": group_override.get("axial_offset_unit"),
                     "so3": group_override.get("so3_unit"),
                 },
                 "sampled_radius": radius,
@@ -1148,9 +1239,7 @@ def resolve_reference_port_frames(
             port_spec.atoms,
         )
 
-    partners: dict[str, set[str]] = {
-        port_id: set() for port_id in spec.ports
-    }
+    partners: dict[str, set[str]] = {port_id: set() for port_id in spec.ports}
     for edge in spec.interfaces.values():
         partners[edge.left_port].add(edge.right_port)
         partners[edge.right_port].add(edge.left_port)
@@ -1203,9 +1292,7 @@ def resolve_reference_port_frames(
             partner_coordinates = None
             if partner_ids:
                 partner_id = next(iter(partner_ids))
-                partner_coordinates = _atom_coordinates(
-                    port_atoms[partner_id]
-                )
+                partner_coordinates = _atom_coordinates(port_atoms[partner_id])
             transform = reference_interface_pca_frame(
                 _atom_coordinates(port_atoms[port_id]),
                 partner_coordinates=partner_coordinates,

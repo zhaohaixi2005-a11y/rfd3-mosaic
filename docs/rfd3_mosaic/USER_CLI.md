@@ -353,6 +353,31 @@ fixed. These scheduling fields apply only to `orbit_rigid` components: their
 supplied internal interface geometry remains exact while the complete seed can
 move as one symmetry-coupled rigid pose.
 
+Movable rigid bodies use a three-stage schedule defined by percentages of each
+component's declared active window, so the behavior is independent of whether
+the run uses 50, 100 or 200 diffusion steps:
+
+| Active-window interval | Phase | Relative proposal range |
+| --- | --- | --- |
+| first 40% | capture | up to 100% of the declared per-step SE(3) trust region |
+| next 40% | settle | up to 50% of the declared per-step trust region |
+| final 20% | polish | up to 20% of the declared per-step trust region |
+
+The declared `max_translation` and `max_rotation_deg` remain cumulative hard
+bounds in every phase. Energy-improving line search may shorten or reject an
+unsafe proposal; the schedule permits a substantial early correction but does
+not require movement when the current pose is already locally consistent.
+After `end_fraction` the pose is frozen. This schedule never applies to
+`pose.mode: fixed`, and it never changes the internal coordinates of a
+joint-rigid seed.
+
+The exact SE(3) state, objective terms, gradients, subspace projections,
+phase-response formula, line search, cumulative bounds and atomic rollback
+conditions are specified in the
+[rigid-mobility mathematical contract](RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md).
+Its controller energy is an inference-time local geometry objective, not a
+physical free energy or a claim that the final backbone will fold.
+
 Existing frozen `packing_preferences_v1` runs retain their original behavior.
 Newly compiled `packing_preferences_v2` designs keep
 `intra_chain_weight=0` unless the user requests monomer-core guidance, while

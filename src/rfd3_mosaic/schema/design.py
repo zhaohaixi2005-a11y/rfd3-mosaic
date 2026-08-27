@@ -448,8 +448,17 @@ class UserUniformSO3OrientationSpec(StrictModel):
     method: Literal["uniform_so3"] = "uniform_so3"
 
 
+class UserPrincipalAxisConeOrientationSpec(StrictModel):
+    """Sample roll freely while keeping the seed long axis near symmetry z."""
+
+    method: Literal["principal_axis_cone"] = "principal_axis_cone"
+    maximum_tilt_deg: Annotated[float, Field(ge=0.0, le=90.0)] = 0.0
+
+
 UserInitialOrientationSpec = Annotated[
-    UserFixedOrientationSpec | UserUniformSO3OrientationSpec,
+    UserFixedOrientationSpec
+    | UserUniformSO3OrientationSpec
+    | UserPrincipalAxisConeOrientationSpec,
     Field(discriminator="method"),
 ]
 
@@ -545,9 +554,7 @@ class UserSamplingSpec(StrictModel):
     scaffold_core_quality: ScaffoldCoreQualitySpec = Field(
         default_factory=ScaffoldCoreQualitySpec
     )
-    screening: AdvisoryScreeningSpec = Field(
-        default_factory=AdvisoryScreeningSpec
-    )
+    screening: AdvisoryScreeningSpec = Field(default_factory=AdvisoryScreeningSpec)
 
     @model_validator(mode="after")
     def reject_ambiguous_pose_declarations(self) -> "UserSamplingSpec":
@@ -557,8 +564,7 @@ class UserSamplingSpec(StrictModel):
             )
         if self.replicates_per_pose > self.designs:
             raise ValueError(
-                "sampling.replicates_per_pose cannot exceed "
-                "sampling.designs"
+                "sampling.replicates_per_pose cannot exceed " "sampling.designs"
             )
         return self
 

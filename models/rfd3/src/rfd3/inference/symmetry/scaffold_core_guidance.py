@@ -34,8 +34,20 @@ class ScaffoldCoreChain:
 
 
 @dataclass(frozen=True)
+class ScaffoldCoreGeneratedRun:
+    """One generated polymer run bounded by two fixed CA anchors."""
+
+    asym_id: int
+    generated_ca_atom_indices: torch.Tensor
+    generated_token_indices: torch.Tensor
+    left_anchor_ca_atom_index: int
+    right_anchor_ca_atom_index: int
+
+
+@dataclass(frozen=True)
 class ScaffoldCoreTopology:
     chains: tuple[ScaffoldCoreChain, ...]
+    generated_runs: tuple[ScaffoldCoreGeneratedRun, ...]
     atom_to_token: torch.Tensor
     generated_token_mask: torch.Tensor
     generated_atom_mask: torch.Tensor
@@ -56,6 +68,7 @@ class ScaffoldCoreGuidanceConfig:
     inter_chain_excess_weight: float = 1.0
     clash_weight: float = 8.0
     continuity_weight: float = 2.0
+    routing_ownership_weight: float = 0.0
     contact_distance: float = 8.0
     contact_softness: float = 0.75
     sequence_separation: int = 8
@@ -84,6 +97,7 @@ class ScaffoldCoreGuidanceConfig:
             "inter_chain_excess_weight",
             "clash_weight",
             "continuity_weight",
+            "routing_ownership_weight",
         ):
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} cannot be negative")
@@ -123,12 +137,15 @@ class ScaffoldCoreEnergy:
     clash: torch.Tensor
     cross_chain_segment_clash: torch.Tensor
     continuity: torch.Tensor
+    routing_ownership: torch.Tensor
     mean_normalized_rg: torch.Tensor
     mean_tertiary_support_fraction: torch.Tensor
     generated_inter_chain_contact_pairs: torch.Tensor
     generated_inter_chain_contact_coverage: torch.Tensor
     minimum_generated_inter_chain_distance: torch.Tensor
     minimum_cross_chain_segment_distance: torch.Tensor
+    routing_ownership_violation_fraction: torch.Tensor
+    maximum_routing_ownership_excess: torch.Tensor
 
     def detached_dict(self) -> dict[str, float]:
         return {
@@ -142,12 +159,15 @@ class ScaffoldCoreEnergy:
                 "clash",
                 "cross_chain_segment_clash",
                 "continuity",
+                "routing_ownership",
                 "mean_normalized_rg",
                 "mean_tertiary_support_fraction",
                 "generated_inter_chain_contact_pairs",
                 "generated_inter_chain_contact_coverage",
                 "minimum_generated_inter_chain_distance",
                 "minimum_cross_chain_segment_distance",
+                "routing_ownership_violation_fraction",
+                "maximum_routing_ownership_excess",
             )
         }
 
@@ -216,6 +236,7 @@ def build_scaffold_core_topology(
     adjacent_pair_colors: list[int] = []
     directed_forward_groups: dict[int, list[tuple[int, int, int, int]]] = {}
     directed_reverse_groups: dict[int, list[tuple[int, int, int, int]]] = {}
+    generated_runs: list[ScaffoldCoreGeneratedRun] = []
     for chain_id in torch.unique(asym_id[ca_tokens], sorted=True).tolist():
         select = asym_id[ca_tokens] == int(chain_id)
         selected_atoms = ca_atom_indices[select]
@@ -233,9 +254,7 @@ def build_scaffold_core_topology(
             consecutive,
             as_tuple=False,
         ).reshape(-1)
-        for pair_index in (
-            consecutive_indices.tolist()
-        ):
+        for pair_index in consecutive_indices.tolist():
             left_token = int(selected_tokens[pair_index].item())
             right_token = int(selected_tokens[pair_index + 1].item())
             if bool(
@@ -249,9 +268,7 @@ def build_scaffold_core_topology(
                         int(selected_atoms[pair_index + 1].item()),
                     )
                 )
-                adjacent_pair_colors.append(
-                    int(residue_index[left_token].item()) % 2
-                )
+                adjacent_pair_colors.append(int(residue_index[left_token].item()) % 2)
         # Terminal generated runs have an unambiguous polymer anchor.  Record
         # a breadth/depth schedule so one vectorized forward (or reverse)
         # sweep can propagate that anchor through every symmetry copy.  This
@@ -263,10 +280,7 @@ def build_scaffold_core_topology(
                 run_start += 1
                 continue
             run_end = run_start
-            while (
-                run_end + 1 < len(generated_values)
-                and generated_values[run_end + 1]
-            ):
+            while run_end + 1 < len(generated_values) and generated_values[run_end + 1]:
                 run_end += 1
             left_fixed = run_start > 0 and not generated_values[run_start - 1]
             right_fixed = (
@@ -284,9 +298,7 @@ def build_scaffold_core_topology(
                         )
                     )
             if right_fixed:
-                for depth, pair_index in enumerate(
-                    range(run_end, run_start - 1, -1)
-                ):
+                for depth, pair_index in enumerate(range(run_end, run_start - 1, -1)):
                     directed_reverse_groups.setdefault(depth, []).append(
                         (
                             int(selected_atoms[pair_index].item()),
@@ -295,6 +307,24 @@ def build_scaffold_core_topology(
                             1,
                         )
                     )
+            if left_fixed and right_fixed:
+                generated_runs.append(
+                    ScaffoldCoreGeneratedRun(
+                        asym_id=int(chain_id),
+                        generated_ca_atom_indices=selected_atoms[
+                            run_start : run_end + 1
+                        ],
+                        generated_token_indices=selected_tokens[
+                            run_start : run_end + 1
+                        ],
+                        left_anchor_ca_atom_index=int(
+                            selected_atoms[run_start - 1].item()
+                        ),
+                        right_anchor_ca_atom_index=int(
+                            selected_atoms[run_end + 1].item()
+                        ),
+                    )
+                )
             run_start = run_end + 1
         chains.append(
             ScaffoldCoreChain(
@@ -321,6 +351,7 @@ def build_scaffold_core_topology(
         raise ValueError("Scaffold core guidance found no generated protein tokens")
     return ScaffoldCoreTopology(
         chains=tuple(chains),
+        generated_runs=tuple(generated_runs),
         atom_to_token=atom_to_token,
         generated_token_mask=token_generated,
         generated_atom_mask=generated_atom_mask,
@@ -406,9 +437,7 @@ def project_generated_polymer_continuity(
 
     def errors(value: torch.Tensor) -> torch.Tensor:
         vectors = value[:, atom_pairs[:, 1]] - value[:, atom_pairs[:, 0]]
-        return torch.abs(
-            torch.linalg.vector_norm(vectors, dim=-1) - target_ca_distance
-        )
+        return torch.abs(torch.linalg.vector_norm(vectors, dim=-1) - target_ca_distance)
 
     initial_errors = errors(result)
     applied_iterations = 0
@@ -455,18 +484,11 @@ def project_generated_polymer_continuity(
             selected_atoms = atom_pairs[selected]
             if not len(selected_tokens):
                 continue
-            vectors = (
-                result[:, selected_atoms[:, 1]]
-                - result[:, selected_atoms[:, 0]]
-            )
+            vectors = result[:, selected_atoms[:, 1]] - result[:, selected_atoms[:, 0]]
             distances = torch.linalg.vector_norm(vectors, dim=-1).clamp_min(1e-8)
             violation = torch.abs(distances - target_ca_distance) > tolerance
             unit = vectors / distances[..., None]
-            correction = (
-                relaxation
-                * (distances - target_ca_distance)[..., None]
-                * unit
-            )
+            correction = relaxation * (distances - target_ca_distance)[..., None] * unit
             left = selected_tokens[:, 0]
             right = selected_tokens[:, 1]
             left_generated = generated[left]
@@ -495,8 +517,7 @@ def project_generated_polymer_continuity(
     maximum_initial = float(initial_errors.max().detach().cpu().item())
     maximum_final = float(final_errors.max().detach().cpu().item())
     return result.detach(), {
-        "applied": bool(topology.directed_continuity_groups)
-        or applied_iterations > 0,
+        "applied": bool(topology.directed_continuity_groups) or applied_iterations > 0,
         "pair_count": int(len(token_pairs)),
         "directed_group_count": len(topology.directed_continuity_groups),
         "directed_sweeps": directed_sweeps,
@@ -605,8 +626,7 @@ def _segment_to_segment_distances(
         & (right_fraction <= 1.0)
     )
     left_closest = (
-        left_start[:, None, :]
-        + left_fraction[..., None] * left_direction[:, None, :]
+        left_start[:, None, :] + left_fraction[..., None] * left_direction[:, None, :]
     )
     right_closest = (
         right_start[None, :, :]
@@ -622,16 +642,20 @@ def _segment_to_segment_distances(
         interior_distance,
         infinity,
     )
-    return torch.stack(
-        (
-            left_start_to_right,
-            left_end_to_right,
-            right_start_to_left,
-            right_end_to_left,
-            interior_distance,
-        ),
-        dim=0,
-    ).min(dim=0).values
+    return (
+        torch.stack(
+            (
+                left_start_to_right,
+                left_end_to_right,
+                right_start_to_left,
+                right_end_to_left,
+                interior_distance,
+            ),
+            dim=0,
+        )
+        .min(dim=0)
+        .values
+    )
 
 
 def scaffold_core_energy(
@@ -773,9 +797,7 @@ def scaffold_core_energy(
                 # while ordinary interface-distance contacts remain soft.
                 clash_terms.append(
                     torch.mean(
-                        torch.square(
-                            torch.relu(config.clash_distance - distances)
-                        )
+                        torch.square(torch.relu(config.clash_distance - distances))
                     )
                 )
 
@@ -796,12 +818,50 @@ def scaffold_core_energy(
                     cross_chain_segment_clash_terms.append(
                         torch.max(
                             torch.square(
-                                torch.relu(
-                                    config.clash_distance - segment_distances
-                                )
+                                torch.relu(config.clash_distance - segment_distances)
                             )
                         )
                     )
+
+    # A two-anchored generated run owns the Voronoi cell of its compiler-
+    # declared endpoint chord.  This is a relative routing constraint: it
+    # does not pull a backbone onto the straight chord and it does not prefer
+    # inward over outward curvature.  It only penalizes residues that are
+    # closer to another chain's endpoint corridor than to their own.
+    routing_terms: list[torch.Tensor] = []
+    routing_excesses: list[torch.Tensor] = []
+    for run_index, run in enumerate(topology.generated_runs):
+        competitors = [
+            other
+            for other_index, other in enumerate(topology.generated_runs)
+            if other_index != run_index and other.asym_id != run.asym_id
+        ]
+        if not competitors or not len(run.generated_ca_atom_indices):
+            continue
+        points = coordinates[run.generated_ca_atom_indices]
+        own = _point_to_segment_distances(
+            points,
+            coordinates[run.left_anchor_ca_atom_index][None, :],
+            coordinates[run.right_anchor_ca_atom_index][None, :],
+        )[:, 0]
+        other_start = torch.stack(
+            [coordinates[item.left_anchor_ca_atom_index] for item in competitors]
+        )
+        other_end = torch.stack(
+            [coordinates[item.right_anchor_ca_atom_index] for item in competitors]
+        )
+        other = (
+            _point_to_segment_distances(
+                points,
+                other_start,
+                other_end,
+            )
+            .min(dim=1)
+            .values
+        )
+        excess = torch.relu(own - other) / config.backbone_distance
+        routing_excesses.append(excess)
+        routing_terms.append(torch.mean(torch.square(excess)))
 
     def mean(items: list[torch.Tensor], default: torch.Tensor = zero):
         return torch.stack(items).mean() if items else default
@@ -813,6 +873,7 @@ def scaffold_core_energy(
     clash = mean(clash_terms)
     cross_chain_segment_clash = mean(cross_chain_segment_clash_terms)
     continuity = mean(continuity_terms)
+    routing_ownership = mean(routing_terms)
     total = (
         config.intra_chain_weight
         * (
@@ -825,9 +886,15 @@ def scaffold_core_energy(
         * inter_excess
         + config.clash_weight * (clash + cross_chain_segment_clash)
         + config.continuity_weight * continuity
+        + config.routing_ownership_weight * routing_ownership
     )
     inf = torch.full(
         (), float("inf"), dtype=coordinates.dtype, device=coordinates.device
+    )
+    all_routing_excess = (
+        torch.cat(routing_excesses)
+        if routing_excesses
+        else torch.zeros(1, dtype=coordinates.dtype, device=coordinates.device)
     )
     return ScaffoldCoreEnergy(
         total=total,
@@ -838,6 +905,7 @@ def scaffold_core_energy(
         clash=clash,
         cross_chain_segment_clash=cross_chain_segment_clash,
         continuity=continuity,
+        routing_ownership=routing_ownership,
         mean_normalized_rg=mean(normalized_rgs),
         mean_tertiary_support_fraction=mean(support_fractions),
         generated_inter_chain_contact_pairs=torch.stack(inter_pairs_hard).sum()
@@ -852,6 +920,10 @@ def scaffold_core_energy(
         ).min()
         if cross_chain_segment_minimums
         else inf,
+        routing_ownership_violation_fraction=torch.mean(
+            (all_routing_excess > 0.0).to(coordinates.dtype)
+        ),
+        maximum_routing_ownership_excess=all_routing_excess.max(),
     )
 
 
@@ -1010,6 +1082,11 @@ def apply_scaffold_core_guidance(
             <= float(initial.cross_chain_segment_clash.item()) + 1e-7
             and float(trial.continuity.item())
             <= float(initial.continuity.item()) + 1e-7
+            and (
+                config.routing_ownership_weight <= 0.0
+                or float(trial.routing_ownership.item())
+                <= float(initial.routing_ownership.item()) + 1e-7
+            )
         )
         if safety_ok and float(trial.total.item()) < float(initial.total.item()) - 1e-8:
             result = candidate.detach()

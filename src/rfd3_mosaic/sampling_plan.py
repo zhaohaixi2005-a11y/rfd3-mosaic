@@ -43,6 +43,7 @@ class StaticPosePlan(StrictModel):
     radial_direction: tuple[float, float, float]
     orientation_method: str
     rotation_deg: tuple[float, float, float] | None = None
+    maximum_tilt_deg: float | None = None
 
 
 class SamplingPlan(StrictModel):
@@ -50,13 +51,9 @@ class SamplingPlan(StrictModel):
 
     schema_version: int = 1
     initial_pose: StaticPosePlan | None = None
-    component_initial_poses: tuple[StaticPosePlan, ...] = Field(
-        default_factory=tuple
-    )
+    component_initial_poses: tuple[StaticPosePlan, ...] = Field(default_factory=tuple)
     diffusion: DiffusionSamplingPlan
-    runtime_mobility: tuple[dict[str, object], ...] = Field(
-        default_factory=tuple
-    )
+    runtime_mobility: tuple[dict[str, object], ...] = Field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -79,7 +76,7 @@ def pose_plan_is_stochastic(plan: SamplingPlan) -> bool:
         else plan.component_initial_poses
     )
     return any(
-        pose.orientation_method == "uniform_so3"
+        pose.orientation_method in {"uniform_so3", "principal_axis_cone"}
         or pose.radius_minimum != pose.radius_maximum
         or pose.axial_minimum != pose.axial_maximum
         for pose in poses
@@ -158,16 +155,17 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
             axial_maximum=initial.axial_offset.maximum,
             radial_direction=initial.radial_direction,
             orientation_method=initial.orientation.method,
-            rotation_deg=(
-                initial.orientation.rotation_deg if fixed else None
+            rotation_deg=(initial.orientation.rotation_deg if fixed else None),
+            maximum_tilt_deg=getattr(
+                initial.orientation,
+                "maximum_tilt_deg",
+                None,
             ),
         )
 
     initial = sampling.initial_pose
     pose_plan = (
-        compile_pose(initial, group_id="motif_group")
-        if initial is not None
-        else None
+        compile_pose(initial, group_id="motif_group") if initial is not None else None
     )
     component_pose_plans = tuple(
         compile_pose(pose, group_id=component_id)
@@ -217,11 +215,11 @@ def assembly_initialization_payload(
         *,
         include_seed: bool,
     ) -> dict[str, object]:
-        orientation: dict[str, object] = {
-            "method": pose.orientation_method
-        }
+        orientation: dict[str, object] = {"method": pose.orientation_method}
         if pose.rotation_deg is not None:
             orientation["rotation_deg"] = pose.rotation_deg
+        if pose.maximum_tilt_deg is not None:
+            orientation["maximum_tilt_deg"] = pose.maximum_tilt_deg
         payload: dict[str, object] = {
             "center_method": "interface_heavy_atom_com",
             "orientation": orientation,

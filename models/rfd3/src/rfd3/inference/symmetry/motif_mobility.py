@@ -52,6 +52,94 @@ def mobility_window_weight(
     return math.sin(math.pi * unit) ** 2
 
 
+@dataclass(frozen=True)
+class RigidMobilityPhase:
+    """One time-normalized phase of an orbit-rigid mobility window."""
+
+    name: str
+    local_fraction: float
+    response_scale: float
+
+
+def rigid_mobility_phase(
+    progress: float,
+    *,
+    start_fraction: float,
+    end_fraction: float,
+    capture_fraction: float = 0.40,
+    settle_fraction: float = 0.40,
+    capture_response_scale: float = 5.0,
+    settle_response_scale: float = 2.5,
+    polish_response_scale: float = 1.0,
+) -> RigidMobilityPhase:
+    """Return a step-count-independent schedule for movable rigid bodies.
+
+    ``capture_fraction`` and ``settle_fraction`` are proportions of the
+    component's declared active window, not absolute diffusion step numbers.
+    The remaining fraction is the polish phase.  Outside the active window the
+    component is frozen.  A component's hard SE(3) bounds remain authoritative
+    in every phase.
+    """
+
+    if not 0.0 <= start_fraction < end_fraction <= 1.0:
+        raise ValueError(
+            "mobility fractions must satisfy 0 <= start_fraction < " "end_fraction <= 1"
+        )
+    if not (
+        0.0 < capture_fraction < 1.0
+        and 0.0 < settle_fraction < 1.0
+        and capture_fraction + settle_fraction < 1.0
+    ):
+        raise ValueError(
+            "rigid mobility phase fractions must be positive and leave a "
+            "nonzero polish phase"
+        )
+    scales = (
+        capture_response_scale,
+        settle_response_scale,
+        polish_response_scale,
+    )
+    if any(not math.isfinite(scale) or scale <= 0.0 for scale in scales):
+        raise ValueError("rigid mobility phase response scales must be positive")
+    if progress <= start_fraction or progress >= end_fraction:
+        return RigidMobilityPhase(
+            name="frozen",
+            local_fraction=0.0 if progress <= start_fraction else 1.0,
+            response_scale=0.0,
+        )
+    local = (progress - start_fraction) / (end_fraction - start_fraction)
+    if local < capture_fraction:
+        return RigidMobilityPhase("capture", local, capture_response_scale)
+    if local < capture_fraction + settle_fraction:
+        return RigidMobilityPhase("settle", local, settle_response_scale)
+    return RigidMobilityPhase("polish", local, polish_response_scale)
+
+
+def rigid_mobility_response(
+    base_response: float,
+    phase: RigidMobilityPhase,
+    *,
+    capture_response_scale: float,
+) -> float:
+    """Return one phase response as a fraction of the capture amplitude.
+
+    ``base_response`` remains the user/task sensitivity control.  The capture
+    scale first establishes the largest permitted response (capped at one),
+    after which settle and polish are fixed proportions of that capture
+    amplitude.  This prevents a larger base response from saturating multiple
+    phases and accidentally erasing the intended coarse-to-fine schedule.
+    """
+
+    if not math.isfinite(base_response) or base_response <= 0.0:
+        raise ValueError("rigid mobility base response must be positive")
+    if not math.isfinite(capture_response_scale) or capture_response_scale <= 0.0:
+        raise ValueError("capture response scale must be positive")
+    if phase.name == "frozen":
+        return 0.0
+    capture_response = min(1.0, base_response * capture_response_scale)
+    return capture_response * phase.response_scale / capture_response_scale
+
+
 def _invert_frame(points, rotation, translation):
     return torch.matmul(points - translation, rotation)
 
@@ -244,6 +332,11 @@ class OrbitRigidMotifController:
         response: float = 0.25,
         per_step_translation: float = 0.25,
         per_step_rotation_degrees: float = 1.0,
+        capture_fraction: float = 0.40,
+        settle_fraction: float = 0.40,
+        capture_response_scale: float = 5.0,
+        settle_response_scale: float = 2.5,
+        polish_response_scale: float = 1.0,
     ):
         if not 0.0 < response <= 1.0:
             raise ValueError("motif mobility response must be in (0, 1]")
@@ -256,6 +349,16 @@ class OrbitRigidMotifController:
             start_fraction=start_fraction,
             end_fraction=end_fraction,
         )
+        rigid_mobility_phase(
+            0.5,
+            start_fraction=0.0,
+            end_fraction=1.0,
+            capture_fraction=capture_fraction,
+            settle_fraction=settle_fraction,
+            capture_response_scale=capture_response_scale,
+            settle_response_scale=settle_response_scale,
+            polish_response_scale=polish_response_scale,
+        )
         self.motifs = motifs
         self.sym_transforms = sym_transforms
         self.base_target = base_target
@@ -264,6 +367,11 @@ class OrbitRigidMotifController:
         self.response = response
         self.per_step_translation = per_step_translation
         self.per_step_rotation_degrees = per_step_rotation_degrees
+        self.capture_fraction = capture_fraction
+        self.settle_fraction = settle_fraction
+        self.capture_response_scale = capture_response_scale
+        self.settle_response_scale = settle_response_scale
+        self.polish_response_scale = polish_response_scale
         self.update_calls = 0
         self.active_window_calls = 0
         self.last_update_applied = False
@@ -271,6 +379,22 @@ class OrbitRigidMotifController:
         self.last_joint_packing_diagnostics: dict[str, Any] | None = None
         self._diagnostic_trajectory: list[dict[str, Any]] = []
         self._effective_pose_prior_scales: dict[str, tuple[float, float]] = {}
+
+    def _temporal_phase(
+        self,
+        motif: OrbitRigidMotif,
+        progress: float,
+    ) -> RigidMobilityPhase:
+        return rigid_mobility_phase(
+            progress,
+            start_fraction=motif.start_fraction,
+            end_fraction=motif.end_fraction,
+            capture_fraction=self.capture_fraction,
+            settle_fraction=self.settle_fraction,
+            capture_response_scale=self.capture_response_scale,
+            settle_response_scale=self.settle_response_scale,
+            polish_response_scale=self.polish_response_scale,
+        )
 
     def _pose_guidance_config(
         self,
@@ -572,20 +696,19 @@ class OrbitRigidMotifController:
             raise ValueError("Mobility proposal coordinates contain NaN or Inf")
         self.update_calls += 1
         self.last_update_applied = False
-        windows = [
-            mobility_window_weight(
-                progress,
-                start_fraction=motif.start_fraction,
-                end_fraction=motif.end_fraction,
-            )
-            for motif in self.motifs
-        ]
+        phases = [self._temporal_phase(motif, progress) for motif in self.motifs]
+        windows = [0.0 if phase.name == "frozen" else 1.0 for phase in phases]
         window = max(windows, default=0.0)
         if window > 0.0:
             self.active_window_calls += 1
-            for motif, motif_window in zip(self.motifs, windows):
+            for motif, motif_window, phase in zip(self.motifs, windows, phases):
                 if motif_window <= 0.0:
                     continue
+                effective_response = rigid_mobility_response(
+                    motif.response,
+                    phase,
+                    capture_response_scale=self.capture_response_scale,
+                )
                 proposal = self._inverse_average_proposal(
                     motif,
                     raw_coordinates,
@@ -612,7 +735,7 @@ class OrbitRigidMotifController:
                     increment = _scaled_rotation(
                         relative_rotation,
                         math.radians(motif.per_step_rotation_degrees * motif_window),
-                        motif.response * motif_window,
+                        effective_response,
                     )
                     rotation = increment @ current_rotation
                     rotation = _scaled_rotation(
@@ -623,7 +746,7 @@ class OrbitRigidMotifController:
                     delta_translation = (
                         desired_translation[batch_index]
                         - motif.state.translation[batch_index]
-                    ) * (motif.response * motif_window)
+                    ) * effective_response
                     delta_translation = _clamp_vector(
                         delta_translation,
                         motif.per_step_translation * motif_window,
@@ -651,6 +774,26 @@ class OrbitRigidMotifController:
                 extra={
                     "proposal_source": "denoiser",
                     "applied": self.last_update_applied,
+                    "temporal_phases": [
+                        {
+                            "constraint_orbit_id": motif.constraint_orbit_id,
+                            "phase": phase.name,
+                            "active_window_fraction": phase.local_fraction,
+                            "response_scale": phase.response_scale,
+                            "effective_response": (
+                                0.0
+                                if phase.name == "frozen"
+                                else rigid_mobility_response(
+                                    motif.response,
+                                    phase,
+                                    capture_response_scale=(
+                                        self.capture_response_scale
+                                    ),
+                                )
+                            ),
+                        }
+                        for motif, phase in zip(self.motifs, phases)
+                    ],
                 },
             )
         )
@@ -883,7 +1026,7 @@ class OrbitRigidMotifController:
         config: ScaffoldGuidanceConfig,
         apply_update: bool,
         pose_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
-        proposal_response_scale: float = 1.0,
+        proposal_response_scale: float | None = None,
     ) -> torch.Tensor:
         """Jointly propose and atomically apply scaffold-driven orbit poses.
 
@@ -919,8 +1062,7 @@ class OrbitRigidMotifController:
             if requested:
                 raise ValueError(
                     "Axis-dependent motif mobility requires a runtime Cn/Dn "
-                    "primary axis; requested subspaces: "
-                    + ", ".join(requested)
+                    "primary axis; requested subspaces: " + ", ".join(requested)
                 )
         if self.base_target.shape[0] != 1:
             raise ValueError("Scaffold-derived motif guidance supports one pose batch")
@@ -934,19 +1076,15 @@ class OrbitRigidMotifController:
             )
         if not torch.isfinite(scaffold).all():
             raise ValueError("Scaffold guidance coordinates contain NaN or Inf")
-        if not math.isfinite(proposal_response_scale) or proposal_response_scale <= 0:
+        if proposal_response_scale is not None and (
+            not math.isfinite(proposal_response_scale) or proposal_response_scale <= 0
+        ):
             raise ValueError("proposal_response_scale must be finite and positive")
 
         self.update_calls += 1
         self.last_update_applied = False
-        windows = tuple(
-            mobility_window_weight(
-                progress,
-                start_fraction=motif.start_fraction,
-                end_fraction=motif.end_fraction,
-            )
-            for motif in self.motifs
-        )
+        phases = tuple(self._temporal_phase(motif, progress) for motif in self.motifs)
+        windows = tuple(0.0 if phase.name == "frozen" else 1.0 for phase in phases)
         window = max(windows, default=0.0)
         extra: dict[str, Any] = {
             "proposal_source": "scaffold_boundary",
@@ -961,7 +1099,20 @@ class OrbitRigidMotifController:
                 "tilt": config.tilt_weight,
                 "prior": config.prior_weight,
             },
-            "proposal_response_scale": float(proposal_response_scale),
+            "external_response_scale": (
+                None
+                if proposal_response_scale is None
+                else float(proposal_response_scale)
+            ),
+            "temporal_phase_policy": {
+                "basis": "fraction_of_component_active_window",
+                "capture_fraction": self.capture_fraction,
+                "settle_fraction": self.settle_fraction,
+                "polish_fraction": (1.0 - self.capture_fraction - self.settle_fraction),
+                "capture_response_scale": self.capture_response_scale,
+                "settle_response_scale": self.settle_response_scale,
+                "polish_response_scale": self.polish_response_scale,
+            },
         }
         if window > 0.0:
             self.active_window_calls += 1
@@ -979,8 +1130,9 @@ class OrbitRigidMotifController:
             for orbit_index, (
                 motif,
                 motif_window,
+                temporal_phase,
                 principal_axis,
-            ) in enumerate(zip(self.motifs, windows, principal_axes)):
+            ) in enumerate(zip(self.motifs, windows, phases, principal_axes)):
                 current_rotation = current_rotations[orbit_index]
                 current_translation = current_translations[orbit_index]
                 if motif_window <= 0.0:
@@ -990,6 +1142,7 @@ class OrbitRigidMotifController:
                             "orbit_index": orbit_index,
                             "constraint_orbit_id": (motif.constraint_orbit_id),
                             "component_id": motif.coupling_group_id,
+                            "temporal_phase": temporal_phase.name,
                             "active": False,
                             "accepted": False,
                             "committed": False,
@@ -1006,14 +1159,23 @@ class OrbitRigidMotifController:
                 rotation_basis = None
                 maximum_step_rotation = motif.per_step_rotation_degrees * motif_window
                 maximum_total_rotation = motif.maximum_rotation_degrees
-                effective_response = min(
-                    1.0,
-                    motif.response * proposal_response_scale,
+                temporal_response = rigid_mobility_response(
+                    motif.response,
+                    temporal_phase,
+                    capture_response_scale=self.capture_response_scale,
                 )
+                response_scale = temporal_response
+                if proposal_response_scale is not None:
+                    # Interface-quality adaptation may make an early proposal
+                    # more conservative, but it may never override the
+                    # time-based settle/polish ceiling with a late large jump.
+                    response_scale = min(
+                        response_scale,
+                        proposal_response_scale,
+                    )
+                effective_response = min(1.0, response_scale)
                 rotation_step_size = (
-                    motif.per_step_rotation_degrees
-                    * effective_response
-                    * motif_window
+                    motif.per_step_rotation_degrees * effective_response * motif_window
                 )
                 if motif.mobility_subspace == "tilt_only":
                     axis_direction = axis.direction.to(
@@ -1038,16 +1200,12 @@ class OrbitRigidMotifController:
                         axis_direction,
                         reference,
                     )
-                    tilt_axis_1 = tilt_axis_1 / torch.linalg.vector_norm(
-                        tilt_axis_1
-                    )
+                    tilt_axis_1 = tilt_axis_1 / torch.linalg.vector_norm(tilt_axis_1)
                     tilt_axis_2 = torch.linalg.cross(
                         axis_direction,
                         tilt_axis_1,
                     )
-                    tilt_axis_2 = tilt_axis_2 / torch.linalg.vector_norm(
-                        tilt_axis_2
-                    )
+                    tilt_axis_2 = tilt_axis_2 / torch.linalg.vector_norm(tilt_axis_2)
                     translation_basis = torch.empty(
                         (0, 3),
                         dtype=current_translation.dtype,
@@ -1219,11 +1377,30 @@ class OrbitRigidMotifController:
                         "component_id": motif.coupling_group_id,
                         "objective_ids": list(motif.objective_ids),
                         "mobility_subspace": motif.mobility_subspace,
+                        "temporal_phase": temporal_phase.name,
+                        "active_window_fraction": temporal_phase.local_fraction,
+                        "temporal_response_scale": (temporal_phase.response_scale),
+                        "effective_response_scale": response_scale,
                         "effective_response": effective_response,
                         "active": True,
                         "accepted": proposal.accepted,
                         "committed": False,
                         "line_search_scale": proposal.line_search_scale,
+                        "gradient_norms": {
+                            "rotation_unprojected": (proposal.rotation_gradient_norm),
+                            "translation_unprojected": (
+                                proposal.translation_gradient_norm
+                            ),
+                            "rotation_projected": (
+                                proposal.projected_rotation_gradient_norm
+                            ),
+                            "translation_projected": (
+                                proposal.projected_translation_gradient_norm
+                            ),
+                        },
+                        "line_search_trials": [
+                            dict(trial) for trial in proposal.line_search_trials
+                        ],
                         "objective": {
                             "initial": local_initial,
                             "proposed": local_proposed,
@@ -1482,9 +1659,7 @@ class OrbitRigidMotifController:
         adaptive_phase = str(packing_step.get("adaptive_phase", "polish"))
         if adaptive_phase not in phase_response_scales:
             rollback_mutable_state()
-            raise ValueError(
-                f"Unknown joint packing adaptive phase {adaptive_phase!r}"
-            )
+            raise ValueError(f"Unknown joint packing adaptive phase {adaptive_phase!r}")
         proposal_response_scale = phase_response_scales[adaptive_phase]
 
         def packing_aware_pose_energy(
@@ -1675,9 +1850,7 @@ class OrbitRigidMotifController:
             dim=-1,
         )
         template_master_centers = motif.template_master.mean(dim=1)
-        prior_scales = self._effective_pose_prior_scales.get(
-            motif.constraint_orbit_id
-        )
+        prior_scales = self._effective_pose_prior_scales.get(motif.constraint_orbit_id)
         diagnostics = {
             "constraint_orbit_id": motif.constraint_orbit_id,
             "component_id": motif.coupling_group_id,
@@ -1713,6 +1886,13 @@ class OrbitRigidMotifController:
                 "response": motif.response,
                 "max_step_translation": motif.per_step_translation,
                 "max_step_rotation_degrees": (motif.per_step_rotation_degrees),
+                "phase_basis": "fraction_of_component_active_window",
+                "capture_fraction": self.capture_fraction,
+                "settle_fraction": self.settle_fraction,
+                "polish_fraction": (1.0 - self.capture_fraction - self.settle_fraction),
+                "capture_response_scale": self.capture_response_scale,
+                "settle_response_scale": self.settle_response_scale,
+                "polish_response_scale": self.polish_response_scale,
             },
         }
         if prior_scales is not None:

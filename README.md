@@ -164,6 +164,12 @@ retain the declared pose. Multi-example execution lets RFD3 reuse one model
 load without collapsing those per-design inputs into repeated diffusion from
 one pose.
 
+Bounded-mobile rigid components use a step-count-independent capture/settle/
+polish schedule over 40%/40%/20% of their declared active window. Early
+sampling can use the full per-step SE(3) trust region, while later proposals
+become progressively smaller. Fixed coordinates and the internal geometry of
+joint-rigid seeds are unaffected.
+
 ## How Mosaic works
 
 <p align="center">

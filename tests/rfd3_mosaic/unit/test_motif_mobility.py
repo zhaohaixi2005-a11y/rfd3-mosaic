@@ -15,6 +15,8 @@ from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
     fit_centered_rigid_pose,
     mobility_window_weight,
+    rigid_mobility_phase,
+    rigid_mobility_response,
 )
 from rfd3.inference.symmetry.scaffold_guidance import (
     BoundaryTopology,
@@ -66,6 +68,66 @@ class MotifMobilityTestCase(unittest.TestCase):
             0.0,
         )
 
+    def test_rigid_mobility_uses_active_window_percentages(self) -> None:
+        expected = (
+            (0.20, "capture", 5.0),
+            (0.60, "settle", 2.5),
+            (0.90, "polish", 1.0),
+        )
+        for progress, name, response_scale in expected:
+            with self.subTest(progress=progress):
+                phase = rigid_mobility_phase(
+                    progress,
+                    start_fraction=0.0,
+                    end_fraction=1.0,
+                )
+                self.assertEqual(phase.name, name)
+                self.assertEqual(phase.response_scale, response_scale)
+
+        self.assertEqual(
+            rigid_mobility_phase(
+                0.05,
+                start_fraction=0.05,
+                end_fraction=0.85,
+            ).name,
+            "frozen",
+        )
+        self.assertEqual(
+            rigid_mobility_phase(
+                0.85,
+                start_fraction=0.05,
+                end_fraction=0.85,
+            ).name,
+            "frozen",
+        )
+
+    def test_phase_schedule_rejects_missing_polish_window(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nonzero polish"):
+            rigid_mobility_phase(
+                0.5,
+                start_fraction=0.0,
+                end_fraction=1.0,
+                capture_fraction=0.5,
+                settle_fraction=0.5,
+            )
+
+    def test_phase_response_ratios_survive_larger_base_response(self) -> None:
+        effective = []
+        for progress in (0.20, 0.60, 0.90):
+            phase = rigid_mobility_phase(
+                progress,
+                start_fraction=0.0,
+                end_fraction=1.0,
+            )
+            effective.append(
+                rigid_mobility_response(
+                    0.4,
+                    phase,
+                    capture_response_scale=5.0,
+                )
+            )
+        self.assertEqual(effective, [1.0, 0.5, 0.2])
+
     def test_rigid_fit_recovers_known_pose_without_reflection(self) -> None:
         template = torch.tensor(
             [
@@ -84,14 +146,10 @@ class MotifMobilityTestCase(unittest.TestCase):
             [[[1.0, -0.5, 0.25]]],
             dtype=torch.float64,
         )
-        proposal = (
-            (template - center) @ rotation.T
-            + center
-            + translation
-        )
+        proposal = (template - center) @ rotation.T + center + translation
 
-        fitted_rotation, fitted_translation, rmsd = (
-            fit_centered_rigid_pose(template, proposal)
+        fitted_rotation, fitted_translation, rmsd = fit_centered_rigid_pose(
+            template, proposal
         )
 
         self.assertTrue(
@@ -133,21 +191,15 @@ class MotifMobilityTestCase(unittest.TestCase):
         }
         target = torch.empty((1, 12, 3), dtype=torch.float64)
         for transform_id in range(3):
-            target[:, 4 * transform_id : 4 * (transform_id + 1)] = (
-                _apply(
-                    template,
-                    transforms[str(transform_id)][0],
-                    transforms[str(transform_id)][1],
-                )
+            target[:, 4 * transform_id : 4 * (transform_id + 1)] = _apply(
+                template,
+                transforms[str(transform_id)][0],
+                transforms[str(transform_id)][1],
             )
         features = {
             "sym_transform": transforms,
-            "motif_constraint_group_orbit_index": torch.tensor(
-                [0, 0, 0]
-            ),
-            "motif_constraint_group_orbit_transform_id": torch.tensor(
-                [0, 1, 2]
-            ),
+            "motif_constraint_group_orbit_index": torch.tensor([0, 0, 0]),
+            "motif_constraint_group_orbit_transform_id": torch.tensor([0, 1, 2]),
             "motif_constraint_group_atom_indices": torch.tensor(
                 [
                     [0, 1, 2, 3],
@@ -159,13 +211,9 @@ class MotifMobilityTestCase(unittest.TestCase):
                 (3, 4),
                 dtype=torch.bool,
             ),
-            "motif_constraint_orbit_master_group_index": torch.tensor(
-                [0]
-            ),
+            "motif_constraint_orbit_master_group_index": torch.tensor([0]),
             "motif_constraint_orbit_mobility_mode": torch.tensor([1]),
-            "motif_constraint_orbit_bounds": torch.tensor(
-                [[2.0, 10.0]]
-            ),
+            "motif_constraint_orbit_bounds": torch.tensor([[2.0, 10.0]]),
         }
         if with_orbit_schedule:
             features.update(
@@ -285,12 +333,14 @@ class MotifMobilityTestCase(unittest.TestCase):
         """One mobile C3 motif plus two generated residues per copy."""
 
         template = torch.tensor(
-            [[
-                [5.0, 0.0, 0.0],
-                [5.0, 1.0, 0.0],
-                [5.0, 0.0, 1.0],
-                [6.0, 0.0, 0.0],
-            ]],
+            [
+                [
+                    [5.0, 0.0, 0.0],
+                    [5.0, 1.0, 0.0],
+                    [5.0, 0.0, 1.0],
+                    [6.0, 0.0, 0.0],
+                ]
+            ],
             dtype=torch.float64,
         )
         generated_template = torch.tensor(
@@ -326,15 +376,9 @@ class MotifMobilityTestCase(unittest.TestCase):
         controller_features = {
             "sym_transform": transforms,
             "motif_constraint_group_orbit_index": torch.tensor([0, 0, 0]),
-            "motif_constraint_group_orbit_transform_id": torch.tensor(
-                [0, 1, 2]
-            ),
-            "motif_constraint_group_atom_indices": torch.tensor(
-                fixed_groups
-            ),
-            "motif_constraint_group_atom_mask": torch.ones(
-                (3, 4), dtype=torch.bool
-            ),
+            "motif_constraint_group_orbit_transform_id": torch.tensor([0, 1, 2]),
+            "motif_constraint_group_atom_indices": torch.tensor(fixed_groups),
+            "motif_constraint_group_atom_mask": torch.ones((3, 4), dtype=torch.bool),
             "motif_constraint_orbit_master_group_index": torch.tensor([0]),
             "motif_constraint_orbit_mobility_mode": torch.tensor([1]),
             "motif_constraint_orbit_bounds": torch.tensor([[2.0, 10.0]]),
@@ -358,9 +402,7 @@ class MotifMobilityTestCase(unittest.TestCase):
 
         generated_mask = torch.zeros(18, dtype=torch.bool)
         generated_mask[generated_indices] = True
-        junction_pairs = torch.tensor(
-            [[3, 4], [9, 10], [15, 16]], dtype=torch.long
-        )
+        junction_pairs = torch.tensor([[3, 4], [9, 10], [15, 16]], dtype=torch.long)
         boundary_topology = BoundaryTopology(
             junction_pairs=junction_pairs,
             fixed_ca_atom_indices=junction_pairs[:, 0],
@@ -467,30 +509,28 @@ class MotifMobilityTestCase(unittest.TestCase):
             coordinates, interface_topology, interface_config
         )
         patch_state = GraphInterfacePatchState(assignments={})
-        # Public create-interface designs declare response=0.2.  During a
-        # distant capture phase the joint controller should use the bounded
-        # phase multiplier rather than taking the historical 0.05 A nominal
-        # translation step forever.
+        # Public create-interface designs declare response=0.2.  Interface
+        # quality still requests capture, while the time-based schedule caps
+        # this mid-window proposal at the settle response.  A late poor patch
+        # therefore cannot trigger an unsafe capture-sized rigid jump.
         controller.motifs[0].response = 0.2
 
-        target, observed, diagnostics = (
-            controller.update_orbits_with_interface_packing(
-                coordinates,
-                features,
-                progress=0.5,
-                topology=boundary_topology,
-                axis=axis,
-                principal_axes=(axis.direction,),
-                scaffold_config=scaffold_config,
-                interface_topology=interface_topology,
-                interface_config=interface_config,
-                patch_state=patch_state,
-                projector=lambda candidate: candidate,
-                apply_update=True,
-                capture_response_scale=4.0,
-                expand_response_scale=3.0,
-                polish_response_scale=1.0,
-            )
+        target, observed, diagnostics = controller.update_orbits_with_interface_packing(
+            coordinates,
+            features,
+            progress=0.5,
+            topology=boundary_topology,
+            axis=axis,
+            principal_axes=(axis.direction,),
+            scaffold_config=scaffold_config,
+            interface_topology=interface_topology,
+            interface_config=interface_config,
+            patch_state=patch_state,
+            projector=lambda candidate: candidate,
+            apply_update=True,
+            capture_response_scale=4.0,
+            expand_response_scale=3.0,
+            polish_response_scale=1.0,
         )
         final = graph_interface_energy(
             observed,
@@ -506,7 +546,11 @@ class MotifMobilityTestCase(unittest.TestCase):
         trajectory = controller.diagnostics()["trajectory"][-1]
         self.assertAlmostEqual(
             trajectory["orbit_proposals"][0]["effective_response"],
-            0.8,
+            0.5,
+        )
+        self.assertEqual(
+            trajectory["orbit_proposals"][0]["temporal_phase"],
+            "settle",
         )
         self.assertTrue(controller.last_joint_transaction_applied)
         self.assertLess(float(final.total), float(baseline.total))
@@ -533,21 +577,19 @@ class MotifMobilityTestCase(unittest.TestCase):
         initial_translation = controller.motifs[0].state.translation.clone()
         patch_state = GraphInterfacePatchState(assignments={})
 
-        target, observed, diagnostics = (
-            controller.update_orbits_with_interface_packing(
-                coordinates,
-                features,
-                progress=0.5,
-                topology=boundary_topology,
-                axis=axis,
-                principal_axes=(axis.direction,),
-                scaffold_config=scaffold_config,
-                interface_topology=interface_topology,
-                interface_config=interface_config,
-                patch_state=patch_state,
-                projector=lambda candidate: candidate,
-                apply_update=False,
-            )
+        target, observed, diagnostics = controller.update_orbits_with_interface_packing(
+            coordinates,
+            features,
+            progress=0.5,
+            topology=boundary_topology,
+            axis=axis,
+            principal_axes=(axis.direction,),
+            scaffold_config=scaffold_config,
+            interface_topology=interface_topology,
+            interface_config=interface_config,
+            patch_state=patch_state,
+            projector=lambda candidate: candidate,
+            apply_update=False,
         )
 
         self.assertTrue(diagnostics["accepted"])
@@ -637,12 +679,10 @@ class MotifMobilityTestCase(unittest.TestCase):
         )
         raw = torch.empty((1, 12, 3), dtype=torch.float64)
         for transform_id in range(3):
-            raw[:, 4 * transform_id : 4 * (transform_id + 1)] = (
-                _apply(
-                    desired_master,
-                    transforms[str(transform_id)][0],
-                    transforms[str(transform_id)][1],
-                )
+            raw[:, 4 * transform_id : 4 * (transform_id + 1)] = _apply(
+                desired_master,
+                transforms[str(transform_id)][0],
+                transforms[str(transform_id)][1],
             )
 
         target = controller.update(raw, progress=0.5)
@@ -685,9 +725,9 @@ class MotifMobilityTestCase(unittest.TestCase):
                 :,
                 4 * transform_id : 4 * (transform_id + 1),
             ]
-            inverse = (
-                group - transforms[str(transform_id)][1]
-            ) @ transforms[str(transform_id)][0]
+            inverse = (group - transforms[str(transform_id)][1]) @ transforms[
+                str(transform_id)
+            ][0]
             self.assertTrue(torch.allclose(inverse, master, atol=1e-6))
             self.assertTrue(
                 torch.allclose(
@@ -755,12 +795,10 @@ class MotifMobilityTestCase(unittest.TestCase):
         )
         raw = torch.empty((1, 12, 3), dtype=torch.float64)
         for transform_id in range(3):
-            raw[:, 4 * transform_id : 4 * (transform_id + 1)] = (
-                _apply(
-                    desired_master,
-                    transforms[str(transform_id)][0],
-                    transforms[str(transform_id)][1],
-                )
+            raw[:, 4 * transform_id : 4 * (transform_id + 1)] = _apply(
+                desired_master,
+                transforms[str(transform_id)][0],
+                transforms[str(transform_id)][1],
             )
 
         controller.update(raw, progress=0.5)
@@ -787,12 +825,8 @@ class MotifMobilityTestCase(unittest.TestCase):
             axis,
             config,
         ) = self._scaffold_guidance_case()
-        initial_rotation = (
-            controller.motifs[0].state.rotation.clone()
-        )
-        initial_translation = (
-            controller.motifs[0].state.translation.clone()
-        )
+        initial_rotation = controller.motifs[0].state.rotation.clone()
+        initial_translation = controller.motifs[0].state.translation.clone()
 
         observed = controller.update_from_scaffold(
             scaffold,
@@ -827,6 +861,45 @@ class MotifMobilityTestCase(unittest.TestCase):
             snapshot["initial_energy"]["total"],
         )
 
+    def test_scaffold_rigid_steps_follow_capture_settle_polish_schedule(
+        self,
+    ) -> None:
+        expected = (
+            (0.20, "capture", 1.0),
+            (0.60, "settle", 0.5),
+            (0.90, "polish", 0.2),
+        )
+        for progress, phase, response in expected:
+            with self.subTest(progress=progress):
+                (
+                    _,
+                    _,
+                    _,
+                    controller,
+                    scaffold,
+                    topology,
+                    axis,
+                    config,
+                ) = self._scaffold_guidance_case()
+                controller.motifs[0].response = 0.2
+                controller.update_from_scaffold(
+                    scaffold,
+                    progress=progress,
+                    topology=topology,
+                    axis=axis,
+                    principal_axis=axis.direction,
+                    config=config,
+                    apply_update=False,
+                )
+                proposal = controller.diagnostics()["trajectory"][-1][
+                    "orbit_proposals"
+                ][0]
+                self.assertEqual(proposal["temporal_phase"], phase)
+                self.assertAlmostEqual(
+                    proposal["effective_response"],
+                    response,
+                )
+
     def test_scaffold_update_lowers_energy_and_preserves_exact_c3(
         self,
     ) -> None:
@@ -855,6 +928,17 @@ class MotifMobilityTestCase(unittest.TestCase):
         self.assertTrue(snapshot["accepted"])
         self.assertTrue(snapshot["applied"])
         self.assertTrue(controller.last_update_applied)
+        proposal = snapshot["orbit_proposals"][0]
+        self.assertIn("rotation_projected", proposal["gradient_norms"])
+        self.assertIn("translation_projected", proposal["gradient_norms"])
+        self.assertGreaterEqual(len(proposal["line_search_trials"]), 1)
+        accepted_trial = proposal["line_search_trials"][-1]
+        self.assertTrue(accepted_trial["finite"])
+        self.assertTrue(accepted_trial["improves"])
+        self.assertLess(
+            accepted_trial["energy"],
+            snapshot["initial_energy"]["total"],
+        )
         self.assertLess(
             snapshot["proposed_energy"]["total"],
             snapshot["initial_energy"]["total"],
@@ -869,9 +953,7 @@ class MotifMobilityTestCase(unittest.TestCase):
             ]
             rotation, translation = transforms[str(transform_id)]
             canonical = (group - translation) @ rotation
-            self.assertTrue(
-                torch.allclose(canonical, master, atol=1e-6)
-            )
+            self.assertTrue(torch.allclose(canonical, master, atol=1e-6))
 
     def test_axis_free_bounded_se3_scaffold_update_executes(self) -> None:
         (
@@ -905,9 +987,7 @@ class MotifMobilityTestCase(unittest.TestCase):
             ]
             rotation, translation = transforms[str(transform_id)]
             canonical = (group - translation) @ rotation
-            self.assertTrue(
-                torch.allclose(canonical, master, atol=1e-6)
-            )
+            self.assertTrue(torch.allclose(canonical, master, atol=1e-6))
 
     def test_scaffold_pose_prior_scales_with_declared_orbit_bounds(
         self,
@@ -944,9 +1024,7 @@ class MotifMobilityTestCase(unittest.TestCase):
             apply_update=False,
         )
 
-        prior = controller.diagnostics()["orbits"][0][
-            "effective_pose_prior"
-        ]
+        prior = controller.diagnostics()["orbits"][0]["effective_pose_prior"]
         self.assertEqual(prior["translation_scale"], 5.0)
         self.assertEqual(prior["rotation_scale_degrees"], 15.0)
         self.assertEqual(
@@ -984,9 +1062,7 @@ class MotifMobilityTestCase(unittest.TestCase):
             # objective.  The combined packing improvement must nevertheless
             # be allowed to win the joint acceptance decision.
             penalty = torch.mean(torch.square(candidate_target - baseline))
-            return penalty, {
-                "total": float(penalty.detach().cpu().item())
-            }
+            return penalty, {"total": float(penalty.detach().cpu().item())}
 
         with patch.object(
             controller,
@@ -1051,8 +1127,8 @@ class MotifMobilityTestCase(unittest.TestCase):
         target = torch.empty((1, 24, 3), dtype=torch.float64)
         for transform_id in range(6):
             rotation, translation = transforms[str(transform_id)]
-            target[:, 4 * transform_id : 4 * (transform_id + 1)] = (
-                _apply(template, rotation, translation)
+            target[:, 4 * transform_id : 4 * (transform_id + 1)] = _apply(
+                template, rotation, translation
             )
         features = {
             "sym_transform": transforms,
@@ -1071,9 +1147,7 @@ class MotifMobilityTestCase(unittest.TestCase):
             ),
             "motif_constraint_orbit_master_group_index": torch.tensor([0]),
             "motif_constraint_orbit_mobility_mode": torch.tensor([1]),
-            "motif_constraint_orbit_bounds": torch.tensor(
-                [[2.0, 10.0]]
-            ),
+            "motif_constraint_orbit_bounds": torch.tensor([[2.0, 10.0]]),
         }
         controller = OrbitRigidMotifController.from_features(
             features,
@@ -1108,9 +1182,7 @@ class MotifMobilityTestCase(unittest.TestCase):
             ]
             rotation, translation = transforms[str(transform_id)]
             canonical = (group - translation) @ rotation
-            self.assertTrue(
-                torch.allclose(canonical, master, atol=1e-6)
-            )
+            self.assertTrue(torch.allclose(canonical, master, atol=1e-6))
 
     def test_scaffold_radial_subspace_moves_only_radially(self) -> None:
         (
@@ -1283,7 +1355,8 @@ class MotifMobilityTestCase(unittest.TestCase):
         )
         templates = (
             template,
-            template + torch.tensor(
+            template
+            + torch.tensor(
                 [[[0.0, 0.0, 4.0]]],
                 dtype=torch.float64,
             ),
@@ -1329,9 +1402,9 @@ class MotifMobilityTestCase(unittest.TestCase):
             "motif_constraint_group_orbit_transform_id": torch.tensor(
                 list(range(group_action_count)) * 2
             ),
-            "motif_constraint_group_atom_indices": torch.arange(
-                atom_count
-            ).reshape(2 * group_action_count, 4),
+            "motif_constraint_group_atom_indices": torch.arange(atom_count).reshape(
+                2 * group_action_count, 4
+            ),
             "motif_constraint_group_atom_mask": torch.ones(
                 (2 * group_action_count, 4),
                 dtype=torch.bool,
@@ -1340,9 +1413,7 @@ class MotifMobilityTestCase(unittest.TestCase):
                 [0, group_action_count]
             ),
             "motif_constraint_orbit_mobility_mode": torch.tensor([1, 1]),
-            "motif_constraint_orbit_bounds": torch.tensor(
-                [[2.0, 10.0], [2.0, 10.0]]
-            ),
+            "motif_constraint_orbit_bounds": torch.tensor([[2.0, 10.0], [2.0, 10.0]]),
             "motif_constraint_orbit_subspace": torch.tensor([4, 4]),
             "motif_constraint_orbit_proposal": torch.tensor([2, 2]),
             "motif_constraint_orbit_schedule": torch.tensor(
@@ -1379,15 +1450,9 @@ class MotifMobilityTestCase(unittest.TestCase):
         generated_mask = torch.zeros(atom_count, dtype=torch.bool)
         generated_mask[[1, second_generated]] = True
         topology = BoundaryTopology(
-            junction_pairs=torch.tensor(
-                [[0, 1], [atoms_per_orbit, second_generated]]
-            ),
-            fixed_ca_atom_indices=torch.tensor(
-                [0, atoms_per_orbit]
-            ),
-            generated_ca_atom_indices=torch.tensor(
-                [1, second_generated]
-            ),
+            junction_pairs=torch.tensor([[0, 1], [atoms_per_orbit, second_generated]]),
+            fixed_ca_atom_indices=torch.tensor([0, atoms_per_orbit]),
+            generated_ca_atom_indices=torch.tensor([1, second_generated]),
             generated_atom_mask=generated_mask,
         )
         axis = CyclicAxis(
@@ -1457,21 +1522,15 @@ class MotifMobilityTestCase(unittest.TestCase):
         for motif in controller_a.motifs:
             self.assertEqual(motif.group_transform_ids.numel(), 6)
             master = observed_a[:, motif.master_atom_indices]
-            for group_row, transform_id_tensor in enumerate(
-                motif.group_transform_ids
-            ):
+            for group_row, transform_id_tensor in enumerate(motif.group_transform_ids):
                 transform_id = int(transform_id_tensor.item())
-                rotation, translation = controller_a.sym_transforms[
-                    transform_id
-                ]
+                rotation, translation = controller_a.sym_transforms[transform_id]
                 group = observed_a[
                     :,
                     motif.group_atom_indices[group_row],
                 ]
                 canonical = (group - translation) @ rotation
-                self.assertTrue(
-                    torch.allclose(canonical, master, atol=1e-6)
-                )
+                self.assertTrue(torch.allclose(canonical, master, atol=1e-6))
         diagnostics = controller_a.diagnostics()
         self.assertEqual(
             [orbit["group_action_count"] for orbit in diagnostics["orbits"]],
@@ -1487,12 +1546,8 @@ class MotifMobilityTestCase(unittest.TestCase):
             config,
             controller,
         ) = self._two_orbit_scaffold_guidance_case()
-        rotations = tuple(
-            motif.state.rotation[0] for motif in controller.motifs
-        )
-        translations = tuple(
-            motif.state.translation[0] for motif in controller.motifs
-        )
+        rotations = tuple(motif.state.rotation[0] for motif in controller.motifs)
+        translations = tuple(motif.state.translation[0] for motif in controller.motifs)
         target = controller.materialize_target()[0]
         _, terms = controller._joint_scaffold_energy(
             target,
@@ -1580,8 +1635,7 @@ class MotifMobilityTestCase(unittest.TestCase):
             snapshot["initial_energy"]["total"],
         )
         proposal_ids = {
-            proposal["constraint_orbit_id"]
-            for proposal in snapshot["orbit_proposals"]
+            proposal["constraint_orbit_id"] for proposal in snapshot["orbit_proposals"]
         }
         self.assertEqual(
             proposal_ids,
@@ -1596,21 +1650,15 @@ class MotifMobilityTestCase(unittest.TestCase):
 
         for motif in controller_a.motifs:
             master = observed_a[:, motif.master_atom_indices]
-            for group_row, transform_id_tensor in enumerate(
-                motif.group_transform_ids
-            ):
+            for group_row, transform_id_tensor in enumerate(motif.group_transform_ids):
                 transform_id = int(transform_id_tensor.item())
-                rotation, translation = controller_a.sym_transforms[
-                    transform_id
-                ]
+                rotation, translation = controller_a.sym_transforms[transform_id]
                 group = observed_a[
                     :,
                     motif.group_atom_indices[group_row],
                 ]
                 canonical = (group - translation) @ rotation
-                self.assertTrue(
-                    torch.allclose(canonical, master, atol=1e-6)
-                )
+                self.assertTrue(torch.allclose(canonical, master, atol=1e-6))
 
     def test_joint_rejection_rolls_back_every_scaffold_orbit(self) -> None:
         (
@@ -1659,16 +1707,10 @@ class MotifMobilityTestCase(unittest.TestCase):
         self.assertEqual(snapshot["joint_decision"], "rejected")
         self.assertFalse(snapshot["applied"])
         self.assertTrue(
-            any(
-                proposal["accepted"]
-                for proposal in snapshot["orbit_proposals"]
-            )
+            any(proposal["accepted"] for proposal in snapshot["orbit_proposals"])
         )
         self.assertTrue(
-            all(
-                not proposal["committed"]
-                for proposal in snapshot["orbit_proposals"]
-            )
+            all(not proposal["committed"] for proposal in snapshot["orbit_proposals"])
         )
 
     def test_controller_rejects_nonfinite_proposal(self) -> None:

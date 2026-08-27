@@ -147,6 +147,10 @@ form and schedule, not on an invented pass threshold. Mosaic's additional
 coverage/continuity/orientation/shape scores remain advisory generation and
 screening proxies until sequence/refolding evidence exists.
 
+When motif pose and generated-patch motion are optimized together, the exact
+SE(3) gradient, line-search and atomic transaction inequalities are defined in
+the [rigid-mobility mathematical contract](RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md).
+
 Primary references:
 
 - RFdiffusion paper: <https://doi.org/10.1038/s41586-023-06415-8>

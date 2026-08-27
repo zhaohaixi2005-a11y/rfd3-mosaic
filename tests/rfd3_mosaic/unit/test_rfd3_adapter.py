@@ -946,12 +946,10 @@ class RFD3AdapterTestCase(unittest.TestCase):
             "c3_component_E_c",
         ):
             quotient_assembly["fragments"].pop(fragment_id)
-            quotient_assembly["motion_groups"]["c3_component"][
-                "members"
-            ].remove(fragment_id)
-            quotient_assembly["ports"]["c3_port"]["fragments"].remove(
+            quotient_assembly["motion_groups"]["c3_component"]["members"].remove(
                 fragment_id
             )
+            quotient_assembly["ports"]["c3_port"]["fragments"].remove(fragment_id)
         quotient_assembly["scaffold_links"].pop("path_D")
         quotient_assembly["scaffold_links"].pop("path_E")
         quotient_config = self.output_directory / "mixed-t-c2-c2.yaml"
@@ -964,9 +962,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             self.output_directory / "mixed-t-c2-c2-output",
             example_id="mixed-t-c2-c2",
         )
-        quotient_emitted = json.loads(
-            quotient_outputs.input_path.read_text()
-        )["mixed-t-c2-c2"]
+        quotient_emitted = json.loads(quotient_outputs.input_path.read_text())[
+            "mixed-t-c2-c2"
+        ]
         quotient_extra = quotient_emitted["extra"]
         self.assertEqual(
             len(quotient_extra["assembly_interface_relations"]),
@@ -975,9 +973,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(
             {
                 relation["edge_stabilizer_order"]
-                for relation in quotient_extra[
-                    "assembly_interface_relations"
-                ]
+                for relation in quotient_extra["assembly_interface_relations"]
             },
             {2},
         )
@@ -985,9 +981,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
             len(quotient_extra["motif_constraint_groups"]),
             6,
         )
-        quotient_report = prevalidate_rfd3_input(
-            quotient_outputs.input_path
-        )
+        quotient_report = prevalidate_rfd3_input(quotient_outputs.input_path)
         self.assertEqual(quotient_report["status"], "passed")
         self.assertEqual(
             matrix_audit["runtime_transform_count"],
@@ -1463,6 +1457,15 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(len(path_selectors), 3)
         self.assertEqual(emitted["contig"].count(path_selectors[1]), 1)
         self.assertEqual(len(emitted["select_fixed_atoms"]), 3)
+        self.assertEqual(
+            extra["generated_cross_chain_topology_guidance"],
+            {
+                "enabled": True,
+                "scope": "two_fixed_anchor_generated_runs",
+                "routing_ownership_weight": 1.0,
+                "normalization_distance": 3.8,
+            },
+        )
 
     def test_c12_compiles_to_a_native_input(self) -> None:
         config = yaml.safe_load(LHD101_CYCLIC_CONFIGS[5].read_text(encoding="utf-8"))
@@ -1758,9 +1761,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
             base_directory=REPOSITORY_ROOT,
             pose_seed=10063,
         )
-        emitted = json.loads(
-            compiled.input_path.read_text(encoding="utf-8")
-        )[compiled.example_id]
+        emitted = json.loads(compiled.input_path.read_text(encoding="utf-8"))[
+            compiled.example_id
+        ]
         extra = emitted["extra"]
 
         self.assertEqual(extra["pose_source"], "compiler_initialization")

@@ -4,24 +4,49 @@ from pathlib import Path
 import numpy as np
 
 from rfd3_mosaic.compile import (
+    _principal_axis_cone_rotation,
     _uniform_so3_rotation,
     build_master_group_transforms,
     load_interface_seed_config,
 )
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-LHD101_CONFIG = (
-    REPOSITORY_ROOT
-    / "configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
-)
+LHD101_CONFIG = REPOSITORY_ROOT / "configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
 
 
 class PoseSamplingTestCase(unittest.TestCase):
-    def test_uniform_so3_sample_is_a_proper_rotation(self) -> None:
-        rotation, quaternion = _uniform_so3_rotation(
-            np.random.default_rng(17)
+    def test_principal_axis_cone_keeps_long_axis_parallel_at_zero_tilt(
+        self,
+    ) -> None:
+        rotation, quaternion = _principal_axis_cone_rotation(
+            np.asarray((1.0, 0.0, 0.0)),
+            np.asarray((0.0, 0.0, 1.0)),
+            0.0,
+            np.random.default_rng(17),
+            unit_values=(0.75, 0.25, 0.4),
         )
+
+        world_axis = rotation @ np.asarray((1.0, 0.0, 0.0))
+        self.assertAlmostEqual(abs(float(world_axis[2])), 1.0, places=12)
+        np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=1e-12)
+        self.assertAlmostEqual(float(np.linalg.det(rotation)), 1.0)
+        self.assertAlmostEqual(float(np.linalg.norm(quaternion)), 1.0)
+
+    def test_principal_axis_cone_never_exceeds_declared_tilt(self) -> None:
+        rotation, _ = _principal_axis_cone_rotation(
+            np.asarray((0.0, 1.0, 0.0)),
+            np.asarray((0.0, 0.0, 1.0)),
+            25.0,
+            np.random.default_rng(18),
+            unit_values=(1.0, 0.6, 0.2),
+        )
+
+        world_axis = rotation @ np.asarray((0.0, 1.0, 0.0))
+        tilt = np.degrees(np.arccos(abs(float(world_axis[2]))))
+        self.assertLessEqual(float(tilt), 25.0 + 1e-10)
+
+    def test_uniform_so3_sample_is_a_proper_rotation(self) -> None:
+        rotation, quaternion = _uniform_so3_rotation(np.random.default_rng(17))
 
         np.testing.assert_allclose(
             rotation.T @ rotation,
@@ -49,14 +74,8 @@ class PoseSamplingTestCase(unittest.TestCase):
             random_seed=102,
         )
 
-        np.testing.assert_allclose(
-            first["primary_seed"], repeated["primary_seed"]
-        )
-        self.assertFalse(
-            np.allclose(
-                first["primary_seed"], different["primary_seed"]
-            )
-        )
+        np.testing.assert_allclose(first["primary_seed"], repeated["primary_seed"])
+        self.assertFalse(np.allclose(first["primary_seed"], different["primary_seed"]))
 
     def test_sampled_radius_and_pose_are_recorded(self) -> None:
         spec = load_interface_seed_config(LHD101_CONFIG)
@@ -86,9 +105,7 @@ class PoseSamplingTestCase(unittest.TestCase):
             ((0.0, 0.0, 0.0), (3.0, -2.0, 5.0)),
             dtype=np.float64,
         )
-        transformed = (
-            points @ transform[:3, :3].T + transform[:3, 3]
-        )
+        transformed = points @ transform[:3, :3].T + transform[:3, 3]
 
         self.assertAlmostEqual(
             float(np.linalg.norm(points[1] - points[0])),

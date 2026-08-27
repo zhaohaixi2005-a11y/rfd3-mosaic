@@ -113,8 +113,7 @@ def _analyze_inter_group_clashes(
                 dtype=np.float64,
             )
             distances = np.linalg.norm(
-                left_coordinates[:, None, :]
-                - right_coordinates[None, :, :],
+                left_coordinates[:, None, :] - right_coordinates[None, :, :],
                 axis=-1,
             )
             pair_minimum = float(distances.min())
@@ -180,12 +179,8 @@ def _terminal_anchor(
         if terminus == "N"
         else max(atom.label_seq_id for atom in atoms)
     )
-    residue_atoms = [
-        atom for atom in atoms if atom.label_seq_id == label_seq_id
-    ]
-    preferred_names = (
-        ("N", "CA") if terminus == "N" else ("C", "CA")
-    )
+    residue_atoms = [atom for atom in atoms if atom.label_seq_id == label_seq_id]
+    preferred_names = ("N", "CA") if terminus == "N" else ("C", "CA")
     for atom_name in preferred_names:
         for atom in residue_atoms:
             if atom.source_atom.atom_name.strip().upper() == atom_name:
@@ -305,14 +300,11 @@ def _minimum_segment_axis_clearance(
     segment = end - start
     radial_start = relative_start - np.dot(relative_start, axis) * axis
     radial_segment = segment - np.dot(segment, axis) * axis
-    squared_radial_length = float(
-        np.dot(radial_segment, radial_segment)
-    )
+    squared_radial_length = float(np.dot(radial_segment, radial_segment))
     fraction = (
         float(
             np.clip(
-                -np.dot(radial_start, radial_segment)
-                / squared_radial_length,
+                -np.dot(radial_start, radial_segment) / squared_radial_length,
                 0.0,
                 1.0,
             )
@@ -349,17 +341,13 @@ def _analyze_scaffold_link_geometry(
         from_coordinate = from_geometry["anchor"]
         to_coordinate = to_geometry["anchor"]
         endpoint_vector = to_coordinate - from_coordinate
-        endpoint_distance = float(
-            np.linalg.norm(endpoint_vector)
-        )
+        endpoint_distance = float(np.linalg.norm(endpoint_vector))
         endpoint_direction = _unit_vector(endpoint_vector)
         minimum_required_residues = max(
             0,
             int(np.ceil(endpoint_distance / 3.8)) - 1,
         )
-        within_maximum_contour = (
-            minimum_required_residues <= link.maximum_length
-        )
+        within_maximum_contour = minimum_required_residues <= link.maximum_length
         if not within_maximum_contour and not link.chain_break:
             infeasible_links.append(link.id)
         excluded_fragments = {
@@ -386,9 +374,7 @@ def _analyze_scaffold_link_geometry(
         chord_out_of_plane_angle: float | None = None
         if link.orbit_id is not None:
             orbit = spec.symmetry.orbits[link.orbit_id]
-            transform_set = spec.symmetry.transform_sets[
-                orbit.transform_set
-            ]
+            transform_set = spec.symmetry.transform_sets[orbit.transform_set]
             axis = np.asarray(transform_set.axis, dtype=np.float64)
             axis /= np.linalg.norm(axis)
             center = np.asarray(transform_set.center, dtype=np.float64)
@@ -400,24 +386,17 @@ def _analyze_scaffold_link_geometry(
             )
             if endpoint_distance > 1e-8:
                 chord_axial_fraction = float(
-                    abs(np.dot(endpoint_vector, axis))
-                    / endpoint_distance
+                    abs(np.dot(endpoint_vector, axis)) / endpoint_distance
                 )
                 chord_out_of_plane_angle = float(
-                    np.degrees(
-                        np.arcsin(
-                            np.clip(chord_axial_fraction, 0.0, 1.0)
-                        )
-                    )
+                    np.degrees(np.arcsin(np.clip(chord_axial_fraction, 0.0, 1.0)))
                 )
         reports.append(
             {
                 "link_instance_id": link.id,
                 "source_link_id": link.source_id,
                 "tie_group": link.tie_group,
-                "from_fragment_instance_id": (
-                    link.from_fragment_instance_id
-                ),
+                "from_fragment_instance_id": (link.from_fragment_instance_id),
                 "to_fragment_instance_id": link.to_fragment_instance_id,
                 "from_anchor": from_geometry["anchor_name"],
                 "to_anchor": to_geometry["anchor_name"],
@@ -450,23 +429,15 @@ def _analyze_scaffold_link_geometry(
                     )
                 ),
                 "endpoint_chord_axial_fraction": chord_axial_fraction,
-                "endpoint_chord_out_of_plane_angle_deg": (
-                    chord_out_of_plane_angle
-                ),
-                "minimum_endpoint_chord_axis_clearance": (
-                    chord_axis_clearance
-                ),
+                "endpoint_chord_out_of_plane_angle_deg": (chord_out_of_plane_angle),
+                "minimum_endpoint_chord_axis_clearance": (chord_axis_clearance),
                 "minimum_interior_chord_fixed_atom_clearance": (
                     interior_chord_clearance
                 ),
-                "corridor_excluded_fragment_instance_ids": sorted(
-                    excluded_fragments
-                ),
+                "corridor_excluded_fragment_instance_ids": sorted(excluded_fragments),
                 "configured_minimum_length": link.minimum_length,
                 "configured_maximum_length": link.maximum_length,
-                "minimum_required_residues_at_3_8A": (
-                    minimum_required_residues
-                ),
+                "minimum_required_residues_at_3_8A": (minimum_required_residues),
                 "within_maximum_contour": within_maximum_contour,
                 "chain_break": link.chain_break,
             }
@@ -481,12 +452,8 @@ def _analyze_scaffold_link_geometry(
             {
                 "source_link_id": source_id,
                 "tie_group": report.get("tie_group"),
-                "configured_minimum_length": int(
-                    report["configured_minimum_length"]
-                ),
-                "configured_maximum_length": int(
-                    report["configured_maximum_length"]
-                ),
+                "configured_minimum_length": int(report["configured_minimum_length"]),
+                "configured_maximum_length": int(report["configured_maximum_length"]),
                 "physical_instance_ids": [],
                 "minimum_required_residues_by_instance": {},
             },
@@ -520,9 +487,7 @@ def _analyze_scaffold_link_geometry(
         midpoint = (minimum + maximum) // 2
         requirements = tuple(
             int(value)
-            for value in entry[
-                "minimum_required_residues_by_instance"
-            ].values()
+            for value in entry["minimum_required_residues_by_instance"].values()
         )
         required = max(requirements)
         selected = max(midpoint, required)
@@ -567,9 +532,7 @@ def _analyze_scaffold_link_geometry(
     for entry in tie_group_bindings.values():
         minimum = int(entry["common_configured_minimum_length"])
         maximum = int(entry["common_configured_maximum_length"])
-        required = int(
-            entry["required_minimum_over_all_physical_instances"]
-        )
+        required = int(entry["required_minimum_over_all_physical_instances"])
         midpoint = (minimum + maximum) // 2
         selected = max(midpoint, required)
         entry["automatic_materialized_length"] = selected
@@ -577,9 +540,7 @@ def _analyze_scaffold_link_geometry(
             minimum <= maximum and selected <= maximum
         )
         entry["source_link_ids"].sort()
-        entry["is_effective_multi_link_tie"] = (
-            len(entry["source_link_ids"]) > 1
-        )
+        entry["is_effective_multi_link_tie"] = len(entry["source_link_ids"]) > 1
     infeasible_tie_groups = sorted(
         tie_group
         for tie_group, entry in tie_group_bindings.items()
@@ -613,11 +574,7 @@ def _analyze_symmetry_cavities(
     for orbit_id, orbit in spec.symmetry.orbits.items():
         transform_set = spec.symmetry.transform_sets[orbit.transform_set]
         orbit_coordinates = np.asarray(
-            [
-                atom.coordinate
-                for atom in atoms
-                if atom.orbit_id == orbit_id
-            ],
+            [atom.coordinate for atom in atoms if atom.orbit_id == orbit_id],
             dtype=np.float64,
         )
         if not orbit_coordinates.size:
@@ -629,30 +586,19 @@ def _analyze_symmetry_cavities(
         axial_coordinates = relative @ axis
         radial_vectors = relative - axial_coordinates[:, None] * axis
         radial_distances = np.linalg.norm(radial_vectors, axis=1)
-        axial_span = float(
-            axial_coordinates.max() - axial_coordinates.min()
-        )
+        axial_span = float(axial_coordinates.max() - axial_coordinates.min())
         maximum_axis_extent = float(radial_distances.max())
         center_distances = np.linalg.norm(relative, axis=1)
         maximum_center_extent = float(center_distances.max())
-        radial_thickness = float(
-            maximum_axis_extent - radial_distances.min()
+        radial_thickness = float(maximum_axis_extent - radial_distances.min())
+        centered_coordinates = orbit_coordinates - orbit_coordinates.mean(axis=0)
+        covariance = (centered_coordinates.T @ centered_coordinates) / len(
+            centered_coordinates
         )
-        centered_coordinates = orbit_coordinates - orbit_coordinates.mean(
-            axis=0
-        )
-        covariance = (
-            centered_coordinates.T @ centered_coordinates
-        ) / len(centered_coordinates)
         shape_eigenvalues = np.linalg.eigvalsh(covariance)
         largest_eigenvalue = float(shape_eigenvalues[-1])
         shape_sphericity = (
-            float(
-                np.sqrt(
-                    max(float(shape_eigenvalues[0]), 0.0)
-                    / largest_eigenvalue
-                )
-            )
+            float(np.sqrt(max(float(shape_eigenvalues[0]), 0.0) / largest_eigenvalue))
             if largest_eigenvalue > 0.0
             else 0.0
         )
@@ -663,20 +609,12 @@ def _analyze_symmetry_cavities(
                 "symmetry_type": transform_set.type.value,
                 "symmetry_order": transform_set.order,
                 "copy_count": len(
-                    {
-                        atom.copy_index
-                        for atom in atoms
-                        if atom.orbit_id == orbit_id
-                    }
+                    {atom.copy_index for atom in atoms if atom.orbit_id == orbit_id}
                 ),
-                "central_void_radius": float(
-                    center_distances.min()
-                ),
+                "central_void_radius": float(center_distances.min()),
                 "maximum_center_extent": maximum_center_extent,
                 "outer_diameter": 2.0 * maximum_center_extent,
-                "minimum_axis_clearance": float(
-                    radial_distances.min()
-                ),
+                "minimum_axis_clearance": float(radial_distances.min()),
                 "mean_axis_clearance": float(radial_distances.mean()),
                 "maximum_axis_extent": maximum_axis_extent,
                 "radial_thickness": radial_thickness,
@@ -711,9 +649,7 @@ def _analyze_symmetry_cavities(
 
 def _rotation_error_deg(observed: np.ndarray, target: np.ndarray) -> float:
     relative = target.T @ observed
-    cosine = float(
-        np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0)
-    )
+    cosine = float(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
     return float(np.rad2deg(np.arccos(cosine)))
 
 
@@ -793,8 +729,7 @@ def _analyze_interface_edges(
             "satisfaction_stage": edge.satisfaction_stage,
             "centroid_distance": float(
                 np.linalg.norm(
-                    left_coordinates.mean(axis=0)
-                    - right_coordinates.mean(axis=0)
+                    left_coordinates.mean(axis=0) - right_coordinates.mean(axis=0)
                 )
             ),
             "minimum_atom_distance": float(distances.min()),
@@ -828,20 +763,14 @@ def _analyze_interface_edges(
                 )
                 reference_basis = "declared_target_transform"
             translation_error = float(
-                np.linalg.norm(
-                    observed_relative[:3, 3] - target_relative[:3, 3]
-                )
+                np.linalg.norm(observed_relative[:3, 3] - target_relative[:3, 3])
             )
             rotation_error = _rotation_error_deg(
                 observed_relative[:3, :3],
                 target_relative[:3, :3],
             )
-            contact_count = int(
-                (distances < geometry.contact_cutoff).sum()
-            )
-            contacts_satisfied = (
-                contact_count >= geometry.minimum_heavy_atom_contacts
-            )
+            contact_count = int((distances < geometry.contact_cutoff).sum())
+            contacts_satisfied = contact_count >= geometry.minimum_heavy_atom_contacts
             satisfied = (
                 translation_error <= geometry.translation_tolerance
                 and rotation_error <= geometry.rotation_tolerance_deg
@@ -856,9 +785,7 @@ def _analyze_interface_edges(
                     "translation_error": translation_error,
                     "translation_tolerance": geometry.translation_tolerance,
                     "rotation_error_deg": rotation_error,
-                    "rotation_tolerance_deg": (
-                        geometry.rotation_tolerance_deg
-                    ),
+                    "rotation_tolerance_deg": (geometry.rotation_tolerance_deg),
                     "declared_contact_cutoff": geometry.contact_cutoff,
                     "declared_contact_count": contact_count,
                     "minimum_heavy_atom_contacts": (
@@ -876,12 +803,9 @@ def _analyze_interface_edges(
                     distance_satisfied = False
                 else:
                     distance_error = abs(
-                        report["centroid_distance"]
-                        - geometry.distance.target
+                        report["centroid_distance"] - geometry.distance.target
                     )
-                    distance_satisfied = (
-                        distance_error <= geometry.distance.tolerance
-                    )
+                    distance_satisfied = distance_error <= geometry.distance.tolerance
                 report.update(
                     {
                         "distance_type": geometry.distance.type,
@@ -899,17 +823,12 @@ def _analyze_interface_edges(
                 checks.append(distance_satisfied)
             if geometry.normal_angle_deg is not None:
                 normal_error = abs(
-                    report["normal_angle_deg"]
-                    - geometry.normal_angle_deg.target
+                    report["normal_angle_deg"] - geometry.normal_angle_deg.target
                 )
-                normal_satisfied = (
-                    normal_error <= geometry.normal_angle_deg.tolerance
-                )
+                normal_satisfied = normal_error <= geometry.normal_angle_deg.tolerance
                 report.update(
                     {
-                        "normal_angle_target_deg": (
-                            geometry.normal_angle_deg.target
-                        ),
+                        "normal_angle_target_deg": (geometry.normal_angle_deg.target),
                         "normal_angle_tolerance_deg": (
                             geometry.normal_angle_deg.tolerance
                         ),
@@ -942,12 +861,9 @@ def _analyze_interface_edges(
                 )
                 checks.append(twist_satisfied)
             if geometry.contacts is not None:
-                contact_count = int(
-                    (distances < geometry.contacts.cutoff).sum()
-                )
+                contact_count = int((distances < geometry.contacts.cutoff).sum())
                 contacts_satisfied = (
-                    contact_count
-                    >= geometry.contacts.min_heavy_atom_contacts
+                    contact_count >= geometry.contacts.min_heavy_atom_contacts
                 )
                 report.update(
                     {
@@ -981,8 +897,7 @@ def _analyze_interface_edges(
         "unsatisfied_output_target_instances": [
             report["edge_instance_id"]
             for report in reports
-            if report["satisfaction_stage"] == "output"
-            and not report["satisfied"]
+            if report["satisfaction_stage"] == "output" and not report["satisfied"]
         ],
         "edges": reports,
     }
@@ -1036,12 +951,8 @@ def _continuous_fragment_paths(scaffold_graph) -> tuple[tuple[str, ...], ...]:
     for link in scaffold_graph.links.values():
         if link.chain_break:
             continue
-        outgoing[link.from_fragment_instance_id] = (
-            link.to_fragment_instance_id
-        )
-        incoming[link.to_fragment_instance_id] = (
-            link.from_fragment_instance_id
-        )
+        outgoing[link.from_fragment_instance_id] = link.to_fragment_instance_id
+        incoming[link.to_fragment_instance_id] = link.from_fragment_instance_id
 
     paths: list[tuple[str, ...]] = []
     visited: set[str] = set()
@@ -1071,9 +982,7 @@ def _element(atom: AtomRecord) -> str:
         return letters[:2].upper()
     inferred = re.sub(r"[^A-Za-z]", "", atom.atom_name)
     if not inferred:
-        raise ValueError(
-            f"Cannot infer element for source atom serial {atom.serial}"
-        )
+        raise ValueError(f"Cannot infer element for source atom serial {atom.serial}")
     return inferred[0].upper()
 
 
@@ -1122,8 +1031,7 @@ def _compile_atoms(
     }
     polymer_paths = _continuous_fragment_paths(scaffold_graph)
     source_entity_ids = {
-        fragment_id: str(index + 1)
-        for index, fragment_id in enumerate(spec.fragments)
+        fragment_id: str(index + 1) for index, fragment_id in enumerate(spec.fragments)
     }
 
     # The complete presymmetrized structure may legitimately contain more
@@ -1163,9 +1071,9 @@ def _compile_atoms(
         for fragment_id in path:
             first_label_seq_id_by_fragment[fragment_id] = next_label_seq_id
             source_id = instances.fragments[fragment_id].source_id
-            next_label_seq_id += len({
-                atom.residue_id for atom in source_atoms[source_id]
-            })
+            next_label_seq_id += len(
+                {atom.residue_id for atom in source_atoms[source_id]}
+            )
 
     compiled_atoms: list[_CompiledAtom] = []
     fragment_ranges: dict[str, dict[str, Any]] = {}
@@ -1180,17 +1088,15 @@ def _compile_atoms(
         chain_id = chain_id_by_fragment[fragment.id]
         entity_id = entity_id_by_fragment[fragment.id]
         first_label_seq_id = (
-            first_label_seq_id_by_fragment[fragment.id]
-            if compact_polymer_paths
-            else 1
+            first_label_seq_id_by_fragment[fragment.id] if compact_polymer_paths else 1
         )
         residue_labels: dict[tuple[str, int, str], int] = {}
         fragment_atom_start = len(compiled_atoms)
         fragment_residue_indices: list[int] = []
         for atom, coordinate in zip(atoms, transformed, strict=True):
             if atom.residue_id not in residue_labels:
-                residue_labels[atom.residue_id] = (
-                    first_label_seq_id + len(residue_labels)
+                residue_labels[atom.residue_id] = first_label_seq_id + len(
+                    residue_labels
                 )
                 fragment_residue_indices.append(global_residue_index)
                 global_residue_index += 1
@@ -1204,9 +1110,7 @@ def _compile_atoms(
                     source_atom=atom,
                     fragment_instance_id=fragment.id,
                     source_fragment_id=fragment.source_id,
-                    motion_group_instance_id=(
-                        fragment.motion_group_instance_id
-                    ),
+                    motion_group_instance_id=(fragment.motion_group_instance_id),
                     orbit_id=fragment.orbit_id,
                     copy_index=fragment.copy_index,
                     transform_id=fragment.transform_id,
@@ -1245,12 +1149,10 @@ def _compile_atoms(
         frames,
     )
     compilation["interface_report"] = interface_report
-    compilation["linker_geometry_report"] = (
-        _analyze_scaffold_link_geometry(
-            compiled_atoms,
-            instances,
-            spec,
-        )
+    compilation["linker_geometry_report"] = _analyze_scaffold_link_geometry(
+        compiled_atoms,
+        instances,
+        spec,
     )
     compilation["symmetry_cavity_report"] = _analyze_symmetry_cavities(
         compiled_atoms,
@@ -1271,11 +1173,7 @@ def _compile_atoms(
 
     if strict_validation and clash_report["total_hard_clashes"]:
         clashing_pairs = sorted(
-            (
-                pair
-                for pair in clash_report["group_pairs"]
-                if pair["hard_clash_count"]
-            ),
+            (pair for pair in clash_report["group_pairs"] if pair["hard_clash_count"]),
             key=lambda pair: (
                 -pair["hard_clash_count"],
                 pair["minimum_atom_distance"],
@@ -1302,6 +1200,18 @@ def _compile_atoms(
         raise ValueError(
             "Standalone compilation rejected unsatisfied required interface "
             f"edges: {interface_report['failed_required_edge_instances']}"
+        )
+    linker_report = compilation["linker_geometry_report"]
+    if (
+        strict_validation
+        and not linker_report["all_generated_link_constraints_materializable"]
+    ):
+        raise ValueError(
+            "Standalone compilation rejected physically unreachable "
+            "scaffold endpoints: no user-authorized linker length can span "
+            "every required physical copy; infeasible link instances="
+            f"{linker_report['infeasible_link_instances']}; infeasible "
+            f"tie groups={linker_report['infeasible_tie_groups']}"
         )
     return compiled_atoms, spec, instances, compilation
 
@@ -1517,9 +1427,7 @@ def compile_standalone(
             instances,
         ),
         "fragment_ranges": compilation["fragment_ranges"],
-        "source_polymer_chain_count": compilation[
-            "source_polymer_chain_count"
-        ],
+        "source_polymer_chain_count": compilation["source_polymer_chain_count"],
         "source_polymer_paths": compilation["source_polymer_paths"],
         "port_frames": compilation["frames"],
         "master_transforms": compilation["master_transforms"],
@@ -1554,8 +1462,7 @@ def compile_standalone(
             ),
         },
         "inputs": [
-            {"path": str(path), "sha256": _sha256(path)}
-            for path in input_paths
+            {"path": str(path), "sha256": _sha256(path)} for path in input_paths
         ],
         "outputs": {
             "structure": {
@@ -1576,13 +1483,10 @@ def compile_standalone(
             "motion_group_instances": len(instances.motion_groups),
             "port_instances": len(instances.ports),
             "interface_edge_instances": len(instances.interfaces),
-            "scaffold_link_instances": len(
-                compiled_scaffold_links(instances)
-            ),
+            "scaffold_link_instances": len(compiled_scaffold_links(instances)),
         },
         "interface_edges": [
-            edge.model_dump(mode="json")
-            for edge in instances.interfaces.values()
+            edge.model_dump(mode="json") for edge in instances.interfaces.values()
         ],
         "scaffold_links": [
             link.model_dump(mode="json")
@@ -1592,12 +1496,8 @@ def compile_standalone(
             "strict_validation": compilation["strict_validation"],
             "inter_group_clashes": compilation["clash_report"],
             "interfaces": compilation["interface_report"],
-            "scaffold_link_geometry": compilation[
-                "linker_geometry_report"
-            ],
-            "symmetry_cavities": compilation[
-                "symmetry_cavity_report"
-            ],
+            "scaffold_link_geometry": compilation["linker_geometry_report"],
+            "symmetry_cavities": compilation["symmetry_cavity_report"],
             "static_metrics": compilation["static_metrics"],
             "objectives": compilation["objective_report"],
         },

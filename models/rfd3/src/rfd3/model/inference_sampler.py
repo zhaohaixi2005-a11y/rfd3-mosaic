@@ -102,23 +102,18 @@ def _scaffold_guidance_requires_primary_axis(
     ):
         return True
     if normalized_id in {"T", "O", "I"}:
-        requested = sorted(
-            set(mobility_subspaces) & _AXIS_DEPENDENT_MOTIF_SUBSPACES
-        )
+        requested = sorted(set(mobility_subspaces) & _AXIS_DEPENDENT_MOTIF_SUBSPACES)
         if requested:
             raise ValueError(
                 f"{normalized_id} has no single global primary axis; "
                 "axis-dependent motif mobility is undefined for subspaces: "
                 + ", ".join(requested)
             )
-        unsupported = sorted(
-            set(mobility_subspaces) - {"bounded_se3"}
-        )
+        unsupported = sorted(set(mobility_subspaces) - {"bounded_se3"})
         if unsupported:
             raise ValueError(
                 f"Unsupported {normalized_id} scaffold-driven motif mobility "
-                "subspaces: "
-                + ", ".join(unsupported)
+                "subspaces: " + ", ".join(unsupported)
             )
         return False
     raise ValueError(
@@ -156,9 +151,7 @@ def _motif_mobility_proposal_schedule(
     for start_fraction, end_fraction in windows:
         active_counts.append(
             sum(
-                start_fraction
-                < step / max(total_steps - 1, 1)
-                < end_fraction
+                start_fraction < step / max(total_steps - 1, 1) < end_fraction
                 for step in proposal_steps
             )
         )
@@ -233,6 +226,11 @@ class SampleDiffusionConfig:
     generated_polymer_continuity_target_ca_distance: float = 3.8
     generated_polymer_continuity_tolerance: float = 0.5
     generated_polymer_continuity_iterations: int = 64
+    # Compiler-owned, topology-neutral protection for two-anchor generated
+    # runs.  The routing field uses relative endpoint-corridor ownership; it
+    # neither creates an interface nor imposes a pore/compactness target.
+    enable_generated_cross_chain_topology_guidance: bool = False
+    generated_routing_ownership_weight: float = 1.0
     graph_interface_guidance_weight: float = 1.0
     graph_interface_guidance_coverage_weight: float = 1.0
     graph_interface_guidance_continuity_weight: float = 1.0
@@ -302,12 +300,15 @@ class SampleDiffusionConfig:
     motif_mobility_apply_updates: bool = True
     motif_mobility_update_interval: int = 5
     motif_mobility_target_update_count: int = 24
-    # Joint interface packing needs meaningful rigid-body exploration while
-    # the selected patch is still distant or too narrow.  The multiplier is
-    # applied to the declared per-orbit response and remains clamped by the
-    # existing per-step and total translation/rotation bounds.
-    motif_mobility_capture_response_scale: float = 4.0
-    motif_mobility_expand_response_scale: float = 3.0
+    # Movable rigid bodies use proportions of their declared active window,
+    # never absolute diffusion-step indices.  These scales expose 100%, 50%
+    # and 20% of the capture amplitude during capture, settle and polish,
+    # respectively, for every declared base response.  The hard total
+    # translation/rotation bounds remain authoritative throughout.
+    motif_mobility_capture_fraction: float = 0.40
+    motif_mobility_settle_fraction: float = 0.40
+    motif_mobility_capture_response_scale: float = 5.0
+    motif_mobility_expand_response_scale: float = 2.5
     motif_mobility_polish_response_scale: float = 1.0
     motif_mobility_target_max_tilt_degrees: float = 20.0
     motif_mobility_junction_weight: float = 1.0
@@ -694,6 +695,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         scaffold_core_active = (
             float(self.scaffold_core_intra_chain_weight) > 0.0
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
+            or bool(self.enable_generated_cross_chain_topology_guidance)
         )
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
@@ -708,6 +710,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Generated polymer continuity guidance requires exact "
                 "orbit-average state and coupled-noise modes"
             )
+        if self.enable_generated_cross_chain_topology_guidance and not exact_state:
+            raise ValueError(
+                "Generated cross-chain topology guidance requires exact "
+                "orbit-average state and coupled-noise modes"
+            )
+        if float(self.generated_routing_ownership_weight) < 0.0:
+            raise ValueError("generated_routing_ownership_weight cannot be negative")
         if float(self.generated_polymer_continuity_target_ca_distance) <= 0.0:
             raise ValueError(
                 "generated_polymer_continuity_target_ca_distance must be positive"
@@ -717,9 +726,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "generated_polymer_continuity_tolerance cannot be negative"
             )
         if int(self.generated_polymer_continuity_iterations) < 1:
-            raise ValueError(
-                "generated_polymer_continuity_iterations must be positive"
-            )
+            raise ValueError("generated_polymer_continuity_iterations must be positive")
         if float(self.scaffold_core_intra_chain_weight) < 0.0:
             raise ValueError("scaffold_core_intra_chain_weight cannot be negative")
         if not 0.0 <= float(self.scaffold_core_inter_chain_weight) <= 2.0:
@@ -783,8 +790,17 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         if int(self.motif_mobility_update_interval) <= 0:
             raise ValueError("motif_mobility_update_interval must be positive")
         if int(self.motif_mobility_target_update_count) < 0:
+            raise ValueError("motif_mobility_target_update_count cannot be negative")
+        capture_fraction = float(self.motif_mobility_capture_fraction)
+        settle_fraction = float(self.motif_mobility_settle_fraction)
+        if not (
+            0.0 < capture_fraction < 1.0
+            and 0.0 < settle_fraction < 1.0
+            and capture_fraction + settle_fraction < 1.0
+        ):
             raise ValueError(
-                "motif_mobility_target_update_count cannot be negative"
+                "motif mobility capture/settle fractions must be positive "
+                "and leave a nonzero polish phase"
             )
         for name, value in (
             (
@@ -943,12 +959,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             contact_prior_decay_power=float(
                 self.graph_interface_guidance_contact_prior_decay_power
             ),
-            contact_prior_r_0=float(
-                self.graph_interface_guidance_contact_prior_r_0
-            ),
-            contact_prior_d_0=float(
-                self.graph_interface_guidance_contact_prior_d_0
-            ),
+            contact_prior_r_0=float(self.graph_interface_guidance_contact_prior_r_0),
+            contact_prior_d_0=float(self.graph_interface_guidance_contact_prior_d_0),
             coverage_weight=float(self.graph_interface_guidance_coverage_weight),
             continuity_weight=float(self.graph_interface_guidance_continuity_weight),
             orientation_weight=float(self.graph_interface_guidance_orientation_weight),
@@ -1028,6 +1040,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             inter_chain_weight=float(self.scaffold_core_inter_chain_weight),
             inter_chain_excess_penalty=float(
                 self.scaffold_core_inter_chain_excess_penalty
+            ),
+            routing_ownership_weight=(
+                float(self.generated_routing_ownership_weight)
+                if self.enable_generated_cross_chain_topology_guidance
+                else 0.0
             ),
         )
 
@@ -1767,6 +1784,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         scaffold_core_active = (
             float(self.scaffold_core_intra_chain_weight) > 0.0
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
+            or bool(self.enable_generated_cross_chain_topology_guidance)
         )
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
@@ -1818,6 +1836,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f"{scaffold_core_guidance_config.intra_chain_weight}, "
                 "inter="
                 f"{scaffold_core_guidance_config.inter_chain_weight}"
+                ", routing="
+                f"{scaffold_core_guidance_config.routing_ownership_weight}"
             )
         if self._uses_exact_symmetry_orbits:
             self._exact_symmetry_orbit_layout = (
@@ -1860,49 +1880,50 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     per_step_rotation_degrees=float(
                         self.motif_mobility_per_step_rotation_degrees
                     ),
+                    capture_fraction=float(self.motif_mobility_capture_fraction),
+                    settle_fraction=float(self.motif_mobility_settle_fraction),
+                    capture_response_scale=float(
+                        self.motif_mobility_capture_response_scale
+                    ),
+                    settle_response_scale=float(
+                        self.motif_mobility_expand_response_scale
+                    ),
+                    polish_response_scale=float(
+                        self.motif_mobility_polish_response_scale
+                    ),
                 )
                 if motif_mobility_controller is None:
                     raise ValueError(
                         "Orbit-rigid motif mobility was enabled but the "
                         "input declares no mobile motif constraint orbit"
                     )
-                mobility_schedule_diagnostics = (
-                    _motif_mobility_proposal_schedule(
-                        total_steps=max(int(noise_schedule.numel()) - 1, 1),
-                        configured_interval=int(
-                            self.motif_mobility_update_interval
-                        ),
-                        target_update_count=int(
-                            self.motif_mobility_target_update_count
-                        ),
-                        windows=tuple(
-                            (
-                                float(
-                                    getattr(
-                                        motif,
-                                        "start_fraction",
-                                        self.motif_mobility_start_fraction,
-                                    )
-                                ),
-                                float(
-                                    getattr(
-                                        motif,
-                                        "end_fraction",
-                                        self.motif_mobility_end_fraction,
-                                    )
-                                ),
-                            )
-                            for motif in motif_mobility_controller.motifs
-                        ),
-                        always_propose=(
-                            self.motif_mobility_proposal_source == "denoiser"
-                        ),
-                    )
+                mobility_schedule_diagnostics = _motif_mobility_proposal_schedule(
+                    total_steps=max(int(noise_schedule.numel()) - 1, 1),
+                    configured_interval=int(self.motif_mobility_update_interval),
+                    target_update_count=int(self.motif_mobility_target_update_count),
+                    windows=tuple(
+                        (
+                            float(
+                                getattr(
+                                    motif,
+                                    "start_fraction",
+                                    self.motif_mobility_start_fraction,
+                                )
+                            ),
+                            float(
+                                getattr(
+                                    motif,
+                                    "end_fraction",
+                                    self.motif_mobility_end_fraction,
+                                )
+                            ),
+                        )
+                        for motif in motif_mobility_controller.motifs
+                    ),
+                    always_propose=(self.motif_mobility_proposal_source == "denoiser"),
                 )
                 effective_motif_mobility_update_interval = int(
-                    mobility_schedule_diagnostics[
-                        "effective_update_interval"
-                    ]
+                    mobility_schedule_diagnostics["effective_update_interval"]
                 )
                 if self.motif_mobility_proposal_source == "scaffold_boundary":
                     scaffold_guidance_topology = build_boundary_topology(
@@ -1914,17 +1935,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         dtype=torch.bool,
                         device=fixed_target.device,
                     )
-                    mobile_motifs = tuple(
-                        motif_mobility_controller.motifs
-                    )
-                    uses_primary_axis = (
-                        _scaffold_guidance_requires_primary_axis(
-                            f.get("symmetry_id"),
-                            tuple(
-                                str(motif.mobility_subspace)
-                                for motif in mobile_motifs
-                            ),
-                        )
+                    mobile_motifs = tuple(motif_mobility_controller.motifs)
+                    uses_primary_axis = _scaffold_guidance_requires_primary_axis(
+                        f.get("symmetry_id"),
+                        tuple(str(motif.mobility_subspace) for motif in mobile_motifs),
                     )
                     if uses_primary_axis:
                         scaffold_guidance_axis = extract_symmetry_primary_axis(
@@ -2047,9 +2061,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                         joint_diagnostics["committed"]
                                     ),
                                     "motif_pose_response_scale": (
-                                        joint_diagnostics[
-                                            "motif_pose_response_scale"
-                                        ]
+                                        joint_diagnostics["motif_pose_response_scale"]
                                     ),
                                 }
                             )
@@ -2413,9 +2425,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
             if scaffold_core_active:
                 if scaffold_core_topology is None:
-                    raise RuntimeError(
-                        "Scaffold core topology was not initialized"
-                    )
+                    raise RuntimeError("Scaffold core topology was not initialized")
                 if scaffold_core_guidance_config is None:
                     raise RuntimeError(
                         "Scaffold core guidance config was not initialized"
@@ -2492,12 +2502,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     target_ca_distance=float(
                         self.generated_polymer_continuity_target_ca_distance
                     ),
-                    tolerance=float(
-                        self.generated_polymer_continuity_tolerance
-                    ),
-                    iterations=int(
-                        self.generated_polymer_continuity_iterations
-                    ),
+                    tolerance=float(self.generated_polymer_continuity_tolerance),
+                    iterations=int(self.generated_polymer_continuity_iterations),
                     projector=continuity_projector,
                 )
                 continuity_step["step_num"] = step_num

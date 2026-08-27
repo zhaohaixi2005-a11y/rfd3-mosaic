@@ -80,9 +80,7 @@ def _sampling_assignments(
     requested = int(sampling.get("designs", 1))
     if topology["kind"] == "user_design":
         design = load_user_design(topology["config"])
-        assignments = design_sampling_assignments(
-            compile_sampling_plan(design)
-        )
+        assignments = design_sampling_assignments(compile_sampling_plan(design))
         if len(assignments) != requested:
             raise ValueError(
                 "Frozen public design and execution envelope disagree on "
@@ -138,15 +136,11 @@ def _merged_rfd3_input(
     by_example: dict[str, DesignSamplingAssignment] = {}
     for assignment in assignments:
         assembly = assemblies[assignment.pose_index]
-        payload = json.loads(
-            assembly.input_path.read_text(encoding="utf-8")
-        )
+        payload = json.loads(assembly.input_path.read_text(encoding="utf-8"))
         source = next(iter(payload.values()))
         source_input = Path(str(source["input"]))
         if not source_input.is_absolute():
-            source_input = (
-                assembly.input_path.parent / source_input
-            ).resolve()
+            source_input = (assembly.input_path.parent / source_input).resolve()
         source["input"] = str(source_input)
         source["extra"] = dict(source.get("extra") or {})
         source["extra"].update(
@@ -178,14 +172,8 @@ def _motif_mobility_runtime(rfd3_input: Path) -> tuple[bool, str]:
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
-    orbits = (example.get("extra") or {}).get(
-        "motif_constraint_orbits", []
-    )
-    mobile = [
-        orbit
-        for orbit in orbits
-        if orbit.get("mobility_mode") == "orbit_rigid"
-    ]
+    orbits = (example.get("extra") or {}).get("motif_constraint_orbits", [])
+    mobile = [orbit for orbit in orbits if orbit.get("mobility_mode") == "orbit_rigid"]
     if not mobile:
         return False, "denoiser"
     proposals = {orbit.get("mobility_proposal") for orbit in mobile}
@@ -204,9 +192,7 @@ def _graph_interface_guidance_runtime(rfd3_input: Path) -> bool:
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
-    relations = (example.get("extra") or {}).get(
-        "assembly_interface_relations", []
-    )
+    relations = (example.get("extra") or {}).get("assembly_interface_relations", [])
     return any(
         bool(relation.get("required", True))
         and relation.get("satisfaction_stage") == "output"
@@ -221,9 +207,7 @@ def _symmetric_scaffold_packing_runtime(rfd3_input: Path) -> bool:
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
-    plan = (example.get("extra") or {}).get(
-        "automatic_symmetric_scaffold_packing"
-    )
+    plan = (example.get("extra") or {}).get("automatic_symmetric_scaffold_packing")
     return isinstance(plan, dict) and plan.get("mode") == "symmetric_generated"
 
 
@@ -234,9 +218,20 @@ def _generated_polymer_continuity_runtime(
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
-    plan = (example.get("extra") or {}).get(
-        "generated_polymer_continuity_guidance"
-    )
+    plan = (example.get("extra") or {}).get("generated_polymer_continuity_guidance")
+    if not isinstance(plan, dict) or not bool(plan.get("enabled")):
+        return None
+    return plan
+
+
+def _generated_cross_chain_topology_runtime(
+    rfd3_input: Path,
+) -> dict[str, Any] | None:
+    """Resolve compiler-owned generated-run routing protection."""
+
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    plan = (example.get("extra") or {}).get("generated_cross_chain_topology_guidance")
     if not isinstance(plan, dict) or not bool(plan.get("enabled")):
         return None
     return plan
@@ -249,14 +244,10 @@ def _resolved_guidance_overrides(
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
-    preferences = (example.get("extra") or {}).get(
-        "resolved_design_preferences"
-    )
+    preferences = (example.get("extra") or {}).get("resolved_design_preferences")
     if not preferences:
         return ()
-    return ResolvedDesignPreferences.model_validate(
-        preferences
-    ).hydra_overrides()
+    return ResolvedDesignPreferences.model_validate(preferences).hydra_overrides()
 
 
 def _record_worker_state(
@@ -281,8 +272,7 @@ def _record_worker_state(
         )
     except (KeyError, OSError, TypeError, ValueError) as index_error:
         print(
-            "WARNING: could not update the RFD3-Mosaic run index: "
-            f"{index_error}",
+            "WARNING: could not update the RFD3-Mosaic run index: " f"{index_error}",
             flush=True,
         )
 
@@ -326,9 +316,7 @@ def _verify_render_identity(
             )
         verify_source_snapshot_tree(
             source_root,
-            expected_manifest_sha256=str(
-                source_snapshot["manifest_sha256"]
-            ),
+            expected_manifest_sha256=str(source_snapshot["manifest_sha256"]),
         )
     records = identity.get("files")
     if not isinstance(records, list) or not records:
@@ -350,9 +338,10 @@ def _verify_render_identity(
     if not isinstance(checkpoint_record, dict):
         raise RuntimeError("render_identity lacks checkpoint identity")
     resources = config["resources"]
-    if Path(str(checkpoint_record.get("path"))).resolve() != Path(
-        resources["checkpoint"]
-    ).resolve():
+    if (
+        Path(str(checkpoint_record.get("path"))).resolve()
+        != Path(resources["checkpoint"]).resolve()
+    ):
         raise RuntimeError("Resolved checkpoint path differs from render identity")
     if checkpoint_record.get("sha256") != resources.get("checkpoint_sha256"):
         raise RuntimeError("Resolved checkpoint digest differs from render identity")
@@ -371,15 +360,9 @@ def execute(
     shutil.copy2(resolved_config, frozen)
     source_provenance = resolved_config.with_name("provenance.json")
     if not source_provenance.is_file():
-        raise RuntimeError(
-            f"Submission provenance is missing: {source_provenance}"
-        )
-    submission_provenance = json.loads(
-        source_provenance.read_text(encoding="utf-8")
-    )
-    expected_resolved_sha = submission_provenance.get(
-        "resolved_config_sha256"
-    )
+        raise RuntimeError(f"Submission provenance is missing: {source_provenance}")
+    submission_provenance = json.loads(source_provenance.read_text(encoding="utf-8"))
+    expected_resolved_sha = submission_provenance.get("resolved_config_sha256")
     observed_resolved_sha = _sha256(resolved_config)
     if expected_resolved_sha != observed_resolved_sha:
         raise RuntimeError(
@@ -399,12 +382,11 @@ def execute(
     runtime_provenance["execution_source_root"] = (
         str(source_root) if source_root is not None else None
     )
-    runtime_provenance["source_snapshot"] = config["provenance"][
-        "render_identity"
-    ].get("source_snapshot")
+    runtime_provenance["source_snapshot"] = config["provenance"]["render_identity"].get(
+        "source_snapshot"
+    )
     runtime_provenance_path.write_text(
-        json.dumps(runtime_provenance, indent=2, sort_keys=True)
-        + "\n",
+        json.dumps(runtime_provenance, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -431,17 +413,13 @@ def execute(
     kind = topology["kind"]
     assignments = _sampling_assignments(config)
     stochastic_pose_sampling = _uses_stochastic_pose_sampling(config)
-    unique_pose_indices = sorted(
-        {assignment.pose_index for assignment in assignments}
-    )
+    unique_pose_indices = sorted({assignment.pose_index for assignment in assignments})
     stochastic_pose_population = len(unique_pose_indices) > 1
     assemblies: dict[int, Any] = {}
     accepted_pose_seeds: dict[int, int | None] = {}
     prevalidation_reports: list[Path] = []
     for pose_index in unique_pose_indices:
-        assignment = next(
-            item for item in assignments if item.pose_index == pose_index
-        )
+        assignment = next(item for item in assignments if item.pose_index == pose_index)
         maximum_attempts = 64 if assignment.pose_seed is not None else 1
         # Even a completely fixed arrangement may have several diffusion
         # replicates.  Keep its one-example compiler input separate from the
@@ -474,9 +452,7 @@ def execute(
                     pose_seed=candidate_seed,
                     example_id=f"pose_{pose_index:05d}",
                 )
-                prevalidation_report = (
-                    pose_directory / "rfd3_prevalidation.json"
-                )
+                prevalidation_report = pose_directory / "rfd3_prevalidation.json"
                 _run(
                     [
                         sys.executable,
@@ -569,8 +545,8 @@ def execute(
         )
 
     sampler = sampling["sampler"]
-    mobility_enabled, mobility_proposal_source = (
-        _motif_mobility_runtime(assemblies[0].input_path)
+    mobility_enabled, mobility_proposal_source = _motif_mobility_runtime(
+        assemblies[0].input_path
     )
     interface_guidance_enabled = _graph_interface_guidance_runtime(
         assemblies[0].input_path
@@ -578,7 +554,8 @@ def execute(
     scaffold_packing_enabled = _symmetric_scaffold_packing_runtime(
         assemblies[0].input_path
     )
-    polymer_continuity = _generated_polymer_continuity_runtime(
+    polymer_continuity = _generated_polymer_continuity_runtime(assemblies[0].input_path)
+    cross_chain_topology = _generated_cross_chain_topology_runtime(
         assemblies[0].input_path
     )
     if interface_guidance_enabled and scaffold_packing_enabled:
@@ -599,8 +576,7 @@ def execute(
         "diffusion_batch_size=1",
         "n_batches=1",
         f"inference_sampler.num_timesteps={sampling['timesteps']}",
-        "inference_sampler.allow_realignment="
-        + str(sampler["allow_realignment"]),
+        "inference_sampler.allow_realignment=" + str(sampler["allow_realignment"]),
         "++inference_sampler.fixed_motif_finalization_mode="
         + str(sampler["fixed_motif_finalization_mode"]),
         "++inference_sampler.preserve_fixed_motif_during_symmetry="
@@ -626,6 +602,8 @@ def execute(
         + str(scaffold_packing_enabled),
         "++inference_sampler.enable_generated_polymer_continuity_guidance="
         + str(polymer_continuity is not None),
+        "++inference_sampler.enable_generated_cross_chain_topology_guidance="
+        + str(cross_chain_topology is not None),
         f"low_memory_mode={sampling['low_memory_mode']}",
         "skip_existing=False",
         "dump_trajectories=False",
@@ -643,13 +621,16 @@ def execute(
                 + str(polymer_continuity.get("projection_iterations", 64)),
             )
         )
+    if cross_chain_topology is not None:
+        inference_command.append(
+            "++inference_sampler.generated_routing_ownership_weight="
+            + str(cross_chain_topology.get("routing_ownership_weight", 1.0))
+        )
     # Resolved preferences also carry the independent intra/inter scaffold
     # field.  Do not couple those overrides to graph-interface activation:
     # supplied-interface jobs may legitimately request a compact monomer core
     # while explicitly declining creation of a second generated interface.
-    inference_command.extend(
-        _resolved_guidance_overrides(assemblies[0].input_path)
-    )
+    inference_command.extend(_resolved_guidance_overrides(assemblies[0].input_path))
     _run(inference_command)
 
     result_jsons = find_result_jsons(run_dir)
@@ -719,9 +700,7 @@ def execute(
         }
         all_reports.extend(audit_outcome.reports)
         if audit_outcome.mobility_trajectory is not None:
-            mobility_trajectories.append(
-                audit_outcome.mobility_trajectory
-            )
+            mobility_trajectories.append(audit_outcome.mobility_trajectory)
         design_results.append(
             {
                 "design_index": assignment.design_index,
@@ -756,13 +735,9 @@ def execute(
         )
     design_results.sort(key=lambda item: int(item["design_index"]))
 
-    accepted_count = sum(
-        bool(record["accepted"]) for record in design_results
-    )
+    accepted_count = sum(bool(record["accepted"]) for record in design_results)
     rejected_count = len(design_results) - accepted_count
-    contract_met_count = sum(
-        bool(record["contract_met"]) for record in design_results
-    )
+    contract_met_count = sum(bool(record["contract_met"]) for record in design_results)
     contract_flagged_count = len(design_results) - contract_met_count
     recommended_count = sum(
         record["recommendation"] == "recommended_for_next_stage"
@@ -798,21 +773,15 @@ def execute(
         "accepted_designs": accepted_count,
         "rejected_designs": rejected_count,
         "design_results": design_results,
-        "result_json": (
-            str(result_jsons[0]) if len(result_jsons) == 1 else None
-        ),
+        "result_json": (str(result_jsons[0]) if len(result_jsons) == 1 else None),
         "result_jsons": [str(path) for path in result_jsons],
         "structure_archive": structure_archive,
         "reports": [str(path) for path in all_reports],
         "runtime_provenance": str(runtime_provenance_path),
         "mobility_trajectory": (
-            str(mobility_trajectories[0])
-            if len(mobility_trajectories) == 1
-            else None
+            str(mobility_trajectories[0]) if len(mobility_trajectories) == 1 else None
         ),
-        "mobility_trajectories": [
-            str(path) for path in mobility_trajectories
-        ],
+        "mobility_trajectories": [str(path) for path in mobility_trajectories],
     }
     summary_path.write_text(
         json.dumps(completion, indent=2, sort_keys=True) + "\n",

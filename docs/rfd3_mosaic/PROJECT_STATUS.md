@@ -1,5 +1,29 @@
 # RFD3-Mosaic project status
 
+## 2026-08-27 endpoint and route-ownership protection (CPU implementation)
+
+- Strict executable compilation now rejects any non-break generated link for
+  which the maximum declared residue count cannot span the fixed endpoint
+  distance at the documented 3.8 A CA contour reference. Diagnostic relaxed
+  compilation still records the infeasible copies and tie groups.
+- Two-fixed-anchor generated paths now carry compiler-derived route ownership
+  into the frozen RFD3 input. During sampling, generated CA coordinates are
+  penalized when they enter another chain's closer endpoint corridor; fixed
+  atoms are excluded, legal inter-chain contacts are not prohibited, and no
+  inward/outward ring morphology is prescribed.
+- The pre-existing cross-chain CA-segment barrier remains responsible for
+  literal backbone-segment collisions. Route ownership, segment collision,
+  continuity and fixed-motif preservation remain separate recorded terms.
+- A principal-axis cone sampler is implemented as an explicit optional prior,
+  but all maintained workflows retain Haar-uniform `uniform_so3`. Ho-Yeung's
+  broad interface-seed orientation sampling does not support silently making
+  a 45-degree cone the LHD or cyclic default.
+- The mathematical definitions, normalization, claim boundary and limitations
+  are recorded in `RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md`. Static checks and
+  the complete 958-test CPU suite pass. A matched old/new GPU comparison is
+  still required before the route-ownership change is called scientifically
+  validated.
+
 ## 2026-08-26 polyhedral bounded-mobility correction (CPU implementation)
 
 - Dynamic T/O `bounded_se3` no longer asks the runtime to invent one global
@@ -13,8 +37,11 @@
   images. Its former `[1, 1, 0]` direction lies on a two-fold stabilizer and
   collapsed the nominal 24-copy orbit to 12 unique placements.
 - Targeted sampler/controller tests and complete CPU input validation pass for
-  both dynamic T (12 copies) and dynamic O (24 copies). Frozen GPU reruns are
-  still required before either dynamic gate is called GPU-closed.
+  both dynamic T (12 copies) and dynamic O (24 copies). Corrected 50-step GPU
+  jobs `5762800` (T x12) and `5762801` (O x24) subsequently closed both
+  engineering gates: bounded mobility executed, the complete fixed orbits and
+  exact symmetry were retained, and both written CA traces had zero breaks and
+  zero clashes. Their single outputs are not secondary-structure benchmarks.
 
 ## 2026-08-25 cross-chain topology safety (CPU implementation)
 
@@ -74,11 +101,12 @@ are free of CA clashes under the current coarse screen.  None meets all
 current advisory monomer-core controller targets, but those targets are not a
 published RFdiffusion/RFD3 backbone-generation acceptance standard.  Several
 clash-free outputs combine good tertiary support with no unintended
-generated--generated inter-chain contacts.  Generated-new-
-interface packing remains the principal scientific blocker: the most recent
-H100, A100 and RTX 3070 evidence contains no output meeting the complete
-online packing-proxy target bundle across 20 completed structures.  Those
-outputs remain generated backbones; this result diagnoses controller
+generated--generated inter-chain contacts. Generated-new-interface packing is
+implemented, while its comparative scientific calibration remains open: the
+most recent H100, A100 and RTX 3070 evidence contains no output meeting the
+complete online packing-proxy target bundle across 20 completed structures.
+This is not a missing execution path or a binary release failure. Those
+outputs remain generated backbones; the result diagnoses controller
 calibration rather than assigning user-level rejection. Runtime reciprocal
 CA-window continuity and stricter post-hoc backbone-heavy-atom continuity are
 now reported separately, because they are different measurements and must not
@@ -111,7 +139,7 @@ interface edges. One pose removes three heavy-atom clashes; the other gains
 two post-hoc contact residues but introduces three heavy-atom clashes and a
 continuity flag. Runtime acceptance currently protects CA geometry while the
 final audit observes backbone-heavy-atom and C--N geometry, so closing that
-representation gap is the next generated-interface blocker.
+representation gap is the next generated-interface calibration question.
 
 ## Experimental capabilities
 

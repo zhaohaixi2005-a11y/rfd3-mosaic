@@ -15,6 +15,7 @@ RFD3-Mosaic.
 - [Current project status](PROJECT_STATUS.md)
 - [Capability boundary](../../DEVELOPMENT_STATUS.md)
 - [Packing-guidance semantics](PACKING_GUIDANCE.md)
+- [Rigid-mobility mathematical contract](RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md)
 - [Structure-metric provenance](STRUCTURE_METRIC_PROVENANCE.md)
 - [Evidence for backbone-evaluation formulas](BACKBONE_EVALUATION_EVIDENCE.md)
 - [Ho-Yeung backbone-comparison protocol](HOYEUNG_BACKBONE_COMPARISON.md)

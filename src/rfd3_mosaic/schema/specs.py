@@ -121,9 +121,7 @@ class MotionGroupSpec(StrictModel):
             raise ValueError("soft_rigid motion groups require bounds")
 
         if self.mode != MotionMode.SOFT_RIGID and self.bounds is not None:
-            raise ValueError(
-                "Motion bounds are only valid for soft_rigid groups"
-            )
+            raise ValueError("Motion bounds are only valid for soft_rigid groups")
 
         return self
 
@@ -146,23 +144,15 @@ class InterfacePortFrameSpec(StrictModel):
             if not self.origin_atoms:
                 raise ValueError("anchors frame requires origin_atoms")
             if self.x_axis_atoms is None or len(self.x_axis_atoms) != 2:
-                raise ValueError(
-                    "anchors frame requires exactly two x_axis_atoms"
-                )
+                raise ValueError("anchors frame requires exactly two x_axis_atoms")
             if self.xy_plane_atoms is None or len(self.xy_plane_atoms) != 3:
-                raise ValueError(
-                    "anchors frame requires exactly three xy_plane_atoms"
-                )
+                raise ValueError("anchors frame requires exactly three xy_plane_atoms")
             if self.transform is not None:
-                raise ValueError(
-                    "anchors frame cannot also define a transform"
-                )
+                raise ValueError("anchors frame cannot also define a transform")
 
         elif self.method == FrameMethod.PRECOMPUTED:
             if self.transform is None:
-                raise ValueError(
-                    "precomputed frame requires a transform"
-                )
+                raise ValueError("precomputed frame requires a transform")
             if len(self.transform) != 4:
                 raise ValueError("Precomputed transform must be 4x4")
             if any(len(row) != 4 for row in self.transform):
@@ -170,19 +160,13 @@ class InterfacePortFrameSpec(StrictModel):
 
         elif self.method == FrameMethod.PRINCIPAL_AXIS_WITH_ANCHOR:
             if self.anchor_atom is None:
-                raise ValueError(
-                    "principal_axis_with_anchor requires anchor_atom"
-                )
+                raise ValueError("principal_axis_with_anchor requires anchor_atom")
             if self.transform is not None:
-                raise ValueError(
-                    "principal-axis frame cannot define a transform"
-                )
+                raise ValueError("principal-axis frame cannot define a transform")
 
         elif self.method == FrameMethod.REFERENCE_INTERFACE_PCA:
             if self.transform is not None:
-                raise ValueError(
-                    "PCA frame cannot define a precomputed transform"
-                )
+                raise ValueError("PCA frame cannot define a precomputed transform")
 
         return self
 
@@ -200,6 +184,8 @@ class InterfacePortSpec(StrictModel):
         if len(self.fragments) != len(set(self.fragments)):
             raise ValueError("Interface-port fragments must be unique")
         return self
+
+
 class CopyRelationSpec(StrictModel):
     """Identifies which symmetry-related copy a port connects to."""
 
@@ -241,14 +227,12 @@ class ReferenceTransformGeometry(StrictModel):
     def validate_reference_source(self) -> "ReferenceTransformGeometry":
         if self.from_reference_seed and self.target_transform is not None:
             raise ValueError(
-                "Do not provide target_transform when "
-                "from_reference_seed is true"
+                "Do not provide target_transform when " "from_reference_seed is true"
             )
 
         if not self.from_reference_seed and self.target_transform is None:
             raise ValueError(
-                "target_transform is required when "
-                "from_reference_seed is false"
+                "target_transform is required when " "from_reference_seed is false"
             )
 
         if self.target_transform is not None:
@@ -303,14 +287,20 @@ class InterfaceCoverageConstraint(StrictModel):
     """
 
     mode: Literal["auto"] = "auto"
-    minimum_contact_residues_per_side: Annotated[
-        int,
-        Field(ge=1),
-    ] | None = None
-    minimum_contiguous_contact_residues_per_side: Annotated[
-        int,
-        Field(ge=1),
-    ] | None = None
+    minimum_contact_residues_per_side: (
+        Annotated[
+            int,
+            Field(ge=1),
+        ]
+        | None
+    ) = None
+    minimum_contiguous_contact_residues_per_side: (
+        Annotated[
+            int,
+            Field(ge=1),
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def contiguous_target_cannot_exceed_coverage(
@@ -353,9 +343,7 @@ class GeometricConstraintsGeometry(StrictModel):
         ]
 
         if all(value is None for value in constraints):
-            raise ValueError(
-                "At least one geometric constraint must be provided"
-            )
+            raise ValueError("At least one geometric constraint must be provided")
 
         return self
 
@@ -381,9 +369,7 @@ class MobilityScheduleSpec(StrictModel):
     @model_validator(mode="after")
     def validate_window(self) -> "MobilityScheduleSpec":
         if self.start_fraction >= self.end_fraction:
-            raise ValueError(
-                "Mobility schedule requires start_fraction < end_fraction"
-            )
+            raise ValueError("Mobility schedule requires start_fraction < end_fraction")
         return self
 
 
@@ -404,10 +390,7 @@ class OrbitMobilitySpec(StrictModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "OrbitMobilitySpec":
-        if (
-            self.mode == OrbitMobilityMode.ORBIT_RIGID
-            and self.bounds is None
-        ):
+        if self.mode == OrbitMobilityMode.ORBIT_RIGID and self.bounds is None:
             raise ValueError(
                 "orbit_rigid interface mobility requires cumulative bounds"
             )
@@ -416,12 +399,16 @@ class OrbitMobilitySpec(StrictModel):
             subspace = self.effective_subspace
             translation = float(self.bounds.max_translation or 0.0)
             rotation = float(self.bounds.max_rotation_deg or 0.0)
-            if subspace in {
-                MobilitySubspace.RADIAL,
-                MobilitySubspace.RADIAL_AXIAL,
-                MobilitySubspace.RADIAL_ROTATION,
-                MobilitySubspace.RADIAL_AXIAL_ROTATION,
-            } and translation <= 0.0:
+            if (
+                subspace
+                in {
+                    MobilitySubspace.RADIAL,
+                    MobilitySubspace.RADIAL_AXIAL,
+                    MobilitySubspace.RADIAL_ROTATION,
+                    MobilitySubspace.RADIAL_AXIAL_ROTATION,
+                }
+                and translation <= 0.0
+            ):
                 raise ValueError(
                     f"{subspace.value} mobility requires a positive "
                     "translation bound"
@@ -435,43 +422,31 @@ class OrbitMobilitySpec(StrictModel):
                 and rotation <= 0.0
             ):
                 raise ValueError(
-                    f"{subspace.value} mobility requires a positive "
-                    "rotation bound"
+                    f"{subspace.value} mobility requires a positive " "rotation bound"
                 )
-            if (
-                subspace == MobilitySubspace.TILT_ONLY
-                and rotation <= 0.0
-            ):
+            if subspace == MobilitySubspace.TILT_ONLY and rotation <= 0.0:
                 raise ValueError(
                     "tilt_only mobility requires a positive rotation bound"
                 )
-            if (
-                subspace == MobilitySubspace.BOUNDED_SE3
-                and (translation <= 0.0 or rotation <= 0.0)
+            if subspace == MobilitySubspace.BOUNDED_SE3 and (
+                translation <= 0.0 or rotation <= 0.0
             ):
                 raise ValueError(
                     "bounded_se3 mobility requires positive translation "
                     "and rotation bounds"
                 )
-        if (
-            self.mode == OrbitMobilityMode.FIXED
-            and any(
-                value is not None
-                for value in (
-                    self.bounds,
-                    self.subspace,
-                    self.proposal,
-                    self.schedule,
-                )
+        if self.mode == OrbitMobilityMode.FIXED and any(
+            value is not None
+            for value in (
+                self.bounds,
+                self.subspace,
+                self.proposal,
+                self.schedule,
             )
         ):
-            raise ValueError(
-                "fixed orbit mobility cannot define motion controls"
-            )
+            raise ValueError("fixed orbit mobility cannot define motion controls")
         if self.mode == OrbitMobilityMode.FIXED and self.objectives:
-            raise ValueError(
-                "fixed orbit mobility cannot define mobility objectives"
-            )
+            raise ValueError("fixed orbit mobility cannot define mobility objectives")
         if len(self.objectives) != len(set(self.objectives)):
             raise ValueError("Orbit mobility objectives must be unique")
         return self
@@ -555,9 +530,7 @@ class SymmetryTransformSetSpec(StrictModel):
 
         if self.type == SymmetryType.CYCLIC:
             if self.secondary_axis is not None:
-                raise ValueError(
-                    "secondary_axis is not valid for cyclic symmetry"
-                )
+                raise ValueError("secondary_axis is not valid for cyclic symmetry")
             return self
 
         expected_polyhedral_orders = {
@@ -579,16 +552,11 @@ class SymmetryTransformSetSpec(StrictModel):
             if secondary_norm <= 1e-12:
                 raise ValueError("Secondary symmetry axis cannot be zero")
             dot_product = sum(
-                left * right
-                for left, right in zip(self.axis, self.secondary_axis)
+                left * right for left, right in zip(self.axis, self.secondary_axis)
             )
-            normalized_dot = abs(dot_product) / (
-                squared_norm * secondary_norm
-            ) ** 0.5
+            normalized_dot = abs(dot_product) / (squared_norm * secondary_norm) ** 0.5
             if normalized_dot > 1e-6:
-                raise ValueError(
-                    "secondary_axis must be perpendicular to axis"
-                )
+                raise ValueError("secondary_axis must be perpendicular to axis")
 
         return self
 
@@ -635,9 +603,9 @@ class FiniteOrbitActionSpec(StrictModel):
             raise ValueError("Coset representative IDs must be unique")
         if len(stabilizer) != len(set(stabilizer)):
             raise ValueError("Stabilizer transform IDs must be unique")
-        unknown_values = set(
-            self.transform_to_coset_representative.values()
-        ) - set(representatives)
+        unknown_values = set(self.transform_to_coset_representative.values()) - set(
+            representatives
+        )
         if unknown_values:
             raise ValueError(
                 "Transform-to-coset map references unknown representatives: "
@@ -651,10 +619,7 @@ class FiniteOrbitActionSpec(StrictModel):
                 "Stabilizer path assignments reference transforms outside "
                 f"the declared stabilizer: {sorted(unknown_path_transforms)}"
             )
-        if (
-            self.stabilizer_path_transform_ids
-            and len(representatives) != 1
-        ):
+        if self.stabilizer_path_transform_ids and len(representatives) != 1:
             raise ValueError(
                 "Stabilizer path assignments currently require a single "
                 "physical quotient representative (a complete G/G "
@@ -684,10 +649,7 @@ class SymmetryOrbitSpec(StrictModel):
                 "component_mobility references groups outside this orbit: "
                 f"{sorted(unknown)}"
             )
-        if (
-            self.mobility.mode != OrbitMobilityMode.FIXED
-            and self.component_mobility
-        ):
+        if self.mobility.mode != OrbitMobilityMode.FIXED and self.component_mobility:
             raise ValueError(
                 "An orbit cannot combine orbit-wide mobility with "
                 "per-component mobility"
@@ -788,8 +750,15 @@ class UniformSO3OrientationSpec(StrictModel):
     method: Literal["uniform_so3"] = "uniform_so3"
 
 
+class PrincipalAxisConeOrientationSpec(StrictModel):
+    """Uniform roll with the group PCA axis sampled inside an axial cone."""
+
+    method: Literal["principal_axis_cone"] = "principal_axis_cone"
+    maximum_tilt_deg: Annotated[float, Field(ge=0.0, le=90.0)] = 0.0
+
+
 OrientationSpec = Annotated[
-    FixedOrientationSpec | UniformSO3OrientationSpec,
+    FixedOrientationSpec | UniformSO3OrientationSpec | PrincipalAxisConeOrientationSpec,
     Field(discriminator="method"),
 ]
 
@@ -801,9 +770,7 @@ class RadialPlacementSpec(StrictModel):
 
     @model_validator(mode="after")
     def validate_radial_direction(self) -> "RadialPlacementSpec":
-        squared_norm = sum(
-            component * component for component in self.radial_direction
-        )
+        squared_norm = sum(component * component for component in self.radial_direction)
         if squared_norm <= 1e-12:
             raise ValueError("radial_direction cannot be the zero vector")
         if self.radius.mean - self.radius.range < 0.0:
@@ -837,9 +804,7 @@ class LinkLengthSpec(StrictModel):
     @model_validator(mode="after")
     def validate_length_range(self) -> "LinkLengthSpec":
         if self.minimum > self.maximum:
-            raise ValueError(
-                "Link minimum cannot be greater than maximum"
-            )
+            raise ValueError("Link minimum cannot be greater than maximum")
         return self
 
 
@@ -857,18 +822,12 @@ class ScaffoldLinkSpec(StrictModel):
     def validate_direction(self) -> "ScaffoldLinkSpec":
         if not self.chain_break:
             if self.from_endpoint.terminus != Terminus.C:
-                raise ValueError(
-                    "A continuous scaffold link must start at C terminus"
-                )
+                raise ValueError("A continuous scaffold link must start at C terminus")
             if self.to_endpoint.terminus != Terminus.N:
-                raise ValueError(
-                    "A continuous scaffold link must end at N terminus"
-                )
+                raise ValueError("A continuous scaffold link must end at N terminus")
 
         if self.from_endpoint == self.to_endpoint:
-            raise ValueError(
-                "Scaffold link endpoints cannot be identical"
-            )
+            raise ValueError("Scaffold link endpoints cannot be identical")
 
         return self
 
@@ -882,6 +841,7 @@ class TerminalExtensionSpec(StrictModel):
 
 
 GeneratedSegmentSpec = ScaffoldLinkSpec | TerminalExtensionSpec
+
 
 class SymmetrySpec(StrictModel):
     transform_sets: Annotated[
@@ -925,16 +885,10 @@ class AssemblySpecification(StrictModel):
         dict[Identifier, MotionGroupSpec],
         Field(min_length=1),
     ]
-    ports: dict[Identifier, InterfacePortSpec] = Field(
-        default_factory=dict
-    )
+    ports: dict[Identifier, InterfacePortSpec] = Field(default_factory=dict)
     symmetry: SymmetrySpec
-    interfaces: dict[Identifier, InterfaceEdgeSpec] = Field(
-        default_factory=dict
-    )
-    scaffold_links: dict[Identifier, ScaffoldLinkSpec] = Field(
-        default_factory=dict
-    )
+    interfaces: dict[Identifier, InterfaceEdgeSpec] = Field(default_factory=dict)
+    scaffold_links: dict[Identifier, ScaffoldLinkSpec] = Field(default_factory=dict)
     generated_segments: dict[
         Identifier,
         GeneratedSegmentSpec,
@@ -964,9 +918,7 @@ class AssemblySpecification(StrictModel):
         # Every fragment must belong to exactly one motion group.
         for fragment_id, owners in fragment_owners.items():
             if not owners:
-                raise ValueError(
-                    f"Fragment {fragment_id!r} has no motion-group owner"
-                )
+                raise ValueError(f"Fragment {fragment_id!r} has no motion-group owner")
             if len(owners) > 1:
                 raise ValueError(
                     f"Fragment {fragment_id!r} belongs to multiple "
@@ -981,9 +933,7 @@ class AssemblySpecification(StrictModel):
                     f"{port.group!r}"
                 )
 
-            group_members = set(
-                self.motion_groups[port.group].members
-            )
+            group_members = set(self.motion_groups[port.group].members)
 
             for fragment_id in port.fragments:
                 if fragment_id not in self.fragments:
@@ -1110,8 +1060,7 @@ class AssemblySpecification(StrictModel):
         for group_id in self.initialization:
             if group_id not in self.motion_groups:
                 raise ValueError(
-                    f"Initialization references unknown motion group "
-                    f"{group_id!r}"
+                    f"Initialization references unknown motion group " f"{group_id!r}"
                 )
 
         return self

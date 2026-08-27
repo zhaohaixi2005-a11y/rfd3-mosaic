@@ -343,9 +343,7 @@ def _write_compact_mixed_standalone_artifacts(
     """Write representative contig chains while retaining full provenance."""
 
     paths = list(_ordered_fragment_paths(links))
-    represented = {
-        fragment_id for path in paths for fragment_id in path
-    }
+    represented = {fragment_id for path in paths for fragment_id in path}
     paths.extend(
         (fragment_id,)
         for fragment_id in sorted(set(additional_fragment_ids) - represented)
@@ -2190,9 +2188,7 @@ def compile_assembly_rfd3_input(
         sample_overrides=sample_overrides,
     )
     standalone_manifest = _load_json(standalone.manifest_path)
-    initialization_samples = standalone_manifest.get(
-        "initialization_samples", {}
-    )
+    initialization_samples = standalone_manifest.get("initialization_samples", {})
     if not isinstance(initialization_samples, dict):
         raise ValueError(
             "Standalone compilation emitted invalid initialization_samples"
@@ -2302,8 +2298,7 @@ def compile_assembly_rfd3_input(
         )
     }
     represented_fragment_ids.update(
-        extension.anchor_fragment_instance_id
-        for extension in terminal_extensions
+        extension.anchor_fragment_instance_id for extension in terminal_extensions
     )
     represented_source_ids = {
         instances.fragments[fragment_id].source_id
@@ -2329,9 +2324,7 @@ def compile_assembly_rfd3_input(
             mapping=mapping,
             output_directory=output,
             links=orbit_links,
-            additional_fragment_ids=(
-                fragment.id for fragment in orphan_fragments
-            ),
+            additional_fragment_ids=(fragment.id for fragment in orphan_fragments),
         )
 
     transform_set_ids = set()
@@ -2355,9 +2348,7 @@ def compile_assembly_rfd3_input(
                 "Native symmetry requires every fixed-only ASU path to "
                 "belong to an expanded orbit"
             )
-        transform_set_ids.add(
-            spec.symmetry.orbits[fragment.orbit_id].transform_set
-        )
+        transform_set_ids.add(spec.symmetry.orbits[fragment.orbit_id].transform_set)
     if len(transform_set_ids) != 1:
         raise ValueError(
             "All ASU scaffold relations must use one native symmetry "
@@ -2910,6 +2901,16 @@ def compile_assembly_rfd3_input(
             "target_ca_distance": 3.8,
             "tolerance": 0.5,
             "projection_iterations": 64,
+        },
+        # A generated path bounded by two fixed endpoints owns the relative
+        # Voronoi cell of that endpoint corridor.  This prevents chains from
+        # swapping routes through another protomer without prohibiting legal
+        # interface contacts or prescribing inward/outward curvature.
+        "generated_cross_chain_topology_guidance": {
+            "enabled": symmetry_multiplicity > 1 and bool(compiled_links),
+            "scope": "two_fixed_anchor_generated_runs",
+            "routing_ownership_weight": 1.0,
+            "normalization_distance": 3.8,
         },
         "symmetry_action_kind": (
             "compact_mixed_stabilizer_quotients"

@@ -9,12 +9,8 @@ import yaml
 from rfd3_mosaic.output import compile_standalone
 from rfd3_mosaic.output.standalone import _chain_id, _classify_symmetry_pair
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-LHD101_CONFIG = (
-    REPOSITORY_ROOT
-    / "configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
-)
+LHD101_CONFIG = REPOSITORY_ROOT / "configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
 
 
 class StandaloneOutputTestCase(unittest.TestCase):
@@ -60,9 +56,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self.assertEqual({row[6] for row in atom_rows}, set("ABCDEF"))
 
     def test_mapping_covers_every_atom(self) -> None:
-        payload = json.loads(
-            self.outputs.mapping_path.read_text(encoding="utf-8")
-        )
+        payload = json.loads(self.outputs.mapping_path.read_text(encoding="utf-8"))
 
         self.assertEqual(len(payload["atom_mappings"]), 1488)
         self.assertEqual(len(payload["fragment_ranges"]), 6)
@@ -72,17 +66,14 @@ class StandaloneOutputTestCase(unittest.TestCase):
             [2, 2, 2],
         )
         indices = [
-            record["compiled"]["atom_index"]
-            for record in payload["atom_mappings"]
+            record["compiled"]["atom_index"] for record in payload["atom_mappings"]
         ]
         self.assertEqual(indices, list(range(1488)))
 
     def test_mapping_compiles_complete_cross_chain_constraint_groups(
         self,
     ) -> None:
-        payload = json.loads(
-            self.outputs.mapping_path.read_text(encoding="utf-8")
-        )
+        payload = json.loads(self.outputs.mapping_path.read_text(encoding="utf-8"))
         groups = payload["interface_constraint_groups"]
 
         self.assertEqual(len(groups), 3)
@@ -102,8 +93,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
             self.assertTrue(group["left_atom_indices"])
             self.assertTrue(group["right_atom_indices"])
             self.assertFalse(
-                set(group["left_atom_indices"])
-                & set(group["right_atom_indices"])
+                set(group["left_atom_indices"]) & set(group["right_atom_indices"])
             )
             self.assertEqual(len(group["atom_indices"]), 496)
             self.assertFalse(claimed_atoms & set(group["atom_indices"]))
@@ -111,16 +101,11 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self.assertEqual(claimed_atoms, set(range(1488)))
 
     def test_manifest_is_explicit_about_unbuilt_scaffold_segments(self) -> None:
-        manifest = json.loads(
-            self.outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["counts"]["scaffold_link_instances"], 3)
         self.assertTrue(
-            any(
-                "not generated" in limitation
-                for limitation in manifest["limitations"]
-            )
+            any("not generated" in limitation for limitation in manifest["limitations"])
         )
 
     def test_master_seed_center_matches_sampled_radial_distance(self) -> None:
@@ -131,9 +116,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
             ).splitlines()
             if line.startswith(("ATOM ", "HETATM "))
         ]
-        mapping = json.loads(
-            self.outputs.mapping_path.read_text(encoding="utf-8")
-        )
+        mapping = json.loads(self.outputs.mapping_path.read_text(encoding="utf-8"))
         master_atom_indices = {
             record["compiled"]["atom_index"]
             for record in mapping["atom_mappings"]
@@ -147,12 +130,10 @@ class StandaloneOutputTestCase(unittest.TestCase):
             ]
         )
         center = first_group_coordinates.mean(axis=0)
-        manifest = json.loads(
-            self.outputs.manifest_path.read_text(encoding="utf-8")
-        )
-        sampled_radius = manifest["initialization_samples"][
-            "primary_seed"
-        ]["sampled_radius"]
+        manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
+        sampled_radius = manifest["initialization_samples"]["primary_seed"][
+            "sampled_radius"
+        ]
 
         self.assertGreaterEqual(sampled_radius, 20.0)
         self.assertLessEqual(sampled_radius, 30.0)
@@ -164,9 +145,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self.assertAlmostEqual(float(center[2]), 0.0, places=2)
 
     def test_manifest_reports_no_hard_inter_group_clashes(self) -> None:
-        manifest = json.loads(
-            self.outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["inter_group_clashes"]
 
         self.assertEqual(report["total_hard_clashes"], 0)
@@ -177,24 +156,16 @@ class StandaloneOutputTestCase(unittest.TestCase):
         )
 
     def test_manifest_reports_scaffold_endpoint_feasibility(self) -> None:
-        manifest = json.loads(
-            self.outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["scaffold_link_geometry"]
 
-        self.assertTrue(
-            report["all_continuous_links_within_maximum_contour"]
-        )
-        self.assertTrue(
-            report["all_generated_link_constraints_materializable"]
-        )
+        self.assertTrue(report["all_continuous_links_within_maximum_contour"])
+        self.assertTrue(report["all_generated_link_constraints_materializable"])
         self.assertEqual(len(report["links"]), 3)
         self.assertEqual(len(report["source_link_bindings"]), 1)
         source_binding = next(iter(report["source_link_bindings"].values()))
         self.assertEqual(len(source_binding["physical_instance_ids"]), 3)
-        self.assertTrue(
-            source_binding["automatic_materialization_feasible"]
-        )
+        self.assertTrue(source_binding["automatic_materialization_feasible"])
         for link in report["links"]:
             self.assertEqual(link["from_anchor"], "C")
             self.assertEqual(link["to_anchor"], "N")
@@ -206,27 +177,15 @@ class StandaloneOutputTestCase(unittest.TestCase):
             self.assertLessEqual(
                 link["from_terminal_tangent_to_chord_angle_deg"], 180.0
             )
-            self.assertGreaterEqual(
-                link["to_terminal_tangent_to_chord_angle_deg"], 0.0
-            )
-            self.assertLessEqual(
-                link["to_terminal_tangent_to_chord_angle_deg"], 180.0
-            )
+            self.assertGreaterEqual(link["to_terminal_tangent_to_chord_angle_deg"], 0.0)
+            self.assertLessEqual(link["to_terminal_tangent_to_chord_angle_deg"], 180.0)
             self.assertGreaterEqual(
                 link["terminal_plane_normal_relative_angle_deg"], 0.0
             )
-            self.assertLessEqual(
-                link["terminal_plane_normal_relative_angle_deg"], 90.0
-            )
-            self.assertGreaterEqual(
-                link["endpoint_chord_axial_fraction"], 0.0
-            )
-            self.assertLessEqual(
-                link["endpoint_chord_axial_fraction"], 1.0
-            )
-            self.assertGreaterEqual(
-                link["minimum_endpoint_chord_axis_clearance"], 0.0
-            )
+            self.assertLessEqual(link["terminal_plane_normal_relative_angle_deg"], 90.0)
+            self.assertGreaterEqual(link["endpoint_chord_axial_fraction"], 0.0)
+            self.assertLessEqual(link["endpoint_chord_axial_fraction"], 1.0)
+            self.assertGreaterEqual(link["minimum_endpoint_chord_axis_clearance"], 0.0)
             self.assertGreaterEqual(
                 link["minimum_interior_chord_fixed_atom_clearance"], 0.0
             )
@@ -244,9 +203,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
             self.assertLess(max(values) - min(values), 1e-5)
 
     def test_manifest_reports_symmetry_axis_and_central_clearance(self) -> None:
-        manifest = json.loads(
-            self.outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["symmetry_cavities"]
 
         self.assertEqual(len(report["orbits"]), 1)
@@ -262,9 +219,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
         )
         self.assertGreaterEqual(orbit["radial_thickness"], 0.0)
         self.assertGreaterEqual(orbit["axial_span"], 0.0)
-        self.assertGreaterEqual(
-            orbit["axial_to_radial_aspect_ratio"], 0.0
-        )
+        self.assertGreaterEqual(orbit["axial_to_radial_aspect_ratio"], 0.0)
         self.assertEqual(len(orbit["shape_covariance_eigenvalues"]), 3)
         self.assertGreaterEqual(orbit["shape_sphericity"], 0.0)
         self.assertLessEqual(orbit["shape_sphericity"], 1.0)
@@ -290,9 +245,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
         )
 
     def test_all_required_reference_interfaces_are_satisfied(self) -> None:
-        manifest = json.loads(
-            self.outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["interfaces"]
 
         self.assertTrue(report["all_required_satisfied"])
@@ -305,9 +258,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
 
     def test_cross_copy_preserve_input_uses_initialized_assembly(self) -> None:
         payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
-        interface = payload["interface_seed"]["interfaces"][
-            "ring_interface"
-        ]
+        interface = payload["interface_seed"]["interfaces"]["ring_interface"]
         interface["copy_relation"] = {"transform": "C3:r1"}
         config = self.output_directory / "cross-copy-preserve-input.yaml"
         config.write_text(
@@ -320,9 +271,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
             self.output_directory / "cross-copy-preserve-input-output",
             base_directory=REPOSITORY_ROOT,
         )
-        manifest = json.loads(
-            outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["interfaces"]
 
         self.assertTrue(report["all_required_satisfied"])
@@ -338,9 +287,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
 
     def test_required_geometric_interface_is_evaluated(self) -> None:
         payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
-        interface = payload["interface_seed"]["interfaces"][
-            "ring_interface"
-        ]
+        interface = payload["interface_seed"]["interfaces"]["ring_interface"]
         interface["target_geometry"] = {
             "mode": "geometric_constraints",
             "distance": {
@@ -364,9 +311,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
             self.output_directory / "geometric-interface-output",
             base_directory=REPOSITORY_ROOT,
         )
-        manifest = json.loads(
-            outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["interfaces"]
 
         self.assertTrue(report["all_required_satisfied"])
@@ -377,9 +322,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
 
     def test_required_geometric_interface_fails_closed(self) -> None:
         payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
-        interface = payload["interface_seed"]["interfaces"][
-            "ring_interface"
-        ]
+        interface = payload["interface_seed"]["interfaces"]["ring_interface"]
         interface["target_geometry"] = {
             "mode": "geometric_constraints",
             "contacts": {
@@ -407,12 +350,8 @@ class StandaloneOutputTestCase(unittest.TestCase):
         self,
     ) -> None:
         payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
-        interface = payload["interface_seed"]["interfaces"][
-            "ring_interface"
-        ]
-        interface["target_geometry"][
-            "minimum_heavy_atom_contacts"
-        ] = 1000000
+        interface = payload["interface_seed"]["interfaces"]["ring_interface"]
+        interface["target_geometry"]["minimum_heavy_atom_contacts"] = 1000000
         interface["target_geometry"]["contact_cutoff"] = 4.5
         config = self.output_directory / "failed-reference-contact.yaml"
         config.write_text(
@@ -473,9 +412,7 @@ class StandaloneOutputTestCase(unittest.TestCase):
             base_directory=REPOSITORY_ROOT,
             strict_validation=False,
         )
-        manifest = json.loads(
-            outputs.manifest_path.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(outputs.manifest_path.read_text(encoding="utf-8"))
         validation = manifest["validation"]
 
         self.assertFalse(validation["strict_validation"])
@@ -487,6 +424,58 @@ class StandaloneOutputTestCase(unittest.TestCase):
             validation["objectives"]["required_failure_count"],
             1,
         )
+
+    def test_strict_compilation_rejects_unreachable_linker_copies(
+        self,
+    ) -> None:
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        payload["interface_seed"]["scaffold_links"]["protomer"]["length"] = {
+            "minimum": 1,
+            "maximum": 1,
+        }
+        invalid_config = self.output_directory / "unreachable-linker.yaml"
+        invalid_config.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "physically unreachable scaffold endpoints",
+        ):
+            compile_standalone(
+                invalid_config,
+                self.output_directory / "unreachable-linker-output",
+                base_directory=REPOSITORY_ROOT,
+            )
+
+    def test_relaxed_compilation_reports_unreachable_linker_copies(
+        self,
+    ) -> None:
+        payload = yaml.safe_load(LHD101_CONFIG.read_text(encoding="utf-8"))
+        payload["interface_seed"]["scaffold_links"]["protomer"]["length"] = {
+            "minimum": 1,
+            "maximum": 1,
+        }
+        invalid_config = self.output_directory / "reported-linker.yaml"
+        invalid_config.write_text(
+            yaml.safe_dump(payload, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        outputs = compile_standalone(
+            invalid_config,
+            self.output_directory / "reported-linker-output",
+            base_directory=REPOSITORY_ROOT,
+            strict_validation=False,
+        )
+        manifest = json.loads(outputs.manifest_path.read_text(encoding="utf-8"))
+        report = manifest["validation"]["scaffold_link_geometry"]
+
+        self.assertFalse(report["all_continuous_links_within_maximum_contour"])
+        self.assertFalse(report["all_generated_link_constraints_materializable"])
+        self.assertEqual(len(report["infeasible_link_instances"]), 3)
+        self.assertEqual(report["infeasible_tie_groups"], ["protomer_length"])
 
 
 if __name__ == "__main__":
