@@ -25,7 +25,13 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install CPU development environment
-        run: pip install -e ".[rfd3,dev]"
+        run: |
+          # Install the CPU wheel first.  Resolving the unconstrained PyPI
+          # torch package on a clean runner may pull multi-gigabyte CUDA
+          # dependencies even though this job never uses a GPU.
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+            "torch>=2.2"
+          pip install -e ".[rfd3,dev]"
       - name: RFD3-Mosaic CPU contracts and coverage
         env:
           DEBUG: "false"
