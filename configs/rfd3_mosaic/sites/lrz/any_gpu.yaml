@@ -16,5 +16,5 @@ setup_commands:
   - source "$SHARED_MAMBAFORGE/etc/profile.d/conda.sh"
   - conda activate "$RC_FOUNDRY_ENV"
 
-checkpoint: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints/rfd3_latest.ckpt
-foundry_checkpoint_dirs: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/software/foundry/checkpoints
+checkpoint: ~/.foundry/checkpoints/rfd3_latest.ckpt
+foundry_checkpoint_dirs: ~/.foundry/checkpoints

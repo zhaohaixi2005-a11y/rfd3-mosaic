@@ -30,5 +30,5 @@ resources:
   profile: p100
 
 output:
-  root: /dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic
+  root: /path/to/rfd3-mosaic-runs
   campaign: public-fixed-xyz-canary-8_5

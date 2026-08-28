@@ -5,11 +5,11 @@
 The current branch is ready for an internal research-preview release.  The
 supported Cn/Dn compiler, fixed-geometry runtime, supplied-interface workflow,
 per-design pose semantics, CLI, reports, CIF archives and portable execution
-profiles are implemented and regression-tested.  The complete local CPU gate
-passes 978 tests, and the public-surface checker passes all 15 maintained
-documents.  Release CI on the laboratory branch and frozen GPU pilots for the
-new public conditioning combinations remain release evidence rather than
-missing architecture.
+profiles are implemented and regression-tested. The complete local CPU gate
+passes 978 tests, and the maintained public documentation passes its automated
+boundary check. Release CI on the laboratory branch and frozen GPU pilots for
+new conditioning combinations remain release evidence rather than missing
+architecture.
 
 The latest two-output I canary materially changes the previous I status.  Both
 written structures contain 60 chains of 50 residues, with zero CA chain breaks

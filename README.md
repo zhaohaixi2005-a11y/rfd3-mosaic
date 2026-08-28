@@ -17,6 +17,7 @@
   <a href="#design-workflows">Design workflows</a> ·
   <a href="#how-mosaic-works">Architecture</a> ·
   <a href="#outputs-and-interpretation">Outputs</a> ·
+  <a href="#repository-layout">Repository layout</a> ·
   <a href="docs/rfd3_mosaic/README.md">Documentation</a>
 </p>
 
@@ -115,10 +116,11 @@ rfd3-mosaic examples --copy supplied-interface-oligomer --output design.yaml
 ```
 
 That example keeps the declared interface partners joint-rigid, grows their
-scaffold without adding an artificial peptide bond, and explicitly opts into a second
-generated Cn interface. Sequence masking, all-glycine conditioning, symmetric
-ligands, RASA, hotspots and H-bond conditioning are optional fields in the
-same public YAML rather than separate task-specific programs.
+scaffold without adding an artificial peptide bond, and explicitly opts into
+an additional generated Cn interface. Sequence masking, all-glycine
+conditioning, symmetric ligands, RASA, hotspots and H-bond conditioning are
+optional fields in the same public YAML rather than separate task-specific
+programs.
 
 The [quick-start guide](docs/rfd3_mosaic/QUICKSTART.md) covers portable
 examples, component motion, execution profiles and result inspection.
@@ -269,6 +271,20 @@ Sequence design, independent refolding and experimental validation are
 planned downstream stages of the Mosaic workflow. They are not yet integrated
 in the current development branch.
 
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| `src/rfd3_mosaic/` | Public compiler, runtime, CLI, reporting and audit implementation |
+| `examples/rfd3_mosaic/` | Maintained, packaged user examples and small structure fixtures |
+| `configs/rfd3_mosaic/` | Compatibility, symmetry and portable execution profiles |
+| `docs/rfd3_mosaic/` | User guides, capability contracts and evidence summaries |
+| `tests/rfd3_mosaic/` | CPU regression and public-contract tests |
+| `models/rfd3/` | Vendored RFdiffusion3 backend retained with upstream attribution |
+
+Site deployment profiles and frozen validation experiments remain source-tree
+reproducibility assets; they are not packaged as ordinary user defaults.
+
 ## Documentation
 
 - [Documentation index](docs/rfd3_mosaic/README.md)
@@ -281,10 +297,11 @@ in the current development branch.
 - [Packing-guidance semantics](docs/rfd3_mosaic/PACKING_GUIDANCE.md)
 - [Metric provenance](docs/rfd3_mosaic/STRUCTURE_METRIC_PROVENANCE.md)
 - [Backbone-evaluation evidence](docs/rfd3_mosaic/BACKBONE_EVALUATION_EVIDENCE.md)
+- [Security and sensitive-data policy](SECURITY.md)
+- [Public-release checklist](PUBLIC_RELEASE_CHECKLIST.md)
 
-Chronological investigations, site-specific validation and implementation
-history are retained under `docs/internal/` as development provenance. They
-are not user instructions.
+Private laboratory records, site-specific run histories and personal
+presentations are intentionally excluded from the public documentation tree.
 
 ## Development
 
@@ -300,6 +317,8 @@ make mosaic-release-smoke
 Contributions should preserve validated workflows, add focused regression
 tests and distinguish CPU evidence from GPU evidence. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Before sharing logs or structures, review the [security policy](SECURITY.md).
 
 ## Upstream software and citation
 

@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-PROJECT_DIR="${RFD3_PROJECT_DIR:-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/projects/rfd3-mosaic}"
-RUN_BASE="${RFD3_RUN_BASE:-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic}"
+PROJECT_DIR="${RFD3_PROJECT_DIR:-$(pwd)}"
+RUN_BASE="${RFD3_RUN_BASE:-${RFD3_MOSAIC_RUN_ROOT:-$HOME/rfd3-mosaic-runs}}"
 ORDERS="${RFD3_SCREEN_ORDERS:-5 6 7}"
 
 read -r -a ORDER_VALUES <<<"$ORDERS"

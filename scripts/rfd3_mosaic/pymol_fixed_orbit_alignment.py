@@ -16,12 +16,11 @@ available when a provenance-exact audit alignment is specifically required.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 
 import numpy as np
 from pymol import cmd
-
 
 _SELECTOR = re.compile(r"^([^0-9,+-]+)([0-9]+)-([0-9]+)$")
 _COMPONENT = re.compile(r"^([^0-9]+)([0-9]+)$")
@@ -1110,7 +1109,7 @@ def mosaic_align(
     design: str = "",
     run_dir: str = "",
     output_object: str = "mosaic_aligned",
-    search_root: str = "/home/haixi/Documents/template",
+    search_root: str = ".",
 ) -> None:
     """Align two already loaded Mosaic CIFs.
 
@@ -1145,8 +1144,8 @@ def mosaic_align(
     ):
         raise FileNotFoundError(
             "The Mosaic run directory is not accessible on the machine "
-            f"running PyMOL: {path_candidate}. If this is an AI-cluster "
-            "(/dss/...) path, drag its presymmetrized_input.cif and result "
+            f"running PyMOL: {path_candidate}. If this is a remote-cluster "
+            "path, drag its presymmetrized_input.cif and result "
             "CIF into PyMOL instead, then run mosaic_align with no arguments."
         )
 

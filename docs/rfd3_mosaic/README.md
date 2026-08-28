@@ -30,5 +30,5 @@ resource requirements are properties of individual designs and execution
 profiles, not restrictions imposed by Mosaic.
 
 Chronological plans, root-cause analyses and site-specific validation records
-are retained under `docs/internal/` as development provenance. They are not
-the current user manual.
+are maintained outside the public documentation tree. They are not part of
+the user manual.

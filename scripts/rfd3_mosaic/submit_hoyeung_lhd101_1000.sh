@@ -10,7 +10,7 @@ fi
 HOYEUNG_REPO=${HOYEUNG_REPO:?Set HOYEUNG_REPO to the original RFdiffusion_interfaceseed checkout}
 RFDIFFUSION_PYTHON=${RFDIFFUSION_PYTHON:?Set RFDIFFUSION_PYTHON to its environment python}
 RFDIFFUSION_MODEL_DIR=${RFDIFFUSION_MODEL_DIR:-$HOYEUNG_REPO/models}
-RFD1_RUN_BASE=${RFD1_RUN_BASE:-/dss/dssfs02/lwp-dss-0001/pn57ki/pn57ki-dss-0000/haixi/runs/rfd3-mosaic/baselines}
+RFD1_RUN_BASE=${RFD1_RUN_BASE:-${RFD3_MOSAIC_RUN_ROOT:-$HOME/rfd3-mosaic-runs}/baselines}
 SBATCH_SCRIPT=${RFD1_SBATCH_SCRIPT:-$(pwd)/scripts/rfd3_mosaic/hoyeung_lhd101_1000_array.sbatch}
 
 test -f "$HOYEUNG_REPO/scripts/run_inference.py"

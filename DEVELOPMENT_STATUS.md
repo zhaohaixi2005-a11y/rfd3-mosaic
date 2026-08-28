@@ -85,4 +85,4 @@ and scientific output evidence. Neither is a substitute for the other.
 Hardware names in validation records describe tested environments only. They
 do not restrict where RFD3-Mosaic may run.
 
-Detailed historical notes are retained under `docs/internal/` for provenance.
+Detailed laboratory history is maintained outside the public release tree.

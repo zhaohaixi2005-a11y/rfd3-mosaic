@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from copy import deepcopy
@@ -317,10 +318,14 @@ def main() -> None:
         arguments.output_dir.expanduser().resolve()
         if arguments.output_dir is not None
         else Path(
-            "/dss/dssfs02/lwp-dss-0001/pn57ki/"
-            "pn57ki-dss-0000/haixi/runs/rfd3-mosaic/"
-            f"_campaigns/gpu-release-gates/{stamp}"
+            os.environ.get(
+                "RFD3_MOSAIC_RUN_ROOT",
+                str(Path.home() / "rfd3-mosaic-runs"),
+            )
         )
+        / "_campaigns"
+        / "gpu-release-gates"
+        / stamp
     )
     output.mkdir(parents=True, exist_ok=False)
 

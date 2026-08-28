@@ -40,7 +40,7 @@ jobs:
           mkdir -p ~/.cache/rf3_checkpoints
           wget -q \
             -O ~/.cache/rf3_checkpoints/rf3_foundry_01_24_latest_remapped.ckpt \
-            http://files.ipd.uw.edu/pub/rf3/rf3_foundry_01_24_latest_remapped.ckpt
+            https://files.ipd.uw.edu/pub/rf3/rf3_foundry_01_24_latest_remapped.ckpt
 
       - name: Run integration tests
         run: |

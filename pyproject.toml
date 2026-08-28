@@ -146,7 +146,6 @@ packages = [
 [tool.hatch.build.targets.sdist]
 exclude = [
   "configs/rfd3_mosaic/sites/",
-  "docs/internal/",
   "experiments/",
   "reports/",
   "scripts/",

@@ -4,22 +4,24 @@
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
-from datetime import datetime, timezone
 import json
 import math
-from pathlib import Path
+import os
 import re
 import subprocess
 import sys
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
 
-
 DEFAULT_RUN_ROOT = Path(
-    "/dss/dssfs02/lwp-dss-0001/pn57ki/"
-    "pn57ki-dss-0000/haixi/runs/rfd3-mosaic"
+    os.environ.get(
+        "RFD3_MOSAIC_RUN_ROOT",
+        str(Path.home() / "rfd3-mosaic-runs"),
+    )
 )
 DEFAULT_TEMPLATE = Path(
     "experiments/lrz_mosaic_lhd101_c3_guided_50step_template.yaml"

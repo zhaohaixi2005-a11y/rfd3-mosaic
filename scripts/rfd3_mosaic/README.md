@@ -26,9 +26,9 @@ the requested name.
 ## Maintained campaign and collection helpers
 
 - `submit_gpu_release_gates.py`: freezes and submits the non-redundant current
-  GPU evidence matrix through `rfd3-mosaic run/submit`. The `closure` tier and
-  every gate's machine-readable acceptance list are maintained in
-  `docs/internal/GPU_ACCEPTANCE_MATRIX_2026_08_25.md`.
+  GPU evidence matrix through `rfd3-mosaic run/submit`. Each gate carries a
+  machine-readable acceptance list and writes its evidence into the run
+  report.
 - `submit_packing_replicates.py`: creates matched independent-pose
   locked/guided C3 packing evidence through the normal CLI. On memory-limited
   Slurm login nodes, `--defer-runtime-preflight` keeps lightweight planning
@@ -48,32 +48,12 @@ the requested name.
   environment helpers.
 - `pymol_fixed_orbit_alignment.py`: visualization only.
 
-## Historical direct-execution scripts
-
-The following files call the adapter or `rfd3.run_inference` directly. They
-are isolated below `archive/legacy_direct/` to explain old runs and reproduce
-historical experiments. Do not use them to validate the current public
+Historical direct-execution scripts and personal campaign records are kept
+outside the public source tree. They do not define the current
 compiler/worker/report contract.
-
-- `archive/legacy_direct/lhd101_c3_central_motif_probe_p100.sbatch`
-- `archive/legacy_direct/lhd101_c3_full_h100.sbatch`
-- `archive/legacy_direct/lhd101_c3_full_single.sbatch`
-- `archive/legacy_direct/lhd101_c3_smoke.sbatch`
-- `archive/legacy_direct/lhd101_c5_mobile_pilot_p100.sbatch`
-- `archive/legacy_direct/lhd101_cn_full_p100.sbatch`
-- `archive/legacy_direct/prism_c3_g2_fixed_mosaic.sbatch`
-- `archive/legacy_direct/validate_lhd101_d3_two_orbit.sh`
-
-Their associated submission wrappers and focused research matrices are also
-historical/diagnostic unless a current document explicitly names them. They
-may use valid code for their original experiment, but they do not provide the
-complete current provenance and reporting contract.
 
 ## Rule for new scripts
 
 New launchers must freeze a public YAML and invoke `rfd3-mosaic run` or
 `submit`. A direct call to `rfd3.run_inference` is permitted only for an
-explicitly labelled historical comparison or low-level RFD3 test.
-
-See `docs/internal/EXECUTION_PATH_AUDIT_2026_08_21.md` for the full path and
-version audit.
+explicitly labelled low-level RFD3 test.
