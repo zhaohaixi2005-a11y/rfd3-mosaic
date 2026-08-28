@@ -21,23 +21,22 @@
   <a href="docs/rfd3_mosaic/README.md">Documentation</a>
 </p>
 
-RFD3-Mosaic is a research software layer for designing symmetric protein
-assemblies with [RFdiffusion3](models/rfd3/README.md). It converts an explicit
-assembly specification—symmetry, components, fixed motifs, supplied
-interfaces and polymer connections—into reproducible RFD3 inputs, executes
-constrained backbone generation and audits the resulting structures against
-the declared geometry.
+RFD3-Mosaic is a constraint-compilation and execution framework for symmetric
+protein backbone design with [RFdiffusion3](models/rfd3/README.md). Starting
+from a user-defined assembly specification, it constructs symmetry-aware RFD3
+inputs, samples independent assembly poses, executes constrained backbone
+generation and records structural audits with full run provenance.
 
-Mosaic is intended for problems in which the scientist knows the assembly to
-design. It does not guess a supposedly optimal cage architecture from an
-arbitrary structure.
+The framework supports fixed-motif scaffolding, supplied-interface
+preservation, multi-component assembly graphs, controlled rigid-body motion
+and reproducible batch generation through one consistent workflow.
 
 > [!IMPORTANT]
-> RFD3-Mosaic is an actively developed research preview. The Cn/Dn release
-> paths have extensive CPU coverage and representative GPU evidence. T/O/I,
-> quotient and advanced multi-interface paths remain controlled research
-> capabilities. See the [current project status](docs/rfd3_mosaic/PROJECT_STATUS.md)
-> before using experimental paths in a production campaign.
+> RFD3-Mosaic is an actively developed research preview. Cn and Dn workflows
+> form the current release target; finite polyhedral groups and advanced
+> multi-interface designs are available as research workflows. Validation
+> evidence is summarized in the
+> [project status](docs/rfd3_mosaic/PROJECT_STATUS.md).
 
 ## Getting started
 
@@ -48,8 +47,9 @@ arbitrary structure.
 - an authorized RFdiffusion3 checkpoint;
 - a GPU suitable for RFdiffusion3 inference when generating structures.
 
-RFD3-Mosaic is not tied to a particular server, scheduler or GPU model.
-Resource requirements depend on the assembly size and symmetry multiplicity.
+Portable local and Slurm execution profiles separate scientific designs from
+site configuration. Resource requirements scale with assembly size and
+symmetry multiplicity.
 
 ### Install
 
@@ -133,13 +133,12 @@ assembly graph is not limited to two components: it supports multiple rigid
 or joint-rigid components, multiple preserved/generated interface relations,
 and explicit generated polymer connections.
 The [native RFD3 capability matrix](docs/rfd3_mosaic/RFD3_NATIVE_CAPABILITIES.md)
-lists the supported conditioning controls and the few native mechanisms that
-remain fail-closed under exact assembly contracts.
+maps each supported conditioning control to its Mosaic configuration field
+and execution behavior.
 
 ## Design workflows
 
-Mosaic exposes two distinct backbone-generation problems rather than hiding
-them behind one packing mode.
+Mosaic provides two primary backbone-generation workflows.
 
 ### Preserve a supplied interface
 
@@ -171,10 +170,9 @@ rfd3-mosaic init design.yaml \
   --component-motion guided
 ```
 
-Generated-interface guidance and supplied-interface preservation have
-different semantics. The former can guide new cross-component packing; the
-latter does not ask generated residues to create a second interface unless
-the user explicitly declares one.
+Interface relations are explicit in the assembly specification. A supplied
+interface is preserved as declared, while generated interfaces can be added
+independently with their own packing guidance.
 
 ### Fixed and movable geometry
 
@@ -191,11 +189,11 @@ retain the declared pose. Multi-example execution lets RFD3 reuse one model
 load without collapsing those per-design inputs into repeated diffusion from
 one pose.
 
-Bounded-mobile rigid components use a step-count-independent capture/settle/
-polish schedule over 40%/40%/20% of their declared active window. Early
-sampling can use the full per-step SE(3) trust region, while later proposals
-become progressively smaller. Fixed coordinates and the internal geometry of
-joint-rigid seeds are unaffected.
+Bounded-mobile components use coarse-to-fine SE(3) optimization during
+diffusion, allowing broad early pose adaptation followed by progressively
+smaller refinements. The schedule, objective terms and geometric invariants
+are defined in the
+[rigid-mobility mathematical contract](docs/rfd3_mosaic/RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md).
 
 ## How Mosaic works
 
@@ -213,7 +211,7 @@ executable design is lowered to an explicit RFD3 specification with frozen
 configuration, seeds and software provenance. Sampling then applies the
 compiled fixed-geometry, symmetry, mobility and optional guidance contracts.
 
-This division of responsibility is deliberate:
+The execution stack separates five responsibilities:
 
 | Layer | Responsibility |
 | --- | --- |
@@ -238,10 +236,10 @@ Mosaic reports three different outcomes:
 3. **Advisory measurements** — task-dependent descriptors support ranking and
    scientific review.
 
-A generated structure is retained when a contract or advisory check is
-flagged. Advisory metrics are not presented as universal designability
-thresholds and do not replace sequence design, independent refolding or
-experimental assessment.
+All generated coordinates are retained. Contract results and advisory
+measurements are reported separately, providing a traceable basis for
+downstream ranking, sequence design, independent refolding and experimental
+selection.
 
 Useful post-run commands are:
 
@@ -251,7 +249,7 @@ rfd3-mosaic report RUN_ID_OR_DIRECTORY
 rfd3-mosaic audit RUN_ID_OR_DIRECTORY
 ```
 
-## Capability boundary
+## Current capabilities
 
 | Area | Current maturity |
 | --- | --- |
@@ -263,27 +261,24 @@ rfd3-mosaic audit RUN_ID_OR_DIRECTORY
 | T/O/I finite-group execution | Research capability with path-specific GPU evidence |
 | Stabilizers, cosets, quotient orbits and advanced multi-interface cases | Controlled research capability |
 
-The software fails closed when it cannot produce an unambiguous executable
-lowering. It does not silently invent symmetry, connectivity, interface
-multiplicity or a preferred architecture.
-
-Sequence design, independent refolding and experimental validation are
-planned downstream stages of the Mosaic workflow. They are not yet integrated
-in the current development branch.
+The compiler validates symmetry, topology, connectivity and component-motion
+semantics before execution, and reports actionable diagnostics when a design
+specification is incomplete. Sequence design, independent refolding and
+experimental validation are planned downstream workflow integrations.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/rfd3_mosaic/` | Public compiler, runtime, CLI, reporting and audit implementation |
+| `src/rfd3_mosaic/` | Compiler, runtime, CLI, reporting and audit implementation |
 | `examples/rfd3_mosaic/` | Maintained, packaged user examples and small structure fixtures |
 | `configs/rfd3_mosaic/` | Compatibility, symmetry and portable execution profiles |
 | `docs/rfd3_mosaic/` | User guides, capability contracts and evidence summaries |
 | `tests/rfd3_mosaic/` | CPU regression and public-contract tests |
-| `models/rfd3/` | Vendored RFdiffusion3 backend retained with upstream attribution |
+| `models/rfd3/` | RFdiffusion3 backend and upstream model configuration |
 
-Site deployment profiles and frozen validation experiments remain source-tree
-reproducibility assets; they are not packaged as ordinary user defaults.
+Installed profiles are portable; the source checkout additionally contains
+site profiles and frozen validation configurations for reproducible testing.
 
 ## Documentation
 
@@ -293,15 +288,11 @@ reproducibility assets; they are not packaged as ordinary user defaults.
 - [Complete user workflow guide](docs/rfd3_mosaic/WORKFLOW_GUIDE.md)
 - [CLI reference](docs/rfd3_mosaic/USER_CLI.md)
 - [Project status and GPU evidence](docs/rfd3_mosaic/PROJECT_STATUS.md)
-- [Public capability boundary](DEVELOPMENT_STATUS.md)
+- [Development status](DEVELOPMENT_STATUS.md)
 - [Packing-guidance semantics](docs/rfd3_mosaic/PACKING_GUIDANCE.md)
 - [Metric provenance](docs/rfd3_mosaic/STRUCTURE_METRIC_PROVENANCE.md)
 - [Backbone-evaluation evidence](docs/rfd3_mosaic/BACKBONE_EVALUATION_EVIDENCE.md)
 - [Security and sensitive-data policy](SECURITY.md)
-- [Public-release checklist](PUBLIC_RELEASE_CHECKLIST.md)
-
-Private laboratory records, site-specific run histories and personal
-presentations are intentionally excluded from the public documentation tree.
 
 ## Development
 
