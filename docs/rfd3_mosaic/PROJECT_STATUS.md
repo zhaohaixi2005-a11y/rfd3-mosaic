@@ -1,5 +1,53 @@
 # RFD3-Mosaic project status
 
+## 2026-08-28 completion snapshot and I-continuity closure
+
+The current branch is ready for an internal research-preview release.  The
+supported Cn/Dn compiler, fixed-geometry runtime, supplied-interface workflow,
+per-design pose semantics, CLI, reports, CIF archives and portable execution
+profiles are implemented and regression-tested.  The complete local CPU gate
+passes 978 tests, and the public-surface checker passes all 15 maintained
+documents.  Release CI on the laboratory branch and frozen GPU pilots for the
+new public conditioning combinations remain release evidence rather than
+missing architecture.
+
+The latest two-output I canary materially changes the previous I status.  Both
+written structures contain 60 chains of 50 residues, with zero CA chain breaks
+and zero cross-chain CA-segment collisions.  Copy-internal distance matrices
+agree to a maximum error of approximately `4.07e-5 A`.  I generation,
+copy-consistent geometry, generated-scaffold CA continuity and cross-chain
+topology are therefore closed at the structure-output level.
+
+This is not yet a claim that every local geometry check is clean.  The two
+independent ASU backbones contain respectively two and three non-neighbour CA
+overlaps; exact I copying repeats them to 120 and 180 reported observations.
+The smallest ASU-local distances are approximately `1.08--1.40 A`, and one
+generated/fixed junction per ASU has an advisory C--N outlier.  These outputs
+remain generated, continuous and scientifically reviewable; Mosaic does not
+discard them or convert an advisory local-repair recommendation into a user-
+independent failure.  A clash-free I quality cohort remains open.  The
+downloaded structure-only bundle did not include the frozen RFD3 input and
+result JSON, so fixed-target RMSD and transform-coordinate residuals must
+still be taken from the retained run audit rather than inferred from the two
+CIFs alone.
+
+Current delivery gates are:
+
+| Delivery slice | Current state | Remaining evidence |
+| --- | --- | --- |
+| v0.1 research-preview engineering | release candidate | one green laboratory-branch release workflow and tagged frozen release |
+| Cn/Dn exact fixed-motif and supplied-interface core | engineering/stable | preserve golden GPU replays across future changes |
+| Generic supplied-interface higher-oligomer plus native conditioning | CPU validated, public | small mask/glycine/ligand GPU pilots on real inputs |
+| Static and bounded-mobile T/O | GPU engineering closed | later multi-design secondary-structure benchmarking is advisory |
+| I generation, copy consistency, CA continuity and cross-chain topology | structure-output closed | retained full run audit plus clash-free/local-repair quality evidence |
+| Generated-new-interface packing | implemented | comparative multi-seed scientific calibration |
+| Route-ownership anti-weaving protection | CPU validated | matched current-revision C3 GPU cohort |
+
+These gates replace a misleading single project-completion percentage.  They
+support releasing the present backbone-design system for laboratory pilots
+without claiming that generated-interface designability, sequence design,
+refolding or experimental success has already been scientifically validated.
+
 ## 2026-08-27 public conditioning and interface-seed product closure
 
 - Supplied-interface scaffolding is a generic public workflow, not an
@@ -189,13 +237,14 @@ The current finite-group GPU maturity is deliberately asymmetric. Static T
 has a complete 12-copy PASS, including repeated exact fixed-orbit,
 scaffold-continuity and clash-free results. Static O also has a documented
 24-copy, 50-timestep PASS: RFD3 inference completed, the exact fixed orbit was
-recovered and scaffold validity passed. A longer 50-step I canary completed
-and materialized all 60 copies. Its exact fixed orbit, sub-milliangstrom
-symmetry-coordinate residual and zero-CA-clash checks met their contracts, but
-five ASU-local generated/fixed boundary defects were reproduced across all
-copies, so I scaffold-continuity closure remains open. Exact run identifiers
-and paths are retained only in the internal validation history. These are
-static execution and fixed-
+recovered and scaffold validity passed. Historical 50-step I canaries
+materialized all 60 copies but reproduced ASU-local generated/fixed boundary
+defects.  The latest two-output I canary removes those CA discontinuities in
+all 60 copies and has no cross-chain segment collision.  It retains two or
+three unique ASU-local CA overlaps, so I continuity is now closed while
+clash-free local geometry remains a separate quality gate. Exact run
+identifiers and paths are retained only in the internal validation history.
+These are static execution and fixed-
 geometry-scaffolding milestones. Dynamic T/O bounded mobility is GPU-closed
 after correcting the polyhedral-axis and O-stabilizer initialization errors.
 Dynamic I mobility and production-
@@ -203,11 +252,11 @@ quality generated-interface polyhedral cages remain separate, unvalidated
 scientific capabilities.
 
 The first local-anchor correction was shown by two GPU reruns to execute but
-to be erased by the high-noise diffusion lifecycle.  A superseding,
-packing-independent generated-polymer continuity projection is now CPU
-validated and awaits one frozen I 50-step rerun.  Until that rerun passes,
-the product status remains “I inference and exact-orbit execution available;
-I generated-scaffold continuity not yet closed.”
+to be erased by the high-noise diffusion lifecycle.  The superseding,
+packing-independent generated-polymer continuity projection is now supported
+by two 60-copy outputs with zero CA breaks.  The accurate product status is
+therefore “I inference and generated-scaffold continuity available; local
+clash-free quality and dynamic-I mobility remain open.”
 
 ## Known incomplete areas
 

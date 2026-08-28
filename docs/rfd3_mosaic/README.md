@@ -7,7 +7,10 @@ RFD3-Mosaic.
 
 1. [Install RFD3-Mosaic](INSTALLATION.md).
 2. Follow the [quick-start workflow](QUICKSTART.md).
-3. Consult the [command-line reference](USER_CLI.md) for complete command and
+3. Use the [complete workflow guide](WORKFLOW_GUIDE.md) to distinguish
+   required fields, optional RFD3 conditioning and the three ordinary-user
+   design patterns.
+4. Consult the [command-line reference](USER_CLI.md) for complete command and
    configuration details.
 
 ## Scientific scope

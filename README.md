@@ -13,6 +13,7 @@
 
 <p align="center">
   <a href="#getting-started">Getting started</a> ·
+  <a href="docs/rfd3_mosaic/WORKFLOW_GUIDE.md">User guide</a> ·
   <a href="#design-workflows">Design workflows</a> ·
   <a href="#how-mosaic-works">Architecture</a> ·
   <a href="#outputs-and-interpretation">Outputs</a> ·
@@ -121,6 +122,10 @@ same public YAML rather than separate task-specific programs.
 
 The [quick-start guide](docs/rfd3_mosaic/QUICKSTART.md) covers portable
 examples, component motion, execution profiles and result inspection.
+The [complete user workflow guide](docs/rfd3_mosaic/WORKFLOW_GUIDE.md)
+separates required and optional input, provides copy-ready examples for every
+supported ordinary-user task, and documents batch generation plus native RFD3
+conditioning.
 The [native RFD3 capability matrix](docs/rfd3_mosaic/RFD3_NATIVE_CAPABILITIES.md)
 lists the supported conditioning controls and the few native mechanisms that
 remain fail-closed under exact assembly contracts.
@@ -265,6 +270,7 @@ in the current development branch.
 - [Documentation index](docs/rfd3_mosaic/README.md)
 - [Installation and execution](docs/rfd3_mosaic/INSTALLATION.md)
 - [Quick start](docs/rfd3_mosaic/QUICKSTART.md)
+- [Complete user workflow guide](docs/rfd3_mosaic/WORKFLOW_GUIDE.md)
 - [CLI reference](docs/rfd3_mosaic/USER_CLI.md)
 - [Project status and GPU evidence](docs/rfd3_mosaic/PROJECT_STATUS.md)
 - [Public capability boundary](DEVELOPMENT_STATUS.md)

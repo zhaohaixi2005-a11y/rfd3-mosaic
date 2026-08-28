@@ -37,8 +37,66 @@ Cn/Dn-only primary-axis solver. Job `5761814` (O) failed preflight because its
 only 12 unique placements. The 2026-08-26 correction makes axis-free
 polyhedral `bounded_se3` explicit and changes the O canary to a generic
 24-image direction. Both YAMLs now pass complete local compile/RFD3 input
-validation; the same two gates must be resubmitted from the corrected frozen
-revision.
+validation. They were subsequently resubmitted from the corrected frozen
+revision; the resulting closure evidence is recorded below.
+
+## Dynamic T/O closure update (2026-08-27)
+
+The corrected dynamic polyhedral gates are now closed. Job `5762800` produced
+one 50-step `T x12` structure and job `5762801` produced one 50-step `O x24`
+structure. Both jobs met the complete fixed-orbit, bounded-mobility, exact
+symmetry, scaffold-continuity and CA-clash contracts. Each result had zero CA
+chain breaks and zero CA clashes.
+
+The mobility controller executed sixteen accepted updates in each job. The
+largest per-orbit observations were approximately `0.076 A / 0.250 deg` for
+T and `0.338 A / 1.362 deg` for O, within the declared `3 A / 10 deg` bounds.
+These runs close the engineering question of bounded two-orbit mobility over
+all T and O group actions.
+
+Possible loop-rich appearance in either single output is a backbone-quality
+observation, not a failed T/O runtime contract. These canaries each contain
+one design, a 30-residue generated `between` region and
+`scaffold_packing: off`; they were not calibrated as secondary-structure
+benchmarks. Loop fraction and longest loop must be measured on a larger
+independent-design cohort before making a scientific quality claim. This does
+not reopen the T/O architecture or mobility implementation.
+
+A post-hoc Biotite P-SEA assignment of the generated 30-residue region found
+`20% helix / 20% strand / 60% coil` with an 11-residue longest coil for T, and
+`30% helix / 30% strand / 40% coil` with a 7-residue longest coil for O. Thus
+the single T output is loop-rich relative to the single O output, while
+neither output is entirely loop. P-SEA is a reproducible CA-trace assignment,
+but these two single-design observations are not a cohort distribution and
+are not interchangeable with PyMOL or STRIDE loop definitions.
+
+## I continuity update (2026-08-28)
+
+LMU job `16039859` produced two I-symmetric coordinate outputs.  The retained
+download bundle is
+`/home/haixi/Documents/template/8.27/16039859`.  Each output contains 60
+chains of 50 residues.  A structure-only rerun of the current scaffold audit
+found zero CA chain breaks and zero cross-chain CA-segment collisions in both
+outputs.  The maximum copy-internal distance-matrix error is approximately
+`4.07e-5 A`.  This closes the historical generated/fixed CA-continuity defect
+and demonstrates copy-consistent I output geometry.
+
+Local geometry is not completely clean.  The first ASU has two unique
+non-neighbour CA overlaps (`1--45` at approximately `1.295 A` and `29--42` at
+approximately `1.396 A`); the second has three (`4--31` at approximately
+`2.590 A`, `25--38` at approximately `1.077 A`, and `26--34` at approximately
+`2.375 A`).  Exact I copying repeats those defects to 120 and 180 audit
+observations.  Each ASU also has one advisory C--N outlier at the fixed/
+generated `30--31` junction (`2.046 A` and `2.192 A`).
+
+The correct interpretation is split rather than binary: I inference,
+60-copy materialization, copy consistency, CA continuity and cross-chain
+topology are closed; clash-free local backbone quality remains open.  The CIFs
+are retained as generated structures with local-repair advice, not rejected.
+Because the downloaded bundle contains the two CIFs and CIF ZIP but not the
+frozen RFD3 input or result JSON, this structure-only review does not replace
+the retained fixed-orbit and transform-coordinate audits from the run
+directory.
 
 ## Gates
 
@@ -47,9 +105,9 @@ revision.
 | `cross-chain-topology` | Does the current chain-local initialization, per-step continuity projection and segment repulsion prevent C3 supplied-interface weaving? | H100/A100/V100/P100 | 6 | fixed seed recovered; zero chain breaks, CA clashes and cross-chain CA-segment collisions in all six |
 | `d3-dynamic` | Can two D3 rigid motif orbits move through the bounded controller without losing exactness? | H100/A100/V100/P100 | 1 | motion executes within bounds; exact orbit, symmetry, continuity, clash and topology contracts meet |
 | `c4-c2-quotient` | Does a quotient physical interface orbit execute on GPU with the compiled multiplicity? | H100/A100/V100/P100 | 1 | output produced; quotient multiplicity and all hard contracts meet |
-| `t-dynamic` | Does bounded two-orbit mobility work through all twelve T actions? | H100/A100 80G | 1 | motion executes within bounds; exact orbit, symmetry, continuity, clash and topology contracts meet |
-| `o-dynamic` | Does bounded two-orbit mobility work through all twenty-four O actions? | H100/A100 80G | 1 | motion executes within bounds; exact orbits, symmetry, continuity, clash and topology contracts meet |
-| `i-continuity` | Does the current per-step polymer projection close the historical I generated/fixed junction defects? | H100/A100 80G | 2 | 60 copies produced; fixed orbit and symmetry meet; zero breaks, clashes and segment collisions in both |
+| `t-dynamic` | Does bounded two-orbit mobility work through all twelve T actions? | H100/A100 80G | 1 | **CLOSED by 5762800:** motion executed within bounds; exact orbit, symmetry, continuity and clash contracts met |
+| `o-dynamic` | Does bounded two-orbit mobility work through all twenty-four O actions? | H100/A100 80G | 1 | **CLOSED by 5762801:** motion executed within bounds; exact orbits, symmetry, continuity and clash contracts met |
+| `i-continuity` | Does the current per-step polymer projection close the historical I generated/fixed junction defects? | H100/A100 80G | 2 | **CONTINUITY CLOSED by 16039859:** both 60-copy outputs have zero CA breaks and zero segment collisions; two/three unique ASU-local CA overlaps keep clash-free local quality open |
 | `locked-packing` + `guided-packing` | Does C3 generated-interface guidance improve a matched independent-pose population? | H100/A100/V100/P100 | 4 + 4 | hard runtime contracts meet; final interface measurements are retained as advisory comparative evidence |
 | `t-packing` | Does T graph-interface guidance execute and report the complete physical edge orbit? | H100/A100 80G | 1 | exact runtime contracts meet; final interface measurements are retained as advisory evidence |
 

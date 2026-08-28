@@ -3,6 +3,11 @@
 This guide covers the supported public workflow. It does not assume access to
 any particular institution, server, scheduler or GPU model.
 
+For a field-by-field required/optional matrix, complete supplied-interface
+and higher-oligomer examples, all public native RFD3 conditioning channels,
+batch semantics and common mistakes, continue with the
+[complete user workflow guide](WORKFLOW_GUIDE.md).
+
 ## 1. Check the installation
 
 ```bash

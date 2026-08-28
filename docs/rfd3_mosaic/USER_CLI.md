@@ -1,5 +1,10 @@
 # RFD3-Mosaic command-line reference
 
+For a task-oriented guide that separates required scientific input from
+optional controls and includes complete fixed-motif, supplied-interface and
+higher-oligomer examples, start with the
+[complete user workflow guide](WORKFLOW_GUIDE.md).
+
 RFD3-Mosaic provides one public command, `rfd3-mosaic`. The command-line
 interface is independent of the machine or institution where it runs.
 

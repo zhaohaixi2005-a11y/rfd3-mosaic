@@ -5,6 +5,11 @@ compatible with an explicit assembly, fixed-geometry and exact-symmetry
 contract. Options are disabled by default when they materially alter the
 conditioning problem, but they remain selectable in the public design YAML.
 
+None of the conditioning channels below is required for an ordinary Mosaic
+run. Omitting `conditioning` preserves the supplied sequence and coordinates
+according to the declared fixed-geometry constraints. Users should add a
+channel only when it represents known scientific input, not because it exists.
+
 ## Public mappings
 
 | RFdiffusion3 capability | Mosaic public declaration |
@@ -33,6 +38,34 @@ Selections are resolved before submission and translated to the label-chain
 indices in the frozen, compiler-generated mmCIF. Invalid or ambiguous
 selections fail before GPU inference.
 
+## Which sequence mode should I use?
+
+| Scientific intent | Declaration | Side-chain redesign |
+| --- | --- | --- |
+| Preserve the original motif identity | omit sequence conditioning | off |
+| Hide the supplied identity but keep its backbone | `mode: masked` | optional |
+| Present an all-glycine surface to RFD3 | `mode: glycine` | not allowed |
+
+Copy-ready masked redesign:
+
+```yaml
+conditioning:
+  sequence:
+    - {selector: A1-153, mode: masked}
+    - {selector: C1-26, mode: masked}
+  redesign_motif_sidechains: true
+```
+
+Copy-ready all-glycine conditioning:
+
+```yaml
+conditioning:
+  sequence:
+    - {selector: A1-153, mode: glycine}
+    - {selector: C1-26, mode: glycine}
+  redesign_motif_sidechains: false
+```
+
 When `conditioning.redesign_motif_sidechains: true` is explicit, Mosaic keeps
 protein motif backbone atoms fixed but does not re-fix their side-chain atoms
 through `select_fixed_atoms`. It may be combined with `mode: masked`; this is
@@ -42,6 +75,54 @@ the existing all-atom fixed-motif behavior is unchanged.
 All-glycine conditioning is intentionally exclusive with side-chain redesign:
 use `masked` when RFD3 should choose new identities, or `glycine` when glycine
 itself is the conditioning identity.
+
+## Atom-level conditioning example
+
+```yaml
+conditioning:
+  ligands:
+    - {selector: B1, coupling_group: supplied_interface}
+  buried:
+    - {selector: B1, atoms: ALL}
+  partially_buried:
+    - {selector: A42-45, atoms: TIP}
+  exposed:
+    - {selector: A80-85, atoms: ALL}
+  hotspots:
+    - {selector: A42-45, atoms: TIP}
+  hbond_acceptors:
+    - {selector: B1, atoms: O1,O2}
+  hbond_donors:
+    - {selector: A67, atoms: N}
+  origin_strategy: hotspots
+```
+
+Ligands are expanded with the declared assembly and attached to the named
+rigid coupling group. RASA, hotspot and hydrogen-bond selectors are remapped
+after symmetry compilation. `origin_strategy: hotspots` requires a hotspot;
+atom names and selector coverage are checked by `validate` before inference.
+
+## Sampling defaults
+
+The maintained public defaults are:
+
+```yaml
+sampling:
+  timesteps: 200
+  designs: 1
+  replicates_per_pose: 1
+  seed: 42
+  low_memory_mode: true
+  is_non_loopy: true
+  plddt_enhanced: true
+  dump_trajectories: false
+```
+
+`designs` is the total requested output count. With a stochastic initial pose,
+`replicates_per_pose: 1` gives each output its own pose. Fixed arrangements
+retain one exact pose and vary diffusion only. See the
+[complete workflow guide](WORKFLOW_GUIDE.md) for pose examples and 1000-design
+campaign guidance.
 
 ## Deliberate semantic replacements
 

@@ -3781,3 +3781,57 @@ hydrophobic-composition proxies on the written structure. Guidance audit
 schema v8 requires capacity and adaptive-phase provenance. The complete CPU
 suite passes 794 tests on the temporary development server. GPU packing
 quality remains the independent promotion gate.
+
+## 2026-08-27 dynamic polyhedral GPU closure
+
+Corrected 50-step GPU jobs `5762800` (`T x12`) and `5762801` (`O x24`)
+generated complete coordinate outputs and met every declared engineering
+contract: both rigid motif orbits remained exact, bounded mobility executed,
+exact symmetry was retained, every CA trace was continuous and both outputs
+contained zero CA clashes. The largest observed motion remained inside the
+declared bounds (approximately `0.076 A / 0.250 deg` for T and
+`0.338 A / 1.362 deg` for O). Dynamic T and O are therefore closed as software
+capabilities.
+
+The two canaries are not secondary-structure benchmarks. Each sampled only
+one design with a 30-residue generated linker and scaffold packing disabled.
+Any loop-rich appearance is retained as an advisory backbone-quality
+observation for a later multi-design benchmark; it is not used to relabel the
+successful symmetry, mobility or continuity execution as failed and does not
+reopen the polyhedral architecture.
+
+Post-hoc Biotite P-SEA assignment quantified that observation. The generated
+30-residue T segment was `20% helix / 20% strand / 60% coil`, with an
+11-residue longest coil. The corresponding O segment was
+`30% helix / 30% strand / 40% coil`, with a 7-residue longest coil. These are
+single-design advisory measurements rather than a T/O quality distribution;
+they support later cohort benchmarking, not further changes to the now-closed
+polyhedral execution path.
+
+## 2026-08-28 I continuity closure and delivery checkpoint
+
+LMU job `16039859` produced two I outputs with 60 chains and 50 residues per
+chain.  A structure-only audit of the downloaded CIFs found zero CA chain
+breaks and zero cross-chain CA-segment collisions in both.  Copy-internal
+distance matrices agree to approximately `4.07e-5 A` maximum error.  The
+historical I generated/fixed CA-junction defect is therefore closed at the
+written-structure level.
+
+The two ASUs retain two and three unique non-neighbour CA overlaps,
+respectively, which exact I symmetry repeats to 120 and 180 observations.
+The minimum local distances (`1.08--1.40 A`) require relaxation, local repair
+or later design screening, but they are not evidence of global weaving or a
+reason to delete the generated CIFs.  I generation, copy consistency,
+continuity and cross-chain topology are closed; clash-free local quality and
+dynamic-I mobility remain open.
+
+The current project is a release candidate for an internal research preview,
+not a scientifically complete universal oligomer designer.  The Cn/Dn exact
+core and supplied-interface workflow are the supported product; static and
+bounded-mobile T/O are engineering-closed; generic native RFD3 conditioning
+and higher-oligomer supplied-interface composition are public and CPU
+validated.  Remaining release evidence is a green laboratory-branch workflow
+plus small real-input conditioning and route-ownership GPU pilots.  Generated-
+new-interface calibration, clash-free I quality cohorts, sequence design,
+refolding and experimental validation remain independent scientific stages
+and do not invalidate the present backbone-generation release.
