@@ -40,7 +40,7 @@ rfd3-mosaic capabilities
 | --- | --- | --- | --- |
 | I have a functional motif but need a new symmetric interface | `central-motif` | selected motif geometry | scaffold plus a new oligomerization interface |
 | I already have an interface and need to scaffold it | `supplied-interface` | both interface partners as one joint-rigid object | declared linker or terminal scaffold |
-| I have a complete non-covalent dimer and want a larger Cn oligomer | `supplied-interface` with `terminal-extensions` and `--new-oligomer-interface` | the complete dimer interface, and optional ligand | independent scaffold plus an additional generated interface |
+| I have a supplied multi-fragment complex and want to extend or reassemble it | simple `supplied-interface`, or the general assembly graph | every declared rigid or joint-rigid component | user-declared polymer paths and optional additional interfaces |
 
 Do not use `central-motif` when the input already contains the biological
 interface that must be preserved. Do not enable `--new-oligomer-interface`
@@ -57,9 +57,9 @@ without changing the task.
 | task | yes | `central-motif` | which of the two physical problems to compile |
 | input structure | yes | `seed.cif` | PDB or mmCIF containing the supplied geometry |
 | symmetry | yes | `C3` | user-declared target: Cn, Dn, T, O or I where supported |
-| motif selector | central-motif only | `A84-126` | fixed functional geometry |
-| interface side A | supplied-interface only | `A1-153` | first partner of the supplied interface |
-| interface side B | supplied-interface only | `C1-26` | second partner of the supplied interface |
+| motif selector | central-motif only | `A10-25` | fixed functional geometry |
+| interface side A | supplied-interface only | `A20-35` | first partner of the supplied interface |
+| interface side B | supplied-interface only | `B40-55` | second partner of the supplied interface |
 | generation length | defaulted; scientific review required | `30` or `70-100` | number of residues RFD3 may generate |
 | output root/profile | defaulted; deployment review required | `runs/`, `cluster.yaml` | where and how the job executes |
 
@@ -99,7 +99,7 @@ Use this for a motif that is not itself the oligomerization interface.
 rfd3-mosaic init fixed-motif-c3.yaml \
   --task central-motif \
   --input functional-motif.cif \
-  --motif-selector A84-126 \
+  --motif-selector A10-25 \
   --symmetry C3 \
   --n-length 35 \
   --c-length 35 \
@@ -133,8 +133,8 @@ copies.
 rfd3-mosaic init supplied-interface-c3.yaml \
   --task supplied-interface \
   --input interface-seed.cif \
-  --side-a A165-194 \
-  --side-b B211-241 \
+  --side-a A20-35 \
+  --side-b B40-55 \
   --symmetry C3 \
   --interface-scaffold adjacent-linker \
   --linker-minimum 70 \
@@ -156,18 +156,20 @@ rfd3-mosaic examples --copy supplied-interface \
   --output supplied-interface-c3.yaml
 ```
 
-## Workflow C: preserve a whole dimer and build a larger oligomer
+## Workflow C: extend a supplied non-covalent complex
 
-Use this when the complete non-covalent dimer is the motif and generated
-terminal scaffold should create an additional C3-C5 oligomerization interface.
+Use this when supplied partners must remain non-covalently associated while
+RFD3 grows independent terminal scaffold. The example uses one concrete
+symmetry only to make the command executable; the workflow is not restricted
+to that symmetry or to a particular oligomer size.
 
 ```bash
-rfd3-mosaic init dimer-to-c3.yaml \
+rfd3-mosaic init supplied-complex.yaml \
   --task supplied-interface \
-  --input light-dependent-dimer.cif \
-  --side-a A1-153 \
-  --side-b C1-26 \
-  --symmetry C3 \
+  --input supplied-complex.cif \
+  --side-a A1-80 \
+  --side-b B1-60 \
+  --symmetry C4 \
   --interface-scaffold terminal-extensions \
   --new-oligomer-interface \
   --sequence-conditioning masked \
@@ -178,7 +180,7 @@ rfd3-mosaic init dimer-to-c3.yaml \
   --pose-axial-minimum -4 \
   --pose-axial-maximum 4 \
   --pose-orientation uniform_so3 \
-  --pose-seed 1000 \
+  --pose-seed 4200 \
   --n-length 30 \
   --c-length 30 \
   --timesteps 200 \
@@ -194,20 +196,63 @@ Copy the complete maintained YAML with:
 
 ```bash
 rfd3-mosaic examples --copy supplied-interface-oligomer \
-  --output dimer-to-c3.yaml
+  --output supplied-complex.yaml
 ```
 
-For a 1000-design campaign, change only:
+The short initializer intentionally has two interface-side arguments. It is
+the convenient front end for the common two-sided case, not a two-component
+limit in the compiler. A three-part seed, several preserved interfaces, or a
+mixture of preserved and generated relations uses the general assembly graph:
+
+```yaml
+name: multi-component-seed
+input: supplied-complex.cif
+symmetry: C4
+
+components:
+  alpha:
+    selectors: [A1-40]
+  beta:
+    selectors: [B1-35]
+  gamma:
+    selectors: [C1-30, C45-60]
+    geometry: joint_rigid
+
+interfaces:
+  - id: preserve_alpha_beta
+    between: [alpha, beta]
+    relation: {mode: preserve_input}
+  - id: preserve_beta_gamma
+    between: [beta, gamma]
+    relation: {mode: preserve_input}
+
+connections:
+  - id: alpha_to_gamma
+    from: alpha.C
+    to: {component: gamma, selector: C1-30, terminus: n}
+    length: {minimum: 25, maximum: 45}
+```
+
+Components are rigid graph nodes. A `joint_rigid` component may contain
+several fragments whose complete relative geometry must remain exact.
+Interfaces are geometric relations and do not create peptide bonds;
+connections are the only declarations that create generated polymer paths.
+Therefore an interface seed may contain two, three or more supplied fragments.
+The repository also includes a complete, validation-tested
+[three-component assembly-graph example](../../examples/rfd3_mosaic/public_three_component_graph.yaml).
+
+For a larger campaign, set the desired integer output count:
 
 ```yaml
 sampling:
   timesteps: 200
-  designs: 1000
+  designs: 250  # choose the count required by the experiment
   replicates_per_pose: 1
 ```
 
-One YAML produces 1000 independently named outputs. With a stochastic
-`initial_pose`, the default gives each design its own pose and diffusion seed.
+One YAML produces the requested number of independently named outputs. With a
+stochastic `initial_pose`, the default gives each design its own pose and
+diffusion seed.
 Without `initial_pose`, a locked design retains one declared pose and varies
 only the diffusion trajectory.
 
@@ -246,12 +291,12 @@ More detailed atom-level conditioning is written in the generated YAML:
 ```yaml
 conditioning:
   sequence:
-    - {selector: A1-153, mode: masked}
-    - {selector: C1-26, mode: masked}
+    - {selector: A20-35, mode: masked}
+    - {selector: B40-55, mode: masked}
   ligands:
-    - {selector: B1, coupling_group: supplied_interface}
+    - {selector: L1, coupling_group: supplied_interface}
   buried:
-    - {selector: B1, atoms: ALL}
+    - {selector: L1, atoms: ALL}
   partially_buried:
     - {selector: A42-45, atoms: TIP}
   exposed:
@@ -259,7 +304,7 @@ conditioning:
   hotspots:
     - {selector: A42-45, atoms: TIP}
   hbond_acceptors:
-    - {selector: B1, atoms: O1,O2}
+    - {selector: L1, atoms: O1,O2}
   hbond_donors:
     - {selector: A67, atoms: N}
   redesign_motif_sidechains: true
@@ -375,7 +420,7 @@ user decides whether to relax, refold, rank or discard them.
 | combining glycine and side-chain redesign | use either glycine conditioning or masked redesign |
 | treating a compiled input CIF as a generated design | generated structures end in `*_model_0.cif[.gz]` |
 | treating an advisory flag as deleted/failed output | inspect the retained CIF and audit details |
-| running 1000 designs before a canary | validate, then run 2-10 designs before scaling |
+| running a large campaign before a canary | validate, then run a small pilot before scaling |
 
 ## Recommended campaign progression
 
@@ -384,8 +429,8 @@ user decides whether to relax, refold, rank or discard them.
 3. Inspect fixed geometry, continuity, clashes, topology and output naming.
 4. Generate 20-50 designs at 200 timesteps for a scientific pilot.
 5. Compare fixed, masked and glycine conditioning only when relevant.
-6. Scale to 1000 designs after the task definition and output behavior are
-   frozen.
+6. Scale to the required campaign size after the task definition and output
+   behavior are frozen.
 
 For exact argument spelling, use `rfd3-mosaic init --help`. For expert graph
 assembly, quotient or polyhedral declarations, consult the

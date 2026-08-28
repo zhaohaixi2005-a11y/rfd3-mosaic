@@ -37,7 +37,7 @@ Current delivery gates are:
 | --- | --- | --- |
 | v0.1 research-preview engineering | release candidate | one green laboratory-branch release workflow and tagged frozen release |
 | Cn/Dn exact fixed-motif and supplied-interface core | engineering/stable | preserve golden GPU replays across future changes |
-| Generic supplied-interface higher-oligomer plus native conditioning | CPU validated, public | small mask/glycine/ligand GPU pilots on real inputs |
+| Generic supplied-interface expansion plus native conditioning | CPU validated, public | small mask/glycine/ligand GPU pilots on real inputs |
 | Static and bounded-mobile T/O | GPU engineering closed | later multi-design secondary-structure benchmarking is advisory |
 | I generation, copy consistency, CA continuity and cross-chain topology | structure-output closed | retained full run audit plus clash-free/local-repair quality evidence |
 | Generated-new-interface packing | implemented | comparative multi-seed scientific calibration |
@@ -72,8 +72,10 @@ refolding or experimental success has already been scientifically validated.
   passthrough strings. The public native-capability matrix records both the
   supported mappings and these deliberate boundaries.
 - The maintained example `supplied-interface-oligomer` and the `init` command
-  demonstrate the complete non-covalent interface-seed path. It remains a
-  scientific user choice whether to request a second generated interface,
+  demonstrate one complete non-covalent interface-seed path. The general
+  assembly graph supports multiple rigid components and interface relations.
+  It remains a scientific user choice whether to request an additional
+  generated interface,
   mask/redesign the supplied surface, include a ligand or sample different
   initial poses; none is enabled implicitly for existing designs.
 

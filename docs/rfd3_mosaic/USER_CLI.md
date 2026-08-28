@@ -2,7 +2,7 @@
 
 For a task-oriented guide that separates required scientific input from
 optional controls and includes complete fixed-motif, supplied-interface and
-higher-oligomer examples, start with the
+multi-component examples, start with the
 [complete user workflow guide](WORKFLOW_GUIDE.md).
 
 RFD3-Mosaic provides one public command, `rfd3-mosaic`. The command-line
@@ -141,8 +141,8 @@ still running without opening a partially written gzip stream.
 After the full run completes, Mosaic also writes
 `generated_structures_cif.zip`. The ZIP contains only plain `.cif` members—no
 configuration, logs, audits or source snapshot—so a run with
-`sampling.designs: 1000` and 1000 produced outputs has exactly 1000 CIF
-members. The adjacent
+`sampling.designs: N` and N produced outputs has exactly N CIF members. The
+adjacent
 `generated_structures_cif_manifest.json` records the requested/produced counts
 and archive SHA256 without being placed inside the structure-only ZIP.
 
@@ -178,9 +178,11 @@ are essential; all conditioning and execution controls are optional.
 | `output` | run root and campaign name |
 
 The maintained complete examples are the normative templates. In particular,
-`supplied-interface-oligomer` demonstrates a preserved non-covalent dimer,
-independent terminal scaffold, an optional second generated interface and
-per-design SE(3) pose sampling.
+`supplied-interface-oligomer` demonstrates preserved non-covalent partners,
+independent terminal scaffold, an optional additional generated interface and
+per-design SE(3) pose sampling. The identifier is the name of one maintained
+example, not a restriction to two-component assemblies; general assembly YAML
+may declare multiple components and multiple interface relations.
 
 ### Native RFdiffusion3 conditioning
 
@@ -371,8 +373,8 @@ Create it with:
 rfd3-mosaic init design.yaml \
   --task supplied-interface \
   --input interface-seed.pdb \
-  --side-a A165-194 \
-  --side-b B211-241 \
+  --side-a A20-35 \
+  --side-b B40-55 \
   --symmetry C3
 ```
 
@@ -401,9 +403,9 @@ repacked, native RFD3 sequence conditioning can be requested explicitly:
 ```yaml
 conditioning:
   sequence:
-    - selector: A1-153
+    - selector: A20-35
       mode: masked
-    - selector: B1-26
+    - selector: B40-55
       mode: masked
 ```
 
@@ -434,8 +436,8 @@ SO(3) pose can reverse which adjacent copy is nearer, use:
 ```yaml
 generation:
   - kind: between
-    from_selector: B211-241
-    to_selector: A165-194
+    from_selector: B40-55
+    to_selector: A20-35
     orbit_offset: nearest_adjacent
     length: {minimum: 70, maximum: 100}
 ```

@@ -79,14 +79,14 @@ installs, checkpoints and portable Slurm profiles.
 
 ### Run a first design
 
-Create a design that preserves a complete two-sided interface seed:
+Create a design with the simple two-sided supplied-interface initializer:
 
 ```bash
 rfd3-mosaic init design.yaml \
   --task supplied-interface \
   --input interface-seed.pdb \
-  --side-a A165-194 \
-  --side-b B211-241 \
+  --side-a A20-35 \
+  --side-b B40-55 \
   --symmetry C3 \
   --designs 100
 ```
@@ -107,15 +107,15 @@ rfd3-mosaic status RUN_ID_OR_DIRECTORY
 rfd3-mosaic report RUN_ID_OR_DIRECTORY
 ```
 
-For a non-covalent interface seed that should form a new higher-order
-oligomer, start from the maintained compositional example:
+For supplied non-covalent partners that should also form an additional
+symmetry-related interface, start from the maintained compositional example:
 
 ```bash
 rfd3-mosaic examples --copy supplied-interface-oligomer --output design.yaml
 ```
 
-That example keeps both interface partners joint-rigid, grows their scaffold
-without adding an artificial peptide bond, and explicitly opts into a second
+That example keeps the declared interface partners joint-rigid, grows their
+scaffold without adding an artificial peptide bond, and explicitly opts into a second
 generated Cn interface. Sequence masking, all-glycine conditioning, symmetric
 ligands, RASA, hotspots and H-bond conditioning are optional fields in the
 same public YAML rather than separate task-specific programs.
@@ -126,6 +126,10 @@ The [complete user workflow guide](docs/rfd3_mosaic/WORKFLOW_GUIDE.md)
 separates required and optional input, provides copy-ready examples for every
 supported ordinary-user task, and documents batch generation plus native RFD3
 conditioning.
+The simple initializer accepts two interface sides. The general public
+assembly graph is not limited to two components: it supports multiple rigid
+or joint-rigid components, multiple preserved/generated interface relations,
+and explicit generated polymer connections.
 The [native RFD3 capability matrix](docs/rfd3_mosaic/RFD3_NATIVE_CAPABILITIES.md)
 lists the supported conditioning controls and the few native mechanisms that
 remain fail-closed under exact assembly contracts.
@@ -146,8 +150,8 @@ rotate relative to the symmetry frame when the design permits motion.
 rfd3-mosaic init design.yaml \
   --task supplied-interface \
   --input interface-seed.pdb \
-  --side-a A165-194 \
-  --side-b B211-241 \
+  --side-a A20-35 \
+  --side-b B40-55 \
   --symmetry C3
 ```
 

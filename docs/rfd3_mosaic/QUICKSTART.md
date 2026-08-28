@@ -3,8 +3,8 @@
 This guide covers the supported public workflow. It does not assume access to
 any particular institution, server, scheduler or GPU model.
 
-For a field-by-field required/optional matrix, complete supplied-interface
-and higher-oligomer examples, all public native RFD3 conditioning channels,
+For a field-by-field required/optional matrix, supplied-interface and
+multi-component examples, all public native RFD3 conditioning channels,
 batch semantics and common mistakes, continue with the
 [complete user workflow guide](WORKFLOW_GUIDE.md).
 
@@ -21,8 +21,8 @@ selected executor and checkpoint without running inference.
 ## 2. Choose a design task
 
 The user writes **one YAML file per scientific design request**, not one YAML
-per generated structure. `sampling.designs: 1000` remains one request and
-produces up to 1000 independently named outputs in the run directory.
+per generated structure. `sampling.designs: N` means that one request produces
+up to N independently named outputs in the run directory.
 
 ### Preserve a supplied interface
 
@@ -33,8 +33,8 @@ must remain unchanged:
 rfd3-mosaic init my-design.yaml \
   --task supplied-interface \
   --input interface-seed.pdb \
-  --side-a A165-194 \
-  --side-b B211-241 \
+  --side-a A20-35 \
+  --side-b B40-55 \
   --symmetry C3
 ```
 
@@ -51,41 +51,46 @@ There are two distinct ways to scaffold a supplied interface:
 - `terminal-extensions` grows each non-covalent partner independently and
   never joins the supplied interface sides with a peptide bond.
 
-For a joint-rigid dimer that should assemble into a new higher-order Cn
-oligomer, create the second form explicitly:
+For supplied non-covalent partners that should also form an additional
+generated interface, request that second relation explicitly:
 
 ```bash
-rfd3-mosaic init dimer-oligomer.yaml \
+rfd3-mosaic init supplied-complex.yaml \
   --task supplied-interface \
-  --input light-dependent-dimer.cif \
-  --side-a A1-153 \
-  --side-b C1-26 \
-  --symmetry C3 \
+  --input supplied-complex.cif \
+  --side-a A1-80 \
+  --side-b B1-60 \
+  --symmetry C4 \
   --interface-scaffold terminal-extensions \
   --new-oligomer-interface \
   --sequence-conditioning masked \
   --redesign-motif-sidechains \
-  --ligand-selector B1 \
   --component-motion guided \
   --pose-radius-minimum 20 \
   --pose-radius-maximum 32 \
   --pose-axial-minimum -4 \
   --pose-axial-maximum 4 \
   --pose-orientation uniform_so3 \
-  --pose-seed 1000 \
+  --pose-seed 4200 \
   --designs 50
 ```
 
-The supplied A/C interface and ligand remain one rigid seed. The explicit
+The supplied interface and ligand remain one rigid seed. The explicit
 `--new-oligomer-interface` switch asks only the generated residues to form an
-additional C3 interface. Omitting it preserves the supplied interface without
-inventing a second one.
+additional symmetry-related interface. Omitting it preserves the supplied
+interface without inventing a second one.
 
 The pose interval is explicit rather than inferred from a protein-specific
 template. With the default `--replicates-per-pose 1`, the command above
 compiles 50 independent rigid assembly poses and gives each pose one RFD3
 diffusion trajectory. Omit all pose options to retain the supplied assembly
 placement exactly.
+
+The short initializer covers the common two-sided declaration. It does not
+limit Mosaic to dimers: general YAML may declare any number of rigid or
+joint-rigid `components`, multiple geometric `interfaces`, and explicit
+generated-chain `connections`. See the complete workflow guide for a
+three-component interface-seed example.
 
 ### Create a new interface around a motif
 
@@ -136,15 +141,15 @@ Optional native RFdiffusion3 conditioning is placed under `conditioning`:
 ```yaml
 conditioning:
   sequence:
-    - {selector: A1-153, mode: masked}  # or glycine
+    - {selector: A20-35, mode: masked}  # or glycine
   ligands:
-    - {selector: B1, coupling_group: supplied_interface}
+    - {selector: L1, coupling_group: supplied_interface}
   buried:
-    - {selector: B1, atoms: ALL}
+    - {selector: L1, atoms: ALL}
   hotspots:
     - {selector: A42-45, atoms: TIP}
   hbond_acceptors:
-    - {selector: B1, atoms: O1,O2}
+    - {selector: L1, atoms: O1,O2}
   redesign_motif_sidechains: false
   origin_strategy: hotspots
 

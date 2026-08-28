@@ -51,8 +51,8 @@ Copy-ready masked redesign:
 ```yaml
 conditioning:
   sequence:
-    - {selector: A1-153, mode: masked}
-    - {selector: C1-26, mode: masked}
+    - {selector: A20-35, mode: masked}
+    - {selector: B40-55, mode: masked}
   redesign_motif_sidechains: true
 ```
 
@@ -61,8 +61,8 @@ Copy-ready all-glycine conditioning:
 ```yaml
 conditioning:
   sequence:
-    - {selector: A1-153, mode: glycine}
-    - {selector: C1-26, mode: glycine}
+    - {selector: A20-35, mode: glycine}
+    - {selector: B40-55, mode: glycine}
   redesign_motif_sidechains: false
 ```
 
@@ -121,8 +121,8 @@ sampling:
 `designs` is the total requested output count. With a stochastic initial pose,
 `replicates_per_pose: 1` gives each output its own pose. Fixed arrangements
 retain one exact pose and vary diffusion only. See the
-[complete workflow guide](WORKFLOW_GUIDE.md) for pose examples and 1000-design
-campaign guidance.
+[complete workflow guide](WORKFLOW_GUIDE.md) for pose examples and general
+multi-design campaign guidance.
 
 ## Deliberate semantic replacements
 
