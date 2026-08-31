@@ -65,6 +65,7 @@ class ScaffoldCoreGuidanceConfig:
     long_range_contact_weight: float = 0.75
     normalized_rg_weight: float = 0.35
     tertiary_support_weight: float = 1.0
+    worst_support_weight: float = 1.0
     inter_chain_excess_weight: float = 1.0
     clash_weight: float = 8.0
     continuity_weight: float = 2.0
@@ -74,6 +75,7 @@ class ScaffoldCoreGuidanceConfig:
     sequence_separation: int = 8
     target_contacts_per_generated_residue: float = 1.5
     target_supported_contacts: float = 2.0
+    worst_support_temperature: float = 0.25
     target_normalized_rg: float = 2.60
     incidental_inter_chain_fraction: float = 0.08
     clash_distance: float = 3.2
@@ -94,6 +96,7 @@ class ScaffoldCoreGuidanceConfig:
             "long_range_contact_weight",
             "normalized_rg_weight",
             "tertiary_support_weight",
+            "worst_support_weight",
             "inter_chain_excess_weight",
             "clash_weight",
             "continuity_weight",
@@ -106,6 +109,7 @@ class ScaffoldCoreGuidanceConfig:
             "contact_softness",
             "target_contacts_per_generated_residue",
             "target_supported_contacts",
+            "worst_support_temperature",
             "target_normalized_rg",
             "clash_distance",
             "backbone_distance",
@@ -133,6 +137,7 @@ class ScaffoldCoreEnergy:
     long_range_contacts: torch.Tensor
     normalized_rg: torch.Tensor
     tertiary_support: torch.Tensor
+    worst_support: torch.Tensor
     inter_chain_excess: torch.Tensor
     clash: torch.Tensor
     cross_chain_segment_clash: torch.Tensor
@@ -155,6 +160,7 @@ class ScaffoldCoreEnergy:
                 "long_range_contacts",
                 "normalized_rg",
                 "tertiary_support",
+                "worst_support",
                 "inter_chain_excess",
                 "clash",
                 "cross_chain_segment_clash",
@@ -179,6 +185,36 @@ def _tensor(
     device: torch.device | None = None,
 ) -> torch.Tensor:
     return torch.as_tensor(value, dtype=dtype, device=device)
+
+
+def worst_support_deficit_energy(
+    generated_support: torch.Tensor,
+    config: ScaffoldCoreGuidanceConfig,
+) -> torch.Tensor:
+    """Smoothly emphasize the worst contiguous tertiary-support deficit."""
+
+    if generated_support.ndim != 1 or not len(generated_support):
+        raise ValueError("generated_support must be one non-empty vector")
+    support_deficit = torch.square(
+        torch.relu(config.target_supported_contacts - generated_support)
+    )
+    window_size = min(config.sequence_separation, len(support_deficit))
+    window_deficit = support_deficit.unfold(0, window_size, 1).mean(dim=-1)
+    temperature = torch.as_tensor(
+        config.worst_support_temperature,
+        dtype=generated_support.dtype,
+        device=generated_support.device,
+    )
+    return temperature * (
+        torch.logsumexp(window_deficit / temperature, dim=0)
+        - torch.log(
+            torch.as_tensor(
+                len(window_deficit),
+                dtype=generated_support.dtype,
+                device=generated_support.device,
+            )
+        )
+    )
 
 
 def build_scaffold_core_topology(
@@ -671,6 +707,7 @@ def scaffold_core_energy(
     long_range_terms: list[torch.Tensor] = []
     rg_terms: list[torch.Tensor] = []
     support_terms: list[torch.Tensor] = []
+    worst_support_terms: list[torch.Tensor] = []
     normalized_rgs: list[torch.Tensor] = []
     support_fractions: list[torch.Tensor] = []
     continuity_terms: list[torch.Tensor] = []
@@ -729,12 +766,18 @@ def scaffold_core_energy(
         )
         generated_support = support[generated]
         if len(generated_support):
-            support_terms.append(
-                torch.mean(
-                    torch.square(
-                        torch.relu(config.target_supported_contacts - generated_support)
-                    )
-                )
+            support_deficit = torch.square(
+                torch.relu(config.target_supported_contacts - generated_support)
+            )
+            support_terms.append(torch.mean(support_deficit))
+            # A chain-wide mean can hide one long unsupported arm behind a
+            # well packed local core.  Average over a sequence-local window,
+            # then use a normalized smooth maximum to focus the gradient on
+            # the worst contiguous generated region without introducing a
+            # hard pass/fail cutoff.  Reusing ``sequence_separation`` ties the
+            # window to the same definition of a tertiary contact.
+            worst_support_terms.append(
+                worst_support_deficit_energy(generated_support, config)
             )
             support_fractions.append(
                 torch.mean(
@@ -869,6 +912,7 @@ def scaffold_core_energy(
     long_range = mean(long_range_terms)
     normalized_rg = mean(rg_terms)
     tertiary_support = mean(support_terms)
+    worst_support = mean(worst_support_terms)
     inter_excess = mean(inter_terms)
     clash = mean(clash_terms)
     cross_chain_segment_clash = mean(cross_chain_segment_clash_terms)
@@ -880,6 +924,7 @@ def scaffold_core_energy(
             config.long_range_contact_weight * long_range
             + config.normalized_rg_weight * normalized_rg
             + config.tertiary_support_weight * tertiary_support
+            + config.worst_support_weight * worst_support
         )
         + config.inter_chain_excess_penalty
         * config.inter_chain_excess_weight
@@ -901,6 +946,7 @@ def scaffold_core_energy(
         long_range_contacts=long_range,
         normalized_rg=normalized_rg,
         tertiary_support=tertiary_support,
+        worst_support=worst_support,
         inter_chain_excess=inter_excess,
         clash=clash,
         cross_chain_segment_clash=cross_chain_segment_clash,
@@ -1118,4 +1164,5 @@ __all__ = [
     "project_generated_polymer_continuity",
     "scaffold_core_energy",
     "scaffold_core_window",
+    "worst_support_deficit_energy",
 ]

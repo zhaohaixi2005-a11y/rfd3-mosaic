@@ -1112,6 +1112,8 @@ class OrbitRigidMotifController:
                 "capture_response_scale": self.capture_response_scale,
                 "settle_response_scale": self.settle_response_scale,
                 "polish_response_scale": self.polish_response_scale,
+                "capture_pose_search": "deterministic_bounded_se3_multistart",
+                "settle_polish_pose_search": "projected_gradient_line_search",
             },
         }
         if window > 0.0:
@@ -1349,6 +1351,7 @@ class OrbitRigidMotifController:
                     rotation_step_size_degrees=rotation_step_size,
                     translation_basis=translation_basis,
                     rotation_basis=rotation_basis,
+                    deterministic_multistart=(temporal_phase.name == "capture"),
                 )
                 proposals.append(proposal)
                 if proposal.accepted:

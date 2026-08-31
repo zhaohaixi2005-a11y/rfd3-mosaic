@@ -19,7 +19,10 @@ import yaml
 
 from rfd3_mosaic.compile import load_assembly_config
 from rfd3_mosaic.design_compiler import lower_user_design
-from rfd3_mosaic.design_preferences import resolved_preferences_payload
+from rfd3_mosaic.design_preferences import (
+    effective_scaffold_core_weights,
+    resolved_preferences_payload,
+)
 from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.schema import (
     AssemblySpecification,
@@ -374,13 +377,14 @@ def lower_experiment_topology(
             for interface in compiled_interfaces
         ):
             audit_requirements.append(AuditRequirement.GRAPH_INTERFACE_GUIDANCE)
-        guidance = design.guidance
+        (
+            effective_intra_chain_weight,
+            effective_inter_chain_weight,
+            effective_inter_chain_excess_penalty,
+        ) = effective_scaffold_core_weights(design)
         scaffold_core_requested = bool(
-            guidance is not None
-            and (
-                (guidance.intra_chain_weight or 0.0) > 0.0
-                or (guidance.inter_chain_excess_penalty or 0.0) > 0.0
-            )
+            effective_intra_chain_weight > 0.0
+            or effective_inter_chain_excess_penalty > 0.0
         )
         if scaffold_core_requested:
             audit_requirements.append(AuditRequirement.SCAFFOLD_CORE_GUIDANCE)
@@ -420,23 +424,10 @@ def lower_experiment_topology(
                     {
                         "mode": "symmetric_generated",
                         "neighbour_policy": "cyclic_adjacent",
-                        "intra_chain_weight": (
-                            design.guidance.intra_chain_weight
-                            if design.guidance is not None
-                            and design.guidance.intra_chain_weight is not None
-                            else 0.0
-                        ),
-                        "inter_chain_weight": (
-                            design.guidance.inter_chain_weight
-                            if design.guidance is not None
-                            and design.guidance.inter_chain_weight is not None
-                            else 1.0
-                        ),
+                        "intra_chain_weight": (effective_intra_chain_weight),
+                        "inter_chain_weight": (effective_inter_chain_weight),
                         "inter_chain_excess_penalty": (
-                            guidance.inter_chain_excess_penalty
-                            if guidance is not None
-                            and guidance.inter_chain_excess_penalty is not None
-                            else 0.0
+                            effective_inter_chain_excess_penalty
                         ),
                         "quality_contract": (
                             design.sampling.scaffold_core_quality.model_dump(
@@ -450,23 +441,10 @@ def lower_experiment_topology(
                 "scaffold_core_guidance": (
                     {
                         "mode": "intra_inter",
-                        "intra_chain_weight": (
-                            guidance.intra_chain_weight
-                            if guidance is not None
-                            and guidance.intra_chain_weight is not None
-                            else 0.0
-                        ),
-                        "inter_chain_weight": (
-                            guidance.inter_chain_weight
-                            if guidance is not None
-                            and guidance.inter_chain_weight is not None
-                            else 1.0
-                        ),
+                        "intra_chain_weight": (effective_intra_chain_weight),
+                        "inter_chain_weight": (effective_inter_chain_weight),
                         "inter_chain_excess_penalty": (
-                            guidance.inter_chain_excess_penalty
-                            if guidance is not None
-                            and guidance.inter_chain_excess_penalty is not None
-                            else 0.0
+                            effective_inter_chain_excess_penalty
                         ),
                         "quality_contract": (
                             design.sampling.scaffold_core_quality.model_dump(

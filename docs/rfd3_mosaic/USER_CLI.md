@@ -462,7 +462,9 @@ guidance:
 
 `intra_chain_weight` rewards long-range contacts inside each generated
 monomer, a bounded length-normalized radius of gyration, and tertiary-contact
-support across generated residues. `inter_chain_weight` follows contact-map
+support across generated residues. It also emphasizes the worst contiguous
+unsupported sequence window so that one long generated arm cannot be hidden
+by the chain-wide mean. `inter_chain_weight` follows contact-map
 semantics: it scales only declared generated--generated interface edges. In a
 supplied-interface design with no generated interface edge it is intentionally
 inactive; a value below one is not silently converted into repulsion.
@@ -522,9 +524,10 @@ Its controller energy is an inference-time local geometry objective, not a
 physical free energy or a claim that the final backbone will fold.
 
 Existing frozen `packing_preferences_v1` runs retain their original behavior.
-Newly compiled `packing_preferences_v2` designs keep
-`intra_chain_weight=0` unless the user requests monomer-core guidance, while
-the broad generated-interface contact prior is calibrated by the existing
+Newly compiled ordinary `create_symmetric_interface` designs use
+`intra_chain_weight=1` by default; an explicit zero remains available for a
+native-RFD3 ablation. Other tasks retain their declared/default value. The
+broad generated-interface contact prior is calibrated by the existing
 `packing: loose|balanced|tight` preset (`0.06`, `0.10`, or `0.15`). An explicit
 `inter_chain_weight` overrides that prior directly.
 

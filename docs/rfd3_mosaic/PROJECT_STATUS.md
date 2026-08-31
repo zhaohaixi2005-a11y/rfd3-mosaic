@@ -1,5 +1,29 @@
 # RFD3-Mosaic project status
 
+## 2026-08-31 fixed-motif scaffold capture correction
+
+- Ordinary `create_symmetric_interface` designs now enable intra-chain
+  scaffold-core guidance by default. An explicit zero remains a supported
+  native-RFD3 ablation; supplied-interface and custom expert tasks retain
+  their declared values.
+- The core controller now combines the chain-wide tertiary-support mean with
+  a normalized smooth maximum over contiguous sequence windows. This targets
+  long unsupported generated arms without inventing a universal structure
+  pass threshold.
+- Bounded/free rigid components use deterministic signed translation,
+  rotation and coupled probes during the early capture phase. Every proposal
+  remains inside the compiler-declared subspace, per-step trust region and
+  cumulative bound. Settle and polish retain the previous projected-gradient
+  line search; locked components remain immobile.
+- The existing per-design pose sampler continues to reject compiler/preflight
+  clash, linker-reachability and routing failures before RFD3. Cyclic
+  interface-specific inward/tangential semantics are not imposed on arbitrary
+  fixed motifs.
+- The complete Mosaic CPU unit suite passes `983` tests plus `119` subtests.
+  A matched 50-step GPU cohort is still required before claiming a scientific
+  improvement in helix/strand content, unsupported-run length or monomer
+  packing.
+
 ## 2026-08-28 completion snapshot and I-continuity closure
 
 The current branch is ready for an internal research-preview release.  The

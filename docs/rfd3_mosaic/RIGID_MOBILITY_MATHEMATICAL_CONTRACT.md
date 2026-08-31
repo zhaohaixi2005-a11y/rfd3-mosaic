@@ -251,6 +251,38 @@ Its published-contact prior, patch terms and safety boundary are specified in
 [Generated-interface packing guidance](PACKING_GUIDANCE.md). Supplied-interface
 scaffolding does not invent this second interface objective.
 
+### Generated-scaffold core term
+
+For ordinary `create_symmetric_interface` designs, Mosaic enables the
+intra-chain scaffold-core objective by default. This is independent of the
+inter-chain interface objective and may be disabled explicitly with
+`guidance.intra_chain_weight: 0` for an ablation. For generated residue \(i\),
+let \(s_i\) be its differentiable count of sequence-distant CA contacts and
+\(s_0\) the configured support target. The mean support deficit is
+
+\[
+E_{\mathrm{support}}=
+\frac{1}{N}\sum_i \max(0,s_0-s_i)^2.
+\]
+
+A mean alone can hide one long unsupported arm. Define
+\(d_i=\max(0,s_0-s_i)^2\), average \(d_i\) in sequence-local windows of width
+equal to the controller's tertiary-contact separation, and apply a normalized
+smooth maximum:
+
+\[
+\bar d_j=\frac{1}{W}\sum_{i=j}^{j+W-1}d_i,
+\qquad
+E_{\mathrm{worst}}=
+\tau\left[\log\sum_j \exp(\bar d_j/\tau)-\log M\right].
+\]
+
+The normalization avoids changing the scale merely because a chain has more
+windows. This is an inference-time controller term, not a universal backbone
+acceptance threshold. It is combined with long-range contacts and
+length-normalized radius of gyration; exact fixed coordinates remain owned by
+the constraint projector.
+
 ## Deterministic SE(3) proposal
 
 At the current pose, Mosaic differentiates the scalar objective with respect
@@ -272,7 +304,14 @@ subspaces \(P_R,P_t\) and normalized:
 Examples include full bounded \(SE(3)\), radial translation only,
 radial-plus-axial translation, rotation only, and radial/axial translation
 with rotation. Ordinary cyclic interface creation suppresses arbitrary
-tangential translation. A zero projected gradient produces no motion.
+tangential translation. A zero projected gradient produces no local-gradient
+motion. During the early `capture` phase only, Mosaic also evaluates
+deterministic signed probes along every compiler-permitted translation and
+rotation basis direction, plus a bounded set of coupled translation/rotation
+probes. This gives a small reproducible multi-start search around the current
+pose without relaxing either trust-region or cumulative bounds. `settle` and
+`polish` use the projected gradient alone. Locked components never enter this
+code.
 
 For scheduled rotation and translation step sizes \(h_R,h_t\), raw increments
 are
@@ -379,9 +418,11 @@ on the same scaffold snapshot. The first finite candidate satisfying
 E(Q_\alpha;S)<E(Q;S)
 \]
 
-is accepted. If none lowers the objective, the pose is unchanged. This strict
-comparison is why a controller may correctly report zero movement for an
-already locally consistent pose.
+is accepted. During `capture`, this comparison is applied to the gradient
+direction and all deterministic multi-start probes, and the lowest finite
+improving candidate is retained. During `settle` and `polish`, the first
+improving gradient-line-search candidate is retained. If none lowers the
+objective, the pose is unchanged.
 
 For several mobile orbits, all proposals are computed from one immutable
 snapshot. The complete candidate is committed atomically only when at least

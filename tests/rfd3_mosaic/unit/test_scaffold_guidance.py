@@ -2,7 +2,6 @@ import math
 import unittest
 
 import torch
-
 from rfd3.inference.symmetry.scaffold_guidance import (
     build_boundary_topology,
     expand_master_orbit,
@@ -126,8 +125,7 @@ class ScaffoldBoundaryTopologyTestCase(unittest.TestCase):
                 topology = build_boundary_topology(features, fixed_mask)
 
                 observed = {
-                    tuple(pair)
-                    for pair in topology.junction_pairs.cpu().tolist()
+                    tuple(pair) for pair in topology.junction_pairs.cpu().tolist()
                 }
                 expected = set()
                 for copy_index in range(order):
@@ -173,9 +171,7 @@ class ScaffoldBoundaryTopologyTestCase(unittest.TestCase):
                 torch.arange(order),
                 tokens_per_chain,
             ),
-            "residue_index": torch.arange(
-                tokens_per_chain
-            ).repeat(order),
+            "residue_index": torch.arange(tokens_per_chain).repeat(order),
             "is_ca": torch.ones(token_count, dtype=torch.bool),
             "is_protein": torch.ones(token_count, dtype=torch.bool),
             "token_bonds": torch.zeros(
@@ -191,10 +187,7 @@ class ScaffoldBoundaryTopologyTestCase(unittest.TestCase):
 
         topology = build_boundary_topology(features, fixed_mask)
 
-        observed = {
-            tuple(pair)
-            for pair in topology.junction_pairs.cpu().tolist()
-        }
+        observed = {tuple(pair) for pair in topology.junction_pairs.cpu().tolist()}
         expected = set()
         for copy_index in range(order):
             start = copy_index * tokens_per_chain
@@ -258,9 +251,7 @@ class CyclicAxisTestCase(unittest.TestCase):
         point = torch.tensor([2.5, -1.25, 0.75], dtype=torch.float64)
         for order in (3, 5):
             with self.subTest(order=order):
-                axis = extract_cyclic_axis(
-                    _cyclic_transforms(order, point=point)
-                )
+                axis = extract_cyclic_axis(_cyclic_transforms(order, point=point))
 
                 self.assertAlmostEqual(
                     abs(
@@ -360,12 +351,8 @@ class CyclicMasterExpansionTestCase(unittest.TestCase):
                             atol=1e-7,
                         )
                     )
-                    canonical = (
-                        expanded[transform_id] - translation
-                    ) @ rotation
-                    self.assertTrue(
-                        torch.allclose(canonical, master, atol=1e-7)
-                    )
+                    canonical = (expanded[transform_id] - translation) @ rotation
+                    self.assertTrue(torch.allclose(canonical, master, atol=1e-7))
 
 
 class ScaffoldOrbitEnergyTestCase(unittest.TestCase):
@@ -510,6 +497,41 @@ class ScaffoldOrbitEnergyTestCase(unittest.TestCase):
 
 
 class BoundedSE3ProposalTestCase(unittest.TestCase):
+    def test_capture_multistart_escapes_zero_gradient_pose(self) -> None:
+        identity = torch.eye(3, dtype=torch.float64)
+
+        def double_well(_rotation, translation):
+            return torch.square(torch.square(translation[0]) - 0.25**2)
+
+        local = propose_bounded_se3_step(
+            identity,
+            torch.zeros(3, dtype=torch.float64),
+            double_well,
+            maximum_step_translation=0.25,
+            maximum_step_rotation_degrees=0.0,
+            maximum_total_translation=1.0,
+            maximum_total_rotation_degrees=0.0,
+            translation_step_size=0.25,
+            rotation_step_size_degrees=0.0,
+        )
+        capture = propose_bounded_se3_step(
+            identity,
+            torch.zeros(3, dtype=torch.float64),
+            double_well,
+            maximum_step_translation=0.25,
+            maximum_step_rotation_degrees=0.0,
+            maximum_total_translation=1.0,
+            maximum_total_rotation_degrees=0.0,
+            translation_step_size=0.25,
+            rotation_step_size_degrees=0.0,
+            deterministic_multistart=True,
+        )
+
+        self.assertFalse(local.accepted)
+        self.assertTrue(capture.accepted)
+        self.assertAlmostEqual(abs(float(capture.translation[0])), 0.25)
+        self.assertLess(float(capture.proposed_energy), float(capture.initial_energy))
+
     def test_proposal_lowers_energy_and_respects_step_and_total_bounds(
         self,
     ) -> None:
@@ -525,10 +547,9 @@ class BoundedSE3ProposalTestCase(unittest.TestCase):
         )
 
         def energy_function(rotation, translation):
-            return (
-                torch.sum(torch.square(translation - target_translation))
-                + torch.sum(torch.square(rotation - target_rotation))
-            )
+            return torch.sum(
+                torch.square(translation - target_translation)
+            ) + torch.sum(torch.square(rotation - target_rotation))
 
         proposal = propose_bounded_se3_step(
             current_rotation,

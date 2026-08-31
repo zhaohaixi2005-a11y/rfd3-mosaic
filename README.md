@@ -191,7 +191,10 @@ one pose.
 
 Bounded-mobile components use coarse-to-fine SE(3) optimization during
 diffusion, allowing broad early pose adaptation followed by progressively
-smaller refinements. The schedule, objective terms and geometric invariants
+smaller refinements. Early capture evaluates a deterministic bounded
+multi-start neighbourhood; generated-interface tasks also use intra-chain
+core support by default, including a smooth worst-window term for long
+unsupported arms. The schedule, objective terms and geometric invariants
 are defined in the
 [rigid-mobility mathematical contract](docs/rfd3_mosaic/RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md).
 

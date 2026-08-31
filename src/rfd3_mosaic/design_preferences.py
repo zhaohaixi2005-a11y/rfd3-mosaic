@@ -19,6 +19,7 @@ from rfd3_mosaic.schema.design import (
     InterfaceAreaPreference,
     PackingPreference,
     UserDesignSpec,
+    UserDesignTask,
 )
 from rfd3_mosaic.schema.specs import StrictModel
 
@@ -94,6 +95,53 @@ _PACKING: dict[PackingPreference, dict[str, float]] = {
         "graph_interface_guidance_maximum_token_step": 0.20,
     },
 }
+
+
+# A fixed non-interface motif is only useful when the generated residues are
+# also asked to form a supported monomer core.  RFdiffusion1 exposed this as
+# an explicit intra-chain contact potential; Mosaic makes the scientifically
+# safe behaviour the ordinary create-interface default while preserving an
+# explicit ``guidance.intra_chain_weight: 0`` ablation.
+DEFAULT_CREATE_INTERFACE_INTRA_CHAIN_WEIGHT = 1.0
+
+
+def effective_scaffold_core_weights(
+    design: UserDesignSpec,
+) -> tuple[float, float, float]:
+    """Return the effective intra/inter scaffold controls for one design.
+
+    The helper is shared by sampler lowering and audit metadata so the report
+    cannot claim that core guidance was disabled while the worker actually
+    used it (or vice versa).
+    """
+
+    guidance = design.guidance
+    explicit_intra = (
+        guidance.intra_chain_weight
+        if guidance is not None and guidance.intra_chain_weight is not None
+        else None
+    )
+    intra = (
+        float(explicit_intra)
+        if explicit_intra is not None
+        else (
+            DEFAULT_CREATE_INTERFACE_INTRA_CHAIN_WEIGHT
+            if design.task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE
+            else 0.0
+        )
+    )
+    inter = (
+        float(guidance.inter_chain_weight)
+        if guidance is not None and guidance.inter_chain_weight is not None
+        else 1.0
+    )
+    inter_excess = (
+        float(guidance.inter_chain_excess_penalty)
+        if guidance is not None and guidance.inter_chain_excess_penalty is not None
+        else 0.0
+    )
+    return intra, inter, inter_excess
+
 
 _AREA: dict[InterfaceAreaPreference, tuple[int, float, float]] = {
     InterfaceAreaPreference.SMALL: (4, 0.85, 0.90),
@@ -175,6 +223,11 @@ def compile_design_preferences(
             "graph_interface_guidance_patch_exclusivity_weight": 1.0,
         }
     )
+    effective_intra, _, _ = effective_scaffold_core_weights(design)
+    if effective_intra > 0.0 or (
+        design.guidance is not None and design.guidance.intra_chain_weight is not None
+    ):
+        overrides["scaffold_core_intra_chain_weight"] = effective_intra
     if design.guidance is not None:
         expert = design.guidance.model_dump(exclude_none=True)
         intra_chain_weight = expert.pop("intra_chain_weight", None)
@@ -195,9 +248,9 @@ def compile_design_preferences(
             overrides["scaffold_core_inter_chain_weight"] = inter_chain_weight
             # RFdiffusion-style ``inter`` controls broad contact capture. It
             # must not scale Mosaic continuity, orientation, or safety terms.
-            overrides[
-                "graph_interface_guidance_contact_prior_weight"
-            ] = inter_chain_weight
+            overrides["graph_interface_guidance_contact_prior_weight"] = (
+                inter_chain_weight
+            )
         if inter_chain_excess_penalty is not None:
             overrides["scaffold_core_inter_chain_excess_penalty"] = (
                 inter_chain_excess_penalty

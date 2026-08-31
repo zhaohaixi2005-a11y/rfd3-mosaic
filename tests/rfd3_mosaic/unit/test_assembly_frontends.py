@@ -39,6 +39,36 @@ def _c3_registry() -> tuple[list[str], dict[str, list[list[float]]]]:
 
 
 class AssemblyFrontendTestCase(unittest.TestCase):
+    def test_fixed_motif_interface_creation_records_default_core_guidance(
+        self,
+    ) -> None:
+        design = (
+            REPOSITORY_ROOT
+            / "experiments"
+            / "lrz_public_c3_locked_packing_patch_capture_v100_50step.yaml"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "fixed-motif-default-core",
+                },
+                Path(temporary) / "output",
+                project_directory=REPOSITORY_ROOT,
+                experiment_name="fixed-motif-default-core",
+                pose_seed=1234,
+            )
+
+        self.assertIn(
+            AuditRequirement.SCAFFOLD_CORE_GUIDANCE,
+            request.audit_requirements,
+        )
+        self.assertEqual(
+            request.audit_metadata["scaffold_core_guidance"]["intra_chain_weight"],
+            1.0,
+        )
+
     def test_user_frontend_freezes_pose_specific_cyclic_wiring(self) -> None:
         design = (
             REPOSITORY_ROOT
@@ -73,16 +103,20 @@ class AssemblyFrontendTestCase(unittest.TestCase):
             reverse_spec = load_assembly_config(reverse.specification_path)
 
         self.assertEqual(
-            forward_spec.generated_segments[
-                "generated_001"
-            ].copy_relation.orbit_offset,
+            forward_spec.generated_segments["generated_001"].copy_relation.orbit_offset,
             1,
         )
         self.assertEqual(
-            reverse_spec.generated_segments[
-                "generated_001"
-            ].copy_relation.orbit_offset,
+            reverse_spec.generated_segments["generated_001"].copy_relation.orbit_offset,
             -1,
+        )
+        self.assertIn(
+            AuditRequirement.SCAFFOLD_CORE_GUIDANCE,
+            forward.audit_requirements,
+        )
+        self.assertEqual(
+            forward.audit_metadata["scaffold_core_guidance"]["intra_chain_weight"],
+            1.0,
         )
 
     def test_scaffold_intra_inter_balance_is_independent_of_new_interface(
@@ -251,9 +285,7 @@ sampling:
             request.audit_requirements,
         )
         self.assertEqual(
-            request.audit_metadata["automatic_symmetric_scaffold_packing"][
-                "mode"
-            ],
+            request.audit_metadata["automatic_symmetric_scaffold_packing"]["mode"],
             "symmetric_generated",
         )
 
@@ -446,6 +478,7 @@ constraints:
                 AuditRequirement.EXACT_CONSTRAINT_ORBIT,
                 AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
                 AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+                AuditRequirement.SCAFFOLD_CORE_GUIDANCE,
                 AuditRequirement.BOUNDED_COMPONENT_MOBILITY,
             ),
         )
@@ -495,6 +528,7 @@ constraints:
                 AuditRequirement.EXACT_CONSTRAINT_ORBIT,
                 AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS,
                 AuditRequirement.GRAPH_INTERFACE_GUIDANCE,
+                AuditRequirement.SCAFFOLD_CORE_GUIDANCE,
             ),
         )
         self.assertGreater(

@@ -10,6 +10,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     build_scaffold_core_topology,
     project_generated_polymer_continuity,
     scaffold_core_energy,
+    worst_support_deficit_energy,
 )
 from rfd3.trainer.rfd3 import _copy_sampler_diagnostics
 
@@ -30,6 +31,19 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_worst_support_focuses_on_one_contiguous_unsupported_run(self) -> None:
+        config = ScaffoldCoreGuidanceConfig(
+            sequence_separation=4,
+            target_supported_contacts=2.0,
+        )
+        contiguous = torch.tensor([2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0])
+        scattered = torch.tensor([0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0])
+
+        contiguous_energy = worst_support_deficit_energy(contiguous, config)
+        scattered_energy = worst_support_deficit_energy(scattered, config)
+
+        self.assertGreater(contiguous_energy.item(), scattered_energy.item())
+
     def test_routing_ownership_penalizes_generated_run_in_wrong_chain_cell(
         self,
     ) -> None:

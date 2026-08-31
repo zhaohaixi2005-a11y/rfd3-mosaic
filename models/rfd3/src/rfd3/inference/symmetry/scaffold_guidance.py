@@ -918,8 +918,16 @@ def propose_bounded_se3_step(
     translation_basis: torch.Tensor | None = None,
     rotation_basis: torch.Tensor | None = None,
     line_search_scales: tuple[float, ...] = (1.0, 0.5, 0.25),
+    deterministic_multistart: bool = False,
 ) -> SE3Proposal:
-    """Take one deterministic gradient proposal with fixed line search."""
+    """Take one bounded SE(3) proposal with a deterministic line search.
+
+    ``deterministic_multistart`` supplements the local gradient with signed
+    basis probes and coupled translation/rotation probes.  It is intended for
+    the early capture phase, where a single gradient can be trapped by an
+    initially poor pose.  The search is reproducible and remains inside both
+    per-step and cumulative motion bounds.
+    """
 
     rotation = _as_tensor(current_rotation)
     if not rotation.is_floating_point():
@@ -1018,14 +1026,94 @@ def propose_bounded_se3_step(
 
     raw_rotation_vector = rotation_direction * math.radians(rotation_step_size_degrees)
     raw_translation = translation_direction * translation_step_size
-    raw_rotation_vector = _clamp_vector(
-        raw_rotation_vector,
-        math.radians(maximum_step_rotation_degrees),
-    )
-    raw_translation = _clamp_vector(
-        raw_translation,
-        maximum_step_translation,
-    )
+
+    def allowed_axes(
+        basis: torch.Tensor | None,
+        reference: torch.Tensor,
+        *,
+        label: str,
+    ) -> tuple[torch.Tensor, ...]:
+        if basis is None:
+            matrix = torch.eye(
+                3,
+                dtype=reference.dtype,
+                device=reference.device,
+            )
+        else:
+            matrix = _as_tensor(
+                basis,
+                dtype=reference.dtype,
+                device=reference.device,
+            )
+            if matrix.ndim != 2 or matrix.shape[1] != 3:
+                raise ValueError(f"{label} basis must have shape [K, 3]")
+            if matrix.shape[0] == 0:
+                return ()
+            orthonormal, _ = torch.linalg.qr(matrix.T, mode="reduced")
+            matrix = orthonormal.T
+        return tuple(matrix[index] for index in range(matrix.shape[0]))
+
+    zero_rotation = torch.zeros_like(raw_rotation_vector)
+    zero_translation = torch.zeros_like(raw_translation)
+    directions: list[tuple[torch.Tensor, torch.Tensor, bool]] = [
+        (raw_rotation_vector, raw_translation, True)
+    ]
+    if deterministic_multistart:
+        translation_axes = allowed_axes(
+            translation_basis,
+            translation,
+            label="translation",
+        )
+        rotation_axes = allowed_axes(
+            rotation_basis,
+            translation,
+            label="rotation",
+        )
+        translation_probes = tuple(
+            sign * axis * translation_step_size
+            for axis in translation_axes
+            for sign in (-1.0, 1.0)
+            if translation_step_size > 0.0
+        )
+        rotation_probes = tuple(
+            sign * axis * math.radians(rotation_step_size_degrees)
+            for axis in rotation_axes
+            for sign in (-1.0, 1.0)
+            if rotation_step_size_degrees > 0.0
+        )
+        directions.extend((zero_rotation, probe, False) for probe in translation_probes)
+        directions.extend((probe, zero_translation, False) for probe in rotation_probes)
+        # Coupled probes let the optimizer cross a shallow saddle that neither
+        # a translation-only nor a rotation-only immediate-descent test can
+        # cross.  Pairing by index keeps the number of objective evaluations
+        # bounded rather than taking a full Cartesian product.
+        coupled_count = max(len(translation_probes), len(rotation_probes))
+        if translation_probes and rotation_probes:
+            directions.extend(
+                (
+                    rotation_probes[index % len(rotation_probes)],
+                    translation_probes[index % len(translation_probes)],
+                    False,
+                )
+                for index in range(coupled_count)
+            )
+
+    directions = [
+        (
+            _clamp_vector(
+                rotation_probe,
+                math.radians(maximum_step_rotation_degrees),
+            ),
+            _clamp_vector(translation_probe, maximum_step_translation),
+            is_gradient,
+        )
+        for rotation_probe, translation_probe, is_gradient in directions
+        if (
+            float(torch.linalg.vector_norm(rotation_probe).detach().item()) > 1e-12
+            or float(torch.linalg.vector_norm(translation_probe).detach().item())
+            > 1e-12
+        )
+    ]
 
     initial_detached = initial_energy.detach()
     identity = torch.eye(
@@ -1034,63 +1122,104 @@ def propose_bounded_se3_step(
         device=rotation.device,
     )
     line_search_trials: list[dict[str, float | bool | None]] = []
-    for scale in line_search_scales:
-        delta_rotation = _rotation_from_vector(raw_rotation_vector * scale)
-        delta_translation = raw_translation * scale
-        candidate_rotation = delta_rotation @ rotation
-        candidate_translation = translation + delta_translation
-        candidate_rotation = _clamp_rotation(
-            candidate_rotation,
-            maximum_total_rotation_degrees,
-        )
-        candidate_translation = _clamp_vector(
-            candidate_translation,
-            maximum_total_translation,
-        )
-        actual_delta_rotation = candidate_rotation @ rotation.T
-        actual_delta_translation = candidate_translation - translation
-        with torch.no_grad():
-            candidate_energy = _energy_scalar(
-                energy_function(
-                    candidate_rotation,
-                    candidate_translation,
-                )
-            ).detach()
-        finite = bool(torch.isfinite(candidate_energy).item())
-        candidate_value = float(candidate_energy.item()) if finite else None
-        improves = bool(
-            finite
-            and candidate_value is not None
-            and candidate_value < float(initial_detached.item())
-        )
-        line_search_trials.append(
-            {
-                "scale": float(scale),
-                "energy": candidate_value,
-                "finite": finite,
-                "improves": improves,
-            }
-        )
-        if not finite:
-            continue
-        if improves:
-            return SE3Proposal(
-                rotation=candidate_rotation.detach(),
-                translation=candidate_translation.detach(),
-                delta_rotation=actual_delta_rotation.detach(),
-                delta_translation=actual_delta_translation.detach(),
-                initial_energy=initial_detached,
-                proposed_energy=candidate_energy,
-                accepted=True,
-                line_search_scale=float(scale),
-                rotation_gradient_norm=rotation_gradient_norm,
-                translation_gradient_norm=translation_gradient_norm,
-                projected_rotation_gradient_norm=(projected_rotation_gradient_norm),
-                projected_translation_gradient_norm=(
-                    projected_translation_gradient_norm
-                ),
-                line_search_trials=tuple(line_search_trials),
+    best: (
+        tuple[
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            float,
+        ]
+        | None
+    ) = None
+    for direction_index, (
+        candidate_rotation_vector,
+        candidate_translation_vector,
+        is_gradient,
+    ) in enumerate(directions):
+        for scale in line_search_scales:
+            delta_rotation = _rotation_from_vector(candidate_rotation_vector * scale)
+            delta_translation = candidate_translation_vector * scale
+            candidate_rotation = delta_rotation @ rotation
+            candidate_translation = translation + delta_translation
+            candidate_rotation = _clamp_rotation(
+                candidate_rotation.detach(),
+                maximum_total_rotation_degrees,
             )
+            candidate_translation = _clamp_vector(
+                candidate_translation.detach(),
+                maximum_total_translation,
+            )
+            actual_delta_rotation = candidate_rotation @ rotation.T
+            actual_delta_translation = candidate_translation - translation
+            with torch.no_grad():
+                candidate_energy = _energy_scalar(
+                    energy_function(
+                        candidate_rotation,
+                        candidate_translation,
+                    )
+                ).detach()
+            finite = bool(torch.isfinite(candidate_energy).item())
+            candidate_value = float(candidate_energy.item()) if finite else None
+            improves = bool(
+                finite
+                and candidate_value is not None
+                and candidate_value < float(initial_detached.item())
+            )
+            line_search_trials.append(
+                {
+                    "direction_index": float(direction_index),
+                    "gradient_direction": is_gradient,
+                    "scale": float(scale),
+                    "energy": candidate_value,
+                    "finite": finite,
+                    "improves": improves,
+                }
+            )
+            if not finite:
+                continue
+            if improves:
+                candidate = (
+                    candidate_rotation.detach(),
+                    candidate_translation.detach(),
+                    actual_delta_rotation.detach(),
+                    actual_delta_translation.detach(),
+                    candidate_energy,
+                    float(scale),
+                )
+                if not deterministic_multistart:
+                    best = candidate
+                    break
+                if best is None or float(candidate_energy) < float(best[4]):
+                    best = candidate
+        if best is not None and not deterministic_multistart:
+            break
+
+    if best is not None:
+        (
+            best_rotation,
+            best_translation,
+            best_delta_rotation,
+            best_delta_translation,
+            best_energy,
+            best_scale,
+        ) = best
+        return SE3Proposal(
+            rotation=best_rotation,
+            translation=best_translation,
+            delta_rotation=best_delta_rotation,
+            delta_translation=best_delta_translation,
+            initial_energy=initial_detached,
+            proposed_energy=best_energy,
+            accepted=True,
+            line_search_scale=best_scale,
+            rotation_gradient_norm=rotation_gradient_norm,
+            translation_gradient_norm=translation_gradient_norm,
+            projected_rotation_gradient_norm=(projected_rotation_gradient_norm),
+            projected_translation_gradient_norm=(projected_translation_gradient_norm),
+            line_search_trials=tuple(line_search_trials),
+        )
 
     return SE3Proposal(
         rotation=rotation.detach().clone(),

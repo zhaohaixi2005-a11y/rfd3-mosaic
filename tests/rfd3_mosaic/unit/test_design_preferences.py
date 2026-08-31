@@ -91,9 +91,7 @@ class DesignPreferencesTestCase(unittest.TestCase):
             8.0,
         )
         self.assertEqual(
-            resolved.sampler_overrides[
-                "graph_interface_guidance_contact_prior_weight"
-            ],
+            resolved.sampler_overrides["graph_interface_guidance_contact_prior_weight"],
             0.1,
         )
         self.assertEqual(resolved.preset_version, "packing_preferences_v2")
@@ -243,6 +241,20 @@ class DesignPreferencesTestCase(unittest.TestCase):
             0.1,
         )
         self.assertNotIn("graph_interface_guidance_intra_chain_weight", overrides)
+
+    def test_create_interface_defaults_to_supported_monomer_core(self) -> None:
+        overrides = compile_design_preferences(
+            create_interface_design()
+        ).sampler_overrides
+
+        self.assertEqual(overrides["scaffold_core_intra_chain_weight"], 1.0)
+
+    def test_explicit_zero_preserves_core_guidance_ablation(self) -> None:
+        overrides = compile_design_preferences(
+            create_interface_design(guidance={"intra_chain_weight": 0.0})
+        ).sampler_overrides
+
+        self.assertEqual(overrides["scaffold_core_intra_chain_weight"], 0.0)
 
     def test_expert_inter_repulsion_is_independent_from_inter_weight(self) -> None:
         expert = create_expert_design(
