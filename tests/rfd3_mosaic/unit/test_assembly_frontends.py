@@ -600,7 +600,7 @@ constraints:
             ),
         )
 
-    def test_preserve_task_does_not_invent_interface_or_mobility_audits(
+    def test_preserve_task_adds_core_but_not_interface_or_mobility_audits(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -651,7 +651,10 @@ constraints:
 
         self.assertEqual(
             request.audit_requirements,
-            (AuditRequirement.EXACT_CONSTRAINT_ORBIT,),
+            (
+                AuditRequirement.EXACT_CONSTRAINT_ORBIT,
+                AuditRequirement.SCAFFOLD_CORE_GUIDANCE,
+            ),
         )
         self.assertFalse(spec.interfaces)
         self.assertEqual(set(spec.generated_segments), {"generated_001"})

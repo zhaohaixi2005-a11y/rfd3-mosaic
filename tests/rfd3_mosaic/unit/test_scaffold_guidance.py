@@ -497,6 +497,49 @@ class ScaffoldOrbitEnergyTestCase(unittest.TestCase):
 
 
 class BoundedSE3ProposalTestCase(unittest.TestCase):
+    def test_seeded_capture_samples_reproducibly_from_near_optimal_pool(self) -> None:
+        identity = torch.eye(3, dtype=torch.float64)
+
+        def symmetric_double_well(_rotation, translation):
+            return torch.square(torch.square(translation[0]) - 0.25**2)
+
+        observed = {}
+        for seed in range(16):
+            proposal = propose_bounded_se3_step(
+                identity,
+                torch.zeros(3, dtype=torch.float64),
+                symmetric_double_well,
+                maximum_step_translation=0.25,
+                maximum_step_rotation_degrees=0.0,
+                maximum_total_translation=1.0,
+                maximum_total_rotation_degrees=0.0,
+                translation_step_size=0.25,
+                rotation_step_size_degrees=0.0,
+                deterministic_multistart=True,
+                selection_seed=seed,
+            )
+            observed[seed] = float(proposal.translation[0])
+            self.assertEqual(
+                sum(bool(trial["selected"]) for trial in proposal.line_search_trials),
+                1,
+            )
+
+        replay = propose_bounded_se3_step(
+            identity,
+            torch.zeros(3, dtype=torch.float64),
+            symmetric_double_well,
+            maximum_step_translation=0.25,
+            maximum_step_rotation_degrees=0.0,
+            maximum_total_translation=1.0,
+            maximum_total_rotation_degrees=0.0,
+            translation_step_size=0.25,
+            rotation_step_size_degrees=0.0,
+            deterministic_multistart=True,
+            selection_seed=7,
+        )
+        self.assertEqual(float(replay.translation[0]), observed[7])
+        self.assertEqual(set(observed.values()), {-0.25, 0.25})
+
     def test_capture_multistart_escapes_zero_gradient_pose(self) -> None:
         identity = torch.eye(3, dtype=torch.float64)
 

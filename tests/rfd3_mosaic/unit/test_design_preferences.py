@@ -79,6 +79,64 @@ def create_expert_design(**updates: object) -> UserDesignSpec:
 
 
 class DesignPreferencesTestCase(unittest.TestCase):
+    def test_only_mobile_cyclic_cross_chain_supplied_seed_enables_capture(self) -> None:
+        supplied = UserDesignSpec.model_validate(
+            {
+                "schema_version": 1,
+                "name": "supplied-interface",
+                "input": "/tmp/motif.pdb",
+                "symmetry": "C3",
+                "task": "preserve_supplied_geometry",
+                "preferences": {"component_motion": "guided"},
+                "generation": [
+                    {
+                        "kind": "between",
+                        "from_selector": "A1-2",
+                        "to_selector": "B1-2",
+                        "length": 20,
+                    }
+                ],
+                "constraints": [
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "A1-2",
+                        "coupling_group": "joint_seed",
+                    },
+                    {
+                        "kind": "fixed_xyz",
+                        "selector": "B1-2",
+                        "coupling_group": "joint_seed",
+                    },
+                ],
+            }
+        )
+        resolved = compile_design_preferences(supplied)
+        self.assertIs(
+            resolved.sampler_overrides["enable_supplied_interface_robust_capture"],
+            True,
+        )
+        self.assertIn(
+            "++inference_sampler.enable_supplied_interface_robust_capture=true",
+            resolved.hydra_overrides(),
+        )
+        self.assertEqual(
+            resolved.sampler_overrides["scaffold_core_intra_chain_weight"],
+            1.0,
+        )
+
+        fixed_motif = create_interface_design(
+            task="preserve_supplied_geometry",
+            preferences={"component_motion": "guided"},
+        )
+        self.assertNotIn(
+            "enable_supplied_interface_robust_capture",
+            compile_design_preferences(fixed_motif).sampler_overrides,
+        )
+        self.assertNotIn(
+            "scaffold_core_intra_chain_weight",
+            compile_design_preferences(fixed_motif).sampler_overrides,
+        )
+
     def test_defaults_keep_arrangement_locked_and_safety_weights(self) -> None:
         design = create_interface_design()
         resolved = compile_design_preferences(design)

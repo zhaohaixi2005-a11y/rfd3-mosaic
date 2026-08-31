@@ -9,11 +9,90 @@ from types import SimpleNamespace
 from rfd3_mosaic.experiment_worker import (
     _generated_cross_chain_topology_runtime,
     _merged_rfd3_input,
+    _require_compiled_pose_feasibility,
 )
 from rfd3_mosaic.sampling_plan import DesignSamplingAssignment
 
 
 class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
+    def _write_capture_input(self, root: Path, *, enabled: bool) -> Path:
+        path = root / "rfd3_input.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "design": {
+                        "extra": {
+                            "resolved_design_preferences": {
+                                "schema_version": 1,
+                                "preset_version": "packing_preferences_v2",
+                                "packing": "balanced",
+                                "cavity": "auto",
+                                "diversity": "medium",
+                                "interface_area": "auto",
+                                "component_motion": "free",
+                                "mobility_subspace": "bounded_se3",
+                                "initial_radius_scale": 1.0,
+                                "diversity_plan": {
+                                    "global_pose_samples": 8,
+                                    "scope": "independent_seed_pose_search",
+                                },
+                                "sampler_overrides": {
+                                    "enable_supplied_interface_robust_capture": enabled
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_required_supplied_interface_pose_gate_accepts_only_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiled = self._write_capture_input(root, enabled=True)
+            manifest = root / "manifest.json"
+            report = {
+                "evaluated": True,
+                "passed": True,
+                "failure_reasons": [],
+            }
+            manifest.write_text(
+                json.dumps(
+                    {"validation": {"supplied_interface_pose_feasibility": report}}
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _require_compiled_pose_feasibility(compiled, manifest),
+                report,
+            )
+
+            report["passed"] = False
+            report["failure_reasons"] = ["bad cyclic wedge"]
+            manifest.write_text(
+                json.dumps(
+                    {"validation": {"supplied_interface_pose_feasibility": report}}
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "bad cyclic wedge"):
+                _require_compiled_pose_feasibility(compiled, manifest)
+
+    def test_pose_gate_is_not_applied_when_capture_semantics_are_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiled = self._write_capture_input(root, enabled=False)
+
+            self.assertIsNone(
+                _require_compiled_pose_feasibility(
+                    compiled,
+                    root / "missing-manifest.json",
+                )
+            )
+
     def test_cross_chain_topology_plan_is_read_from_frozen_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rfd3_input.json"

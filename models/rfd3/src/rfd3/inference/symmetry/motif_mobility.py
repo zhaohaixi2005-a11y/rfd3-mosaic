@@ -1027,6 +1027,7 @@ class OrbitRigidMotifController:
         apply_update: bool,
         pose_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
         proposal_response_scale: float | None = None,
+        proposal_selection_seed: int | None = None,
     ) -> torch.Tensor:
         """Jointly propose and atomically apply scaffold-driven orbit poses.
 
@@ -1080,6 +1081,8 @@ class OrbitRigidMotifController:
             not math.isfinite(proposal_response_scale) or proposal_response_scale <= 0
         ):
             raise ValueError("proposal_response_scale must be finite and positive")
+        if proposal_selection_seed is not None and proposal_selection_seed < 0:
+            raise ValueError("proposal_selection_seed cannot be negative")
 
         self.update_calls += 1
         self.last_update_applied = False
@@ -1113,6 +1116,12 @@ class OrbitRigidMotifController:
                 "settle_response_scale": self.settle_response_scale,
                 "polish_response_scale": self.polish_response_scale,
                 "capture_pose_search": "deterministic_bounded_se3_multistart",
+                "capture_candidate_selection": (
+                    "seeded_near_optimal_gain_pool"
+                    if proposal_selection_seed is not None
+                    else "minimum_energy"
+                ),
+                "minimum_best_gain_fraction": 0.75,
                 "settle_polish_pose_search": "projected_gradient_line_search",
             },
         }
@@ -1179,6 +1188,53 @@ class OrbitRigidMotifController:
                 rotation_step_size = (
                     motif.per_step_rotation_degrees * effective_response * motif_window
                 )
+                if motif.mobility_subspace == "bounded_se3" and axis is not None:
+                    # Full SE(3) is unchanged mathematically, but expressing
+                    # the capture proposals in the local cyclic frame makes
+                    # the multi-start set physically interpretable: signed
+                    # radial, tangential and axial moves plus rotations about
+                    # the same three axes.  The basis spans R^3, so no degree
+                    # of freedom is removed.
+                    axis_direction = axis.direction.to(
+                        dtype=current_translation.dtype,
+                        device=current_translation.device,
+                    )
+                    axis_direction = axis_direction / torch.linalg.vector_norm(
+                        axis_direction
+                    )
+                    axis_point = axis.point.to(
+                        dtype=current_translation.dtype,
+                        device=current_translation.device,
+                    )
+                    master_center = (
+                        motif.template_master[0].mean(dim=0) + current_translation
+                    )
+                    offset = master_center - axis_point
+                    radial = (
+                        offset
+                        - torch.dot(
+                            offset,
+                            axis_direction,
+                        )
+                        * axis_direction
+                    )
+                    radial_norm = torch.linalg.vector_norm(radial)
+                    if float(radial_norm.item()) <= 1e-8:
+                        raise ValueError(
+                            "Symmetry-aligned bounded SE(3) capture is undefined "
+                            "for a motif centered on the symmetry axis"
+                        )
+                    radial = radial / radial_norm
+                    tangential = torch.linalg.cross(axis_direction, radial)
+                    tangential = tangential / torch.linalg.vector_norm(tangential)
+                    translation_basis = torch.stack(
+                        (radial, tangential, axis_direction),
+                        dim=0,
+                    )
+                    rotation_basis = translation_basis.to(
+                        dtype=current_rotation.dtype,
+                        device=current_rotation.device,
+                    )
                 if motif.mobility_subspace == "tilt_only":
                     axis_direction = axis.direction.to(
                         dtype=current_translation.dtype,
@@ -1352,6 +1408,14 @@ class OrbitRigidMotifController:
                     translation_basis=translation_basis,
                     rotation_basis=rotation_basis,
                     deterministic_multistart=(temporal_phase.name == "capture"),
+                    selection_seed=(
+                        int(proposal_selection_seed)
+                        + self.update_calls * 1_000_003
+                        + orbit_index * 10_007
+                        if temporal_phase.name == "capture"
+                        and proposal_selection_seed is not None
+                        else None
+                    ),
                 )
                 proposals.append(proposal)
                 if proposal.accepted:

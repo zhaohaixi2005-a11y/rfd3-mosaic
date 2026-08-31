@@ -76,6 +76,7 @@ class ScaffoldCoreGuidanceConfig:
     target_contacts_per_generated_residue: float = 1.5
     target_supported_contacts: float = 2.0
     worst_support_temperature: float = 0.25
+    support_center_weight_floor: float = 0.05
     target_normalized_rg: float = 2.60
     incidental_inter_chain_fraction: float = 0.08
     clash_distance: float = 3.2
@@ -110,6 +111,7 @@ class ScaffoldCoreGuidanceConfig:
             "target_contacts_per_generated_residue",
             "target_supported_contacts",
             "worst_support_temperature",
+            "support_center_weight_floor",
             "target_normalized_rg",
             "clash_distance",
             "backbone_distance",
@@ -121,6 +123,8 @@ class ScaffoldCoreGuidanceConfig:
                 raise ValueError(f"{name} must be positive")
         if self.sequence_separation < 2:
             raise ValueError("sequence_separation must be at least two")
+        if not 0.0 < self.support_center_weight_floor <= 1.0:
+            raise ValueError("support_center_weight_floor must be in (0, 1]")
         if not 0.0 <= self.incidental_inter_chain_fraction < 1.0:
             raise ValueError("incidental_inter_chain_fraction must be in [0, 1)")
         if not 0.0 <= self.start_fraction < self.end_fraction <= 1.0:
@@ -215,6 +219,132 @@ def worst_support_deficit_energy(
             )
         )
     )
+
+
+def generated_chain_core_centers(
+    coordinates: torch.Tensor,
+    topology: ScaffoldCoreTopology,
+    config: ScaffoldCoreGuidanceConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return ordinary and tertiary-support-weighted generated-chain centers.
+
+    For generated residue ``i`` the robust-center weight is
+
+    ``floor + clamp(s_i / s_target, 0, 1)``
+
+    where ``s_i`` is its smooth sequence-distant contact support.  The small
+    positive floor keeps the center defined before a core exists, while long
+    unsupported arms contribute far less than residues already participating
+    in a tertiary core.
+    """
+
+    if coordinates.ndim != 2 or coordinates.shape[-1] != 3:
+        raise ValueError("coordinates must have shape [L, 3]")
+    ordinary: list[torch.Tensor] = []
+    supported: list[torch.Tensor] = []
+    for chain in topology.chains:
+        xyz = coordinates[chain.ca_atom_indices]
+        generated = chain.generated_ca_mask
+        generated_xyz = xyz[generated]
+        if not len(generated_xyz):
+            continue
+        ordinary.append(generated_xyz.mean(dim=0))
+
+        distances = torch.cdist(xyz, xyz)
+        sequence_gap = torch.abs(
+            chain.residue_indices[:, None] - chain.residue_indices[None, :]
+        )
+        pair_mask = (
+            torch.triu(
+                torch.ones(
+                    (len(xyz), len(xyz)),
+                    dtype=torch.bool,
+                    device=xyz.device,
+                ),
+                diagonal=1,
+            )
+            & (sequence_gap >= config.sequence_separation)
+            & (generated[:, None] | generated[None, :])
+        )
+        left, right = torch.nonzero(pair_mask, as_tuple=True)
+        support = torch.zeros(len(xyz), dtype=xyz.dtype, device=xyz.device)
+        if len(left):
+            contacts = _soft_contacts(distances[left, right], config)
+            support = support.index_add(0, left, contacts)
+            support = support.index_add(0, right, contacts)
+        generated_support = support[generated]
+        weights = config.support_center_weight_floor + torch.clamp(
+            generated_support / config.target_supported_contacts,
+            min=0.0,
+            max=1.0,
+        )
+        supported.append(
+            torch.sum(weights[:, None] * generated_xyz, dim=0) / weights.sum()
+        )
+    if not ordinary:
+        raise ValueError("No generated protein chains are available for capture")
+    return torch.stack(ordinary, dim=0), torch.stack(supported, dim=0)
+
+
+def robust_interface_capture_energy(
+    coordinates: torch.Tensor,
+    topology: ScaffoldCoreTopology,
+    config: ScaffoldCoreGuidanceConfig,
+    group_atom_indices: torch.Tensor,
+    *,
+    capture_progress: float,
+) -> torch.Tensor:
+    """Capture each rigid seed copy between its two nearest generated cores.
+
+    ``capture_progress`` blends the Ho-Yeung-style midpoint of ordinary chain
+    COMs into a midpoint of tertiary-support-weighted core centers.  Neighbour
+    identities are chosen from detached geometry, but the selected midpoint
+    and complete rigid-copy centers remain differentiable.
+    """
+
+    if not 0.0 <= capture_progress <= 1.0:
+        raise ValueError("capture_progress must be in [0, 1]")
+    groups = torch.as_tensor(
+        group_atom_indices,
+        dtype=torch.long,
+        device=coordinates.device,
+    )
+    if groups.ndim != 2 or groups.shape[1] == 0:
+        raise ValueError("group_atom_indices must have shape [G, M] with M > 0")
+    ordinary, supported = generated_chain_core_centers(
+        coordinates,
+        topology,
+        config,
+    )
+    if len(ordinary) < 2:
+        return coordinates.sum() * 0.0
+    group_centers = coordinates[groups].mean(dim=1)
+    losses: list[torch.Tensor] = []
+    blend = torch.as_tensor(
+        capture_progress,
+        dtype=coordinates.dtype,
+        device=coordinates.device,
+    )
+    scale = torch.as_tensor(
+        config.contact_distance,
+        dtype=coordinates.dtype,
+        device=coordinates.device,
+    )
+    for group_center in group_centers:
+        with torch.no_grad():
+            nearest = torch.topk(
+                torch.linalg.vector_norm(
+                    ordinary.detach() - group_center.detach(),
+                    dim=-1,
+                ),
+                k=2,
+                largest=False,
+            ).indices
+        ordinary_midpoint = ordinary[nearest].mean(dim=0)
+        supported_midpoint = supported[nearest].mean(dim=0)
+        target = (1.0 - blend) * ordinary_midpoint + blend * supported_midpoint
+        losses.append(torch.sum(torch.square((group_center - target) / scale)))
+    return torch.stack(losses).mean()
 
 
 def build_scaffold_core_topology(

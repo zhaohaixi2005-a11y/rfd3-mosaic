@@ -919,6 +919,8 @@ def propose_bounded_se3_step(
     rotation_basis: torch.Tensor | None = None,
     line_search_scales: tuple[float, ...] = (1.0, 0.5, 0.25),
     deterministic_multistart: bool = False,
+    selection_seed: int | None = None,
+    minimum_best_gain_fraction: float = 0.75,
 ) -> SE3Proposal:
     """Take one bounded SE(3) proposal with a deterministic line search.
 
@@ -926,7 +928,11 @@ def propose_bounded_se3_step(
     basis probes and coupled translation/rotation probes.  It is intended for
     the early capture phase, where a single gradient can be trapped by an
     initially poor pose.  The search is reproducible and remains inside both
-    per-step and cumulative motion bounds.
+    per-step and cumulative motion bounds.  When ``selection_seed`` is given,
+    the accepted early proposal is sampled reproducibly from candidates whose
+    energy gain is at least ``minimum_best_gain_fraction`` of the best gain.
+    This dimensionless near-optimal set preserves pose diversity without ever
+    accepting a non-improving candidate.
     """
 
     rotation = _as_tensor(current_rotation)
@@ -963,6 +969,10 @@ def propose_bounded_se3_step(
         raise ValueError("proposal step sizes cannot be negative")
     if not line_search_scales or any(scale <= 0.0 for scale in line_search_scales):
         raise ValueError("line_search_scales must be positive")
+    if not 0.0 < minimum_best_gain_fraction <= 1.0:
+        raise ValueError("minimum_best_gain_fraction must be in (0, 1]")
+    if selection_seed is not None and selection_seed < 0:
+        raise ValueError("selection_seed cannot be negative")
 
     with torch.enable_grad():
         rotation_vector = torch.zeros(
@@ -1122,7 +1132,7 @@ def propose_bounded_se3_step(
         device=rotation.device,
     )
     line_search_trials: list[dict[str, float | bool | None]] = []
-    best: (
+    improving_candidates: list[
         tuple[
             torch.Tensor,
             torch.Tensor,
@@ -1130,9 +1140,10 @@ def propose_bounded_se3_step(
             torch.Tensor,
             torch.Tensor,
             float,
+            int,
         ]
-        | None
-    ) = None
+    ] = []
+    best = None
     for direction_index, (
         candidate_rotation_vector,
         candidate_translation_vector,
@@ -1167,6 +1178,7 @@ def propose_bounded_se3_step(
                 and candidate_value is not None
                 and candidate_value < float(initial_detached.item())
             )
+            trial_index = len(line_search_trials)
             line_search_trials.append(
                 {
                     "direction_index": float(direction_index),
@@ -1175,6 +1187,7 @@ def propose_bounded_se3_step(
                     "energy": candidate_value,
                     "finite": finite,
                     "improves": improves,
+                    "selected": False,
                 }
             )
             if not finite:
@@ -1187,14 +1200,39 @@ def propose_bounded_se3_step(
                     actual_delta_translation.detach(),
                     candidate_energy,
                     float(scale),
+                    trial_index,
                 )
                 if not deterministic_multistart:
                     best = candidate
                     break
-                if best is None or float(candidate_energy) < float(best[4]):
-                    best = candidate
+                improving_candidates.append(candidate)
         if best is not None and not deterministic_multistart:
             break
+
+    if deterministic_multistart and improving_candidates:
+        best_energy = min(float(candidate[4]) for candidate in improving_candidates)
+        initial_value = float(initial_detached)
+        best_gain = initial_value - best_energy
+        eligible = [
+            candidate
+            for candidate in improving_candidates
+            if initial_value - float(candidate[4])
+            >= minimum_best_gain_fraction * best_gain
+        ]
+        if selection_seed is None or len(eligible) == 1:
+            best = min(eligible, key=lambda candidate: float(candidate[4]))
+        else:
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(int(selection_seed))
+            selected_index = int(
+                torch.randint(
+                    len(eligible),
+                    (1,),
+                    generator=generator,
+                    device="cpu",
+                ).item()
+            )
+            best = eligible[selected_index]
 
     if best is not None:
         (
@@ -1204,7 +1242,9 @@ def propose_bounded_se3_step(
             best_delta_translation,
             best_energy,
             best_scale,
+            best_trial_index,
         ) = best
+        line_search_trials[best_trial_index]["selected"] = True
         return SE3Proposal(
             rotation=best_rotation,
             translation=best_translation,

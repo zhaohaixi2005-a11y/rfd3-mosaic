@@ -253,6 +253,48 @@ def _resolved_guidance_overrides(
     return ResolvedDesignPreferences.model_validate(preferences).hydra_overrides()
 
 
+def _requires_supplied_interface_pose_feasibility(rfd3_input: Path) -> bool:
+    """Return whether compiler-resolved task semantics require the Cn gate."""
+
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    preferences = (example.get("extra") or {}).get("resolved_design_preferences")
+    if not preferences:
+        return False
+    resolved = ResolvedDesignPreferences.model_validate(preferences)
+    return bool(
+        resolved.sampler_overrides.get(
+            "enable_supplied_interface_robust_capture",
+            False,
+        )
+    )
+
+
+def _require_compiled_pose_feasibility(
+    compiled_input: Path,
+    manifest_path: Path,
+) -> dict[str, Any] | None:
+    """Fail one sampled pose before RFD3 when its required geometry is invalid."""
+
+    if not _requires_supplied_interface_pose_feasibility(compiled_input):
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    report = (manifest.get("validation") or {}).get(
+        "supplied_interface_pose_feasibility"
+    )
+    if not isinstance(report, dict) or not bool(report.get("evaluated")):
+        raise ValueError(
+            "Supplied-interface pose feasibility was required but the compiler "
+            "could not identify a cross-chain Cn joint-rigid seed"
+        )
+    if not bool(report.get("passed")):
+        reasons = report.get("failure_reasons") or ["unspecified geometry failure"]
+        raise ValueError(
+            "Pre-RFD3 supplied-interface pose rejected: " + "; ".join(reasons)
+        )
+    return report
+
+
 def _record_worker_state(
     config: dict[str, Any],
     run_dir: Path,
@@ -420,6 +462,7 @@ def execute(
     stochastic_pose_population = len(unique_pose_indices) > 1
     assemblies: dict[int, Any] = {}
     accepted_pose_seeds: dict[int, int | None] = {}
+    accepted_pose_feasibility: dict[int, dict[str, Any] | None] = {}
     prevalidation_reports: list[Path] = []
     for pose_index in unique_pose_indices:
         assignment = next(item for item in assignments if item.pose_index == pose_index)
@@ -455,6 +498,10 @@ def execute(
                     pose_seed=candidate_seed,
                     example_id=f"pose_{pose_index:05d}",
                 )
+                feasibility = _require_compiled_pose_feasibility(
+                    assembly.input_path,
+                    pose_directory / "manifest.json",
+                )
                 prevalidation_report = pose_directory / "rfd3_prevalidation.json"
                 _run(
                     [
@@ -473,6 +520,7 @@ def execute(
                 continue
             assemblies[pose_index] = assembly
             accepted_pose_seeds[pose_index] = candidate_seed
+            accepted_pose_feasibility[pose_index] = feasibility
             prevalidation_reports.append(prevalidation_report)
             break
 
@@ -515,6 +563,9 @@ def execute(
                         "compiled_input_sha256": _sha256(
                             assemblies[assignment.pose_index].input_path
                         ),
+                        "pre_rfd3_pose_feasibility": accepted_pose_feasibility[
+                            assignment.pose_index
+                        ],
                     }
                     for assignment in assignments
                 ],

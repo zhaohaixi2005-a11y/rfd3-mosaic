@@ -71,6 +71,7 @@ class _RecordingScaffoldController:
         principal_axes,
         config,
         apply_update,
+        proposal_selection_seed=None,
     ):
         active = 0.10 < float(progress) < 0.85
         applied = bool(apply_update) and active
@@ -88,6 +89,7 @@ class _RecordingScaffoldController:
                     for value in principal_axes
                 ),
                 "config": config,
+                "proposal_selection_seed": proposal_selection_seed,
             }
         )
         self.last_update_applied = applied

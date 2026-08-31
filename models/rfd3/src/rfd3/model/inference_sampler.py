@@ -40,6 +40,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
     project_generated_polymer_continuity,
+    robust_interface_capture_energy,
     scaffold_core_energy,
 )
 from rfd3.inference.symmetry.scaffold_guidance import (
@@ -219,6 +220,10 @@ class SampleDiffusionConfig:
     scaffold_core_intra_chain_weight: float = 0.0
     scaffold_core_inter_chain_weight: float = 1.0
     scaffold_core_inter_chain_excess_penalty: float = 0.0
+    # Supplied-interface-only rigid capture.  The compiler enables this for a
+    # movable joint-rigid seed; it is never inferred from symmetry alone.
+    enable_supplied_interface_robust_capture: bool = False
+    supplied_interface_capture_weight: float = 1.0
     # Mosaic may request an independent kinematic safety projection for
     # generated peptide paths.  It does not imply intra-chain compaction or
     # inter-chain interface creation.
@@ -697,6 +702,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
             or bool(self.enable_generated_cross_chain_topology_guidance)
         )
+        robust_capture_active = bool(self.enable_supplied_interface_robust_capture)
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
         )
@@ -705,6 +711,25 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Scaffold intra/inter guidance requires exact orbit-average "
                 "state and coupled-noise modes"
             )
+        if robust_capture_active and not exact_state:
+            raise ValueError(
+                "Supplied-interface robust capture requires exact orbit-average "
+                "state and coupled-noise modes"
+            )
+        if robust_capture_active and not self.enable_orbit_rigid_motif_mobility:
+            raise ValueError(
+                "Supplied-interface robust capture requires one declared "
+                "joint-rigid mobile motif orbit"
+            )
+        if robust_capture_active and self.motif_mobility_proposal_source != (
+            "scaffold_boundary"
+        ):
+            raise ValueError(
+                "Supplied-interface robust capture requires "
+                "motif_mobility_proposal_source=scaffold_boundary"
+            )
+        if float(self.supplied_interface_capture_weight) < 0.0:
+            raise ValueError("supplied_interface_capture_weight cannot be negative")
         if polymer_continuity_active and not exact_state:
             raise ValueError(
                 "Generated polymer continuity guidance requires exact "
@@ -1786,6 +1811,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
             or bool(self.enable_generated_cross_chain_topology_guidance)
         )
+        robust_capture_active = bool(self.enable_supplied_interface_robust_capture)
+        scaffold_core_topology_required = scaffold_core_active or robust_capture_active
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
         )
@@ -1822,12 +1849,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "Automatic symmetric scaffold packing initialized: "
                 f"edges={len(graph_interface_topology.edges)}"
             )
-        if scaffold_core_active or polymer_continuity_active:
+        if scaffold_core_topology_required or polymer_continuity_active:
             scaffold_core_topology = build_scaffold_core_topology(
                 f,
                 is_motif_atom_with_fixed_coord,
             )
-        if scaffold_core_active:
+        if scaffold_core_topology_required:
             scaffold_core_guidance_config = self._scaffold_core_guidance_config()
             ranked_logger.info(
                 "Scaffold intra/inter guidance initialized: "
@@ -2074,7 +2101,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 coordinates=proposed_coordinates,
                             )
                         core_pose_energy = None
-                        if scaffold_core_active:
+                        if scaffold_core_topology_required:
                             if scaffold_core_topology is None:
                                 raise RuntimeError(
                                     "Scaffold core topology was not initialized"
@@ -2099,11 +2126,46 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                     proposal_coordinates[0],
                                     candidate_target,
                                 )
-                                return scaffold_core_energy(
+                                core_total = scaffold_core_energy(
                                     candidate_state,
                                     scaffold_core_topology,
                                     scaffold_core_guidance_config,
                                 ).total
+                                if robust_capture_active:
+                                    local_window = (
+                                        float(progress)
+                                        - float(self.motif_mobility_start_fraction)
+                                    ) / max(
+                                        float(self.motif_mobility_end_fraction)
+                                        - float(self.motif_mobility_start_fraction),
+                                        1e-8,
+                                    )
+                                    capture_fraction = float(
+                                        self.motif_mobility_capture_fraction
+                                    )
+                                    if 0.0 <= local_window <= capture_fraction:
+                                        capture_progress = min(
+                                            1.0,
+                                            max(0.0, local_window / capture_fraction),
+                                        )
+                                        capture_terms = [
+                                            robust_interface_capture_energy(
+                                                candidate_state,
+                                                scaffold_core_topology,
+                                                scaffold_core_guidance_config,
+                                                motif.group_atom_indices,
+                                                capture_progress=capture_progress,
+                                            )
+                                            for motif in motif_mobility_controller.motifs
+                                        ]
+                                        core_total = (
+                                            core_total
+                                            + float(
+                                                self.supplied_interface_capture_weight
+                                            )
+                                            * torch.stack(capture_terms).mean()
+                                        )
+                                return core_total
 
                         scaffold_update_arguments = {
                             "progress": progress,
@@ -2112,6 +2174,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                             "principal_axes": scaffold_guidance_principal_axes,
                             "config": scaffold_guidance_config,
                             "apply_update": bool(self.motif_mobility_apply_updates),
+                            # The engine reseeds torch once per Mosaic design.
+                            # Reuse that independently replayable seed for
+                            # early near-optimal pose selection; the controller
+                            # derives distinct substreams by step and orbit.
+                            "proposal_selection_seed": int(torch.initial_seed()),
                         }
                         # Preserve the exact legacy call signature when the
                         # new field is disabled.  Besides compatibility with
@@ -2897,6 +2964,7 @@ class ConditionalDiffusionSampler:
                 "enable_graph_interface_guidance",
                 "enable_symmetric_scaffold_packing",
                 "enable_generated_polymer_continuity_guidance",
+                "enable_supplied_interface_robust_capture",
             ):
                 if kwargs.get(flag, False):
                     unsupported.append(flag)

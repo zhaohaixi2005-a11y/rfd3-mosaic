@@ -191,11 +191,13 @@ one pose.
 
 Bounded-mobile components use coarse-to-fine SE(3) optimization during
 diffusion, allowing broad early pose adaptation followed by progressively
-smaller refinements. Early capture evaluates a deterministic bounded
-multi-start neighbourhood; generated-interface tasks also use intra-chain
-core support by default, including a smooth worst-window term for long
-unsupported arms. The schedule, objective terms and geometric invariants
-are defined in the
+smaller refinements. Early capture evaluates a bounded multi-start
+neighbourhood and uses the design seed to choose reproducibly among
+near-optimal improving proposals. Generated-interface and supplied-interface
+tasks use intra-chain core support by default, including a smooth worst-window
+term for long unsupported arms. Movable cyclic supplied interfaces also use
+pre-diffusion pose-feasibility checks and a robust neighbour-core capture
+term. The schedule, objective terms and geometric invariants are defined in the
 [rigid-mobility mathematical contract](docs/rfd3_mosaic/RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md).
 
 ## How Mosaic works

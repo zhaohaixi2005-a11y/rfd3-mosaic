@@ -202,6 +202,15 @@ class StandaloneOutputTestCase(unittest.TestCase):
             values = [float(link[metric]) for link in report["links"]]
             self.assertLess(max(values) - min(values), 1e-5)
 
+    def test_manifest_reports_supplied_interface_pose_feasibility(self) -> None:
+        manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
+        report = manifest["validation"]["supplied_interface_pose_feasibility"]
+
+        self.assertTrue(report["evaluated"])
+        self.assertTrue(report["passed"])
+        self.assertEqual(len(report["joint_seed_groups"]), 1)
+        self.assertFalse(report["link_failures"])
+
     def test_manifest_reports_symmetry_axis_and_central_clearance(self) -> None:
         manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["symmetry_cavities"]

@@ -516,6 +516,19 @@ After `end_fraction` the pose is frozen. This schedule never applies to
 `pose.mode: fixed`, and it never changes the internal coordinates of a
 joint-rigid seed.
 
+For a movable cross-chain supplied interface under `Cn`, Mosaic additionally
+rejects independently sampled pre-RFD3 poses whose fixed fragments span more
+than one cyclic wedge, whose interface orientation is incompatible with the
+local tangent, or whose declared scaffold path fails contour/corridor checks.
+It retains every feasible design pose rather than choosing one universal best
+pose. During early diffusion, the complete seed is captured toward the
+midpoint of its neighbouring generated chains; that target transitions from
+ordinary chain centers to tertiary-support-weighted core centers as structure
+emerges. Early full-SE(3) proposals use signed radial, tangential and axial
+directions, and a seeded near-optimal pool preserves reproducible diversity.
+These controls are initialization and inference geometry, not a final
+structure acceptance score.
+
 The exact SE(3) state, objective terms, gradients, subspace projections,
 phase-response formula, line search, cumulative bounds and atomic rollback
 conditions are specified in the
@@ -524,9 +537,10 @@ Its controller energy is an inference-time local geometry objective, not a
 physical free energy or a claim that the final backbone will fold.
 
 Existing frozen `packing_preferences_v1` runs retain their original behavior.
-Newly compiled ordinary `create_symmetric_interface` designs use
-`intra_chain_weight=1` by default; an explicit zero remains available for a
-native-RFD3 ablation. Other tasks retain their declared/default value. The
+Newly compiled ordinary `create_symmetric_interface` and explicit cross-chain
+supplied-interface designs use `intra_chain_weight=1` by default; an explicit
+zero remains available for a native-RFD3 ablation. Other tasks retain their
+declared/default value. The
 broad generated-interface contact prior is calibrated by the existing
 `packing: loose|balanced|tight` preset (`0.06`, `0.10`, or `0.15`). An explicit
 `inter_chain_weight` overrides that prior directly.

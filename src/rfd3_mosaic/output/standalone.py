@@ -564,6 +564,173 @@ def _analyze_scaffold_link_geometry(
     }
 
 
+def _analyze_supplied_interface_pose_feasibility(
+    atoms: list[_CompiledAtom],
+    spec: Any,
+    linker_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate necessary Cn pose geometry for cross-chain joint-rigid seeds.
+
+    This is deliberately a feasibility report rather than a pose score.  It
+    uses only cyclic wedge geometry, excluded volume and polymer contour
+    constraints that exist before RFD3 creates any scaffold coordinates.
+    """
+
+    grouped: dict[str, list[_CompiledAtom]] = {}
+    for atom in atoms:
+        if atom.copy_index == 0:
+            grouped.setdefault(atom.motion_group_instance_id, []).append(atom)
+
+    group_reports: list[dict[str, Any]] = []
+    for group_id, group_atoms in grouped.items():
+        by_fragment: dict[str, list[_CompiledAtom]] = {}
+        for atom in group_atoms:
+            by_fragment.setdefault(atom.source_fragment_id, []).append(atom)
+        if len(by_fragment) < 2:
+            continue
+        orbit_id = next(
+            (atom.orbit_id for atom in group_atoms if atom.orbit_id is not None),
+            None,
+        )
+        if orbit_id is None:
+            continue
+        orbit = spec.symmetry.orbits[orbit_id]
+        transform_set = spec.symmetry.transform_sets[orbit.transform_set]
+        if str(transform_set.type.value) != "cyclic":
+            continue
+
+        axis = np.asarray(transform_set.axis, dtype=np.float64)
+        axis /= np.linalg.norm(axis)
+        center = np.asarray(transform_set.center, dtype=np.float64)
+        fragment_centers = np.asarray(
+            [
+                np.asarray(
+                    [atom.coordinate for atom in fragment_atoms],
+                    dtype=np.float64,
+                ).mean(axis=0)
+                for fragment_atoms in by_fragment.values()
+            ]
+        )
+        group_center = fragment_centers.mean(axis=0)
+        group_relative = group_center - center
+        radial = group_relative - np.dot(group_relative, axis) * axis
+        radial_norm = float(np.linalg.norm(radial))
+        if radial_norm <= 1e-8:
+            group_reports.append(
+                {
+                    "motion_group_instance_id": group_id,
+                    "passed": False,
+                    "failure_reasons": ["joint seed center lies on the cyclic axis"],
+                }
+            )
+            continue
+        radial /= radial_norm
+        tangent = np.cross(axis, radial)
+        tangent /= np.linalg.norm(tangent)
+
+        relative_centers = fragment_centers - center
+        radial_coordinates = (
+            relative_centers - (relative_centers @ axis)[:, None] * axis
+        )
+        azimuths = np.arctan2(radial_coordinates @ tangent, radial_coordinates @ radial)
+        azimuths = np.sort(np.mod(azimuths, 2.0 * np.pi))
+        circular_gaps = np.diff(np.concatenate((azimuths, azimuths[:1] + 2.0 * np.pi)))
+        angular_span = float(np.degrees(2.0 * np.pi - circular_gaps.max()))
+
+        centered_fragments = fragment_centers - fragment_centers.mean(axis=0)
+        if len(fragment_centers) == 2:
+            interface_normal = fragment_centers[1] - fragment_centers[0]
+        else:
+            _, _, vh = np.linalg.svd(centered_fragments, full_matrices=False)
+            interface_normal = vh[0]
+        tangent_deviation = _vector_angle_degrees(
+            interface_normal,
+            tangent,
+            sign_invariant=True,
+        )
+        symmetry_order = int(transform_set.order)
+        wedge_angle = 360.0 / symmetry_order
+        maximum_tangent_deviation = min(60.0, wedge_angle / 2.0)
+        failures: list[str] = []
+        if angular_span > wedge_angle + 1e-6:
+            failures.append("joint seed spans more than one cyclic protomer wedge")
+        if tangent_deviation is None or tangent_deviation > (
+            maximum_tangent_deviation + 1e-6
+        ):
+            failures.append("supplied interface normal is not locally tangential")
+        group_reports.append(
+            {
+                "motion_group_instance_id": group_id,
+                "source_fragment_ids": sorted(by_fragment),
+                "symmetry_order": symmetry_order,
+                "radial_distance": radial_norm,
+                "fragment_azimuth_span_deg": angular_span,
+                "maximum_fragment_azimuth_span_deg": wedge_angle,
+                "interface_normal_tangent_deviation_deg": tangent_deviation,
+                "maximum_interface_normal_tangent_deviation_deg": (
+                    maximum_tangent_deviation
+                ),
+                "passed": not failures,
+                "failure_reasons": failures,
+            }
+        )
+
+    link_failures: list[dict[str, Any]] = []
+    for link in linker_report["links"]:
+        if bool(link["chain_break"]):
+            continue
+        reasons: list[str] = []
+        axis_clearance = link.get("minimum_endpoint_chord_axis_clearance")
+        fixed_clearance = link.get("minimum_interior_chord_fixed_atom_clearance")
+        if not bool(link["within_maximum_contour"]):
+            reasons.append("configured linker cannot span endpoint chord")
+        if axis_clearance is not None and float(axis_clearance) < 3.8:
+            reasons.append("endpoint chord crosses the cyclic-axis exclusion tube")
+        if fixed_clearance is not None and float(fixed_clearance) < 2.0:
+            reasons.append("endpoint chord intersects another fixed component")
+        for name in (
+            "from_terminal_tangent_to_chord_angle_deg",
+            "to_terminal_tangent_to_chord_angle_deg",
+        ):
+            angle = link.get(name)
+            if angle is not None and float(angle) > 120.0:
+                reasons.append(f"{name} is more than 120 degrees")
+        if reasons:
+            link_failures.append(
+                {
+                    "link_instance_id": link["link_instance_id"],
+                    "reasons": reasons,
+                }
+            )
+
+    evaluated = bool(group_reports)
+    failures = [
+        reason
+        for report in group_reports
+        for reason in report.get("failure_reasons", [])
+    ]
+    failures.extend(reason for report in link_failures for reason in report["reasons"])
+    return {
+        "evaluated": evaluated,
+        "passed": bool(evaluated and not failures),
+        "joint_seed_groups": group_reports,
+        "link_failures": link_failures,
+        "failure_reasons": failures,
+        "criteria": {
+            "cyclic_wedge_angle_deg": "360 / n",
+            "maximum_tangent_deviation_deg": "min(60, 180 / n)",
+            "minimum_axis_clearance_angstrom": 3.8,
+            "minimum_fixed_atom_corridor_clearance_angstrom": 2.0,
+            "maximum_terminal_backturn_deg": 120.0,
+            "linker_contour": "ceil(endpoint_distance / 3.8) - 1 <= max_length",
+        },
+        "interpretation": (
+            "Necessary pre-diffusion geometry only; this report neither ranks "
+            "backbone quality nor selects one globally optimal pose."
+        ),
+    }
+
+
 def _analyze_symmetry_cavities(
     atoms: list[_CompiledAtom],
     spec: Any,
@@ -1214,6 +1381,13 @@ def _compile_atoms(
         instances,
         spec,
     )
+    compilation["supplied_interface_pose_feasibility"] = (
+        _analyze_supplied_interface_pose_feasibility(
+            compiled_atoms,
+            spec,
+            compilation["linker_geometry_report"],
+        )
+    )
     compilation["symmetry_cavity_report"] = _analyze_symmetry_cavities(
         compiled_atoms,
         spec,
@@ -1562,6 +1736,9 @@ def compile_standalone(
             "inter_group_clashes": compilation["clash_report"],
             "interfaces": compilation["interface_report"],
             "scaffold_link_geometry": compilation["linker_geometry_report"],
+            "supplied_interface_pose_feasibility": compilation[
+                "supplied_interface_pose_feasibility"
+            ],
             "symmetry_cavities": compilation["symmetry_cavity_report"],
             "static_metrics": compilation["static_metrics"],
             "objectives": compilation["objective_report"],

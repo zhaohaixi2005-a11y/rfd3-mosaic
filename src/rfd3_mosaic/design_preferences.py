@@ -7,6 +7,8 @@ settings, so a preset can be calibrated without changing user designs.
 
 from __future__ import annotations
 
+import re
+from collections import defaultdict
 from typing import Any, Literal
 
 from pydantic import Field
@@ -45,7 +47,7 @@ class ResolvedDesignPreferences(StrictModel):
     mobility_subspace: str | None
     initial_radius_scale: float
     diversity_plan: ResolvedDiversityPlan
-    sampler_overrides: dict[str, float | int] = Field(default_factory=dict)
+    sampler_overrides: dict[str, float | int | bool] = Field(default_factory=dict)
     hard_contracts: tuple[str, ...] = (
         "exact_fixed_geometry",
         "exact_symmetry",
@@ -55,7 +57,8 @@ class ResolvedDesignPreferences(StrictModel):
 
     def hydra_overrides(self) -> tuple[str, ...]:
         return tuple(
-            f"++inference_sampler.{name}={value}"
+            "++inference_sampler."
+            f"{name}={str(value).lower() if isinstance(value, bool) else value}"
             for name, value in sorted(self.sampler_overrides.items())
         )
 
@@ -97,12 +100,58 @@ _PACKING: dict[PackingPreference, dict[str, float]] = {
 }
 
 
-# A fixed non-interface motif is only useful when the generated residues are
-# also asked to form a supported monomer core.  RFdiffusion1 exposed this as
-# an explicit intra-chain contact potential; Mosaic makes the scientifically
-# safe behaviour the ordinary create-interface default while preserving an
-# explicit ``guidance.intra_chain_weight: 0`` ablation.
+# A fixed non-interface motif or a supplied cross-chain seed is only useful
+# when the generated residues are also asked to form a supported monomer
+# core. RFdiffusion1 exposed this as an explicit intra-chain contact
+# potential; Mosaic makes it the ordinary default for both workflows while
+# preserving an explicit ``guidance.intra_chain_weight: 0`` ablation.
 DEFAULT_CREATE_INTERFACE_INTRA_CHAIN_WEIGHT = 1.0
+DEFAULT_SUPPLIED_INTERFACE_INTRA_CHAIN_WEIGHT = 1.0
+
+
+def _selector_chain(selector: str) -> str | None:
+    """Extract the leading author-chain identifier from a public selector."""
+
+    match = re.match(r"^([^0-9,]+?)(?=-?[0-9])", selector.strip())
+    return match.group(1) if match is not None else None
+
+
+def _declares_cross_chain_supplied_interface(design: UserDesignSpec) -> bool:
+    """Recognize an explicit supplied interface without relying on names."""
+
+    if any(
+        interface.relation.mode == "preserve_input" for interface in design.interfaces
+    ):
+        return True
+    if any(
+        component.geometry == "joint_rigid"
+        and len(
+            {
+                chain
+                for selector in component.selectors
+                if (chain := _selector_chain(selector)) is not None
+            }
+        )
+        >= 2
+        for component in design.components.values()
+    ):
+        return True
+    coupled: dict[str, set[str]] = defaultdict(set)
+    for constraint in design.constraints:
+        if (
+            getattr(constraint, "kind", None) == "fixed_xyz"
+            and constraint.coupling_group is not None
+            and (chain := _selector_chain(constraint.selector)) is not None
+        ):
+            coupled[str(constraint.coupling_group)].add(chain)
+    return any(len(chains) >= 2 for chains in coupled.values())
+
+
+def _uses_cyclic_symmetry(design: UserDesignSpec) -> bool:
+    symmetry_id = (
+        design.symmetry if isinstance(design.symmetry, str) else design.symmetry.id
+    )
+    return str(symmetry_id).startswith("C")
 
 
 def effective_scaffold_core_weights(
@@ -127,7 +176,12 @@ def effective_scaffold_core_weights(
         else (
             DEFAULT_CREATE_INTERFACE_INTRA_CHAIN_WEIGHT
             if design.task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE
-            else 0.0
+            else (
+                DEFAULT_SUPPLIED_INTERFACE_INTRA_CHAIN_WEIGHT
+                if design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
+                and _declares_cross_chain_supplied_interface(design)
+                else 0.0
+            )
         )
     )
     inter = (
@@ -209,7 +263,7 @@ def compile_design_preferences(
         ComponentMotionPreference.FREE: "bounded_se3",
     }[motion]
 
-    overrides: dict[str, float | int] = dict(_PACKING[preferences.packing])
+    overrides: dict[str, float | int | bool] = dict(_PACKING[preferences.packing])
     pairs, coverage_scale, continuity_scale = _AREA[preferences.interface_area]
     overrides["graph_interface_guidance_pairs_per_edge"] = pairs
     overrides["graph_interface_guidance_coverage_weight"] *= coverage_scale
@@ -255,6 +309,14 @@ def compile_design_preferences(
             overrides["scaffold_core_inter_chain_excess_penalty"] = (
                 inter_chain_excess_penalty
             )
+    if (
+        design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
+        and motion != ComponentMotionPreference.LOCKED
+        and _uses_cyclic_symmetry(design)
+        and _declares_cross_chain_supplied_interface(design)
+    ):
+        overrides["enable_supplied_interface_robust_capture"] = True
+        overrides["supplied_interface_capture_weight"] = 1.0
     return ResolvedDesignPreferences(
         packing=preferences.packing,
         cavity=preferences.cavity,

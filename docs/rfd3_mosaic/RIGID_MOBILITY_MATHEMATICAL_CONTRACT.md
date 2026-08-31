@@ -76,8 +76,28 @@ q=(
 This avoids the orientation bias of independently uniform Euler angles. The
 random seed and the resulting quaternion, rotation matrix, radius and axial
 offset are written to pose provenance. Hard linker, clash, topology and user
-constraint checks reject infeasible initializations. Randomness is used here
-to create diversity; it is not used to choose a runtime descent direction.
+constraint checks reject infeasible initializations.
+
+For a movable cross-chain supplied interface under \(C_n\), executable
+compilation adds a necessary-geometry gate to every independently sampled
+pose. Let \(\Delta\phi\) be the smallest circular azimuth interval containing
+the fixed-fragment centers and let \(\eta\) be the acute angle between the
+fragment-center interface-normal proxy and the local ring tangent. Mosaic
+requires
+
+\[
+\Delta\phi\le \frac{360^\circ}{n},\qquad
+\eta\le\min\left(60^\circ,\frac{180^\circ}{n}\right).
+\]
+
+Every declared generated link must also satisfy the contour bound below, keep
+its endpoint chord at least 3.8 A from the cyclic axis, keep the chord interior
+at least 2.0 A from other fixed atoms, and avoid a terminal tangent back-turn
+greater than 120 degrees. A rejected pose is resampled from its deterministic
+seed stream. Passing poses are not ranked against one another: each design
+keeps its own feasible pose, preserving the assembly-level population. These
+criteria are conservative reachability and routing checks, not a score for a
+good interface or a guarantee that RFD3 will produce a folded backbone.
 
 `uniform_so3` remains the ordinary default for every symmetry family.  When a
 workflow has an independently justified preferred axis, it may explicitly use
@@ -253,9 +273,10 @@ scaffolding does not invent this second interface objective.
 
 ### Generated-scaffold core term
 
-For ordinary `create_symmetric_interface` designs, Mosaic enables the
-intra-chain scaffold-core objective by default. This is independent of the
-inter-chain interface objective and may be disabled explicitly with
+For ordinary `create_symmetric_interface` designs and explicit cross-chain
+supplied-interface designs, Mosaic enables the intra-chain scaffold-core
+objective by default. This is independent of the inter-chain interface
+objective and may be disabled explicitly with
 `guidance.intra_chain_weight: 0` for an ablation. For generated residue \(i\),
 let \(s_i\) be its differentiable count of sequence-distant CA contacts and
 \(s_0\) the configured support target. The mean support deficit is
@@ -282,6 +303,49 @@ windows. This is an inference-time controller term, not a universal backbone
 acceptance threshold. It is combined with long-range contacts and
 length-normalized radius of gyration; exact fixed coordinates remain owned by
 the constraint projector.
+
+### Robust supplied-interface capture
+
+For a movable joint-rigid supplied interface in \(C_n\), early capture adds a
+center objective without altering any coordinate inside the seed. For each
+generated residue \(i\), let \(s_i\) be its smooth sequence-distant contact
+support and define
+
+\[
+w_i=w_{\min}+\operatorname{clip}\left(\frac{s_i}{s_0},0,1\right),
+\qquad w_{\min}=0.05.
+\]
+
+For generated chain \(k\), its ordinary and support-weighted centers are
+
+\[
+C_k^{\mathrm{COM}}=\frac{1}{N_k}\sum_i x_i,
+\qquad
+C_k^{\mathrm{core}}=\frac{\sum_i w_i x_i}{\sum_i w_i}.
+\]
+
+For each symmetry copy of the supplied seed, the two nearest generated-chain
+identities are selected from detached geometry. Their centers remain
+differentiable. If \(u_c\in[0,1]\) is progress through the capture phase, the
+target midpoint is
+
+\[
+M_k(u_c)=(1-u_c)\frac{C_a^{\mathrm{COM}}+C_b^{\mathrm{COM}}}{2}
++u_c\frac{C_a^{\mathrm{core}}+C_b^{\mathrm{core}}}{2},
+\]
+
+and the capture term for rigid-copy center \(G_k(Q)\) is
+
+\[
+E_{\mathrm{capture}}=
+\frac{1}{K}\sum_k
+\left\|\frac{G_k(Q)-M_k(u_c)}{d_{\mathrm{contact}}}\right\|_2^2.
+\]
+
+Thus the early Ho-Yeung-style midpoint supplies a broad capture signal before
+a core exists, while later capture is less influenced by long unsupported
+arms. The term is active only during `capture`, only for compiler-recognized
+movable cross-chain supplied seeds, and never for locked components.
 
 ## Deterministic SE(3) proposal
 
@@ -312,6 +376,19 @@ probes. This gives a small reproducible multi-start search around the current
 pose without relaxing either trust-region or cumulative bounds. `settle` and
 `polish` use the projected gradient alone. Locked components never enter this
 code.
+
+For full bounded \(SE(3)\) with a cyclic axis, the proposal basis is the local
+orthonormal frame
+
+\[
+B=(e_r,e_\phi,e_z),\qquad e_\phi=e_z\times e_r.
+\]
+
+Signed translation and rotation probes are evaluated along all three axes;
+their coupled probes include radial, tangential and axial combinations.
+Because \(B\) spans \(\mathbb{R}^3\), this changes the finite multi-start
+neighbourhood, not the declared degrees of freedom. Axis-free full \(SE(3)\)
+uses the Cartesian basis.
 
 For scheduled rotation and translation step sizes \(h_R,h_t\), raw increments
 are
@@ -419,9 +496,20 @@ E(Q_\alpha;S)<E(Q;S)
 \]
 
 is accepted. During `capture`, this comparison is applied to the gradient
-direction and all deterministic multi-start probes, and the lowest finite
-improving candidate is retained. During `settle` and `polish`, the first
-improving gradient-line-search candidate is retained. If none lowers the
+direction and all deterministic multi-start probes. Let
+\(\Delta E_*=E_0-E_*\) be the gain of the best improving candidate. The
+eligible near-optimal pool is
+
+\[
+\mathcal P=\{q_j:E_0-E_j\ge0.75\,\Delta E_*\}.
+\]
+
+One member of \(\mathcal P\) is selected reproducibly from the design's
+diffusion seed and a step/orbit-specific substream. Consequently, independent
+designs need not collapse to the same local minimum, while no non-improving
+candidate can be accepted. Without a selection seed, the minimum-energy member
+is retained for backward compatibility. During `settle` and `polish`, the
+first improving gradient-line-search candidate is retained. If none lowers the
 objective, the pose is unchanged.
 
 For several mobile orbits, all proposals are computed from one immutable

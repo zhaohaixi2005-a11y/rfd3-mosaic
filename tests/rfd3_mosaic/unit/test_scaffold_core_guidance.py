@@ -8,7 +8,9 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
+    generated_chain_core_centers,
     project_generated_polymer_continuity,
+    robust_interface_capture_energy,
     scaffold_core_energy,
     worst_support_deficit_energy,
 )
@@ -31,6 +33,73 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_support_weighted_center_downweights_one_long_unsupported_arm(self) -> None:
+        topology = build_scaffold_core_topology(
+            {
+                "atom_to_token_map": torch.arange(7),
+                "asym_id": torch.zeros(7, dtype=torch.long),
+                "residue_index": torch.arange(7),
+                "is_ca": torch.ones(7, dtype=torch.bool),
+                "is_protein": torch.ones(7, dtype=torch.bool),
+            },
+            torch.tensor([True, False, False, False, False, False, False]),
+        )
+        coordinates = torch.tensor(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [0.5, 1.0, 0.0],
+                [1.0, 0.5, 0.0],
+                [30.0, 0.5, 0.0],
+            ]
+        )
+        ordinary, supported = generated_chain_core_centers(
+            coordinates,
+            topology,
+            ScaffoldCoreGuidanceConfig(sequence_separation=2),
+        )
+
+        self.assertLess(float(supported[0, 0]), float(ordinary[0, 0]))
+
+    def test_capture_targets_each_seed_copy_to_local_two_chain_midpoint(self) -> None:
+        topology = build_scaffold_core_topology(
+            features(tokens_per_chain=4),
+            torch.tensor([True, False, False, False] * 2),
+        )
+        coordinates = torch.tensor(
+            [
+                [-2.0, 0.0, 0.0],
+                [-2.0, 1.0, 0.0],
+                [-2.0, 2.0, 0.0],
+                [-2.0, 3.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [2.0, 3.0, 0.0],
+            ]
+        )
+        groups = torch.tensor([[0, 4]])
+        centered = robust_interface_capture_energy(
+            coordinates,
+            topology,
+            ScaffoldCoreGuidanceConfig(sequence_separation=2),
+            groups,
+            capture_progress=0.0,
+        )
+        shifted = coordinates.clone()
+        shifted[[0, 4], 0] += 4.0
+        displaced = robust_interface_capture_energy(
+            shifted,
+            topology,
+            ScaffoldCoreGuidanceConfig(sequence_separation=2),
+            groups,
+            capture_progress=0.0,
+        )
+
+        self.assertLess(float(centered), float(displaced))
+
     def test_worst_support_focuses_on_one_contiguous_unsupported_run(self) -> None:
         config = ScaffoldCoreGuidanceConfig(
             sequence_separation=4,
