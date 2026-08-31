@@ -248,23 +248,52 @@ def build_boundary_topology(
         atom_to_token,
         (fixed & considered_atom).to(dtype=torch.long),
     )
-    partially_fixed = (token_fixed_counts > 0) & (
-        token_fixed_counts < token_atom_counts
+    # A fixed-backbone motif with redesignable side chains is intentionally
+    # only partially fixed at atom level.  It is nevertheless one fixed
+    # *residue* for scaffold topology: its CA belongs to the rigid target and
+    # its side-chain atoms must not be mistaken for generated scaffold.  Use
+    # the unique protein CA as the authoritative token-level state.  Retain
+    # the all-atom rule for non-protein tokens, which have no CA convention.
+    token_ca_counts = torch.zeros_like(token_atom_counts)
+    token_fixed_ca_counts = torch.zeros_like(token_atom_counts)
+    ca_atoms = is_ca & considered_atom
+    token_ca_counts.index_add_(
+        0,
+        atom_to_token,
+        ca_atoms.to(dtype=torch.long),
     )
-    if torch.any(partially_fixed):
+    token_fixed_ca_counts.index_add_(
+        0,
+        atom_to_token,
+        (fixed & ca_atoms).to(dtype=torch.long),
+    )
+    invalid_protein_ca = is_protein & (token_ca_counts != 1)
+    if torch.any(invalid_protein_ca):
+        tokens = torch.nonzero(invalid_protein_ca, as_tuple=False).flatten().tolist()
+        raise ValueError(
+            "Every protein token must have exactly one CA representative; "
+            f"invalid tokens: {tokens}"
+        )
+    partially_fixed_nonprotein = (
+        ~is_protein
+        & (token_fixed_counts > 0)
+        & (token_fixed_counts < token_atom_counts)
+    )
+    if torch.any(partially_fixed_nonprotein):
         tokens = (
-            torch.nonzero(
-                partially_fixed,
-                as_tuple=False,
-            )
+            torch.nonzero(partially_fixed_nonprotein, as_tuple=False)
             .flatten()
             .tolist()
         )
         raise ValueError(
-            "Scaffold boundary topology requires whole-token fixed states; "
-            f"partially fixed tokens: {tokens}"
+            "Non-protein scaffold-boundary tokens require whole-token fixed "
+            f"states; partially fixed tokens: {tokens}"
         )
-    fixed_token = token_fixed_counts > 0
+    fixed_token = (token_atom_counts > 0) & (
+        token_fixed_counts == token_atom_counts
+    )
+    fixed_token[is_protein] = token_fixed_ca_counts[is_protein] == 1
+    fixed_topology_atom = fixed_token[atom_to_token] & considered_atom
 
     ca_by_token: dict[int, int] = {}
     for token_id_tensor in torch.unique(atom_to_token):
@@ -351,14 +380,14 @@ def build_boundary_topology(
     return BoundaryTopology(
         junction_pairs=junction_pairs,
         fixed_ca_atom_indices=torch.nonzero(
-            fixed & is_ca,
+            fixed_topology_atom & is_ca,
             as_tuple=False,
         ).flatten(),
         generated_ca_atom_indices=torch.nonzero(
-            ~fixed & is_ca,
+            ~fixed_topology_atom & is_ca,
             as_tuple=False,
         ).flatten(),
-        generated_atom_mask=~fixed & considered_atom,
+        generated_atom_mask=~fixed_topology_atom & considered_atom,
     )
 
 

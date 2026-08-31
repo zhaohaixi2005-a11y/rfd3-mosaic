@@ -2566,7 +2566,16 @@ def compile_assembly_rfd3_input(
     contig = ",/0,".join(
         chain for segment in segments for chain in segment.contig_chains
     )
-    asu_chain_count = sum(len(segment.contig_chains) for segment in segments)
+    # Polymer paths and non-polymer conditioning entities have different
+    # runtime chain semantics in RFD3.  In particular, a symmetrized ligand
+    # may remain one parser chain while its coordinates are expanded by the
+    # symmetry runtime.  Preserve the historical aggregate count for older
+    # consumers, but also publish the polymer count explicitly so topology
+    # validation never mistakes one ligand selector for N protein chains.
+    asu_polymer_chain_count = sum(
+        len(segment.contig_chains) for segment in segments
+    )
+    asu_chain_count = asu_polymer_chain_count
     preexpanded_chain_layout: list[dict[str, Any]] | None = None
     compact_chain_layout: list[dict[str, Any]] | None = None
     stabilized_segment_transform_ids: tuple[str, ...] | None = None
@@ -3129,6 +3138,8 @@ def compile_assembly_rfd3_input(
             finite_action.model_dump(mode="json") if finite_action is not None else None
         ),
         "asu_chain_count": asu_chain_count,
+        "asu_polymer_chain_count": asu_polymer_chain_count,
+        "ligand_selector_count": len(ligand_selectors),
         "scaffold_mode": scaffold_mode,
         "configured_linker_length_range": configured_linker_range,
         "materialized_linker_length": materialized_linker_length,

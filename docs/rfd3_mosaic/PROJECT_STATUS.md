@@ -21,7 +21,16 @@
   chain midpoint to tertiary-support-weighted core centers, reducing the
   leverage of long unsupported arms. Locked components remain immobile and
   complete joint-rigid seed geometry remains exact.
-- The complete Mosaic CPU unit suite passes `990` tests plus `119` subtests.
+- Cyclic `nearest_adjacent` scaffolding now has an explicit end-to-end chain
+  count contract: one cross-copy `between` path produces exactly `n` protein
+  scaffold chains under `Cn`, even when the supplied non-covalent seed has
+  two fixed interface fragments per copy. Protein-chain validation is kept
+  separate from symmetric ligand parser entities.
+- Masked supplied motifs with redesignable side chains are fixed protein
+  topology tokens whenever their backbone CA is fixed. Their unfixed side
+  chains are no longer misclassified as generated scaffold by boundary or
+  scaffold-core guidance.
+- The complete Mosaic CPU unit suite passes `993` tests plus `119` subtests.
   A matched 50-step GPU cohort is still required before claiming a scientific
   improvement in helix/strand content, unsupported-run length or monomer
   packing.

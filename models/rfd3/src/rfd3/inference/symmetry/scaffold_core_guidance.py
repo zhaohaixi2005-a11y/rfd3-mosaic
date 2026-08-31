@@ -388,9 +388,28 @@ def build_scaffold_core_topology(
 
     fixed_counts = torch.zeros(token_count, dtype=torch.long, device=device)
     atom_counts = torch.zeros_like(fixed_counts)
+    ca_counts = torch.zeros_like(fixed_counts)
+    fixed_ca_counts = torch.zeros_like(fixed_counts)
     atom_counts.index_add_(0, atom_to_token, torch.ones_like(atom_to_token))
     fixed_counts.index_add_(0, atom_to_token, fixed.to(dtype=torch.long))
-    token_fixed = fixed_counts == atom_counts
+    ca_counts.index_add_(0, atom_to_token, is_ca.to(dtype=torch.long))
+    fixed_ca_counts.index_add_(
+        0,
+        atom_to_token,
+        (fixed & is_ca).to(dtype=torch.long),
+    )
+    invalid_protein_ca = is_protein & (ca_counts != 1)
+    if torch.any(invalid_protein_ca):
+        tokens = torch.nonzero(invalid_protein_ca, as_tuple=False).flatten().tolist()
+        raise ValueError(
+            "Every protein token must have exactly one CA representative; "
+            f"invalid tokens: {tokens}"
+        )
+    token_fixed = (atom_counts > 0) & (fixed_counts == atom_counts)
+    # Native RFD3 side-chain redesign fixes only backbone atoms.  Such a
+    # residue is fixed for scaffold/core topology when its CA is fixed; its
+    # redesignable side chain is not a generated polymer segment.
+    token_fixed[is_protein] = fixed_ca_counts[is_protein] == 1
     token_generated = ~token_fixed
     generated_atom_mask = token_generated[atom_to_token]
 

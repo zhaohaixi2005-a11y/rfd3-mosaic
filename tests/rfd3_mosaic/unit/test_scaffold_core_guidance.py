@@ -33,6 +33,24 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_fixed_backbone_sidechain_is_not_generated_scaffold(self) -> None:
+        topology = build_scaffold_core_topology(
+            {
+                "atom_to_token_map": torch.tensor([0, 0, 1, 1]),
+                "asym_id": torch.tensor([0, 0]),
+                "residue_index": torch.tensor([0, 1]),
+                "is_ca": torch.tensor([True, False, True, False]),
+                "is_protein": torch.tensor([True, True]),
+            },
+            torch.tensor([True, False, False, False]),
+        )
+
+        self.assertEqual(topology.generated_token_mask.tolist(), [False, True])
+        self.assertEqual(
+            topology.generated_atom_mask.tolist(),
+            [False, False, True, True],
+        )
+
     def test_support_weighted_center_downweights_one_long_unsupported_arm(self) -> None:
         topology = build_scaffold_core_topology(
             {

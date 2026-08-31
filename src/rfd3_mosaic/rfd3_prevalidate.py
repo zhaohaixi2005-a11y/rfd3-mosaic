@@ -571,6 +571,14 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
     expected = report["expected_multiplicity"]
     preexpanded_layout = report.get("preexpanded_chain_layout")
     compact_layout = report.get("compact_chain_layout")
+    expected_asu_polymer_chains = report.get(
+        "expected_asu_polymer_chain_count"
+    )
+    ligand_aware_regular_layout = (
+        expected_asu_polymer_chains is not None
+        and not isinstance(compact_layout, list)
+        and not isinstance(preexpanded_layout, list)
+    )
     if isinstance(compact_layout, list):
         expected_chain_count = sum(
             len(record["transform_indices"])
@@ -581,7 +589,27 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
     else:
         expected_asu_chains = report.get("expected_asu_chain_count", 1)
         expected_chain_count = expected * expected_asu_chains
-    if report["chain_count"] != expected_chain_count:
+    if ligand_aware_regular_layout:
+        expected_protein_chain_count = (
+            expected * int(expected_asu_polymer_chains)
+        )
+        if report.get("protein_chain_count") != expected_protein_chain_count:
+            failures.append(
+                f"expected {expected_protein_chain_count} protein polymer "
+                "chains, observed "
+                f"{report.get('protein_chain_count')}"
+            )
+        expected_ligand_selectors = int(
+            report.get("expected_ligand_selector_count", 0)
+        )
+        if (
+            expected_ligand_selectors > 0
+            and int(report.get("nonprotein_chain_count", 0)) <= 0
+        ):
+            failures.append(
+                "declared ligand conditioning produced no non-protein chain"
+            )
+    elif report["chain_count"] != expected_chain_count:
         failures.append(
             f"expected {expected_chain_count} chains, observed "
             f"{report['chain_count']}"
@@ -643,7 +671,12 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
                     "symmetry entity"
                 )
     else:
-        residue_counts = list(report["residues_per_chain"].values())
+        residue_count_source = (
+            report.get("protein_residues_per_chain", {})
+            if ligand_aware_regular_layout
+            else report["residues_per_chain"]
+        )
+        residue_counts = list(residue_count_source.values())
         residue_count_frequencies = Counter(residue_counts)
         if not residue_counts or any(
             frequency % expected != 0
@@ -849,6 +882,33 @@ def prevalidate_rfd3_input(
         )
 
     categories = set(atom_array.get_annotation_categories())
+    try:
+        # ``is_protein`` is exposed by AtomWorks but is not guaranteed to be
+        # listed by Biotite's custom-annotation catalogue.
+        protein_atom_mask = np.asarray(atom_array.is_protein, dtype=bool)
+    except AttributeError:
+        # Conservative compatibility fallback for old external arrays.
+        from atomworks.constants import STANDARD_AA
+
+        protein_atom_mask = np.isin(atom_array.res_name, STANDARD_AA)
+    protein_chain_ids = [
+        chain_id
+        for chain_id in chain_ids
+        if bool(
+            np.any(
+                protein_atom_mask
+                & (np.asarray(atom_array.chain_id) == chain_id)
+            )
+        )
+    ]
+    nonprotein_chain_ids = [
+        chain_id for chain_id in chain_ids if chain_id not in protein_chain_ids
+    ]
+    protein_residues_per_chain = {
+        chain_id: residues_per_chain[chain_id]
+        for chain_id in protein_chain_ids
+    }
+
     motif_mask = get_motif_features(atom_array)["is_motif_atom"].astype(bool)
     expected_symmetry_id = str(raw_spec["symmetry"]["id"]).upper()
     extra = raw_spec.get("extra") or {}
@@ -972,11 +1032,24 @@ def prevalidate_rfd3_input(
         ),
         "compact_chain_layout": extra.get("compact_chain_layout"),
         "expected_asu_chain_count": int(extra.get("asu_chain_count", 1)),
+        "expected_asu_polymer_chain_count": (
+            int(extra["asu_polymer_chain_count"])
+            if "asu_polymer_chain_count" in extra
+            else None
+        ),
+        "expected_ligand_selector_count": int(
+            extra.get("ligand_selector_count", 0)
+        ),
         "atom_count": int(len(atom_array)),
         "chain_count": len(chain_ids),
         "chain_ids": chain_ids,
+        "protein_chain_count": len(protein_chain_ids),
+        "protein_chain_ids": protein_chain_ids,
+        "nonprotein_chain_count": len(nonprotein_chain_ids),
+        "nonprotein_chain_ids": nonprotein_chain_ids,
         "atoms_per_chain": atoms_per_chain,
         "residues_per_chain": residues_per_chain,
+        "protein_residues_per_chain": protein_residues_per_chain,
         "motif_atom_count": int(motif_mask.sum()),
         "fixed_coordinate_atom_count": int(
             atom_array.is_motif_atom_with_fixed_coord.astype(bool).sum()

@@ -610,6 +610,10 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertFalse(payload["plddt_enhanced"])
         report = prevalidate_rfd3_input(outputs.input_path)
         self.assertEqual(report["status"], "passed")
+        self.assertEqual(payload["extra"]["asu_polymer_chain_count"], 1)
+        self.assertEqual(payload["extra"]["ligand_selector_count"], 1)
+        self.assertEqual(report["protein_chain_count"], 3)
+        self.assertGreaterEqual(report["nonprotein_chain_count"], 1)
 
     def test_polyhedral_symmetry_uses_complete_declared_multiplicity(
         self,

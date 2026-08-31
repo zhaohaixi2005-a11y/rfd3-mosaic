@@ -844,6 +844,8 @@ class _PublicGeometryPreflight:
     atom_count: int
     residue_count: int
     chain_count: int
+    protein_chain_count: int
+    nonprotein_chain_count: int
     runtime_features_validated: bool
 
 
@@ -895,6 +897,10 @@ def _preflight_public_design_geometry(
                 int(value) for value in report["residues_per_chain"].values()
             ),
             chain_count=int(report["chain_count"]),
+            protein_chain_count=int(report.get("protein_chain_count", 0)),
+            nonprotein_chain_count=int(
+                report.get("nonprotein_chain_count", 0)
+            ),
             runtime_features_validated=True,
         )
 
@@ -2461,7 +2467,18 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "geometry:    PASSED "
                 f"({preflight.atom_count} atoms, "
                 f"{preflight.residue_count} residues, "
-                f"{preflight.chain_count} chains)"
+                f"{preflight.protein_chain_count} protein chains"
+                + (
+                    f", {preflight.nonprotein_chain_count} non-protein "
+                    + (
+                        "entity"
+                        if preflight.nonprotein_chain_count == 1
+                        else "entities"
+                    )
+                    if preflight.nonprotein_chain_count
+                    else ""
+                )
+                + ")"
             )
             print("RFD3 input:  PASSED (runtime features are finite)")
             return

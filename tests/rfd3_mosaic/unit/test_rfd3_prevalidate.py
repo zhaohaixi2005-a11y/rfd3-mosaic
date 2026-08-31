@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 from biotite.structure import AtomArray
-
 from rfd3.inference.parsing import InputSelection
+
 from rfd3_mosaic.design_compiler import lower_user_design
 from rfd3_mosaic.output import compile_rfd3_input
 from rfd3_mosaic.rfd3_prevalidate import (
@@ -284,6 +284,41 @@ class RFD3PrevalidationLogicTestCase(unittest.TestCase):
             "symmetry_ids": ["C3"],
             "expected_symmetry_id": "C3",
         }
+        self.assertEqual(_validate_report(report), [])
+
+    def test_ligand_chain_is_not_multiplied_as_a_protein_path(self) -> None:
+        report = {
+            "expected_multiplicity": 5,
+            "expected_asu_chain_count": 2,
+            "expected_asu_polymer_chain_count": 1,
+            "expected_ligand_selector_count": 1,
+            "chain_count": 6,
+            "protein_chain_count": 5,
+            "nonprotein_chain_count": 1,
+            "symmetry_transform_ids": [0, 1, 2, 3, 4],
+            "residues_per_chain": {
+                "A": 260,
+                "B": 260,
+                "C": 260,
+                "D": 260,
+                "E": 260,
+                "L": 1,
+            },
+            "protein_residues_per_chain": {
+                "A": 260,
+                "B": 260,
+                "C": 260,
+                "D": 260,
+                "E": 260,
+            },
+            "motif_atom_count": 100,
+            "fixed_coordinate_atom_count": 100,
+            "fixed_sequence_atom_count": 100,
+            "asu_atom_count": 500,
+            "symmetry_ids": ["C5"],
+            "expected_symmetry_id": "C5",
+        }
+
         self.assertEqual(_validate_report(report), [])
 
     def test_rejects_partially_fixed_interface_seed(self) -> None:

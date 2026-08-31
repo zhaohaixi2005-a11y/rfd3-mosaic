@@ -243,6 +243,35 @@ class ScaffoldBoundaryTopologyTestCase(unittest.TestCase):
             [False, False, True, True],
         )
 
+    def test_fixed_backbone_with_redesignable_sidechain_is_one_fixed_token(
+        self,
+    ) -> None:
+        features = {
+            "atom_to_token_map": torch.tensor([0, 0, 1, 1]),
+            "asym_id": torch.tensor([0, 0]),
+            "residue_index": torch.tensor([0, 1]),
+            "is_ca": torch.tensor([True, False, True, False]),
+            "is_protein": torch.tensor([True, True]),
+            "token_bonds": torch.tensor(
+                [
+                    [False, True],
+                    [True, False],
+                ]
+            ),
+        }
+        # Token 0 has a fixed CA/backbone but a redesignable side-chain atom.
+        fixed_mask = torch.tensor([True, False, False, False])
+
+        topology = build_boundary_topology(features, fixed_mask)
+
+        self.assertEqual(topology.junction_pairs.tolist(), [[0, 2]])
+        self.assertEqual(topology.fixed_ca_atom_indices.tolist(), [0])
+        self.assertEqual(topology.generated_ca_atom_indices.tolist(), [2])
+        self.assertEqual(
+            topology.generated_atom_mask.tolist(),
+            [False, False, True, True],
+        )
+
 
 class CyclicAxisTestCase(unittest.TestCase):
     def test_extracts_axis_and_off_origin_center_for_c3_and_c5(
