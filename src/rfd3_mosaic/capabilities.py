@@ -82,7 +82,7 @@ CAPABILITIES: tuple[CapabilityRecord, ...] = (
         public_interface=True,
         summary=(
             "Preserve a complete non-covalent joint-rigid interface while "
-            "independent generated terminal scaffold forms an explicitly "
+            "generated scaffold residues form an explicitly "
             "requested higher-order cyclic oligomerization interface."
         ),
         dependencies=(

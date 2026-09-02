@@ -25,6 +25,8 @@ from rfd3_mosaic.schema.specs import (
 Selector = Annotated[str, Field(min_length=1)]
 PositiveLength = Annotated[int, Field(ge=1)]
 RequestedLength = PositiveLength | LinkLengthSpec
+ScaffoldPackingMode = Literal["off", "symmetric_generated"]
+SCAFFOLD_PACKING_MODES = frozenset(("off", "symmetric_generated"))
 
 
 class AtomScope(str, Enum):
@@ -614,7 +616,16 @@ class UserSamplingSpec(StrictModel):
     dump_trajectories: bool = False
     is_non_loopy: bool | None = True
     plddt_enhanced: bool = True
-    scaffold_packing: Literal["off", "symmetric_generated"] = "off"
+    scaffold_packing: ScaffoldPackingMode = Field(
+        default="off",
+        description=(
+            "Optional generated--generated symmetry-neighbour interface "
+            "objective. This is orthogonal to preserving a supplied "
+            "interface: preserve_supplied_geometry plus "
+            "symmetric_generated keeps the supplied interface exact while "
+            "creating a second interface from generated scaffold residues."
+        ),
+    )
     scaffold_core_quality: ScaffoldCoreQualitySpec = Field(
         default_factory=ScaffoldCoreQualitySpec
     )
@@ -1124,6 +1135,10 @@ class UserDesignSpec(StrictModel):
         Expert authors declare component mobility directly. Resolver-emitted
         expert graphs may retain ``preserve_supplied_geometry`` so downstream
         stages never confuse supplied hyperedges with generated contacts.
+        ``sampling.scaffold_packing`` is an orthogonal output objective, so
+        a supplied interface seed may explicitly request a second,
+        generated--generated symmetry-neighbour interface without weakening
+        the supplied geometry contract.
         """
 
         motion = self.preferences.component_motion

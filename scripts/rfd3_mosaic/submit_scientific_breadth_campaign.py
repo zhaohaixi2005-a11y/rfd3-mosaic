@@ -18,7 +18,6 @@ from typing import Any, Callable
 
 import yaml
 
-
 JOB_ID_PATTERN = re.compile(r"Submitted batch job ([0-9]+)")
 
 
@@ -31,7 +30,9 @@ class Case:
     mutate: Callable[[dict[str, Any]], None]
 
 
-def _set_generation_lengths(*lengths: int | dict[str, int]) -> Callable[[dict[str, Any]], None]:
+def _set_generation_lengths(
+    *lengths: int | dict[str, int],
+) -> Callable[[dict[str, Any]], None]:
     def mutate(payload: dict[str, Any]) -> None:
         regions = payload.get("generation", [])
         if len(regions) != len(lengths):
@@ -180,9 +181,7 @@ def _advance_pose_seeds(sampling: dict[str, Any], seed: int) -> None:
 def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     print("+ " + " ".join(command), flush=True)
     environment = os.environ.copy()
-    environment.update(
-        {"DEBUG": "false", "TYPE_CHECK": "false", "NAN_CHECK": "true"}
-    )
+    environment.update({"DEBUG": "false", "TYPE_CHECK": "false", "NAN_CHECK": "true"})
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -194,6 +193,17 @@ def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     )
     print(result.stdout, end="", flush=True)
     return result
+
+
+def _git_revision(project: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    return result.stdout.strip()
 
 
 def main() -> None:
@@ -214,7 +224,9 @@ def main() -> None:
     parser.add_argument("--timesteps", type=int, default=200)
     parser.add_argument("--seed-start", type=int, default=200000)
     parser.add_argument("--site-label", required=True)
-    parser.add_argument("--case", action="append", choices=[case.name for case in CASES])
+    parser.add_argument(
+        "--case", action="append", choices=[case.name for case in CASES]
+    )
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--submit", action="store_true")
     args = parser.parse_args()
@@ -276,7 +288,9 @@ def main() -> None:
                 else f"{case.name}__shard_{shard_index:02d}.yaml"
             )
             frozen = config_dir / frozen_name
-            frozen.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+            frozen.write_text(
+                yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+            )
 
             profile = profiles[case.resource_class]
             record: dict[str, Any] = {
@@ -331,19 +345,31 @@ def main() -> None:
                 record["submitted"] = result.returncode == 0 and match is not None
             records.append(record)
 
+    manifest_path = output / "campaign_manifest.json"
+    collector = (
+        project / "scripts" / "rfd3_mosaic" / "collect_scientific_breadth_campaign.py"
+    )
+    collection_argv = [sys.executable, str(collector), str(manifest_path)]
     manifest = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "campaign": campaign_name,
         "site_label": args.site_label,
+        "source_revision": _git_revision(project),
+        "run_root": str(run_root),
         "designs_per_case": args.designs,
         "designs_per_job": designs_per_job,
         "timesteps": args.timesteps,
         "case_count": len(selected),
         "requested_designs": len(selected) * args.designs,
         "records": records,
+        "collection": {
+            "command_argv": collection_argv,
+            "status_json": "collection_summary.json",
+            "status_markdown": "COLLECTION_STATUS.md",
+            "transfer_paths": "transfer_paths.txt",
+        },
     }
-    manifest_path = output / "campaign_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"campaign: {output}")
     print(f"manifest: {manifest_path}")

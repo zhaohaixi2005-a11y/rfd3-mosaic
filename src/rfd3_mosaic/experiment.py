@@ -34,6 +34,7 @@ from rfd3_mosaic.sampling_plan import (
     pose_plan_is_stochastic,
 )
 from rfd3_mosaic.schema import load_user_design
+from rfd3_mosaic.schema.design import SCAFFOLD_PACKING_MODES
 
 SCHEMA_VERSION = 1
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -734,9 +735,7 @@ def resolve_experiment(
     resolved_sampling = {
         "preset": preset,
         "timesteps": timesteps,
-        "designs": _positive_integer(
-            sampling.get("designs", 1), "sampling.designs"
-        ),
+        "designs": _positive_integer(sampling.get("designs", 1), "sampling.designs"),
         "replicates_per_pose": _positive_integer(
             sampling.get("replicates_per_pose", 1),
             "sampling.replicates_per_pose",
@@ -755,9 +754,7 @@ def resolve_experiment(
             sampling.get("dump_trajectories", False),
             "sampling.dump_trajectories",
         ),
-        "scaffold_packing": str(
-            sampling.get("scaffold_packing", "off")
-        ),
+        "scaffold_packing": str(sampling.get("scaffold_packing", "off")),
         "screening": {},
         "sampler": dict(SAMPLER_PRESETS[preset]),
     }
@@ -784,25 +781,16 @@ def resolve_experiment(
         )
     retain_all_outputs = raw_screening.get("retain_all_outputs", True)
     if retain_all_outputs is not True:
-        raise ValueError(
-            "sampling.screening.retain_all_outputs must remain true"
-        )
+        raise ValueError("sampling.screening.retain_all_outputs must remain true")
     resolved_sampling["screening"] = {
         "mode": screening_mode,
         "protocol": screening_protocol,
         "retain_all_outputs": True,
     }
     if resolved_sampling["replicates_per_pose"] > resolved_sampling["designs"]:
-        raise ValueError(
-            "sampling.replicates_per_pose cannot exceed sampling.designs"
-        )
-    if resolved_sampling["scaffold_packing"] not in {
-        "off",
-        "symmetric_generated",
-    }:
-        raise ValueError(
-            "sampling.scaffold_packing must be off or symmetric_generated"
-        )
+        raise ValueError("sampling.replicates_per_pose cannot exceed sampling.designs")
+    if resolved_sampling["scaffold_packing"] not in SCAFFOLD_PACKING_MODES:
+        raise ValueError("sampling.scaffold_packing must be off or symmetric_generated")
 
     resources = raw.get("resources")
     if not isinstance(resources, dict):

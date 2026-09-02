@@ -269,7 +269,10 @@ E(Q;S)=E_{\mathrm{scaffold}}(Q;S)+E_{\mathrm{interface}}(Q;S).
 
 Its published-contact prior, patch terms and safety boundary are specified in
 [Generated-interface packing guidance](PACKING_GUIDANCE.md). Supplied-interface
-scaffolding does not invent this second interface objective.
+scaffolding does not invent this second interface objective by default, but it
+may request it explicitly with
+`sampling.scaffold_packing: symmetric_generated`; the supplied joint-rigid
+interface remains an independent hard invariant.
 
 ### Generated-scaffold core term
 

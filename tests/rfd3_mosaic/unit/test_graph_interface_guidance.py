@@ -178,6 +178,9 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
                 (atom_count, atom_count), dtype=torch.bool
             ),
             "residue_index": torch.arange(atoms_per_chain).repeat(3),
+            "sym_transform_id": torch.repeat_interleave(
+                torch.arange(3), atoms_per_chain
+            ),
         }
         fixed = torch.zeros(atom_count, dtype=torch.bool)
         fixed[::atoms_per_chain] = True
@@ -194,6 +197,47 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
         )
         self.assertTrue(all(edge.automatic_quality for edge in topology.edges))
         self.assertFalse(torch.any(topology.generated_atom_mask & fixed))
+
+    def test_scaffold_packing_groups_multiple_chains_by_symmetry_copy(self) -> None:
+        atoms_per_chain = 5
+        chains_per_copy = 2
+        order = 3
+        atom_count = order * chains_per_copy * atoms_per_chain
+        chain_ids = torch.repeat_interleave(
+            torch.arange(order * chains_per_copy), atoms_per_chain
+        )
+        transform_ids = torch.repeat_interleave(
+            torch.arange(order), chains_per_copy * atoms_per_chain
+        )
+        features = {
+            "symmetry_id": "C3",
+            "sym_transform_id": transform_ids,
+            "atom_to_token_map": torch.arange(atom_count),
+            "asym_id": chain_ids,
+            "is_ca": torch.ones(atom_count, dtype=torch.bool),
+            "is_virtual": torch.zeros(atom_count, dtype=torch.bool),
+            "token_bonds": torch.zeros(
+                (atom_count, atom_count), dtype=torch.bool
+            ),
+            "residue_index": torch.arange(atoms_per_chain).repeat(
+                order * chains_per_copy
+            ),
+        }
+        fixed = torch.zeros(atom_count, dtype=torch.bool)
+        fixed[::atoms_per_chain] = True
+
+        topology = build_symmetric_scaffold_interface_topology(features, fixed)
+
+        self.assertEqual(len(topology.edges), order)
+        first = topology.edges[0]
+        self.assertEqual(
+            set(first.left_generated_token_ids.tolist()),
+            {1, 2, 3, 4, 6, 7, 8, 9},
+        )
+        self.assertEqual(
+            set(first.right_generated_token_ids.tolist()),
+            {11, 12, 13, 14, 16, 17, 18, 19},
+        )
 
     def test_scaffold_packing_rejects_noncyclic_group(self) -> None:
         features = {

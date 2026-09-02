@@ -663,10 +663,15 @@ def build_symmetric_scaffold_interface_topology(
     graph-declared interface design.  Consequently both paths share patch
     locking, exact projection, line search and final quality diagnostics.
 
-    The runtime chain order is the declared transform order.  A cyclic ring
-    therefore has physical neighbour pairs ``(i, i+1 mod n)``.  Undirected
-    deduplication avoids emitting the C2 contact twice.  Non-cyclic groups
-    require graph-declared neighbours and fail closed rather than guessing.
+    Physical neighbours are derived from the atomwise ``sym_transform_id``,
+    not from chain numbering.  One symmetry copy may contain several polymer
+    chains, so sorting chain IDs can accidentally pair two chains inside one
+    copy and can turn a requested Cn assembly into a 2n chain cycle.  A cyclic
+    ring instead has transform-neighbour pairs ``(i, i+1 mod n)`` and each
+    side contains every generated chain assigned to that transform.
+    Undirected deduplication avoids emitting the C2 contact twice. Non-cyclic
+    groups require graph-declared neighbours and fail closed rather than
+    guessing.
     """
 
     symmetry_id = str(features.get("symmetry_id") or "")
@@ -694,28 +699,70 @@ def build_symmetric_scaffold_interface_topology(
         )
     atom_chain = asym_id[atom_to_token]
     generated = ~fixed & ~is_virtual
-    chain_ids = tuple(
+    order_text = symmetry_id[1:]
+    if not order_text.isdigit() or int(order_text) < 2:
+        raise ValueError(
+            "Automatic symmetric scaffold packing requires a valid Cn order"
+        )
+    order = int(order_text)
+    raw_transform_ids = features.get("sym_transform_id")
+    if raw_transform_ids is None:
+        # Narrow compatibility path for synthetic/older feature bundles.
+        # It is safe only when there is exactly one generated chain per copy.
+        chain_ids = tuple(
+            int(value)
+            for value in torch.unique(atom_chain[generated], sorted=True)
+            .detach()
+            .cpu()
+            .tolist()
+        )
+        if len(chain_ids) != order:
+            raise ValueError(
+                "Automatic symmetric scaffold packing requires atomwise "
+                "sym_transform_id when a symmetry copy contains multiple "
+                "generated chains"
+            )
+        transform_ids = torch.full_like(atom_chain, -1)
+        for transform_index, chain_id in enumerate(chain_ids):
+            transform_ids[atom_chain == chain_id] = transform_index
+    else:
+        transform_ids = torch.as_tensor(
+            raw_transform_ids,
+            dtype=torch.long,
+            device=device,
+        )
+        if transform_ids.shape != fixed.shape:
+            raise ValueError(
+                "Automatic scaffold packing sym_transform_id must have "
+                "shape [L]"
+            )
+    observed_transforms = tuple(
         int(value)
-        for value in torch.unique(atom_chain[generated], sorted=True)
+        for value in torch.unique(transform_ids[generated], sorted=True)
         .detach()
         .cpu()
         .tolist()
     )
-    if len(chain_ids) < 2:
+    expected_transforms = tuple(range(order))
+    if observed_transforms != expected_transforms:
         raise ValueError(
             "Automatic symmetric scaffold packing requires generated atoms "
-            "on at least two physical chains"
+            "on every cyclic transform; expected "
+            f"{expected_transforms}, observed {observed_transforms}"
         )
 
     neighbour_pairs: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
-    for index, left_chain in enumerate(chain_ids):
-        right_chain = chain_ids[(index + 1) % len(chain_ids)]
-        key = tuple(sorted((left_chain, right_chain)))
+    for left_transform in expected_transforms:
+        right_transform = (left_transform + 1) % order
+        key = (
+            min(left_transform, right_transform),
+            max(left_transform, right_transform),
+        )
         if key in seen:
             continue
         seen.add(key)
-        neighbour_pairs.append((left_chain, right_chain))
+        neighbour_pairs.append((left_transform, right_transform))
 
     edge_count = len(neighbour_pairs)
     left = torch.zeros(
@@ -723,12 +770,12 @@ def build_symmetric_scaffold_interface_topology(
     )
     right = torch.zeros_like(left)
     edge_ids: list[str] = []
-    for edge_index, (left_chain, right_chain) in enumerate(neighbour_pairs):
-        left[edge_index] = atom_chain == left_chain
-        right[edge_index] = atom_chain == right_chain
+    for edge_index, (left_transform, right_transform) in enumerate(neighbour_pairs):
+        left[edge_index] = transform_ids == left_transform
+        right[edge_index] = transform_ids == right_transform
         edge_ids.append(
             "automatic_symmetric_scaffold_interface"
-            f"@chain_{left_chain}_chain_{right_chain}"
+            f"@transform_{left_transform}_transform_{right_transform}"
         )
 
     synthetic = dict(features)
@@ -2714,7 +2761,7 @@ def _selected_patch_token_groups(
     """Recover the exact reciprocal windows used by the current energy."""
 
     xyz = coordinates[0]
-    groups = []
+    groups: list[torch.Tensor] = []
     for edge in topology.edges:
         if not (
             edge.requested_contact_count > 0

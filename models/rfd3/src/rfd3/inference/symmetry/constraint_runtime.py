@@ -219,14 +219,16 @@ class MosaicConstraintRuntime:
                 "Constraint runtime received an invalid diffusion step"
             )
         self._phase_counts["model_prediction"] += 1
+        proposal_hook = self.proposal_hook
         should_propose = (
-            self.proposal_hook is not None
+            proposal_hook is not None
             and (
                 self.proposal_source == "denoiser"
                 or step_num % self.proposal_interval == 0
             )
         )
         if should_propose:
+            assert proposal_hook is not None
             progress = step_num / max(total_steps - 1, 1)
             proposal_coordinates = coordinates
             if self.proposal_source == "scaffold_boundary":
@@ -241,7 +243,7 @@ class MosaicConstraintRuntime:
                 device_type=coordinates.device.type,
                 enabled=False,
             ):
-                proposal = self.proposal_hook(
+                proposal = proposal_hook(
                     proposal_coordinates.detach().to(torch.float32),
                     progress,
                 )

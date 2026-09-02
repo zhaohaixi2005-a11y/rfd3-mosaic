@@ -8,6 +8,7 @@ from math import ceil
 from pydantic import Field
 
 from rfd3_mosaic.schema.design import (
+    ScaffoldPackingMode,
     UserDesignSpec,
     UserFixedOrientationSpec,
 )
@@ -26,7 +27,7 @@ class DiffusionSamplingPlan(StrictModel):
     execution_backend: str
     neighbour_radius: int
     dump_trajectories: bool
-    scaffold_packing: str
+    scaffold_packing: ScaffoldPackingMode
     screening_mode: str
     screening_protocol: str
     retain_all_outputs: bool

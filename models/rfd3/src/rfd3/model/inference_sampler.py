@@ -706,14 +706,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
             or bool(self.enable_generated_cross_chain_topology_guidance)
         )
-        robust_capture_active = bool(
-            self.enable_assembly_robust_capture
-            or self.enable_supplied_interface_robust_capture
-        )
-        robust_capture_weight = (
-            float(self.assembly_capture_weight)
-            if self.enable_assembly_robust_capture
-            else float(self.supplied_interface_capture_weight)
+        robust_capture_active, robust_capture_weight = (
+            self._assembly_robust_capture_settings()
         )
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
@@ -739,18 +733,6 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             raise ValueError(
                 "Assembly robust capture requires "
                 "motif_mobility_proposal_source=scaffold_boundary"
-            )
-        if robust_capture_weight < 0.0:
-            raise ValueError("assembly capture weight cannot be negative")
-        if (
-            self.enable_assembly_robust_capture
-            and self.enable_supplied_interface_robust_capture
-            and float(self.assembly_capture_weight)
-            != float(self.supplied_interface_capture_weight)
-        ):
-            raise ValueError(
-                "Canonical and legacy assembly capture weights must agree "
-                "when both capture flags are enabled"
             )
         if polymer_continuity_active and not exact_state:
             raise ValueError(
@@ -926,6 +908,23 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 raise ValueError(
                     "local_neighbourhood does not yet support dynamic motif " "mobility"
                 )
+
+    def _assembly_robust_capture_settings(self) -> tuple[bool, float]:
+        """Canonicalize current and frozen legacy capture configuration."""
+
+        canonical = bool(self.enable_assembly_robust_capture)
+        legacy = bool(self.enable_supplied_interface_robust_capture)
+        canonical_weight = float(self.assembly_capture_weight)
+        legacy_weight = float(self.supplied_interface_capture_weight)
+        if canonical and legacy and canonical_weight != legacy_weight:
+            raise ValueError(
+                "Canonical and legacy assembly capture weights must agree "
+                "when both capture flags are enabled"
+            )
+        weight = canonical_weight if canonical else legacy_weight
+        if weight < 0.0:
+            raise ValueError("assembly capture weight cannot be negative")
+        return canonical or legacy, weight
 
     @property
     def _uses_exact_symmetry_orbits(self) -> bool:
@@ -1696,13 +1695,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         is_motif_atom_with_fixed_coord: torch.Tensor,
         fixed_coordinates: torch.Tensor,
     ) -> torch.Tensor:
-        """Enforce symmetry after the stochastic coordinate update.
+        """Enforce the complete hard contract after the Euler update.
 
-        Projecting only the denoised prediction is insufficient because
-        ``X_noisy_L`` contains independent atomwise noise.  The Euler update
-        therefore need not remain symmetric even when ``X_denoised_L`` is
-        symmetric.  Mosaic's hard-motif mode projects the actual updated
-        coordinates and then restores complete cross-chain motif groups.
+        Exact Mosaic uses coupled orbit noise, so this projection is not a
+        repair for independent-noise asymmetry.  It is the lifecycle boundary
+        that projects the state actually passed to the next diffusion step,
+        restores each complete joint-rigid constraint group, and validates
+        orbit closure after numerical integration.
         """
 
         if self._uses_exact_symmetry_orbits:
@@ -1833,14 +1832,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
             or bool(self.enable_generated_cross_chain_topology_guidance)
         )
-        robust_capture_active = bool(
-            self.enable_assembly_robust_capture
-            or self.enable_supplied_interface_robust_capture
-        )
-        robust_capture_weight = (
-            float(self.assembly_capture_weight)
-            if self.enable_assembly_robust_capture
-            else float(self.supplied_interface_capture_weight)
+        robust_capture_active, robust_capture_weight = (
+            self._assembly_robust_capture_settings()
         )
         scaffold_core_topology_required = scaffold_core_active or robust_capture_active
         polymer_continuity_active = bool(
@@ -2190,9 +2183,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                         ]
                                         core_total = (
                                             core_total
-                                            + float(
-                                                robust_capture_weight
-                                            )
+                                            + float(robust_capture_weight)
                                             * torch.stack(capture_terms).mean()
                                         )
                                 return core_total

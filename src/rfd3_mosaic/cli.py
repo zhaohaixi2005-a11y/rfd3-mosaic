@@ -33,6 +33,7 @@ from rfd3_mosaic.experiment import (
     resolve_experiment,
 )
 from rfd3_mosaic.graph_search import search_graph_design
+from rfd3_mosaic.interface_semantics import resolve_interface_contract
 from rfd3_mosaic.onboarding import (
     available_examples,
     available_profiles,
@@ -754,9 +755,7 @@ def _write_quick_experiment(arguments: argparse.Namespace) -> Path:
         },
     }
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    request_directory = (
-        output_root / utc_run_day() / "_requests" / name / timestamp
-    )
+    request_directory = output_root / utc_run_day() / "_requests" / name / timestamp
     request_directory.mkdir(parents=True, exist_ok=False)
     path = request_directory / "experiment.yaml"
     path.write_text(
@@ -824,11 +823,7 @@ def _write_public_experiment(
     }
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     request_directory = (
-        design.output.root
-        / utc_run_day()
-        / "_requests"
-        / design.name
-        / timestamp
+        design.output.root / utc_run_day() / "_requests" / design.name / timestamp
     )
     request_directory.mkdir(parents=True, exist_ok=False)
     path = request_directory / "experiment.yaml"
@@ -898,9 +893,7 @@ def _preflight_public_design_geometry(
             ),
             chain_count=int(report["chain_count"]),
             protein_chain_count=int(report.get("protein_chain_count", 0)),
-            nonprotein_chain_count=int(
-                report.get("nonprotein_chain_count", 0)
-            ),
+            nonprotein_chain_count=int(report.get("nonprotein_chain_count", 0)),
             runtime_features_validated=True,
         )
 
@@ -918,20 +911,14 @@ def _print_execution_plan(plan: dict, *, output_format: str) -> None:
     print(f"name:       {plan['name']}")
     print(f"topology:   {design['topology']}")
     print(f"timesteps:  {sampling['timesteps']}")
-    print(
-        "designs:    "
-        f"{sampling['designs']} independently seeded sample(s)"
-    )
+    print("designs:    " f"{sampling['designs']} independently seeded sample(s)")
     print(f"diffusion seed: {sampling['seed']}")
     print(
         "pose count: "
         f"{sampling['compiled_pose_count']} "
         f"({sampling['design_semantics']})"
     )
-    print(
-        "replicates/pose: "
-        f"{sampling['replicates_per_pose']} requested"
-    )
+    print("replicates/pose: " f"{sampling['replicates_per_pose']} requested")
     print(f"preset:     {sampling['preset']}")
     print(f"backend:    {sampling['execution_backend']}")
     print(f"profile:    {execution['profile']}")
@@ -1529,6 +1516,9 @@ def _print_public_design_plan(
         "schema_version": 1,
         "user_mode": design.user_mode,
         "task": design.task.value if design.task is not None else None,
+        "interface_contract": resolve_interface_contract(design).model_dump(
+            mode="json"
+        ),
         "resolved_preferences": compile_design_preferences(design).model_dump(
             mode="json"
         ),
@@ -1850,9 +1840,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 interface_scaffold=arguments.interface_scaffold,
                 new_oligomer_interface=arguments.new_oligomer_interface,
                 sequence_conditioning=arguments.sequence_conditioning,
-                redesign_motif_sidechains=(
-                    arguments.redesign_motif_sidechains
-                ),
+                redesign_motif_sidechains=(arguments.redesign_motif_sidechains),
                 ligand_selectors=tuple(arguments.ligand_selector),
                 n_length=arguments.n_length,
                 c_length=arguments.c_length,
@@ -2097,10 +2085,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
         if catalog is not None:
             print(f"catalog:      {catalog['catalog_directory']}")
-            print(
-                "catalog view: "
-                f"{Path(catalog['run_root']) / 'RUN_CATALOG'}"
-            )
+            print("catalog view: " f"{Path(catalog['run_root']) / 'RUN_CATALOG'}")
             print(
                 f"cataloged:    {catalog['run_count']} run(s), "
                 f"{catalog['structure_count']} structure(s)"

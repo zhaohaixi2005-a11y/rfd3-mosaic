@@ -9,6 +9,7 @@ from rfd3_mosaic.assembly_frontends import (
     lower_experiment_topology,
 )
 from rfd3_mosaic.compile import load_assembly_config
+from rfd3_mosaic.output import compile_assembly_rfd3_input
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
@@ -286,6 +287,82 @@ sampling:
         )
         self.assertEqual(
             request.audit_metadata["automatic_symmetric_scaffold_packing"]["mode"],
+            "symmetric_generated",
+        )
+        self.assertEqual(
+            request.audit_metadata["interface_contract"]["mode"],
+            "preserve_supplied_and_create_generated",
+        )
+
+    def test_supplied_dimer_cross_copy_link_compiles_one_chain_per_cyclic_unit(
+        self,
+    ) -> None:
+        """A preserved A:B seed plus B_k->A_(k-1) is Cn, not 2n arms."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            structure = root / "seed.pdb"
+            structure.write_text(
+                "ATOM      1   CA ALA A   1       8.000   0.000   0.000"
+                "  1.00 20.00           C\n"
+                "ATOM      2   CA ALA B   1       8.000   4.000   0.000"
+                "  1.00 20.00           C\nEND\n",
+                encoding="utf-8",
+            )
+            design = root / "design.yaml"
+            design.write_text(
+                """\
+schema_version: 1
+name: supplied-dimer-cross-copy-ring
+input: seed.pdb
+symmetry: C3
+task: preserve_supplied_geometry
+generation:
+  - kind: between
+    from_selector: B1
+    to_selector: A1
+    orbit_offset: nearest_adjacent
+    length: {minimum: 18, maximum: 24}
+constraints:
+  - {kind: fixed_xyz, selector: A1, coupling_group: seed}
+  - {kind: fixed_xyz, selector: B1, coupling_group: seed}
+sampling:
+  scaffold_packing: symmetric_generated
+""",
+                encoding="utf-8",
+            )
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "supplied-dimer-cross-copy-ring",
+                },
+                root / "lowered",
+                project_directory=root,
+                experiment_name="supplied-dimer-cross-copy-ring",
+            )
+            specification = load_assembly_config(request.specification_path)
+            compiled = compile_assembly_rfd3_input(
+                request.specification_path,
+                root / "compiled",
+                base_directory=root,
+                example_id="supplied-dimer-cross-copy-ring",
+                extra_metadata=request.audit_metadata,
+            )
+            mapping = json.loads(compiled.mapping_path.read_text(encoding="utf-8"))
+            native = json.loads(compiled.input_path.read_text(encoding="utf-8"))[
+                "supplied-dimer-cross-copy-ring"
+            ]
+
+        segment = specification.generated_segments["generated_001"]
+        self.assertIn(segment.copy_relation.orbit_offset, {-1, 1})
+        self.assertEqual(len(mapping["source_polymer_paths"]), 3)
+        self.assertEqual(
+            sorted(len(path) for path in mapping["source_polymer_paths"]),
+            [2, 2, 2],
+        )
+        self.assertEqual(
+            native["extra"]["automatic_symmetric_scaffold_packing"]["mode"],
             "symmetric_generated",
         )
 

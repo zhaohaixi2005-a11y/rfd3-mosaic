@@ -1239,9 +1239,11 @@ def propose_bounded_se3_step(
             break
 
     if deterministic_multistart and improving_candidates:
-        best_energy = min(float(candidate[4]) for candidate in improving_candidates)
+        best_energy_value = min(
+            float(candidate[4]) for candidate in improving_candidates
+        )
         initial_value = float(initial_detached)
-        best_gain = initial_value - best_energy
+        best_gain = initial_value - best_energy_value
         eligible = [
             candidate
             for candidate in improving_candidates
@@ -1269,7 +1271,7 @@ def propose_bounded_se3_step(
             best_translation,
             best_delta_rotation,
             best_delta_translation,
-            best_energy,
+            selected_energy,
             best_scale,
             best_trial_index,
         ) = best
@@ -1280,7 +1282,7 @@ def propose_bounded_se3_step(
             delta_rotation=best_delta_rotation,
             delta_translation=best_delta_translation,
             initial_energy=initial_detached,
-            proposed_energy=best_energy,
+            proposed_energy=selected_energy,
             accepted=True,
             line_search_scale=best_scale,
             rotation_gradient_norm=rotation_gradient_norm,

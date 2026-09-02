@@ -28,6 +28,7 @@ from rfd3.inference.symmetry.scaffold_guidance import (
     BoundaryTopology,
     CyclicAxis,
     ScaffoldGuidanceConfig,
+    SE3Proposal,
     insert_master_orbit,
     propose_bounded_se3_step,
     scaffold_orbit_energy,
@@ -1136,7 +1137,7 @@ class OrbitRigidMotifController:
             )
             proposed_rotations = list(current_rotations)
             proposed_translations = list(current_translations)
-            proposals = []
+            proposals: list[SE3Proposal | None] = []
 
             for orbit_index, (
                 motif,
@@ -1168,6 +1169,12 @@ class OrbitRigidMotifController:
 
                 translation_basis = None
                 rotation_basis = None
+                axis_required = motif.mobility_subspace != "bounded_se3"
+                if axis_required and axis is None:
+                    raise ValueError(
+                        f"Mobility subspace {motif.mobility_subspace!r} "
+                        "requires a declared cyclic symmetry axis"
+                    )
                 maximum_step_rotation = motif.per_step_rotation_degrees * motif_window
                 maximum_total_rotation = motif.maximum_rotation_degrees
                 temporal_response = rigid_mobility_response(
@@ -1236,6 +1243,7 @@ class OrbitRigidMotifController:
                         device=current_rotation.device,
                     )
                 if motif.mobility_subspace == "tilt_only":
+                    assert axis is not None
                     axis_direction = axis.direction.to(
                         dtype=current_translation.dtype,
                         device=current_translation.device,
@@ -1282,6 +1290,7 @@ class OrbitRigidMotifController:
                     "radial_rotation",
                     "radial_axial_rotation",
                 }:
+                    assert axis is not None
                     axis_direction = axis.direction.to(
                         dtype=current_translation.dtype,
                         device=current_translation.device,

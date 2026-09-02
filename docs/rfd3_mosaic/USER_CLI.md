@@ -422,11 +422,22 @@ atoms and sequence identities remain fixed.  Mosaic fails validation if a
 masked/Gly selector would retain fixed side-chain atoms, so an input cannot
 claim that sequence is free while leaking the original side chains.
 
-`task: preserve_supplied_geometry` never invents a second generated interface.
-The supplied interface remains the oligomeric contact; generated residues are
-shaped as a monomer scaffold. `sampling.scaffold_packing: symmetric_generated`
-is rejected for this task because it has the different meaning “create a new
-generated--generated symmetry-neighbour interface”.
+By default, `task: preserve_supplied_geometry` preserves the supplied interface
+without inventing another one; generated residues are shaped as a supported
+scaffold. To retain that supplied interface **and** create a second,
+generated--generated symmetry-neighbour interface, opt in explicitly:
+
+```yaml
+task: preserve_supplied_geometry
+sampling:
+  scaffold_packing: symmetric_generated
+```
+
+The two contracts are orthogonal: the complete supplied interface seed stays
+joint-rigid and exact, while only generated scaffold residues receive the new
+cyclic-neighbour packing objective. This hybrid mode currently requires `Cn`
+symmetry, at least one generated region, and
+`execution_backend: explicit_all_copy` (the default).
 
 For a cyclic interface seed, the two physical sides of one supplied interface
 remain a **non-covalent same-copy pair**. A generated protomer may instead join

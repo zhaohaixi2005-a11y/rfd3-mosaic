@@ -24,6 +24,7 @@ from rfd3_mosaic.design_preferences import (
     resolved_preferences_payload,
 )
 from rfd3_mosaic.geometry import build_transform_registry
+from rfd3_mosaic.interface_semantics import resolve_interface_contract
 from rfd3_mosaic.schema import (
     AssemblySpecification,
     load_user_design,
@@ -411,6 +412,9 @@ def lower_experiment_topology(
             audit_metadata={
                 "public_design": str(design_path),
                 "public_task": (design.task.value if design.task is not None else None),
+                "interface_contract": resolve_interface_contract(design).model_dump(
+                    mode="json"
+                ),
                 "fixed_arrangement": design.fixed_arrangement.value,
                 "assembly_shape": (
                     design.assembly_shape.model_dump(mode="json")

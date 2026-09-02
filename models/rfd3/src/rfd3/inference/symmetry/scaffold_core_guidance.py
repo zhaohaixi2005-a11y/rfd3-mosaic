@@ -1175,9 +1175,10 @@ def apply_scaffold_core_guidance(
                 "final": initial.detached_dict(),
             }
         initial.total.backward()
-        gradient = source.grad[0]
-        if gradient is None or not torch.isfinite(gradient).all():
+        source_gradient = source.grad
+        if source_gradient is None or not torch.isfinite(source_gradient).all():
             raise ValueError("Scaffold core guidance produced non-finite gradients")
+        gradient = source_gradient[0]
         ca_gradient_by_token = torch.zeros(
             (len(topology.generated_token_mask), 3),
             dtype=gradient.dtype,

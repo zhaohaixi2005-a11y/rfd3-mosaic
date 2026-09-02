@@ -6,7 +6,10 @@ Mosaic supports two different scientific inputs on one compiler and sampler:
 
 - `preserve_supplied_geometry`: every supplied interface seed is an atomic,
   joint-rigid relation. Mosaic scaffolds between user-declared participants
-  and does not redesign that interface.
+  and does not redesign that interface. By default no second interface is
+  created; `sampling.scaffold_packing: symmetric_generated` explicitly adds a
+  generated--generated cyclic-neighbour interface while the supplied one
+  remains exact.
 - `create_symmetric_interface`: the input is a motif without the requested
   neighbour interface. Generated residues receive packing guidance while the
   motif arrangement is either locked or explicitly allowed to move.
