@@ -9,7 +9,6 @@ from rfd3_mosaic.structure import (
     select_atoms,
 )
 
-
 PDB_TEXT = """\
 ATOM      1  N   ALA A 165      10.000  11.000  12.000  1.00 20.00           N
 ATOM      2  CA  ALA A 165      11.000  11.000  12.000  1.00 20.00           C

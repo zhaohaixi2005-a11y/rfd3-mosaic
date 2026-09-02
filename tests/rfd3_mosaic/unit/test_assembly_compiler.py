@@ -4,13 +4,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from rfd3_mosaic.assembly_frontends import (
-    AssemblyCompilationRequest,
-    AuditRequirement,
-)
 from rfd3_mosaic.assembly_compiler import (
     CompiledAudit,
     compile_experiment_assembly,
+)
+from rfd3_mosaic.assembly_frontends import (
+    AssemblyCompilationRequest,
+    AuditRequirement,
 )
 
 

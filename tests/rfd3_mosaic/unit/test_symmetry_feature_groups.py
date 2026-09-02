@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import numpy as np
 import torch
-
 from rfd3.engine import (
     RFD3InferenceEngine,
     _requires_true_precision,

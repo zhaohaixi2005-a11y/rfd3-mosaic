@@ -15,7 +15,6 @@ from rfd3_mosaic.geometry import (
 from rfd3_mosaic.schema import FrameMethod, InterfacePortFrameSpec
 from rfd3_mosaic.structure import load_selected_atoms
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 LHD101_CONFIG = (
     REPOSITORY_ROOT

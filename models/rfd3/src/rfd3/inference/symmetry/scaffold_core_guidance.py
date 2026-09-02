@@ -286,7 +286,7 @@ def generated_chain_core_centers(
     return torch.stack(ordinary, dim=0), torch.stack(supported, dim=0)
 
 
-def robust_interface_capture_energy(
+def robust_assembly_capture_energy(
     coordinates: torch.Tensor,
     topology: ScaffoldCoreTopology,
     config: ScaffoldCoreGuidanceConfig,
@@ -294,7 +294,7 @@ def robust_interface_capture_energy(
     *,
     capture_progress: float,
 ) -> torch.Tensor:
-    """Capture each rigid seed copy between its two nearest generated cores.
+    """Capture each rigid copy between its two nearest generated cores.
 
     ``capture_progress`` blends the Ho-Yeung-style midpoint of ordinary chain
     COMs into a midpoint of tertiary-support-weighted core centers.  Neighbour
@@ -345,6 +345,25 @@ def robust_interface_capture_energy(
         target = (1.0 - blend) * ordinary_midpoint + blend * supported_midpoint
         losses.append(torch.sum(torch.square((group_center - target) / scale)))
     return torch.stack(losses).mean()
+
+
+def robust_interface_capture_energy(
+    coordinates: torch.Tensor,
+    topology: ScaffoldCoreTopology,
+    config: ScaffoldCoreGuidanceConfig,
+    group_atom_indices: torch.Tensor,
+    *,
+    capture_progress: float,
+) -> torch.Tensor:
+    """Compatibility alias for :func:`robust_assembly_capture_energy`."""
+
+    return robust_assembly_capture_energy(
+        coordinates,
+        topology,
+        config,
+        group_atom_indices,
+        capture_progress=capture_progress,
+    )
 
 
 def build_scaffold_core_topology(

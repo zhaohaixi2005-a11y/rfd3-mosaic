@@ -7,8 +7,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from rfd3_mosaic.compile import expand_symmetry_instances
 from rfd3_mosaic.cli import main
+from rfd3_mosaic.compile import expand_symmetry_instances
 from rfd3_mosaic.design_compiler import lower_user_design
 from rfd3_mosaic.schema import UserDesignSpec
 

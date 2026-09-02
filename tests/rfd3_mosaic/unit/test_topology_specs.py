@@ -3,12 +3,12 @@ import unittest
 from pydantic import ValidationError
 
 from rfd3_mosaic.schema import (
-    MotionGroupInitializationSpec,
     CopyRelationSpec,
     GeometricConstraintsGeometry,
     InterfaceCoverageConstraint,
     InterfaceEdgeSpec,
     LinkLengthSpec,
+    MotionGroupInitializationSpec,
     ReferenceTransformGeometry,
     ScaffoldEndpointSpec,
     ScaffoldLinkSpec,

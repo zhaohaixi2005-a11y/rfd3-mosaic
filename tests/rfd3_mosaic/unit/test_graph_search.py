@@ -7,11 +7,11 @@ import yaml
 from rfd3_mosaic.graph_search import (
     _ranking_key,
     _summary,
+    _with_pose_sample,
     graph_neighbour_assignments,
     search_graph_design,
 )
 from rfd3_mosaic.schema import load_user_design
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = (
@@ -86,13 +86,33 @@ class GraphSearchTestCase(unittest.TestCase):
             self.design,
             interface_ids=("alpha_beta_neighbour",),
         )
-
         self.assertEqual(
             assignments,
             (
                 {"alpha_beta_neighbour": "C3:r1"},
                 {"alpha_beta_neighbour": "C3:r2"},
             ),
+        )
+
+    def test_pose_population_is_initialized_when_user_omits_pose_ranges(self) -> None:
+        first = _with_pose_sample(
+            self.design,
+            sample_index=0,
+            sample_count=4,
+            seed_start=700,
+        )
+        second = _with_pose_sample(
+            self.design,
+            sample_index=1,
+            sample_count=4,
+            seed_start=700,
+        )
+
+        self.assertIn("protomer_seed", first.sampling.initial_poses)
+        self.assertIn("protomer_seed", second.sampling.initial_poses)
+        self.assertNotEqual(
+            first.sampling.initial_poses["protomer_seed"],
+            second.sampling.initial_poses["protomer_seed"],
         )
 
     def test_rejects_combinatorial_search_before_compilation(self) -> None:

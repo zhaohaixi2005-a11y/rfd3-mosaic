@@ -79,7 +79,7 @@ def create_expert_design(**updates: object) -> UserDesignSpec:
 
 
 class DesignPreferencesTestCase(unittest.TestCase):
-    def test_only_mobile_cyclic_cross_chain_supplied_seed_enables_capture(self) -> None:
+    def test_mobile_finite_group_scaffolds_enable_generic_capture(self) -> None:
         supplied = UserDesignSpec.model_validate(
             {
                 "schema_version": 1,
@@ -112,11 +112,11 @@ class DesignPreferencesTestCase(unittest.TestCase):
         )
         resolved = compile_design_preferences(supplied)
         self.assertIs(
-            resolved.sampler_overrides["enable_supplied_interface_robust_capture"],
+            resolved.sampler_overrides["enable_assembly_robust_capture"],
             True,
         )
         self.assertIn(
-            "++inference_sampler.enable_supplied_interface_robust_capture=true",
+            "++inference_sampler.enable_assembly_robust_capture=true",
             resolved.hydra_overrides(),
         )
         self.assertEqual(
@@ -128,13 +128,31 @@ class DesignPreferencesTestCase(unittest.TestCase):
             task="preserve_supplied_geometry",
             preferences={"component_motion": "guided"},
         )
-        self.assertNotIn(
-            "enable_supplied_interface_robust_capture",
-            compile_design_preferences(fixed_motif).sampler_overrides,
+        self.assertTrue(
+            compile_design_preferences(fixed_motif).sampler_overrides[
+                "enable_assembly_robust_capture"
+            ]
         )
         self.assertNotIn(
             "scaffold_core_intra_chain_weight",
             compile_design_preferences(fixed_motif).sampler_overrides,
+        )
+
+        for symmetry_id in ("D3", "T", "O", "I"):
+            finite_group = create_interface_design(
+                symmetry=symmetry_id,
+                preferences={"component_motion": "free"},
+            )
+            self.assertTrue(
+                compile_design_preferences(finite_group).sampler_overrides[
+                    "enable_assembly_robust_capture"
+                ]
+            )
+
+        locked = create_interface_design()
+        self.assertNotIn(
+            "enable_assembly_robust_capture",
+            compile_design_preferences(locked).sampler_overrides,
         )
 
     def test_defaults_keep_arrangement_locked_and_safety_weights(self) -> None:
@@ -164,6 +182,27 @@ class DesignPreferencesTestCase(unittest.TestCase):
             "optimize_components",
         )
         self.assertEqual(pose["subspace"], "radial_axial_rotation")
+        self.assertEqual(pose["max_translation"], 60.0)
+        self.assertEqual(pose["max_rotation_deg"], 90.0)
+
+    def test_polyhedral_guided_motion_uses_full_se3_capture_window(self) -> None:
+        for symmetry_id in ("T", "O", "I"):
+            with self.subTest(symmetry=symmetry_id):
+                design = create_interface_design(
+                    symmetry=symmetry_id,
+                    preferences={"component_motion": "guided"},
+                )
+                pose = compile_constraint_plan(design).operators[0].parameters[
+                    "pose"
+                ]
+                self.assertEqual(pose["subspace"], "bounded_se3")
+                self.assertEqual(pose["max_translation"], 60.0)
+                self.assertEqual(pose["max_rotation_deg"], 90.0)
+                self.assertTrue(
+                    compile_design_preferences(design).sampler_overrides[
+                        "enable_assembly_robust_capture"
+                    ]
+                )
 
     def test_free_motion_uses_bounded_se3(self) -> None:
         design = create_interface_design(preferences={"component_motion": "free"})

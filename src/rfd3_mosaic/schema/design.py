@@ -1361,29 +1361,10 @@ class UserDesignSpec(StrictModel):
                     "fixed interfaces connected by between generation use "
                     "task=preserve_supplied_geometry"
                 )
-            symmetry_id = (
-                self.symmetry if isinstance(self.symmetry, str) else self.symmetry.id
-            )
-            if (
-                self.fixed_arrangement == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
-                and not symmetry_id.startswith(("C", "D"))
-            ):
-                raise ValueError(
-                    "fixed_arrangement=optimize_components currently "
-                    "supports Cn and Dn because its safe orbit-adaptation "
-                    "controller requires a principal symmetry axis; locked "
-                    "generated-interface guidance is topology-neutral"
-                )
-        elif self.fixed_arrangement == FixedArrangementPolicy.OPTIMIZE_COMPONENTS:
-            symmetry_id = (
-                self.symmetry if isinstance(self.symmetry, str) else self.symmetry.id
-            )
-            if not symmetry_id.startswith(("C", "D")):
-                raise ValueError(
-                    "mobile preserve_supplied_geometry currently supports "
-                    "Cn and Dn; the complete supplied interface remains one "
-                    "joint-rigid body while its assembly pose is optimized"
-                )
+            # Cn/Dn guided motion uses their declared primary axis.  T/O/I
+            # use bounded full SE(3) proposals evaluated against local
+            # finite-group neighbours, so optimized rigid-orbit placement is
+            # no longer restricted to axial symmetry.
         return self
 
 

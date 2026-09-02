@@ -253,8 +253,8 @@ def _resolved_guidance_overrides(
     return ResolvedDesignPreferences.model_validate(preferences).hydra_overrides()
 
 
-def _requires_supplied_interface_pose_feasibility(rfd3_input: Path) -> bool:
-    """Return whether compiler-resolved task semantics require the Cn gate."""
+def _requires_assembly_pose_feasibility(rfd3_input: Path) -> bool:
+    """Return whether compiler-resolved semantics require the finite-group gate."""
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
@@ -263,11 +263,17 @@ def _requires_supplied_interface_pose_feasibility(rfd3_input: Path) -> bool:
         return False
     resolved = ResolvedDesignPreferences.model_validate(preferences)
     return bool(
-        resolved.sampler_overrides.get(
-            "enable_supplied_interface_robust_capture",
-            False,
+        resolved.sampler_overrides.get("enable_assembly_robust_capture", False)
+        or resolved.sampler_overrides.get(
+            "enable_supplied_interface_robust_capture", False
         )
     )
+
+
+def _requires_supplied_interface_pose_feasibility(rfd3_input: Path) -> bool:
+    """Backward-compatible name for the generic assembly pose gate."""
+
+    return _requires_assembly_pose_feasibility(rfd3_input)
 
 
 def _require_compiled_pose_feasibility(
@@ -276,21 +282,22 @@ def _require_compiled_pose_feasibility(
 ) -> dict[str, Any] | None:
     """Fail one sampled pose before RFD3 when its required geometry is invalid."""
 
-    if not _requires_supplied_interface_pose_feasibility(compiled_input):
+    if not _requires_assembly_pose_feasibility(compiled_input):
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    report = (manifest.get("validation") or {}).get(
+    validation = manifest.get("validation") or {}
+    report = validation.get("assembly_pose_feasibility") or validation.get(
         "supplied_interface_pose_feasibility"
     )
     if not isinstance(report, dict) or not bool(report.get("evaluated")):
         raise ValueError(
-            "Supplied-interface pose feasibility was required but the compiler "
-            "could not identify a cross-chain Cn joint-rigid seed"
+            "Assembly pose feasibility was required but the compiler could "
+            "not identify a finite-group rigid orbit"
         )
     if not bool(report.get("passed")):
         reasons = report.get("failure_reasons") or ["unspecified geometry failure"]
         raise ValueError(
-            "Pre-RFD3 supplied-interface pose rejected: " + "; ".join(reasons)
+            "Pre-RFD3 assembly pose rejected: " + "; ".join(reasons)
         )
     return report
 

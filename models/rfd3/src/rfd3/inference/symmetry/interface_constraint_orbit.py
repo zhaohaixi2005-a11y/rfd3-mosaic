@@ -14,7 +14,6 @@ from typing import Any, Literal
 
 import torch
 
-
 _ORBIT_FEATURES = {
     "motif_constraint_group_atom_indices",
     "motif_constraint_group_atom_mask",

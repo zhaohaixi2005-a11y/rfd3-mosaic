@@ -1,7 +1,11 @@
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
+
+from rfd3_mosaic.rfd3_central_motif_probe import (
+    build_central_motif_probe_input,
+)
 
 
 def _c3_registry() -> tuple[list[str], dict[str, list[list[float]]]]:
@@ -25,10 +29,6 @@ def _c3_registry() -> tuple[list[str], dict[str, list[list[float]]]]:
     ]
     order = ["C3:e", "C3:r1", "C3:r2"]
     return order, {"C3:e": identity, "C3:r1": r1, "C3:r2": r2}
-
-from rfd3_mosaic.rfd3_central_motif_probe import (
-    build_central_motif_probe_input,
-)
 
 
 class CentralMotifProbeTestCase(unittest.TestCase):

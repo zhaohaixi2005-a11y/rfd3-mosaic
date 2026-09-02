@@ -7,7 +7,6 @@ from typing import Callable
 
 import torch
 
-
 SymmetryProjector = Callable[[torch.Tensor], torch.Tensor]
 ConstraintRestorer = Callable[
     [torch.Tensor, torch.Tensor, torch.Tensor],

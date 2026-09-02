@@ -2,6 +2,21 @@
 
 ## 2026-08-31 layered SE(3) capture correction
 
+- Layered rigid capture is now a finite-symmetry assembly operation rather
+  than an LHD101/Cn special case. Movable Cn/Dn assemblies use their physical
+  radial/axial frame; movable T/O/I assemblies use bounded full SE(3) and
+  nearest-copy geometry, without inventing a privileged polyhedral axis.
+- Ordinary movable components share one loose anti-divergence envelope of
+  `60 A / 90 deg` and early per-proposal limits of `2.5 A / 6 deg`. These are
+  not target displacements. A proposal commits only when the combined
+  capture, junction, scaffold-core, topology and pose-prior objective improves
+  while clash, exact-symmetry and joint-rigid contracts remain valid. Locked
+  components retain exactly zero mobility.
+- Before RFD3, independently seeded pose populations retain only hard-feasible
+  placements: no fixed-group clash, reachable generated paths and unobstructed
+  endpoint corridors. Cyclic tasks additionally use their physical wedge and
+  tangent geometry; Dn/T/O/I use local finite-group neighbours. Feasible poses
+  remain a population and are not collapsed to one claimed optimum.
 - Ordinary `create_symmetric_interface` and explicit cross-chain
   supplied-interface designs now enable intra-chain scaffold-core guidance by
   default. An explicit zero remains a supported native-RFD3 ablation.
@@ -9,18 +24,18 @@
   a normalized smooth maximum over contiguous sequence windows. This targets
   long unsupported generated arms without inventing a universal structure
   pass threshold.
-- Movable cyclic supplied interfaces receive a pre-RFD3 feasibility gate for
-  cyclic-wedge occupancy, local tangential orientation, linker reachability
-  and endpoint-corridor geometry. Rejected independent poses are resampled;
-  feasible poses are not collapsed to one optimum.
+- Movable cyclic supplied interfaces additionally receive a pre-RFD3
+  feasibility gate for cyclic-wedge occupancy and local tangential
+  orientation.
 - Early full-SE(3) capture probes signed radial, tangential and axial
   translation/rotation directions. A design-seeded near-optimal gain pool
   preserves replayable pose diversity while accepting only objective-lowering
   candidates. Settle and polish retain projected-gradient line search.
-- Supplied-interface capture transitions from a Ho-Yeung-style neighbouring
-  chain midpoint to tertiary-support-weighted core centers, reducing the
-  leverage of long unsupported arms. Locked components remain immobile and
-  complete joint-rigid seed geometry remains exact.
+- Assembly capture transitions from a Ho-Yeung-style neighbouring-chain
+  midpoint to tertiary-support-weighted generated-core centers, reducing the
+  leverage of long unsupported arms. The same controller is available to
+  movable fixed-motif and supplied-interface tasks. Complete joint-rigid seed
+  geometry remains exact.
 - Cyclic `nearest_adjacent` scaffolding now has an explicit end-to-end chain
   count contract: one cross-copy `between` path produces exactly `n` protein
   scaffold chains under `Cn`, even when the supplied non-covalent seed has
@@ -30,8 +45,8 @@
   topology tokens whenever their backbone CA is fixed. Their unfixed side
   chains are no longer misclassified as generated scaffold by boundary or
   scaffold-core guidance.
-- The complete Mosaic CPU unit suite passes `993` tests plus `119` subtests.
-  A matched 50-step GPU cohort is still required before claiming a scientific
+- The complete Mosaic CPU unit suite passes `995` tests. A matched GPU cohort
+  is still required before claiming a scientific
   improvement in helix/strand content, unsupported-run length or monomer
   packing.
 

@@ -147,11 +147,25 @@ def _declares_cross_chain_supplied_interface(design: UserDesignSpec) -> bool:
     return any(len(chains) >= 2 for chains in coupled.values())
 
 
-def _uses_cyclic_symmetry(design: UserDesignSpec) -> bool:
+def _uses_supported_finite_symmetry(design: UserDesignSpec) -> bool:
     symmetry_id = (
         design.symmetry if isinstance(design.symmetry, str) else design.symmetry.id
     )
-    return str(symmetry_id).startswith("C")
+    normalized = str(symmetry_id).strip().upper()
+    if normalized in {"T", "O", "I"}:
+        return True
+    return bool(
+        len(normalized) >= 2
+        and normalized[0] in {"C", "D"}
+        and normalized[1:].isdigit()
+        and int(normalized[1:]) >= 2
+    )
+
+
+def _declares_generated_scaffold(design: UserDesignSpec) -> bool:
+    """Return whether a movable assembly has scaffold coordinates to capture."""
+
+    return bool(design.generation or design.connections)
 
 
 def effective_scaffold_core_weights(
@@ -257,9 +271,18 @@ def compile_design_preferences(
                 == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
                 else ComponentMotionPreference.LOCKED
             )
+    symmetry_id = (
+        design.symmetry if isinstance(design.symmetry, str) else design.symmetry.id
+    )
+    has_primary_axis = str(symmetry_id).strip().upper().startswith(("C", "D"))
     mobility_subspace = {
         ComponentMotionPreference.LOCKED: None,
-        ComponentMotionPreference.GUIDED: "radial_axial_rotation",
+        # A radial/axial decomposition is physical for Cn/Dn only.  Guided
+        # polyhedral motion uses bounded full SE(3) with local finite-group
+        # neighbours rather than privileging an arbitrary display axis.
+        ComponentMotionPreference.GUIDED: (
+            "radial_axial_rotation" if has_primary_axis else "bounded_se3"
+        ),
         ComponentMotionPreference.FREE: "bounded_se3",
     }[motion]
 
@@ -309,14 +332,18 @@ def compile_design_preferences(
             overrides["scaffold_core_inter_chain_excess_penalty"] = (
                 inter_chain_excess_penalty
             )
+    # Layered rigid capture is a finite-group assembly operation, not a Cn or
+    # LHD101 special case.  It is meaningful whenever a design declares a
+    # movable rigid orbit and generated scaffold coordinates.  Cn/Dn use a
+    # symmetry-aligned local basis; T/O/I use a Cartesian basis spanning the
+    # same full SE(3).  Locked arrangements remain excluded by construction.
     if (
-        design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY
-        and motion != ComponentMotionPreference.LOCKED
-        and _uses_cyclic_symmetry(design)
-        and _declares_cross_chain_supplied_interface(design)
+        motion != ComponentMotionPreference.LOCKED
+        and _uses_supported_finite_symmetry(design)
+        and _declares_generated_scaffold(design)
     ):
-        overrides["enable_supplied_interface_robust_capture"] = True
-        overrides["supplied_interface_capture_weight"] = 1.0
+        overrides["enable_assembly_robust_capture"] = True
+        overrides["assembly_capture_weight"] = 1.0
     return ResolvedDesignPreferences(
         packing=preferences.packing,
         cavity=preferences.cavity,

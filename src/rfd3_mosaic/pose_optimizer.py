@@ -369,28 +369,26 @@ def initialize_global_seed_layout(
         raise ValueError("global seed layout sample_count must be positive")
     if not 0 <= sample_index < sample_count:
         raise ValueError("global seed layout sample_index is out of range")
-    if not isinstance(design.symmetry, str):
-        raise NotImplementedError(
-            "Global seed-layout initialization requires a named finite "
-            "symmetry"
-        )
-    cyclic_or_dihedral = design.symmetry.startswith(("C", "D"))
-    polyhedral = design.symmetry in {"T", "O", "I"}
+    symmetry_id = (
+        design.symmetry if isinstance(design.symmetry, str) else design.symmetry.id
+    )
+    cyclic_or_dihedral = symmetry_id.startswith(("C", "D"))
+    polyhedral = symmetry_id in {"T", "O", "I"}
     if not cyclic_or_dihedral and not polyhedral:
         raise NotImplementedError(
             "Global seed-layout initialization supports Cn/Dn/T/O/I"
         )
     if cyclic_or_dihedral:
         try:
-            cyclic_order = int(design.symmetry[1:])
+            cyclic_order = int(symmetry_id[1:])
         except ValueError as error:
             raise ValueError(
-                f"Invalid cyclic/dihedral symmetry {design.symmetry!r}"
+                f"Invalid cyclic/dihedral symmetry {symmetry_id!r}"
             ) from error
     else:
         cyclic_order = 0
-    group_order = symmetry_group_action_count(design.symmetry)
-    is_dihedral = design.symmetry.startswith("D")
+    group_order = symmetry_group_action_count(symmetry_id)
+    is_dihedral = symmetry_id.startswith("D")
     component_ids = tuple(sorted(design.components))
     if not component_ids:
         raise ValueError("Global seed layout requires assembly components")

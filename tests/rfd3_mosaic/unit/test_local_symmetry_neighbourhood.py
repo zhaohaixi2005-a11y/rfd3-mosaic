@@ -2,7 +2,6 @@ import math
 import unittest
 
 import torch
-
 from rfd3.inference.symmetry.local_neighbourhood import (
     build_local_symmetry_neighbourhood,
     crop_features_to_local_neighbourhood,

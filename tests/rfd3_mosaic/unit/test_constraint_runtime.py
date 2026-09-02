@@ -1,7 +1,6 @@
 import unittest
 
 import torch
-
 from rfd3.inference.symmetry.constraint_runtime import (
     ConstraintProposalResult,
     MosaicConstraintRuntime,

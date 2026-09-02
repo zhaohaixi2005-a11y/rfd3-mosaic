@@ -40,7 +40,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
     project_generated_polymer_continuity,
-    robust_interface_capture_energy,
+    robust_assembly_capture_energy,
     scaffold_core_energy,
 )
 from rfd3.inference.symmetry.scaffold_guidance import (
@@ -220,8 +220,12 @@ class SampleDiffusionConfig:
     scaffold_core_intra_chain_weight: float = 0.0
     scaffold_core_inter_chain_weight: float = 1.0
     scaffold_core_inter_chain_excess_penalty: float = 0.0
-    # Supplied-interface-only rigid capture.  The compiler enables this for a
-    # movable joint-rigid seed; it is never inferred from symmetry alone.
+    # Finite-group assembly capture for any declared movable rigid orbit with
+    # generated scaffold coordinates.  Cn/Dn use a symmetry-aligned basis;
+    # T/O/I use full Cartesian SE(3).  The supplied-interface names are kept
+    # as backward-compatible aliases for frozen historical inputs.
+    enable_assembly_robust_capture: bool = False
+    assembly_capture_weight: float = 1.0
     enable_supplied_interface_robust_capture: bool = False
     supplied_interface_capture_weight: float = 1.0
     # Mosaic may request an independent kinematic safety projection for
@@ -702,7 +706,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
             or bool(self.enable_generated_cross_chain_topology_guidance)
         )
-        robust_capture_active = bool(self.enable_supplied_interface_robust_capture)
+        robust_capture_active = bool(
+            self.enable_assembly_robust_capture
+            or self.enable_supplied_interface_robust_capture
+        )
+        robust_capture_weight = (
+            float(self.assembly_capture_weight)
+            if self.enable_assembly_robust_capture
+            else float(self.supplied_interface_capture_weight)
+        )
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
         )
@@ -713,23 +725,33 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
         if robust_capture_active and not exact_state:
             raise ValueError(
-                "Supplied-interface robust capture requires exact orbit-average "
+                "Assembly robust capture requires exact orbit-average "
                 "state and coupled-noise modes"
             )
         if robust_capture_active and not self.enable_orbit_rigid_motif_mobility:
             raise ValueError(
-                "Supplied-interface robust capture requires one declared "
+                "Assembly robust capture requires one declared "
                 "joint-rigid mobile motif orbit"
             )
         if robust_capture_active and self.motif_mobility_proposal_source != (
             "scaffold_boundary"
         ):
             raise ValueError(
-                "Supplied-interface robust capture requires "
+                "Assembly robust capture requires "
                 "motif_mobility_proposal_source=scaffold_boundary"
             )
-        if float(self.supplied_interface_capture_weight) < 0.0:
-            raise ValueError("supplied_interface_capture_weight cannot be negative")
+        if robust_capture_weight < 0.0:
+            raise ValueError("assembly capture weight cannot be negative")
+        if (
+            self.enable_assembly_robust_capture
+            and self.enable_supplied_interface_robust_capture
+            and float(self.assembly_capture_weight)
+            != float(self.supplied_interface_capture_weight)
+        ):
+            raise ValueError(
+                "Canonical and legacy assembly capture weights must agree "
+                "when both capture flags are enabled"
+            )
         if polymer_continuity_active and not exact_state:
             raise ValueError(
                 "Generated polymer continuity guidance requires exact "
@@ -1811,7 +1833,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
             or bool(self.enable_generated_cross_chain_topology_guidance)
         )
-        robust_capture_active = bool(self.enable_supplied_interface_robust_capture)
+        robust_capture_active = bool(
+            self.enable_assembly_robust_capture
+            or self.enable_supplied_interface_robust_capture
+        )
+        robust_capture_weight = (
+            float(self.assembly_capture_weight)
+            if self.enable_assembly_robust_capture
+            else float(self.supplied_interface_capture_weight)
+        )
         scaffold_core_topology_required = scaffold_core_active or robust_capture_active
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
@@ -2149,7 +2179,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                             max(0.0, local_window / capture_fraction),
                                         )
                                         capture_terms = [
-                                            robust_interface_capture_energy(
+                                            robust_assembly_capture_energy(
                                                 candidate_state,
                                                 scaffold_core_topology,
                                                 scaffold_core_guidance_config,
@@ -2161,7 +2191,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                         core_total = (
                                             core_total
                                             + float(
-                                                self.supplied_interface_capture_weight
+                                                robust_capture_weight
                                             )
                                             * torch.stack(capture_terms).mean()
                                         )
@@ -2964,6 +2994,7 @@ class ConditionalDiffusionSampler:
                 "enable_graph_interface_guidance",
                 "enable_symmetric_scaffold_packing",
                 "enable_generated_polymer_continuity_guidance",
+                "enable_assembly_robust_capture",
                 "enable_supplied_interface_robust_capture",
             ):
                 if kwargs.get(flag, False):

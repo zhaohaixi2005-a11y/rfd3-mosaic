@@ -1,18 +1,18 @@
-from contextlib import redirect_stdout
-from io import StringIO
 import tempfile
 import unittest
-from unittest.mock import patch
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 from pydantic import ValidationError
 
+from rfd3_mosaic.cli import _write_public_experiment, main
 from rfd3_mosaic.constraint_plan import (
     ConstraintStage,
     compile_constraint_plan,
 )
-from rfd3_mosaic.cli import _write_public_experiment, main
 from rfd3_mosaic.schema import UserDesignSpec, load_user_design
 
 
@@ -285,8 +285,8 @@ class UserDesignConstraintTestCase(unittest.TestCase):
         self.assertEqual(pose["mode"], "bounded_mobile")
         self.assertEqual(pose["subspace"], "radial_axial_rotation")
         self.assertEqual(pose["proposal"], "scaffold_objectives")
-        self.assertEqual(pose["max_translation"], 4.0)
-        self.assertEqual(pose["max_rotation_deg"], 10.0)
+        self.assertEqual(pose["max_translation"], 60.0)
+        self.assertEqual(pose["max_rotation_deg"], 90.0)
 
     def test_create_interface_task_defaults_to_locked_fixed_arrangement(
         self,
@@ -348,8 +348,8 @@ class UserDesignConstraintTestCase(unittest.TestCase):
             pose = operator.parameters["pose"]
             self.assertEqual(pose["mode"], "bounded_mobile")
             self.assertEqual(pose["subspace"], "bounded_se3")
-            self.assertEqual(pose["max_translation"], 15.0)
-            self.assertEqual(pose["max_rotation_deg"], 45.0)
+            self.assertEqual(pose["max_translation"], 60.0)
+            self.assertEqual(pose["max_rotation_deg"], 90.0)
             self.assertEqual(operator.coupling_group, "supplied_interface")
 
     def test_locked_create_interface_is_topology_neutral(self) -> None:
@@ -368,27 +368,25 @@ class UserDesignConstraintTestCase(unittest.TestCase):
         )
         self.assertEqual(declared.fixed_arrangement.value, "locked")
 
-    def test_polyhedral_component_optimization_fails_closed(self) -> None:
-        with self.assertRaisesRegex(
-            ValidationError,
-            "optimize_components currently supports Cn and Dn",
-        ):
-            design(
-                task="create_symmetric_interface",
-                fixed_arrangement="optimize_components",
-                symmetry="T",
-                generation=[
-                    {
-                        "kind": "terminal",
-                        "anchor": "A12-20",
-                        "terminus": "n",
-                        "length": 35,
-                    }
-                ],
-                constraints=[
-                    {"kind": "fixed_xyz", "selector": "A12-20"}
-                ],
-            )
+    def test_polyhedral_component_optimization_uses_bounded_se3(self) -> None:
+        declared = design(
+            task="create_symmetric_interface",
+            fixed_arrangement="optimize_components",
+            symmetry="T",
+            preferences={"component_motion": "guided"},
+            generation=[
+                {
+                    "kind": "terminal",
+                    "anchor": "A12-20",
+                    "terminus": "n",
+                    "length": 35,
+                }
+            ],
+            constraints=[{"kind": "fixed_xyz", "selector": "A12-20"}],
+        )
+        pose = compile_constraint_plan(declared).operators[0].parameters["pose"]
+        self.assertEqual(pose["mode"], "bounded_mobile")
+        self.assertEqual(pose["subspace"], "bounded_se3")
 
     def test_preserve_task_rejects_custom_mobile_pose(self) -> None:
         with self.assertRaisesRegex(

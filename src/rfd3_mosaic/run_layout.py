@@ -6,7 +6,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 

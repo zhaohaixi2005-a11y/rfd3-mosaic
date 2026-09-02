@@ -27,6 +27,7 @@ from rfd3_mosaic.feasibility_restoration import (
     bind_feasible_linker_lengths,
 )
 from rfd3_mosaic.output import compile_standalone
+from rfd3_mosaic.pose_optimizer import initialize_global_seed_layout
 from rfd3_mosaic.schema import (
     CopyRelationSpec,
     UserDesignSpec,
@@ -160,6 +161,7 @@ def _with_pose_sample(
     design: UserDesignSpec,
     *,
     sample_index: int,
+    sample_count: int,
     seed_start: int,
 ) -> UserDesignSpec:
     sampling = design.sampling
@@ -193,12 +195,16 @@ def _with_pose_sample(
                 )
             }
         )
-    if sample_index:
-        raise ValueError(
-            "pose_samples greater than one requires sampling.initial_pose "
-            "or sampling.initial_poses"
-        )
-    return design
+    seeded = design.model_copy(
+        update={
+            "sampling": sampling.model_copy(update={"seed": int(seed_start)})
+        }
+    )
+    return initialize_global_seed_layout(
+        seeded,
+        sample_index=sample_index,
+        sample_count=sample_count,
+    )
 
 
 def _summary(
@@ -742,14 +748,6 @@ def search_graph_design(
         raise ValueError("pose_samples must be positive")
     if top_count < 1:
         raise ValueError("top_count must be positive")
-    if (
-        pose_samples > 1
-        and design.sampling.initial_pose is None
-        and not design.sampling.initial_poses
-    ):
-        raise ValueError(
-            "pose_samples greater than one requires a declared initial pose"
-        )
     searched_interface_ids = (
         tuple(interface_ids) if interface_ids is not None else None
     )
@@ -815,6 +813,7 @@ def search_graph_design(
                 candidate_design = _with_pose_sample(
                     assigned,
                     sample_index=pose_sample_index,
+                    sample_count=pose_samples,
                     seed_start=seed_start,
                 )
                 candidate_directory = candidates_root / candidate_id

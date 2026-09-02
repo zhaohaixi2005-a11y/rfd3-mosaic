@@ -8,7 +8,6 @@ from rfd3_mosaic.compile import (
 from rfd3_mosaic.schema import CompiledInstanceSet, ScaffoldLinkInstance
 from rfd3_mosaic.topology import compile_scaffold_graph
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 LHD101_CONFIG = (
     REPOSITORY_ROOT

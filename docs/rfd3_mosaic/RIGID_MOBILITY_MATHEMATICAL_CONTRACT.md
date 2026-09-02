@@ -304,10 +304,11 @@ acceptance threshold. It is combined with long-range contacts and
 length-normalized radius of gyration; exact fixed coordinates remain owned by
 the constraint projector.
 
-### Robust supplied-interface capture
+### Robust finite-assembly capture
 
-For a movable joint-rigid supplied interface in \(C_n\), early capture adds a
-center objective without altering any coordinate inside the seed. For each
+For a movable joint-rigid component under supported finite symmetry, early
+capture adds a center objective without altering any coordinate inside the
+rigid group. For each
 generated residue \(i\), let \(s_i\) be its smooth sequence-distant contact
 support and define
 
@@ -324,7 +325,7 @@ C_k^{\mathrm{COM}}=\frac{1}{N_k}\sum_i x_i,
 C_k^{\mathrm{core}}=\frac{\sum_i w_i x_i}{\sum_i w_i}.
 \]
 
-For each symmetry copy of the supplied seed, the two nearest generated-chain
+For each symmetry copy of the rigid group, the two nearest generated-chain
 identities are selected from detached geometry. Their centers remain
 differentiable. If \(u_c\in[0,1]\) is progress through the capture phase, the
 target midpoint is
@@ -344,8 +345,11 @@ E_{\mathrm{capture}}=
 
 Thus the early Ho-Yeung-style midpoint supplies a broad capture signal before
 a core exists, while later capture is less influenced by long unsupported
-arms. The term is active only during `capture`, only for compiler-recognized
-movable cross-chain supplied seeds, and never for locked components.
+arms. Neighbours are local finite-group neighbours: Cn/Dn can use their
+physical symmetry-aligned frame, whereas T/O/I use bounded Cartesian SE(3)
+without a fabricated global axis. The term is active only during `capture`,
+only for compiler-recognized movable rigid groups with generated scaffold, and
+never for locked components.
 
 ## Deterministic SE(3) proposal
 
@@ -419,17 +423,17 @@ expert declaration may override them explicitly.
 | Public task and arrangement | Motion subspace | Active window | Base response | Per-update limits | Cumulative limits |
 | --- | --- | ---: | ---: | ---: | ---: |
 | any task, `locked` | none | none | 0 | 0 A / 0 deg | 0 A / 0 deg |
-| `create_symmetric_interface`, `optimize_components` | radial + axial translation and rotation; axis-free groups use bounded SE(3) | 5%-75% | 0.2 | 0.25 A / 1 deg | 4 A / 10 deg |
-| `preserve_supplied_geometry`, `optimize_components` | radial + axial translation and rotation; axis-free groups use bounded SE(3) | 5%-85% | 0.4 | 0.5 A / 2.5 deg | 15 A / 45 deg |
+| ordinary movable finite-symmetry task, `optimize_components` | Cn/Dn: radial + axial translation and rotation; T/O/I or explicit free motion: bounded SE(3) | 2%-88% | 0.55 | 2.5 A / 6 deg | 60 A / 90 deg |
 
-The larger supplied-interface envelope is intentional: all atoms inside the
-declared interface seed remain rigid, while the complete seed may search a
-substantially different orbit pose. The table describes capability, not an
-instruction to consume the full allowance. Gradient projection, line search,
-the soft prior and transaction safety can accept a smaller update or no
-update. Thus an observed 0.3 A displacement under a 15 A limit means that no
-larger tested step lowered the current declared objective safely; it does not
-mean that the component was hard-limited to 0.3 A.
+The `60 A / 90 deg` envelope is deliberately a loose anti-divergence guard,
+not a preferred displacement and not a quality score. All atoms inside a
+declared rigid component remain rigid while its complete orbit may cross a
+large distance to reach a locally packed state. Movement stops because no
+tested safe proposal lowers the declared objective, not because a prescribed
+distance was consumed. The generated polymer is therefore not intended to
+compensate for a bad movable pose by becoming a long loop. Pre-RFD3 hard
+feasibility, objective descent, line search and transaction safety can accept
+a smaller update or no update.
 
 The objective calibration used by the ordinary scaffold controller is:
 

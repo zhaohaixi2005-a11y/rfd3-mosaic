@@ -11,7 +11,6 @@ from typing import Any
 from rfd3_mosaic.run_index import list_run_records, relocate_run_record
 from rfd3_mosaic.run_layout import dated_run_directory, safe_layout_name, utc_run_day
 
-
 SCHEMA_VERSION = 1
 _MOVABLE_STATES = frozenset({"completed", "failed"})
 

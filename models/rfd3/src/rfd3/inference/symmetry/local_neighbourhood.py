@@ -10,12 +10,11 @@ therefore be tested independently before the initializer and denoiser are
 switched from the explicit all-copy representation.
 """
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import torch
-
 from rfd3.inference.symmetry.atom_array import (
     FIXED_ENTITY_ID,
     FIXED_TRANSFORM_ID,

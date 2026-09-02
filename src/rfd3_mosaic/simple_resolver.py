@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable
 
 import yaml
 
+from rfd3_mosaic.constraint_plan import ordinary_assembly_capture_pose
 from rfd3_mosaic.design_compiler import (
     lower_user_design,
     parse_public_selector,
@@ -74,28 +75,20 @@ from rfd3_mosaic.topology.symmetry_connectivity import (
 _CYCLIC = re.compile(r"^C(?P<order>[2-9][0-9]*)$")
 
 
-def _ordinary_component_pose(intent: SimpleCageIntentSpec) -> dict[str, Any]:
+def _ordinary_component_pose(
+    intent: SimpleCageIntentSpec,
+    symmetry_id: str,
+) -> dict[str, Any]:
     """Lower one high-level motion choice without exposing SE(3) tuning."""
 
     motion = intent.preferences.component_motion
     if motion is None or motion.value == "locked":
         return {"mode": "fixed"}
-    return {
-        "mode": "bounded_mobile",
-        "subspace": (
-            "bounded_se3"
-            if motion.value == "free"
-            else "radial_axial_rotation"
-        ),
-        "proposal": "scaffold_objectives",
-        "max_translation": 4.0,
-        "max_rotation_deg": 10.0,
-        "start_fraction": 0.05,
-        "end_fraction": 0.75,
-        "response": 0.2,
-        "max_step_translation": 0.25,
-        "max_step_rotation_deg": 1.0,
-    }
+    normalized = symmetry_id.strip().upper()
+    full_se3 = motion.value == "free" or normalized in {"T", "O", "I"}
+    return ordinary_assembly_capture_pose(
+        full_se3=full_se3
+    ).model_dump(mode="json")
 
 
 @dataclass(frozen=True)
@@ -313,7 +306,7 @@ def _enumerate_mixed_component_interface_candidates(
     for symmetry_id in requested:
         reasons: list[str] = []
         try:
-            group_order = symmetry_group_action_count(symmetry_id)
+            symmetry_group_action_count(symmetry_id)
         except ValueError as error:
             reasons.append(str(error))
             rejections[symmetry_id] = reasons
@@ -384,7 +377,7 @@ def _enumerate_mixed_component_interface_candidates(
                     "finite_orbit_action": _action_payload(
                         participant_plan.action
                     ),
-                    "pose": _ordinary_component_pose(intent),
+                    "pose": _ordinary_component_pose(intent, symmetry_id),
                 }
                 ports[port_id] = {
                     "component": component_id,
@@ -1052,7 +1045,7 @@ def _enumerate_single_supplied_hyperedge_candidates(
                 component_id: {
                     "selectors": component_selectors,
                     "geometry": "joint_rigid",
-                    "pose": _ordinary_component_pose(intent),
+                    "pose": _ordinary_component_pose(intent, symmetry_id),
                 }
             },
             "ports": ports,
@@ -1957,7 +1950,7 @@ def _enumerate_multi_seed_candidates(
         components[component_id] = {
             "selectors": component_selectors,
             "geometry": "joint_rigid",
-            "pose": _ordinary_component_pose(intent),
+            "pose": _ordinary_component_pose(intent, symmetry_id),
         }
         interface_ports: list[str] = []
         for side_index, participant in enumerate(seed.participants):
@@ -2516,7 +2509,10 @@ def enumerate_simple_design_candidates(
                         component_id: {
                             "selectors": [selectors[left], selectors[right]],
                             "geometry": "joint_rigid",
-                            "pose": _ordinary_component_pose(intent),
+                            "pose": _ordinary_component_pose(
+                                intent,
+                                symmetry_id,
+                            ),
                         }
                     },
                     "ports": {

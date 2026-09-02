@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import biotite.structure as struc
 import numpy as np
-
 from rfd3.inference.symmetry.frames import (
     RTs_to_framecoords,
     framecoords_to_RTs,
@@ -17,6 +16,7 @@ from rfd3.inference.symmetry.symmetry_utils import (
     _resolve_symmetry_frames,
     make_symmetric_atom_array_for_partial_diffusion,
 )
+
 from rfd3_mosaic.geometry import build_polyhedral_registry
 from rfd3_mosaic.schema.specs import SymmetryType
 

@@ -8,13 +8,12 @@ from rfd3_mosaic.compile import (
     load_interface_seed_config,
 )
 from rfd3_mosaic.schema import InterfaceSeedSpec
-from rfd3_mosaic.topology.stabilizer_cosets import (
-    stabilizer_coset_hypotheses,
-)
 from rfd3_mosaic.topology.component_incidence import (
     enumerate_binary_interface_incidence_plans,
 )
-
+from rfd3_mosaic.topology.stabilizer_cosets import (
+    stabilizer_coset_hypotheses,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 LHD101_CONFIG = (

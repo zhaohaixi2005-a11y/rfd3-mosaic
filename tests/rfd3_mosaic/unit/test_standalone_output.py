@@ -205,6 +205,10 @@ class StandaloneOutputTestCase(unittest.TestCase):
     def test_manifest_reports_supplied_interface_pose_feasibility(self) -> None:
         manifest = json.loads(self.outputs.manifest_path.read_text(encoding="utf-8"))
         report = manifest["validation"]["supplied_interface_pose_feasibility"]
+        self.assertEqual(
+            report,
+            manifest["validation"]["assembly_pose_feasibility"],
+        )
 
         self.assertTrue(report["evaluated"])
         self.assertTrue(report["passed"])

@@ -1,7 +1,6 @@
 import unittest
 
 import torch
-
 from rfd3.model.layers.block_utils import (
     create_attention_indices,
     get_sparse_attention_indices_with_inter_chain,

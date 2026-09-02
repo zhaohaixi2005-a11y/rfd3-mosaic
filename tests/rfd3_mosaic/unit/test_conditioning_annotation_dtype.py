@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 import numpy as np
 from biotite.structure import AtomArray, BondList, BondType
-
 from rfd3.transforms.conditioning_base import (
     UnindexFlaggedTokens,
     convert_existing_annotations_to_bool,

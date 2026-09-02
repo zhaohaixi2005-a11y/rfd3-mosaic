@@ -1,8 +1,8 @@
-from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
 import unittest
+from pathlib import Path
 
 from rfd3_mosaic.provenance.software import verify_file_identities
 from rfd3_mosaic.provenance.source_snapshot import (

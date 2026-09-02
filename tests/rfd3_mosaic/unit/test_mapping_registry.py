@@ -14,7 +14,6 @@ from rfd3_mosaic.provenance import (
     build_mapping_registry,
 )
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 LHD101_CONFIG = (
     REPOSITORY_ROOT

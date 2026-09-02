@@ -517,8 +517,8 @@ class DesignCompilerTestCase(unittest.TestCase):
             mobility.effective_proposal.value,
             "scaffold_objectives",
         )
-        self.assertEqual(mobility.bounds.max_translation, 4.0)
-        self.assertEqual(mobility.bounds.max_rotation_deg, 10.0)
+        self.assertEqual(mobility.bounds.max_translation, 60.0)
+        self.assertEqual(mobility.bounds.max_rotation_deg, 90.0)
 
     def test_simple_create_interface_requires_explicit_multi_component_graph(
         self,

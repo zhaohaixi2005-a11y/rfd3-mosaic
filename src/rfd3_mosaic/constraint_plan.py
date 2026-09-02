@@ -87,44 +87,47 @@ def _controlled_dofs(constraint: ConstraintClause) -> tuple[str, ...]:
     return tuple(result)
 
 
-_CREATE_INTERFACE_ORBIT_POSE = FixedComponentPoseSpec(
+_ASSEMBLY_CAPTURE_ORBIT_POSE = FixedComponentPoseSpec(
     mode="bounded_mobile",
-    # Ordinary interface design uses the symmetry axis as a physically
-    # meaningful coordinate system: optimize cage radius, axial placement and
-    # full rigid-body orientation while suppressing arbitrary tangential drift.
-    # Expert declarations can still request unrestricted bounded_se3.
+    # These are trust-region limits, not requested displacements.  The
+    # layered assembly objective may use the larger early window to recover
+    # from a poor but feasible starting pose; every proposal still has to
+    # lower the declared capture/junction/core/topology objective and the
+    # late schedule shrinks the proposal scale.  Locked components never use
+    # this policy.
     subspace="radial_axial_rotation",
     proposal="scaffold_objectives",
-    max_translation=4.0,
-    max_rotation_deg=10.0,
-    start_fraction=0.05,
-    end_fraction=0.75,
-    response=0.2,
-    max_step_translation=0.25,
-    max_step_rotation_deg=1.0,
+    # A deliberately loose cumulative guard: convergence is determined by
+    # objective improvement and contact formation, not by exhausting this
+    # number.  The pre-RFD3 feasibility stage should normally start well
+    # inside it.
+    max_translation=60.0,
+    max_rotation_deg=90.0,
+    start_fraction=0.02,
+    end_fraction=0.88,
+    response=0.55,
+    max_step_translation=2.5,
+    max_step_rotation_deg=6.0,
 )
 
 
-_CREATE_INTERFACE_FREE_ORBIT_POSE = _CREATE_INTERFACE_ORBIT_POSE.model_copy(
-    update={"subspace": "bounded_se3"}
-)
+def ordinary_assembly_capture_pose(
+    *,
+    full_se3: bool = False,
+) -> FixedComponentPoseSpec:
+    """Return the one ordinary movable-orbit policy used by all frontends.
 
-_PRESERVE_INTERFACE_ORBIT_POSE = _CREATE_INTERFACE_ORBIT_POSE.model_copy(
-    update={
-        "max_translation": 15.0,
-        "max_rotation_deg": 45.0,
-        "end_fraction": 0.85,
-        "response": 0.4,
-        "max_step_translation": 0.5,
-        "max_step_rotation_deg": 2.5,
-    }
-)
+    Cn/Dn guided designs retain their meaningful radial/axial basis.  T/O/I
+    and explicitly free designs span bounded full SE(3).  Keeping this helper
+    public prevents the ordinary intent resolver and task compiler from
+    silently drifting back to different movement limits.
+    """
 
-_PRESERVE_INTERFACE_FREE_ORBIT_POSE = (
-    _PRESERVE_INTERFACE_ORBIT_POSE.model_copy(
+    if not full_se3:
+        return _ASSEMBLY_CAPTURE_ORBIT_POSE
+    return _ASSEMBLY_CAPTURE_ORBIT_POSE.model_copy(
         update={"subspace": "bounded_se3"}
     )
-)
 
 
 def _parameters(
@@ -136,17 +139,12 @@ def _parameters(
 ) -> dict[str, object]:
     if isinstance(constraint, FixedXYZConstraint):
         if fixed_arrangement == FixedArrangementPolicy.OPTIMIZE_COMPONENTS:
-            if task == UserDesignTask.CREATE_SYMMETRIC_INTERFACE:
-                pose = (
-                    _CREATE_INTERFACE_FREE_ORBIT_POSE
-                    if mobility_subspace == "bounded_se3"
-                    else _CREATE_INTERFACE_ORBIT_POSE
-                )
-            elif task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:
-                pose = (
-                    _PRESERVE_INTERFACE_FREE_ORBIT_POSE
-                    if mobility_subspace == "bounded_se3"
-                    else _PRESERVE_INTERFACE_ORBIT_POSE
+            if task in {
+                UserDesignTask.CREATE_SYMMETRIC_INTERFACE,
+                UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY,
+            }:
+                pose = ordinary_assembly_capture_pose(
+                    full_se3=mobility_subspace == "bounded_se3"
                 )
             else:
                 pose = constraint.pose

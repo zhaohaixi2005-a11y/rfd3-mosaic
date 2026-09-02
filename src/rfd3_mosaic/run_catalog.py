@@ -11,7 +11,6 @@ from typing import Any, Iterable
 
 from rfd3_mosaic.run_index import list_run_records
 
-
 SCHEMA_VERSION = 1
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 

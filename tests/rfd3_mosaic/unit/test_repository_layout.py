@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import runpy
 import unittest
-
+from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 SCRIPT_ROOT = REPOSITORY / "scripts" / "rfd3_mosaic"

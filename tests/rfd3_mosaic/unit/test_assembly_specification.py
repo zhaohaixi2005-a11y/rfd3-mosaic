@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pydantic import ValidationError
 import yaml
+from pydantic import ValidationError
 
 from rfd3_mosaic import (
     AssemblySpecification,
@@ -12,7 +12,6 @@ from rfd3_mosaic import (
     load_interface_seed_config,
 )
 from rfd3_mosaic.compile import expand_symmetry_instances
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 REFERENCE_CONFIG = (

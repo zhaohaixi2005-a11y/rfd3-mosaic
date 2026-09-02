@@ -564,16 +564,77 @@ def _analyze_scaffold_link_geometry(
     }
 
 
-def _analyze_supplied_interface_pose_feasibility(
+def _minimum_master_to_orbit_copy_distance(
+    atoms: list[_CompiledAtom],
+    *,
+    orbit_id: str,
+    source_fragment_ids: set[str],
+) -> tuple[float | None, float | None, int]:
+    """Return local finite-group copy separation without inventing an axis.
+
+    Every proper finite symmetry group is homogeneous under its group action.
+    It is therefore sufficient to compare the master copy with every other
+    copy in the same orbit.  The two returned values are descriptors used by
+    the pre-RFD3 feasibility report: centre separation and all-atom clearance.
+    Only the latter is a hard excluded-volume condition.
+    """
+
+    by_copy: dict[int, list[_CompiledAtom]] = {}
+    for atom in atoms:
+        if atom.orbit_id != orbit_id or atom.source_fragment_id not in (
+            source_fragment_ids
+        ):
+            continue
+        by_copy.setdefault(atom.copy_index, []).append(atom)
+    master = by_copy.get(0)
+    if not master or len(by_copy) < 2:
+        return None, None, len(by_copy)
+    master_coordinates = np.asarray(
+        [atom.coordinate for atom in master], dtype=np.float64
+    )
+    master_center = master_coordinates.mean(axis=0)
+    minimum_center_distance: float | None = None
+    minimum_atom_distance: float | None = None
+    for copy_index, copy_atoms in by_copy.items():
+        if copy_index == 0:
+            continue
+        copy_coordinates = np.asarray(
+            [atom.coordinate for atom in copy_atoms], dtype=np.float64
+        )
+        center_distance = float(
+            np.linalg.norm(copy_coordinates.mean(axis=0) - master_center)
+        )
+        atom_distance = float(
+            np.linalg.norm(
+                master_coordinates[:, None, :] - copy_coordinates[None, :, :],
+                axis=-1,
+            ).min()
+        )
+        minimum_center_distance = (
+            center_distance
+            if minimum_center_distance is None
+            else min(minimum_center_distance, center_distance)
+        )
+        minimum_atom_distance = (
+            atom_distance
+            if minimum_atom_distance is None
+            else min(minimum_atom_distance, atom_distance)
+        )
+    return minimum_center_distance, minimum_atom_distance, len(by_copy)
+
+
+def _analyze_assembly_pose_feasibility(
     atoms: list[_CompiledAtom],
     spec: Any,
     linker_report: dict[str, Any],
 ) -> dict[str, Any]:
-    """Evaluate necessary Cn pose geometry for cross-chain joint-rigid seeds.
+    """Evaluate necessary pre-RFD3 geometry for finite-group capture.
 
-    This is deliberately a feasibility report rather than a pose score.  It
-    uses only cyclic wedge geometry, excluded volume and polymer contour
-    constraints that exist before RFD3 creates any scaffold coordinates.
+    This is deliberately a feasibility report rather than a pose score.  Cn
+    retains its physically meaningful wedge/tangent checks.  Dn and the
+    polyhedral groups use local group-action neighbours, excluded volume and
+    polymer contour constraints; they are never forced into a fictitious
+    single-axis radial model.
     """
 
     grouped: dict[str, list[_CompiledAtom]] = {}
@@ -586,8 +647,6 @@ def _analyze_supplied_interface_pose_feasibility(
         by_fragment: dict[str, list[_CompiledAtom]] = {}
         for atom in group_atoms:
             by_fragment.setdefault(atom.source_fragment_id, []).append(atom)
-        if len(by_fragment) < 2:
-            continue
         orbit_id = next(
             (atom.orbit_id for atom in group_atoms if atom.orbit_id is not None),
             None,
@@ -596,7 +655,47 @@ def _analyze_supplied_interface_pose_feasibility(
             continue
         orbit = spec.symmetry.orbits[orbit_id]
         transform_set = spec.symmetry.transform_sets[orbit.transform_set]
-        if str(transform_set.type.value) != "cyclic":
+        symmetry_type = str(transform_set.type.value)
+        source_fragment_ids = set(by_fragment)
+        (
+            minimum_copy_center_distance,
+            minimum_copy_atom_distance,
+            copy_count,
+        ) = _minimum_master_to_orbit_copy_distance(
+            atoms,
+            orbit_id=orbit_id,
+            source_fragment_ids=source_fragment_ids,
+        )
+        failures: list[str] = []
+        if (
+            minimum_copy_atom_distance is not None
+            and minimum_copy_atom_distance < 2.0 - 1e-6
+        ):
+            failures.append("symmetry-related rigid copies have a hard atom clash")
+
+        common_report: dict[str, Any] = {
+            "motion_group_instance_id": group_id,
+            "source_fragment_ids": sorted(by_fragment),
+            "orbit_id": orbit_id,
+            "symmetry_type": symmetry_type,
+            "symmetry_order": int(transform_set.order),
+            "copy_count": copy_count,
+            "minimum_copy_center_distance_angstrom": minimum_copy_center_distance,
+            "minimum_copy_atom_distance_angstrom": minimum_copy_atom_distance,
+        }
+
+        # A single cyclic wedge and its tangent direction are well-defined for
+        # Cn only.  Dihedral and polyhedral groups deliberately stop here: the
+        # local nearest-copy descriptors above carry the finite-group geometry.
+        if symmetry_type != "cyclic" or len(by_fragment) < 2:
+            common_report.update(
+                {
+                    "passed": not failures,
+                    "failure_reasons": failures,
+                    "local_adjacency_model": "finite_group_nearest_copy",
+                }
+            )
+            group_reports.append(common_report)
             continue
 
         axis = np.asarray(transform_set.axis, dtype=np.float64)
@@ -616,13 +715,15 @@ def _analyze_supplied_interface_pose_feasibility(
         radial = group_relative - np.dot(group_relative, axis) * axis
         radial_norm = float(np.linalg.norm(radial))
         if radial_norm <= 1e-8:
-            group_reports.append(
+            failures.append("joint seed center lies on the cyclic axis")
+            common_report.update(
                 {
-                    "motion_group_instance_id": group_id,
                     "passed": False,
-                    "failure_reasons": ["joint seed center lies on the cyclic axis"],
+                    "failure_reasons": failures,
+                    "local_adjacency_model": "cyclic_wedge_and_tangent",
                 }
             )
+            group_reports.append(common_report)
             continue
         radial /= radial_norm
         tangent = np.cross(axis, radial)
@@ -651,18 +752,14 @@ def _analyze_supplied_interface_pose_feasibility(
         symmetry_order = int(transform_set.order)
         wedge_angle = 360.0 / symmetry_order
         maximum_tangent_deviation = min(60.0, wedge_angle / 2.0)
-        failures: list[str] = []
         if angular_span > wedge_angle + 1e-6:
             failures.append("joint seed spans more than one cyclic protomer wedge")
         if tangent_deviation is None or tangent_deviation > (
             maximum_tangent_deviation + 1e-6
         ):
             failures.append("supplied interface normal is not locally tangential")
-        group_reports.append(
+        common_report.update(
             {
-                "motion_group_instance_id": group_id,
-                "source_fragment_ids": sorted(by_fragment),
-                "symmetry_order": symmetry_order,
                 "radial_distance": radial_norm,
                 "fragment_azimuth_span_deg": angular_span,
                 "maximum_fragment_azimuth_span_deg": wedge_angle,
@@ -672,10 +769,15 @@ def _analyze_supplied_interface_pose_feasibility(
                 ),
                 "passed": not failures,
                 "failure_reasons": failures,
+                "local_adjacency_model": "cyclic_wedge_and_tangent",
             }
         )
+        group_reports.append(common_report)
 
     link_failures: list[dict[str, Any]] = []
+    cyclic_geometry = any(
+        report.get("symmetry_type") == "cyclic" for report in group_reports
+    )
     for link in linker_report["links"]:
         if bool(link["chain_break"]):
             continue
@@ -684,7 +786,13 @@ def _analyze_supplied_interface_pose_feasibility(
         fixed_clearance = link.get("minimum_interior_chord_fixed_atom_clearance")
         if not bool(link["within_maximum_contour"]):
             reasons.append("configured linker cannot span endpoint chord")
-        if axis_clearance is not None and float(axis_clearance) < 3.8:
+        # The axis-exclusion tube is meaningful only for a cyclic ring.  Dn
+        # and T/O/I are governed by their local group-action neighbours.
+        if (
+            cyclic_geometry
+            and axis_clearance is not None
+            and float(axis_clearance) < 3.8
+        ):
             reasons.append("endpoint chord crosses the cyclic-axis exclusion tube")
         if fixed_clearance is not None and float(fixed_clearance) < 2.0:
             reasons.append("endpoint chord intersects another fixed component")
@@ -717,9 +825,10 @@ def _analyze_supplied_interface_pose_feasibility(
         "link_failures": link_failures,
         "failure_reasons": failures,
         "criteria": {
-            "cyclic_wedge_angle_deg": "360 / n",
-            "maximum_tangent_deviation_deg": "min(60, 180 / n)",
-            "minimum_axis_clearance_angstrom": 3.8,
+            "cyclic_wedge_angle_deg": "360 / n (Cn only)",
+            "maximum_tangent_deviation_deg": "min(60, 180 / n) (Cn only)",
+            "minimum_axis_clearance_angstrom": "3.8 (Cn only)",
+            "minimum_symmetry_copy_atom_distance_angstrom": 2.0,
             "minimum_fixed_atom_corridor_clearance_angstrom": 2.0,
             "maximum_terminal_backturn_deg": 120.0,
             "linker_contour": "ceil(endpoint_distance / 3.8) - 1 <= max_length",
@@ -729,6 +838,16 @@ def _analyze_supplied_interface_pose_feasibility(
             "backbone quality nor selects one globally optimal pose."
         ),
     }
+
+
+def _analyze_supplied_interface_pose_feasibility(
+    atoms: list[_CompiledAtom],
+    spec: Any,
+    linker_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Backward-compatible alias for the generic assembly feasibility gate."""
+
+    return _analyze_assembly_pose_feasibility(atoms, spec, linker_report)
 
 
 def _analyze_symmetry_cavities(
@@ -1381,13 +1500,15 @@ def _compile_atoms(
         instances,
         spec,
     )
-    compilation["supplied_interface_pose_feasibility"] = (
-        _analyze_supplied_interface_pose_feasibility(
-            compiled_atoms,
-            spec,
-            compilation["linker_geometry_report"],
-        )
+    compilation["assembly_pose_feasibility"] = _analyze_assembly_pose_feasibility(
+        compiled_atoms,
+        spec,
+        compilation["linker_geometry_report"],
     )
+    # Keep the historical key readable for frozen runs and downstream tools.
+    compilation["supplied_interface_pose_feasibility"] = compilation[
+        "assembly_pose_feasibility"
+    ]
     compilation["symmetry_cavity_report"] = _analyze_symmetry_cavities(
         compiled_atoms,
         spec,
@@ -1736,6 +1857,9 @@ def compile_standalone(
             "inter_group_clashes": compilation["clash_report"],
             "interfaces": compilation["interface_report"],
             "scaffold_link_geometry": compilation["linker_geometry_report"],
+            "assembly_pose_feasibility": compilation[
+                "assembly_pose_feasibility"
+            ],
             "supplied_interface_pose_feasibility": compilation[
                 "supplied_interface_pose_feasibility"
             ],

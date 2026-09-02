@@ -37,7 +37,7 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
                                     "scope": "independent_seed_pose_search",
                                 },
                                 "sampler_overrides": {
-                                    "enable_supplied_interface_robust_capture": enabled
+                                    "enable_assembly_robust_capture": enabled
                                 },
                             }
                         }
@@ -48,7 +48,7 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
         )
         return path
 
-    def test_required_supplied_interface_pose_gate_accepts_only_pass(self) -> None:
+    def test_required_assembly_pose_gate_accepts_only_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             compiled = self._write_capture_input(root, enabled=True)
@@ -60,7 +60,7 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
             }
             manifest.write_text(
                 json.dumps(
-                    {"validation": {"supplied_interface_pose_feasibility": report}}
+                    {"validation": {"assembly_pose_feasibility": report}}
                 ),
                 encoding="utf-8",
             )
@@ -74,7 +74,7 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
             report["failure_reasons"] = ["bad cyclic wedge"]
             manifest.write_text(
                 json.dumps(
-                    {"validation": {"supplied_interface_pose_feasibility": report}}
+                    {"validation": {"assembly_pose_feasibility": report}}
                 ),
                 encoding="utf-8",
             )

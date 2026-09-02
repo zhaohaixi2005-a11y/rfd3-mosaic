@@ -1,7 +1,7 @@
-from contextlib import redirect_stdout
-from io import StringIO
 import json
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 
 from rfd3_mosaic.capabilities import (
     CapabilityMaturity,
