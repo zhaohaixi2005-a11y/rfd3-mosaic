@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import runpy
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -26,7 +27,22 @@ class RepositoryLayoutTestCase(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_historical_direct_scripts_are_physically_isolated(self) -> None:
-        self.assertTrue(SCRIPT_ARCHIVE.is_dir())
+        archive_prefix = SCRIPT_ARCHIVE.relative_to(REPOSITORY).as_posix()
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", archive_prefix],
+            cwd=REPOSITORY,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.splitlines()
+        self.assertEqual(tracked, [])
+
+        # Historical submission scripts are deliberately local-only.  They are
+        # useful in long-lived development checkouts, but are excluded from the
+        # public repository and therefore absent from a clean CI checkout.
+        if not SCRIPT_ARCHIVE.exists():
+            return
+
         direct = []
         for path in SCRIPT_ARCHIVE.iterdir():
             if not path.is_file():
