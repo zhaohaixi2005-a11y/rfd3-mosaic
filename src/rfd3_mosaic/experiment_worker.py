@@ -258,7 +258,20 @@ def _requires_assembly_pose_feasibility(rfd3_input: Path) -> bool:
 
     payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
     example = next(iter(payload.values()))
-    preferences = (example.get("extra") or {}).get("resolved_design_preferences")
+    extra = example.get("extra") or {}
+    cross_chain_topology = extra.get("generated_cross_chain_topology_guidance")
+    # A two-anchor generated route has a compiler-declared chain owner even
+    # when every supplied component is absolutely locked.  In that case the
+    # pre-RFD3 pose gate is *more* important, not less: runtime SE(3) capture
+    # cannot move the anchors out of an impossible corridor.  Previously this
+    # gate was coupled only to movable-orbit robust capture, which allowed
+    # locked poses already diagnosed as crossing the axis, another fixed
+    # component, or an incompatible terminal tangent to enter diffusion.
+    if isinstance(cross_chain_topology, dict) and bool(
+        cross_chain_topology.get("enabled")
+    ):
+        return True
+    preferences = extra.get("resolved_design_preferences")
     if not preferences:
         return False
     resolved = ResolvedDesignPreferences.model_validate(preferences)

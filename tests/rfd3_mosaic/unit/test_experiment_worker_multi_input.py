@@ -15,7 +15,13 @@ from rfd3_mosaic.sampling_plan import DesignSamplingAssignment
 
 
 class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
-    def _write_capture_input(self, root: Path, *, enabled: bool) -> Path:
+    def _write_capture_input(
+        self,
+        root: Path,
+        *,
+        enabled: bool,
+        cross_chain_topology: bool = False,
+    ) -> Path:
         path = root / "rfd3_input.json"
         path.write_text(
             json.dumps(
@@ -39,7 +45,12 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
                                 "sampler_overrides": {
                                     "enable_assembly_robust_capture": enabled
                                 },
-                            }
+                            },
+                            "generated_cross_chain_topology_guidance": {
+                                "enabled": cross_chain_topology,
+                                "scope": "two_fixed_anchor_generated_runs",
+                                "routing_ownership_weight": 1.0,
+                            },
                         }
                     }
                 }
@@ -92,6 +103,32 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
                     root / "missing-manifest.json",
                 )
             )
+
+    def test_locked_cross_chain_route_still_requires_pose_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiled = self._write_capture_input(
+                root,
+                enabled=False,
+                cross_chain_topology=True,
+            )
+            manifest = root / "manifest.json"
+            report = {
+                "evaluated": True,
+                "passed": False,
+                "failure_reasons": [
+                    "endpoint chord intersects another fixed component"
+                ],
+            }
+            manifest.write_text(
+                json.dumps(
+                    {"validation": {"assembly_pose_feasibility": report}}
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "intersects another fixed"):
+                _require_compiled_pose_feasibility(compiled, manifest)
 
     def test_cross_chain_topology_plan_is_read_from_frozen_input(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
