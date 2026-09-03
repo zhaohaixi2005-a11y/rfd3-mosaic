@@ -263,6 +263,40 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
         self.assertTrue(torch.equal(projected[0, 0], coordinates[0, 0]))
         self.assertTrue(torch.all(torch.abs(distances - 3.8) <= 0.5 + 1e-6))
 
+    def test_polymer_projection_does_not_modify_valid_backbone(self) -> None:
+        f = {
+            "atom_to_token_map": torch.arange(5),
+            "asym_id": torch.zeros(5, dtype=torch.long),
+            "residue_index": torch.arange(5),
+            "is_ca": torch.ones(5, dtype=torch.bool),
+            "is_protein": torch.ones(5, dtype=torch.bool),
+        }
+        fixed = torch.tensor([True, False, False, False, True])
+        topology = build_scaffold_core_topology(f, fixed)
+        coordinates = torch.tensor(
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [3.9, 0.0, 0.0],
+                    [7.7, 0.0, 0.0],
+                    [11.6, 0.0, 0.0],
+                    [15.4, 0.0, 0.0],
+                ]
+            ]
+        )
+
+        projected, diagnostics = project_generated_polymer_continuity(
+            coordinates,
+            topology,
+            projector=lambda value: value + 100.0,
+        )
+
+        self.assertTrue(torch.equal(projected, coordinates))
+        self.assertFalse(diagnostics["applied"])
+        self.assertEqual(diagnostics["directed_sweeps"], 0)
+        self.assertEqual(diagnostics["iterations"], 0)
+        self.assertTrue(diagnostics["within_tolerance"])
+
     def test_polymer_projection_respects_both_fixed_linker_anchors(self) -> None:
         f = {
             "atom_to_token_map": torch.arange(5),

@@ -3092,12 +3092,12 @@ def compile_assembly_rfd3_input(
         # fixed-anchor frame instead.  This is explicit Mosaic provenance and
         # leaves non-Mosaic/native RFD3 inputs on their historical default.
         "generated_coordinate_initialization": "local_fixed_anchor",
-        # Initial placement alone is erased by the high-sigma first diffusion
-        # state.  Keep the generated polymer locally connected throughout
-        # exact symmetric sampling without requesting any packing morphology
-        # or an additional interface.
+        # Record an optional final connectivity safeguard.  It is deliberately
+        # forbidden during the noisy diffusion trajectory: projecting X_t onto
+        # clean 3.8-A CA geometry would invalidate the model noise schedule.
         "generated_polymer_continuity_guidance": {
             "enabled": symmetry_multiplicity > 1,
+            "application_phase": "final_only",
             "scope": "adjacent_generated_protein_tokens",
             "target_ca_distance": 3.8,
             "tolerance": 0.5,

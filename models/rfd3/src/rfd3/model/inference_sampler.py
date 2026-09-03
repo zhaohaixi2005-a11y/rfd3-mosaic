@@ -228,9 +228,10 @@ class SampleDiffusionConfig:
     assembly_capture_weight: float = 1.0
     enable_supplied_interface_robust_capture: bool = False
     supplied_interface_capture_weight: float = 1.0
-    # Mosaic may request an independent kinematic safety projection for
-    # generated peptide paths.  It does not imply intra-chain compaction or
-    # inter-chain interface creation.
+    # Mosaic may request a final kinematic safety projection for generated
+    # peptide paths.  This must never be applied to an intermediate noisy
+    # diffusion state: enforcing clean 3.8-A CA geometry on X_t destroys the
+    # sampler's noise schedule and moves subsequent denoising off-distribution.
     enable_generated_polymer_continuity_guidance: bool = False
     generated_polymer_continuity_target_ca_distance: float = 3.8
     generated_polymer_continuity_tolerance: float = 0.5
@@ -2554,49 +2555,6 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 core_step["step_num"] = step_num
                 scaffold_core_diagnostics.append(core_step)
 
-            if polymer_continuity_active:
-                if scaffold_core_topology is None:
-                    raise RuntimeError(
-                        "Polymer continuity topology was not initialized"
-                    )
-                if constraint_runtime is not None:
-
-                    def continuity_projector(
-                        candidate,
-                        *,
-                        active_step_num=step_num,
-                    ):
-                        return constraint_runtime.project_post_guidance(
-                            candidate,
-                            step_num=active_step_num,
-                        )
-                else:
-
-                    def continuity_projector(
-                        candidate,
-                        *,
-                        active_fixed_target=fixed_target,
-                    ):
-                        return self._project_stepwise_updated_coordinates(
-                            candidate,
-                            f,
-                            is_motif_atom_with_fixed_coord,
-                            active_fixed_target,
-                        )
-
-                X_L, continuity_step = project_generated_polymer_continuity(
-                    X_L,
-                    scaffold_core_topology,
-                    target_ca_distance=float(
-                        self.generated_polymer_continuity_target_ca_distance
-                    ),
-                    tolerance=float(self.generated_polymer_continuity_tolerance),
-                    iterations=int(self.generated_polymer_continuity_iterations),
-                    projector=continuity_projector,
-                )
-                continuity_step["step_num"] = step_num
-                polymer_continuity_diagnostics.append(continuity_step)
-
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
                 self.sigma_data * X_noisy_L / torch.sqrt(t_hat**2 + self.sigma_data**2)
@@ -2730,7 +2688,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 iterations=int(self.generated_polymer_continuity_iterations),
                 projector=final_continuity_projector,
             )
-            final_continuity_step["phase"] = "final_projection"
+            final_continuity_step["phase"] = "final_only"
             polymer_continuity_diagnostics.append(final_continuity_step)
 
         if constraint_runtime is not None:
@@ -2929,8 +2887,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             }
         if polymer_continuity_active:
             result["generated_polymer_continuity_diagnostics"] = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "runtime_active": True,
+                "application_phase": "final_only",
+                "trajectory_projection_steps": 0,
                 "target_ca_distance": float(
                     self.generated_polymer_continuity_target_ca_distance
                 ),

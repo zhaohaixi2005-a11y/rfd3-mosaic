@@ -646,6 +646,23 @@ def project_generated_polymer_continuity(
     initial_errors = errors(result)
     applied_iterations = 0
 
+    # A valid model prediction must remain bitwise untouched.  In particular,
+    # do not run the directed anchor sweeps merely because a generated run is
+    # anchored: those sweeps propagate small local corrections along the whole
+    # chain and can perturb an otherwise valid secondary structure.
+    if torch.all(initial_errors <= tolerance):
+        maximum_initial = float(initial_errors.max().detach().cpu().item())
+        return coordinates, {
+            "applied": False,
+            "pair_count": int(len(token_pairs)),
+            "directed_group_count": len(topology.directed_continuity_groups),
+            "directed_sweeps": 0,
+            "iterations": 0,
+            "maximum_initial_ca_error": maximum_initial,
+            "maximum_final_ca_error": maximum_initial,
+            "within_tolerance": True,
+        }
+
     # First propagate every unambiguous terminal anchor through its generated
     # run.  A group contains at most one operation per chain, so assignments
     # are collision-free and remain fully vectorized across symmetry copies.
@@ -658,12 +675,14 @@ def project_generated_polymer_continuity(
             signs = group[:, 3].to(dtype=result.dtype)
             vectors = result[:, right_atoms] - result[:, left_atoms]
             distances = torch.linalg.vector_norm(vectors, dim=-1).clamp_min(1e-8)
+            violation = torch.abs(distances - target_ca_distance) > tolerance
             unit = vectors / distances[..., None]
             correction = (
                 relaxation
                 * (distances - target_ca_distance)[..., None]
                 * unit
                 * signs[None, :, None]
+                * violation[..., None]
             )
             for batch_index in range(result.shape[0]):
                 token_delta = torch.zeros(

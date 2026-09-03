@@ -776,6 +776,80 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 label=f"Denoised trajectory state {index}",
             )
 
+    def test_polymer_continuity_is_final_only_not_a_trajectory_projection(
+        self,
+    ) -> None:
+        features = self._c3_features()
+        features.update(
+            {
+                "atom_to_token_map": torch.arange(6),
+                "asym_id": torch.tensor([0, 0, 1, 1, 2, 2]),
+                "residue_index": torch.tensor([0, 1, 0, 1, 0, 1]),
+                "is_ca": torch.ones(6, dtype=torch.bool),
+                "is_protein": torch.ones(6, dtype=torch.bool),
+                "ref_element": torch.zeros(6, dtype=torch.long),
+            }
+        )
+        canonical = torch.tensor(
+            [[[5.0, 0.0, 0.0], [8.8, 0.0, 0.0]]]
+        )
+        coordinates = apply_symmetry_to_xyz_atomwise(
+            canonical.repeat(1, 3, 1),
+            features,
+            partial_diffusion=True,
+        )
+        fixed = torch.tensor([True, False, True, False, True, False])
+        features.update(
+            {
+                "is_motif_atom_with_fixed_coord": fixed,
+                "motif_constraint_group_membership": fixed[None, :],
+            }
+        )
+        module = _AsymmetricFakeDiffusion()
+        sampler = SampleDiffusionWithSymmetry(
+            gamma_0=0.6,
+            num_timesteps=4,
+            preserve_fixed_motif_during_symmetry=True,
+            require_motif_constraint_groups=True,
+            symmetry_state_mode="orbit_average",
+            symmetry_noise_mode="coupled",
+            enable_generated_polymer_continuity_guidance=True,
+        )
+        calls = []
+
+        def record_final_only(candidate, _topology, **_kwargs):
+            calls.append(candidate.clone())
+            return candidate, {
+                "applied": False,
+                "within_tolerance": True,
+            }
+
+        with (
+            mock.patch(
+                "rfd3.model.inference_sampler."
+                "project_generated_polymer_continuity",
+                side_effect=record_final_only,
+            ),
+            torch.no_grad(),
+        ):
+            result = sampler.sample_diffusion_like_af3(
+                f=features,
+                diffusion_module=module,
+                diffusion_batch_size=1,
+                coord_atom_lvl_to_be_noised=coordinates,
+                initializer_outputs={},
+                ref_initializer_outputs=None,
+                f_ref=None,
+            )
+
+        self.assertEqual(module.calls, 3)
+        self.assertEqual(len(calls), 1)
+        diagnostics = result["generated_polymer_continuity_diagnostics"]
+        self.assertEqual(diagnostics["application_phase"], "final_only")
+        self.assertEqual(diagnostics["trajectory_projection_steps"], 0)
+        self.assertEqual(len(diagnostics["steps"]), 1)
+        self.assertEqual(diagnostics["steps"][0]["phase"], "final_only")
+
     def test_scaffold_source_honors_interval_and_refreshes_only_on_apply(
         self,
     ) -> None:

@@ -896,6 +896,7 @@ class RFD3AdapterTestCase(unittest.TestCase):
             emitted["extra"]["generated_polymer_continuity_guidance"],
             {
                 "enabled": True,
+                "application_phase": "final_only",
                 "scope": "adjacent_generated_protein_tokens",
                 "target_ca_distance": 3.8,
                 "tolerance": 0.5,
