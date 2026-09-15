@@ -30,8 +30,10 @@ new curved-path force is introduced.
 The mobile control now uses the corrected capture implementation: in two-anchor
 tasks, neighbours are bound from actual fixed polymer endpoints and cannot
 switch according to instantaneous COM distances. This rule is shared across
-symmetry groups and seed types. The compiler also rejects an invalid supplied
-interface/polymer incidence graph before emitting an inference input. These
+symmetry groups and seed types. For the declared `preserve_supplied_geometry`
+task, the compiler rejects an invalid supplied interface/polymer incidence
+graph before emitting an inference input. Generic fragment-scaffolding inputs
+retain the diagnostic because they need not describe interface-seeded assemblies. These
 are common safeguards in both arms, not additional experimental variables.
 
 Before interpreting an arm comparison, compare compiled contigs, resolved copy

@@ -3185,7 +3185,8 @@ def compile_assembly_rfd3_input(
         seed_topology = analyze_interleaved_interface_seed_topology(instances)
         adapter_extra["interleaved_interface_seed_topology"] = seed_topology.to_dict()
         if (
-            seed_topology.interface_pairs
+            caller_extra.get("public_task") == "preserve_supplied_geometry"
+            and seed_topology.interface_pairs
             and seed_topology.status == "invalid_interface_unit_graph"
         ):
             raise ValueError(

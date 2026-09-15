@@ -767,6 +767,17 @@ class RFD3AdapterTestCase(unittest.TestCase):
             example_id="mixed-polymer-path-c3",
             linker_length=80,
         )
+        # The same fragment path is representable generically, but cannot
+        # satisfy a declared non-covalent interface-seeded assembly task.
+        with self.assertRaisesRegex(ValueError, "directly joins the two sides"):
+            compile_rfd3_input(
+                config,
+                self.output_directory / "invalid-preserved-interface-output",
+                base_directory=REPOSITORY_ROOT,
+                example_id="invalid-preserved-interface",
+                linker_length=80,
+                extra_metadata={"public_task": "preserve_supplied_geometry"},
+            )
         emitted = json.loads(outputs.input_path.read_text(encoding="utf-8"))[
             "mixed-polymer-path-c3"
         ]
@@ -2068,6 +2079,13 @@ class RFD3AdapterTestCase(unittest.TestCase):
         )
         for config, symmetry_id, multiplicity, transform_order in cases:
             with self.subTest(symmetry_id=symmetry_id):
+                with self.assertRaisesRegex(ValueError, "2 components"):
+                    compile_rfd3_input(
+                        config,
+                        self.output_directory / f"disconnected-{symmetry_id.lower()}",
+                        base_directory=REPOSITORY_ROOT,
+                        extra_metadata={"public_task": "preserve_supplied_geometry"},
+                    )
                 outputs = compile_rfd3_input(
                     config,
                     self.output_directory / f"tracked-{symmetry_id.lower()}",
