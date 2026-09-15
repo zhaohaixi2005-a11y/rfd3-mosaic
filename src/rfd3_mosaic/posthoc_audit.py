@@ -19,6 +19,7 @@ from rfd3_mosaic.result_auditing import (
     run_result_audits,
     utc_now,
 )
+from rfd3_mosaic.run_artifacts import resolve_run_artifact
 from rfd3_mosaic.run_index import update_run_state
 
 
@@ -152,14 +153,16 @@ def audit_existing_run(
             raise ValueError(f"Expected a JSON mapping in {summary_path}")
 
     compiled_by_result = {
-        str(record.get("result_json")): Path(str(record["compiled_input"]))
+        Path(str(record.get("result_json"))).name: resolve_run_artifact(
+            root, str(record["compiled_input"]), previous
+        )
         for record in previous.get("design_results", [])
         if isinstance(record, dict) and record.get("compiled_input")
     }
     default_input = find_compiled_input(root)
 
     def input_for_result(result_json: Path) -> Path:
-        recorded = compiled_by_result.get(str(result_json))
+        recorded = compiled_by_result.get(result_json.name)
         if recorded is not None and recorded.is_file():
             return recorded
         return _materialize_result_compiled_input(
@@ -169,9 +172,32 @@ def audit_existing_run(
         )
 
     def report_directory(result_json: Path) -> Path:
-        if len(result_jsons) == 1:
-            return root
         design_id = result_json.stem.removesuffix("_model_0")
+        records = [
+            record for record in previous.get("design_results", [])
+            if isinstance(record, dict)
+            and Path(str(record.get("result_json", ""))).name == result_json.name
+        ]
+        if len(records) > 1:
+            raise ValueError(f"Ambiguous report identity for {result_json.name}")
+        declared = records[0].get("reports") if records else None
+        if not declared and len(result_jsons) == 1:
+            declared = previous.get("reports")
+        if declared:
+            directories = {
+                resolve_run_artifact(root, str(path), previous).parent
+                for path in declared
+            }
+            if len(directories) != 1:
+                raise ValueError(
+                    f"Audit reports span multiple directories: {result_json.name}"
+                )
+            return directories.pop()
+        current = root / "audits" / design_id
+        if current.is_dir():
+            return current
+        if len(result_jsons) == 1:
+            return root  # Legacy single-result layout.
         return root / "audits" / design_id
 
     started_at = utc_now()
@@ -319,16 +345,14 @@ def audit_existing_run(
             result_json = str(audited["result_json"])
             record = previous_design_for(result_json, design_index)
             screening_payload = audited["screening"]
-            contract_met = screening_payload["contract_status"] in {
-                "met",
-                "not_evaluated",
-            }
+            contract_met = screening_payload["contract_status"] == "met"
             record.update(
                 {
                     "result_json": result_json,
                     "compiled_input": audited["compiled_input"],
                     "generated": True,
                     "contract_met": contract_met,
+                    "contract_status": screening_payload["contract_status"],
                     "recommendation": screening_payload["recommendation"],
                     "screening_advice": audited["screening_advice"],
                     "accepted": audited["accepted"],
@@ -342,6 +366,9 @@ def audit_existing_run(
         contract_met_count = sum(
             bool(record["contract_met"]) for record in refreshed_designs
         )
+        contract_flagged_count = sum(
+            record["contract_status"] == "flagged" for record in refreshed_designs
+        )
         accepted_count = sum(
             bool(record["accepted"]) for record in refreshed_designs
         )
@@ -354,8 +381,9 @@ def audit_existing_run(
                 "produced_designs": len(refreshed_designs),
                 "generated_designs": len(refreshed_designs),
                 "contract_met_designs": contract_met_count,
-                "contract_flagged_designs": (
-                    len(refreshed_designs) - contract_met_count
+                "contract_flagged_designs": contract_flagged_count,
+                "contract_not_evaluated_designs": (
+                    len(refreshed_designs) - contract_met_count - contract_flagged_count
                 ),
                 "recommended_designs": recommended_count,
                 "review_designs": len(refreshed_designs) - recommended_count,

@@ -20,11 +20,6 @@ _HARD_REPORTS = frozenset(
         "cylindrical_coordinate_audit.json",
     }
 )
-_ADVISORY_REPORTS = frozenset(
-    {
-        "assembly_interface_relation_audit.json",
-    }
-)
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -81,7 +76,7 @@ def build_advisory_screening(
     A contract flag means that an explicit invariant such as exact supplied
     geometry, chain continuity, or declared symmetry needs inspection.  An
     advisory flag means that a task-dependent proxy (packing, compactness,
-    clash burden, interface coverage, or shape target) was not satisfied.
+    clash burden or automatically derived interface coverage) was not satisfied.
     Neither category asserts experimental failure or designability.
     """
 
@@ -90,19 +85,6 @@ def build_advisory_screening(
         raise ValueError("screening mode must be off or advisory")
     if protocol not in {"auto", "generic_backbone", "hoyeung_lhd101"}:
         raise ValueError(f"Unsupported screening protocol: {protocol}")
-    if mode == "off":
-        return {
-            "schema_version": 1,
-            "mode": mode,
-            "protocol": protocol,
-            "generated_output_retained": True,
-            "contract_status": "not_evaluated",
-            "recommendation": "not_screened",
-            "contract_flags": [],
-            "advisory_flags": [],
-            "reports": [str(path) for path in paths],
-        }
-
     contract_flags: list[dict[str, Any]] = []
     advisory_flags: list[dict[str, Any]] = []
     for path in paths:
@@ -126,15 +108,27 @@ def build_advisory_screening(
                 )
             continue
 
-        if path.name in _ADVISORY_REPORTS:
+        if path.name == "assembly_interface_relation_audit.json":
+            # Current reports already exclude automatic proxy targets from
+            # their top-level decision. Preserve explicit required failures;
+            # older reports without this semantics marker remain advisory.
+            declared_contracts = payload.get("semantics") == (
+                "declared_contracts_with_measurement_only_quality"
+            )
             if not passed:
-                advisory_flags.append(
+                flags = contract_flags if declared_contracts else advisory_flags
+                flags.append(
                     _flag(
-                        code=f"advisory.{path.stem}",
+                        code=(
+                            f"contract.{path.stem}"
+                            if declared_contracts
+                            else f"advisory.{path.stem}"
+                        ),
                         report=path,
                         message=(
-                            "A task-dependent interface or packing target "
-                            "was not satisfied."
+                            "A required interface relation was not satisfied."
+                            if declared_contracts
+                            else "A legacy interface or packing audit was flagged."
                         ),
                     )
                 )
@@ -152,6 +146,7 @@ def build_advisory_screening(
                         "patch_identity_contract_valid",
                         "adaptive_phase_contract_valid",
                         "capacity_preflight_contract_valid",
+                        "contact_prior_contract_valid",
                         "final_proxy_contract_valid",
                         "execution_contract_valid",
                     ),
@@ -212,12 +207,33 @@ def build_advisory_screening(
                         "passed_clashes",
                         "passed_compactness",
                         "passed_peptide_geometry",
-                        "passed_assembly_shape",
                     ),
                     report=path,
                     prefix="advisory.scaffold",
                 )
             )
+            shape = payload.get("assembly_shape_contract")
+            if isinstance(shape, dict) and shape.get("declared") is True:
+                if shape.get("passed") is not True:
+                    contract_flags.append(
+                        _flag(
+                            code="contract.scaffold.passed_assembly_shape",
+                            report=path,
+                            message=(
+                                "The explicitly declared assembly size was not satisfied."
+                            ),
+                            observed=shape.get("checks"),
+                        )
+                    )
+            else:
+                advisory_flags.extend(
+                    _false_summary_flags(
+                        summary,
+                        ("passed_assembly_shape",),
+                        report=path,
+                        prefix="advisory.scaffold",
+                    )
+                )
             # Older reports may only carry a top-level decision.  Preserve
             # that information as advice rather than silently upgrading it
             # into a hard failure.
@@ -289,8 +305,13 @@ def build_advisory_screening(
                 )
             )
 
-    contract_status = "flagged" if contract_flags else "met"
-    if contract_flags:
+    contract_status = (
+        "flagged" if contract_flags else "met" if paths else "not_evaluated"
+    )
+    if mode == "off" or not paths:
+        recommendation = "not_screened"
+        advisory_flags = []
+    elif contract_flags:
         recommendation = "review_contract"
     elif advisory_flags:
         recommendation = "review_advisory_metrics"

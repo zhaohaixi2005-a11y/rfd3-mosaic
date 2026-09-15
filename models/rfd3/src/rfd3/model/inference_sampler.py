@@ -2022,15 +2022,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         f"{self.motif_mobility_update_interval}, target="
                         f"{self.motif_mobility_target_update_count})"
                     )
-                    # A monomer-core field must participate in the SE(3) pose
-                    # gradient.  Keep the existing atomic graph transaction
-                    # unchanged for legacy inter-only jobs; explicit intra
-                    # jobs use the established scaffold transaction with an
-                    # additional differentiable pose energy.
-                    joint_packing_mobility = bool(
-                        graph_interface_topology is not None
-                        and scaffold_core_topology is None
-                    )
+                    # Final continuity also needs core topology data. Its
+                    # presence must not disable the joint transaction. Active
+                    # core/route/capture objectives join the pose gradient and
+                    # the same atomic acceptance decision below.
+                    joint_packing_mobility = graph_interface_topology is not None
                     if joint_packing_mobility:
                         ranked_logger.info(
                             "Unified packing-aware motif mobility enabled: "
@@ -2051,6 +2047,57 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                             or scaffold_guidance_config is None
                         ):
                             raise RuntimeError("Scaffold guidance was not initialized")
+                        core_state_energy = None
+                        if scaffold_core_topology_required:
+                            if scaffold_core_topology is None:
+                                raise RuntimeError(
+                                    "Scaffold core topology was not initialized"
+                                )
+                            if scaffold_core_guidance_config is None:
+                                raise RuntimeError(
+                                    "Scaffold core guidance config was not initialized"
+                                )
+
+                            def core_state_energy(candidate_state):
+                                core_total = scaffold_core_energy(
+                                    candidate_state,
+                                    scaffold_core_topology,
+                                    scaffold_core_guidance_config,
+                                ).total
+                                if robust_capture_active:
+                                    local_window = (
+                                        float(progress)
+                                        - float(self.motif_mobility_start_fraction)
+                                    ) / max(
+                                        float(self.motif_mobility_end_fraction)
+                                        - float(self.motif_mobility_start_fraction),
+                                        1e-8,
+                                    )
+                                    capture_fraction = float(
+                                        self.motif_mobility_capture_fraction
+                                    )
+                                    if 0.0 <= local_window <= capture_fraction:
+                                        capture_progress = min(
+                                            1.0,
+                                            max(0.0, local_window / capture_fraction),
+                                        )
+                                        capture_terms = [
+                                            robust_assembly_capture_energy(
+                                                candidate_state,
+                                                scaffold_core_topology,
+                                                scaffold_core_guidance_config,
+                                                motif.group_atom_indices,
+                                                capture_progress=capture_progress,
+                                            )
+                                            for motif in motif_mobility_controller.motifs
+                                        ]
+                                        core_total = (
+                                            core_total
+                                            + float(robust_capture_weight)
+                                            * torch.stack(capture_terms).mean()
+                                        )
+                                return core_total
+
                         if joint_packing_mobility:
                             if (
                                 graph_interface_topology is None
@@ -2099,6 +2146,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 polish_response_scale=float(
                                     self.motif_mobility_polish_response_scale
                                 ),
+                                additional_state_energy=core_state_energy,
+                                proposal_selection_seed=int(torch.initial_seed()),
                             )
                             packing_step = dict(joint_diagnostics["packing_step"])
                             packing_step.update(
@@ -2125,69 +2174,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 coordinates=proposed_coordinates,
                             )
                         core_pose_energy = None
-                        if scaffold_core_topology_required:
-                            if scaffold_core_topology is None:
-                                raise RuntimeError(
-                                    "Scaffold core topology was not initialized"
-                                )
-                            if scaffold_core_guidance_config is None:
-                                raise RuntimeError(
-                                    "Scaffold core guidance config was not initialized"
-                                )
+                        if core_state_energy is not None:
 
                             def core_pose_energy(candidate_target):
-                                generated_mask = (
-                                    scaffold_core_topology.generated_atom_mask
-                                )
-                                # Candidate target contains the differentiable
-                                # mobile seed pose; the generated scaffold must
-                                # come from the current denoiser proposal.  A
-                                # target-only energy would optimize against
-                                # placeholder coordinates instead of the
-                                # structure being sampled.
                                 candidate_state = torch.where(
-                                    generated_mask[:, None],
+                                    scaffold_core_topology.generated_atom_mask[:, None],
                                     proposal_coordinates[0],
                                     candidate_target,
                                 )
-                                core_total = scaffold_core_energy(
-                                    candidate_state,
-                                    scaffold_core_topology,
-                                    scaffold_core_guidance_config,
-                                ).total
-                                if robust_capture_active:
-                                    local_window = (
-                                        float(progress)
-                                        - float(self.motif_mobility_start_fraction)
-                                    ) / max(
-                                        float(self.motif_mobility_end_fraction)
-                                        - float(self.motif_mobility_start_fraction),
-                                        1e-8,
-                                    )
-                                    capture_fraction = float(
-                                        self.motif_mobility_capture_fraction
-                                    )
-                                    if 0.0 <= local_window <= capture_fraction:
-                                        capture_progress = min(
-                                            1.0,
-                                            max(0.0, local_window / capture_fraction),
-                                        )
-                                        capture_terms = [
-                                            robust_assembly_capture_energy(
-                                                candidate_state,
-                                                scaffold_core_topology,
-                                                scaffold_core_guidance_config,
-                                                motif.group_atom_indices,
-                                                capture_progress=capture_progress,
-                                            )
-                                            for motif in motif_mobility_controller.motifs
-                                        ]
-                                        core_total = (
-                                            core_total
-                                            + float(robust_capture_weight)
-                                            * torch.stack(capture_terms).mean()
-                                        )
-                                return core_total
+                                return core_state_energy(candidate_state)
 
                         scaffold_update_arguments = {
                             "progress": progress,
@@ -2771,6 +2766,22 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             mobility_diagnostics["apply_updates"] = bool(
                 self.motif_mobility_apply_updates
             )
+            mobility_diagnostics["runtime_config"] = {
+                key: value for key, value in vars(self).items()
+                if key.startswith("motif_mobility_")
+                and (value is None or isinstance(value, (bool, int, float, str)))
+            }
+            mobility_diagnostics["robust_capture"] = {
+                "enabled": bool(robust_capture_active),
+                "weight": float(robust_capture_weight),
+                "capture_fraction": float(self.motif_mobility_capture_fraction),
+                "window_start": float(self.motif_mobility_start_fraction),
+                "window_end": float(self.motif_mobility_end_fraction),
+                "core_config": (
+                    vars(scaffold_core_guidance_config)
+                    if scaffold_core_guidance_config is not None else None
+                ),
+            }
             mobility_diagnostics["update_interval"] = (
                 effective_motif_mobility_update_interval
             )

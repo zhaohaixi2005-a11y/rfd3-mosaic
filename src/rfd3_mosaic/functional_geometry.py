@@ -73,7 +73,7 @@ def _dihedral_deg(
     third: FloatArray,
     fourth: FloatArray,
 ) -> float:
-    b0 = second - first
+    b0 = first - second
     b1 = third - second
     b2 = fourth - third
     norm = float(np.linalg.norm(b1))

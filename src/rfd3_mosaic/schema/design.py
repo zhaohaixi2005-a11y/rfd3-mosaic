@@ -14,6 +14,8 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import AliasChoices, Field, field_validator, model_validator
 
+from rfd3_mosaic.schema.symmetry_names import SYMMETRY_NAME_PATTERN
+
 from rfd3_mosaic.schema.specs import (
     CopyRelationSpec,
     FiniteOrbitActionSpec,
@@ -466,7 +468,7 @@ GenerationClause = Annotated[
 
 SymmetryName = Annotated[
     str,
-    Field(pattern=r"^(?:C[1-9][0-9]*|D[2-9][0-9]*|T|O|I)$"),
+    Field(pattern=SYMMETRY_NAME_PATTERN),
 ]
 
 

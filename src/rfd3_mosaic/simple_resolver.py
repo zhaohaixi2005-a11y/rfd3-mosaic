@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, replace
 from itertools import combinations, permutations
 from pathlib import Path
@@ -40,6 +39,7 @@ from rfd3_mosaic.pose_optimizer import (
     optimize_candidate_subset,
 )
 from rfd3_mosaic.schema import SimpleCageIntentSpec, UserDesignSpec
+from rfd3_mosaic.schema.symmetry_names import NONTRIVIAL_CYCLIC_NAME
 from rfd3_mosaic.seed_library import materialize_seed_library
 from rfd3_mosaic.seed_stabilizer import resolve_seed_stabilizer
 from rfd3_mosaic.simple_architecture import (
@@ -72,7 +72,7 @@ from rfd3_mosaic.topology.symmetry_connectivity import (
     minimal_group_relations,
 )
 
-_CYCLIC = re.compile(r"^C(?P<order>[2-9][0-9]*)$")
+_CYCLIC = NONTRIVIAL_CYCLIC_NAME
 
 
 def _ordinary_component_pose(

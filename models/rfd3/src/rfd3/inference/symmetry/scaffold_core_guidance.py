@@ -1190,6 +1190,8 @@ def apply_scaffold_core_guidance(
                 "accepted": False,
                 "progress": float(progress),
                 "window": float(window),
+                "reason": "inactive_window" if window <= 0.0 else "zero_objective",
+                "line_search_trials": [],
                 "initial": initial.detached_dict(),
                 "final": initial.detached_dict(),
             }
@@ -1301,6 +1303,7 @@ def apply_scaffold_core_guidance(
     result = coordinates
     final = initial
     accepted_scale = 0.0
+    line_search_trials: list[dict[str, Any]] = []
     for attempt in range(config.line_search_steps):
         scale = config.line_search_contraction**attempt
         candidate = coordinates + scale * atom_step.detach()
@@ -1308,21 +1311,34 @@ def apply_scaffold_core_guidance(
             candidate = projector(candidate)
         with torch.no_grad():
             trial = scaffold_core_energy(candidate[0], topology, config)
+        trial_record: dict[str, Any] = {
+            "scale": float(scale), "accepted": False,
+            "metrics": trial.detached_dict(), "checks": [],
+        }
+        line_search_trials.append(trial_record)
         if not torch.isfinite(trial.total):
+            trial_record["first_rejection_reason"] = "nonfinite_total"
             continue
-        safety_ok = (
-            float(trial.clash.item()) <= float(initial.clash.item()) + 1e-7
-            and float(trial.cross_chain_segment_clash.item())
-            <= float(initial.cross_chain_segment_clash.item()) + 1e-7
-            and float(trial.continuity.item())
-            <= float(initial.continuity.item()) + 1e-7
-            and (
-                config.routing_ownership_weight <= 0.0
-                or float(trial.routing_ownership.item())
-                <= float(initial.routing_ownership.item()) + 1e-7
-            )
-        )
-        if safety_ok and float(trial.total.item()) < float(initial.total.item()) - 1e-8:
+        safety_fields = ["clash", "cross_chain_segment_clash", "continuity"]
+        if config.routing_ownership_weight > 0.0:
+            safety_fields.append("routing_ownership")
+        for field in safety_fields:
+            before_value = float(getattr(initial, field).item())
+            after_value = float(getattr(trial, field).item())
+            trial_record["checks"].append({
+                "rule": field + "_regression", "before": before_value,
+                "after": after_value, "maximum_allowed": before_value + 1e-7,
+                "passed": after_value <= before_value + 1e-7,
+            })
+        trial_record["checks"].append({
+            "rule": "strict_energy_descent", "before": float(initial.total.item()),
+            "after": float(trial.total.item()), "minimum_decrease": 1e-8,
+            "passed": float(trial.total.item()) < float(initial.total.item()) - 1e-8,
+        })
+        failures = [item["rule"] for item in trial_record["checks"] if not item["passed"]]
+        trial_record["first_rejection_reason"] = failures[0] if failures else None
+        trial_record["accepted"] = not failures
+        if not failures:
             result = candidate.detach()
             final = trial
             accepted = True
@@ -1331,6 +1347,8 @@ def apply_scaffold_core_guidance(
     return result, {
         "applied": accepted,
         "accepted": accepted,
+        "reason": "accepted" if accepted else "no_acceptable_trial",
+        "line_search_trials": line_search_trials,
         "progress": float(progress),
         "window": float(window),
         "line_search_scale": accepted_scale,

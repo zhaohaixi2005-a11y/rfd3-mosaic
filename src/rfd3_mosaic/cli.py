@@ -1453,6 +1453,8 @@ def _print_public_design_plan(
     *,
     output_format: str,
 ) -> None:
+    from rfd3_mosaic.decision_explanation import DECISION_POLICY
+
     constraints = compile_constraint_plan(design)
     sampling = compile_sampling_plan(design)
     capabilities = required_capabilities_for_design(design)
@@ -1514,6 +1516,7 @@ def _print_public_design_plan(
     )
     payload = {
         "schema_version": 1,
+        "decision_policy": DECISION_POLICY,
         "user_mode": design.user_mode,
         "task": design.task.value if design.task is not None else None,
         "interface_contract": resolve_interface_contract(design).model_dump(
@@ -1560,6 +1563,11 @@ def _print_public_design_plan(
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     print("RFD3-Mosaic public design plan")
+    print("decision rules: docs/rfd3_mosaic/DECISION_RULES.zh-CN.md")
+    print(
+        "parameter evidence: resolved_preferences now; "
+        "runtime config/effective_config after sampling"
+    )
     print(
         "user mode:  "
         + (

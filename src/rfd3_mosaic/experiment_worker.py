@@ -17,6 +17,7 @@ import yaml
 
 from rfd3_mosaic.advisory_screening import write_advisory_screening
 from rfd3_mosaic.assembly_compiler import compile_experiment_assembly
+from rfd3_mosaic.decision_explanation import write_decision_explanation
 from rfd3_mosaic.design_preferences import ResolvedDesignPreferences
 from rfd3_mosaic.provenance.software import (
     collect_runtime_provenance,
@@ -632,6 +633,18 @@ def execute(
     cross_chain_topology = _generated_cross_chain_topology_runtime(
         assemblies[0].input_path
     )
+    # The legacy official control deliberately uses legacy_asu/independent
+    # sampling. Compiler metadata describes optional exact-Mosaic safeguards;
+    # those automatic safeguards must not change the control's sampler mode
+    # or cause its initialization to fail. Explicit mobility/packing requests
+    # still undergo the sampler's normal compatibility validation.
+    exact_sampler = (
+        sampler["symmetry_state_mode"] == "orbit_average"
+        and sampler["symmetry_noise_mode"] == "coupled"
+    )
+    if not exact_sampler:
+        polymer_continuity = None
+        cross_chain_topology = None
     if interface_guidance_enabled and scaffold_packing_enabled:
         raise ValueError(
             "Compiled input cannot enable graph interfaces and automatic "
@@ -770,10 +783,14 @@ def execute(
             mode=str(screening_config.get("mode", "advisory")),
             protocol=str(screening_config.get("protocol", "auto")),
         )
-        contract_met = screening["contract_status"] in {
-            "met",
-            "not_evaluated",
-        }
+        contract_met = screening["contract_status"] == "met"
+        decision_path = write_decision_explanation(
+            audit_directory / "decision_explanation.json",
+            result_json=result_json,
+            compiled_input=assembly.input_path,
+            reports=audit_outcome.reports,
+            screening=screening,
+        )
         all_reports.extend(audit_outcome.reports)
         if audit_outcome.mobility_trajectory is not None:
             mobility_trajectories.append(audit_outcome.mobility_trajectory)
@@ -789,8 +806,10 @@ def execute(
                 "result_json": str(result_json),
                 "generated": True,
                 "contract_met": contract_met,
+                "contract_status": screening["contract_status"],
                 "recommendation": screening["recommendation"],
                 "screening_advice": str(screening_path),
+                "decision_explanation": str(decision_path),
                 # Backward-compatible aliases for older campaign collectors.
                 # New reporting must use generated/contract/recommendation.
                 "accepted": accepted,
@@ -814,7 +833,12 @@ def execute(
     accepted_count = sum(bool(record["accepted"]) for record in design_results)
     rejected_count = len(design_results) - accepted_count
     contract_met_count = sum(bool(record["contract_met"]) for record in design_results)
-    contract_flagged_count = len(design_results) - contract_met_count
+    contract_flagged_count = sum(
+        record["contract_status"] == "flagged" for record in design_results
+    )
+    contract_unevaluated_count = (
+        len(design_results) - contract_met_count - contract_flagged_count
+    )
     recommended_count = sum(
         record["recommendation"] == "recommended_for_next_stage"
         for record in design_results
@@ -839,6 +863,7 @@ def execute(
         "generated_designs": len(design_results),
         "contract_met_designs": contract_met_count,
         "contract_flagged_designs": contract_flagged_count,
+        "contract_not_evaluated_designs": contract_unevaluated_count,
         "recommended_designs": recommended_count,
         "review_designs": len(design_results) - recommended_count,
         "screening": {

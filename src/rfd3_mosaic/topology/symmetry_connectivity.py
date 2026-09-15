@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from itertools import combinations
 
 from rfd3_mosaic.geometry import build_transform_registry
 from rfd3_mosaic.schema import SymmetryTransformSetSpec
+from rfd3_mosaic.schema.symmetry_names import CYCLIC_NAME, DIHEDRAL_NAME
 
-_CYCLIC = re.compile(r"^C(?P<order>[1-9][0-9]*)$")
-_DIHEDRAL = re.compile(r"^D(?P<order>[2-9][0-9]*)$")
+_CYCLIC = CYCLIC_NAME
+_DIHEDRAL = DIHEDRAL_NAME
 _POLYHEDRAL = {
     "T": ("tetrahedral", 12),
     "O": ("octahedral", 24),

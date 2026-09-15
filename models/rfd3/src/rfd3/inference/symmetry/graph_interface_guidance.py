@@ -2549,6 +2549,8 @@ def graph_interface_proposal_acceptable(
     before: GraphInterfaceEnergy,
     after: GraphInterfaceEnergy,
     config: GraphInterfaceGuidanceConfig,
+    *,
+    decision: dict[str, Any] | None = None,
 ) -> bool:
     """Hard acceptance contract for a timestep packing proposal.
 
@@ -2558,16 +2560,38 @@ def graph_interface_proposal_acceptable(
     distance and aggregate global clash energy.
     """
 
-    if not (
-        torch.isfinite(after.total)
-        and float(after.total.detach().cpu().item())
-        < float(before.total.detach().cpu().item()) - 1e-10
+    def check(name: str, passed: bool, **values: Any) -> bool:
+        outcome = bool(passed)
+        if decision is not None:
+            decision.setdefault("checks", []).append(
+                {"rule": name, "passed": outcome, **values}
+            )
+            decision["accepted"] = outcome
+            if not outcome:
+                decision["first_rejection_reason"] = name
+        return outcome
+
+    if decision is not None:
+        decision.update(
+            checks=[], accepted=False, first_rejection_reason=None,
+            evaluation="short_circuit; later checks omitted after rejection",
+        )
+    if not check(
+        "finite_strict_energy_descent",
+        (
+            torch.isfinite(after.total)
+            and float(after.total.detach().cpu().item())
+            < float(before.total.detach().cpu().item()) - 1e-10
+        ),
+        before=float(before.total.detach().cpu().item()),
+        after=float(after.total.detach().cpu().item()), minimum_decrease=1e-10,
     ):
         return False
 
     def minimum_not_worse(
         initial: torch.Tensor,
         candidate: torch.Tensor,
+        name: str,
     ) -> bool:
         initial_minimum = float(initial.min().detach().cpu().item())
         candidate_minimum = float(candidate.min().detach().cpu().item())
@@ -2576,19 +2600,28 @@ def graph_interface_proposal_acceptable(
             if initial_minimum >= config.clash_ca_distance
             else initial_minimum
         )
-        return candidate_minimum >= required - 1e-6
+        return check(
+            name, candidate_minimum >= required - 1e-6,
+            before=initial_minimum, after=candidate_minimum,
+            minimum_allowed=required, tolerance=1e-6,
+        )
 
     if not minimum_not_worse(
         before.minimum_distances,
         after.minimum_distances,
+        "interface_minimum_distance",
     ):
         return False
     if not minimum_not_worse(
         before.minimum_global_safety_distance.reshape(1),
         after.minimum_global_safety_distance.reshape(1),
+        "global_minimum_distance",
     ):
         return False
-    if before.per_source_total.shape != after.per_source_total.shape:
+    if not check(
+        "source_identity_shape",
+        before.per_source_total.shape == after.per_source_total.shape,
+    ):
         return False
     before_sources = before.per_source_total.detach()
     after_sources = after.per_source_total.detach()
@@ -2598,12 +2631,19 @@ def graph_interface_proposal_acceptable(
         config.maximum_source_regression_absolute,
         abs(worst_before) * config.maximum_source_regression_fraction,
     )
-    if (
-        worst_after
-        > worst_before + config.maximum_source_regression_absolute
+    if not check(
+        "worst_source_regression",
+        not (worst_after > worst_before + config.maximum_source_regression_absolute),
+        before=worst_before, after=worst_after,
+        maximum_allowed=worst_before + config.maximum_source_regression_absolute,
     ):
         return False
-    if bool(torch.any(after_sources - before_sources > allowed_regression)):
+    if not check(
+        "each_source_regression",
+        not bool(torch.any(after_sources - before_sources > allowed_regression)),
+        before=before_sources.cpu().tolist(), after=after_sources.cpu().tolist(),
+        maximum_increase=allowed_regression,
+    ):
         return False
     before_junction = float(before.junction.detach().cpu().item())
     after_junction = float(after.junction.detach().cpu().item())
@@ -2612,7 +2652,11 @@ def graph_interface_proposal_acceptable(
         if before_junction <= config.maximum_backbone_loss
         else before_junction
     )
-    if after_junction > junction_limit + 1e-8:
+    if not check(
+        "junction_regression", not (after_junction > junction_limit + 1e-8),
+        before=before_junction, after=after_junction,
+        maximum_allowed=junction_limit, tolerance=1e-8,
+    ):
         return False
     before_exclusivity = float(
         before.patch_exclusivity.detach().cpu().item()
@@ -2625,12 +2669,20 @@ def graph_interface_proposal_acceptable(
         if before_exclusivity <= config.maximum_patch_exclusivity_loss
         else before_exclusivity
     )
-    if after_exclusivity > exclusivity_limit + 1e-8:
+    if not check(
+        "patch_exclusivity_regression",
+        not (after_exclusivity > exclusivity_limit + 1e-8),
+        before=before_exclusivity, after=after_exclusivity,
+        maximum_allowed=exclusivity_limit, tolerance=1e-8,
+    ):
         return False
-    return bool(
-        after.global_safety_clash
-        <= before.global_safety_clash + 1e-8
+    return check(
+        "global_clash_regression",
+        bool(after.global_safety_clash <= before.global_safety_clash + 1e-8),
+        before=float(before.global_safety_clash.detach().cpu().item()),
+        after=float(after.global_safety_clash.detach().cpu().item()), tolerance=1e-8,
     )
+
 
 def graph_interface_energy_diagnostics(
     energy: GraphInterfaceEnergy,
@@ -3000,7 +3052,11 @@ def apply_graph_interface_guidance(
         and config.distance_weight == 0.0
         and config.contact_prior_weight == 0.0
     ):
-        return coordinates, {"applied": False, "window_weight": window}
+        return coordinates, {
+            "applied": False, "window_weight": window, "progress": float(progress),
+            "reason": "inactive_window" if window == 0.0 else "all_weights_zero",
+            "line_search_trials": [],
+        }
     scheduled_target = scheduled_interface_ca_distance(progress, config)
     if (
         patch_state is not None
@@ -3200,6 +3256,7 @@ def apply_graph_interface_guidance(
     accepted_scale = 0.0
     accepted_energy = energy
     accepted = coordinates
+    line_search_trials: list[dict[str, Any]] = []
     for line_search_index in range(effective_config.line_search_steps):
         scale = effective_config.line_search_contraction**line_search_index
         candidate = coordinates + scale * displacement
@@ -3212,10 +3269,13 @@ def apply_graph_interface_guidance(
             target_ca_distance_override=scheduled_target,
             patch_assignments=patch_assignments,
         )
+        trial_decision: dict[str, Any] = {"scale": float(scale)}
+        line_search_trials.append(trial_decision)
         if graph_interface_proposal_acceptable(
             energy,
             candidate_energy,
             effective_config,
+            decision=trial_decision,
         ):
             accepted_scale = scale
             accepted_energy = candidate_energy
@@ -3230,6 +3290,10 @@ def apply_graph_interface_guidance(
     return accepted, {
         "applied": accepted_scale > 0.0,
         "proposal_accepted": accepted_scale > 0.0,
+        "reason": "accepted" if accepted_scale > 0.0 else "no_acceptable_trial",
+        "progress": float(progress),
+        "effective_config": vars(effective_config),
+        "line_search_trials": line_search_trials,
         "line_search_scale": accepted_scale,
         "window_weight": window,
         "contact_prior_schedule_scale": contact_prior_schedule_scale,

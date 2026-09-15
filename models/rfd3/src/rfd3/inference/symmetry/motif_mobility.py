@@ -1650,6 +1650,8 @@ class OrbitRigidMotifController:
         capture_response_scale: float = 1.0,
         expand_response_scale: float = 1.0,
         polish_response_scale: float = 1.0,
+        additional_state_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        proposal_selection_seed: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         """Propose motif poses and generated packing as one transaction.
 
@@ -1659,6 +1661,11 @@ class OrbitRigidMotifController:
         geometry worse.  This method snapshots both mutable states, proposes
         a symmetry-projected generated patch and bounded motif poses from the
         same scaffold, then accepts or rolls back the complete transaction.
+
+        An optional additional energy receives the complete [L, 3] state.
+        Core, routing and capture terms participate in both the pose gradient
+        and the final comparison; topology needed only for final continuity
+        does not introduce an energy term.
         """
 
         if scaffold_coordinates.shape != self.base_target.shape:
@@ -1719,6 +1726,16 @@ class OrbitRigidMotifController:
             config=scaffold_config,
         )
 
+        def extra_energy(coordinates: torch.Tensor) -> torch.Tensor:
+            if additional_state_energy is None:
+                return coordinates.new_zeros(())
+            value = additional_state_energy(coordinates[0])
+            if value.ndim != 0 or not torch.isfinite(value):
+                raise ValueError("Additional joint state energy must be one finite scalar")
+            return value
+
+        baseline_extra = extra_energy(baseline_coordinates)
+
         try:
             packed_coordinates, packing_step = apply_graph_interface_guidance(
                 baseline_coordinates,
@@ -1750,7 +1767,7 @@ class OrbitRigidMotifController:
                 interface_topology,
                 interface_config,
                 patch_assignments=patch_state.assignments,
-            ).total
+            ).total + extra_energy(candidate_coordinates)
 
         try:
             self.update_orbits_from_scaffold(
@@ -1766,6 +1783,7 @@ class OrbitRigidMotifController:
                 apply_update=True,
                 pose_energy=packing_aware_pose_energy,
                 proposal_response_scale=proposal_response_scale,
+                proposal_selection_seed=proposal_selection_seed,
             )
         except Exception:
             rollback_mutable_state()
@@ -1801,21 +1819,24 @@ class OrbitRigidMotifController:
                     config=scaffold_config,
                 )
             )
+            candidate_extra = extra_energy(candidate_coordinates)
         except Exception:
             rollback_mutable_state()
             raise
 
-        baseline_total = baseline_graph.total + baseline_scaffold_total
-        candidate_total = candidate_graph.total + candidate_scaffold_total
+        baseline_total = baseline_graph.total + baseline_scaffold_total + baseline_extra
+        candidate_total = candidate_graph.total + candidate_scaffold_total + candidate_extra
         packing_improved = bool(
             torch.isfinite(candidate_graph.total)
             and float(candidate_graph.total.detach().cpu().item())
             < float(baseline_graph.total.detach().cpu().item()) - 1.0e-10
         )
+        packing_decision: dict[str, Any] = {}
         packing_contract_safe = graph_interface_proposal_acceptable(
             baseline_graph,
             candidate_graph,
             interface_config,
+            decision=packing_decision,
         )
 
         def minimum_not_worse(
@@ -1879,6 +1900,20 @@ class OrbitRigidMotifController:
             ),
             "packing_improved": packing_improved,
             "packing_contract_safe": packing_contract_safe,
+            "packing_decision": packing_decision,
+            "failed_conditions": [
+                name for name, passed in (
+                    ("transaction_has_change", transaction_has_change),
+                    ("packing_improved", packing_improved),
+                    ("combined_improved", combined_improved),
+                    ("packing_contract_safe", packing_contract_safe),
+                    ("edge_safe", edge_safe),
+                    ("global_safe", global_safe),
+                    ("junction_safe", junction_safe),
+                ) if not passed
+            ],
+            "minimum_combined_decrease": 1e-10,
+            "junction_limit": junction_limit,
             "combined_improved": combined_improved,
             "edge_safe": edge_safe,
             "global_safe": global_safe,
@@ -1889,6 +1924,8 @@ class OrbitRigidMotifController:
             "candidate_packing": float(candidate_graph.total.detach().cpu().item()),
             "baseline_scaffold": baseline_scaffold_terms,
             "candidate_scaffold": candidate_scaffold_terms,
+            "baseline_additional_energy": float(baseline_extra.detach().cpu().item()),
+            "candidate_additional_energy": float(candidate_extra.detach().cpu().item()),
             "packing_step": packing_step,
         }
         self.last_joint_packing_diagnostics = diagnostics

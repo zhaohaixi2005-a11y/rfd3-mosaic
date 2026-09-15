@@ -14,10 +14,11 @@ from rfd3_mosaic.schema.design import (
     UserResourceSpec,
 )
 from rfd3_mosaic.schema.specs import CopyRelationSpec, Identifier, StrictModel
+from rfd3_mosaic.schema.symmetry_names import SYMMETRY_NAME_PATTERN
 
 SimpleSymmetryName = Annotated[
     str,
-    Field(pattern=r"^(?:C[1-9][0-9]*|D[2-9][0-9]*|T|O|I)$"),
+    Field(pattern=SYMMETRY_NAME_PATTERN),
 ]
 
 

@@ -8,6 +8,13 @@ multi-component examples, start with the
 RFD3-Mosaic provides one public command, `rfd3-mosaic`. The command-line
 interface is independent of the machine or institution where it runs.
 
+For the Chinese explanation of operation triggers, equations, parameter
+defaults, acceptance conditions and the limits of screening criteria, read
+[判定规则与公式](DECISION_RULES.zh-CN.md). `plan --format json` includes
+`decision_policy` alongside the resolved preferences. New worker runs write
+`audits/<design_id>/decision_explanation.md` and `.json`, with recorded runtime
+settings, audit evidence and references to per-step proposal decisions.
+
 > **Status:** research preview. Commands documented here are the maintained
 > public interface, but compatibility is not guaranteed until the first stable
 > release.
@@ -122,8 +129,10 @@ Pose sampling does not prefer a central pore or one cage silhouette unless the
 user explicitly declares a corresponding assembly-shape target.
 The run report records generated outputs, geometry-contract flags and
 advisory recommendations. A flagged design is never deleted. Set
-`screening.mode: off` to suppress recommendations; destructive screening is
-not part of the public schema. `protocol: hoyeung_lhd101` records campaign
+`screening.mode: off` to suppress recommendations. Required geometry contracts
+are still evaluated and flagged; unevaluated results are never counted as
+contracts met. Destructive screening is not part of the public schema.
+`protocol: hoyeung_lhd101` records campaign
 intent, but the published cohort-median loop/Rg selection is only computed
 after the cohort exists.
 `pose_manifest.json` records the exact pose seed, diffusion seed, compiled

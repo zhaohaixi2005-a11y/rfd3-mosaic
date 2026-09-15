@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import asdict, dataclass
 
 from rfd3_mosaic.schema import SimpleCageIntentSpec
+from rfd3_mosaic.schema.symmetry_names import CYCLIC_NAME, DIHEDRAL_NAME
 from rfd3_mosaic.topology.stabilizer_cosets import (
     stabilizer_coset_hypotheses,
     supported_orbit_sizes,
 )
 
-_CYCLIC = re.compile(r"^C(?P<order>[1-9][0-9]*)$")
-_DIHEDRAL = re.compile(r"^D(?P<order>[2-9][0-9]*)$")
+_CYCLIC = CYCLIC_NAME
+_DIHEDRAL = DIHEDRAL_NAME
 _POLYHEDRAL_ORDERS = {"T": 12, "O": 24, "I": 60}
 
 

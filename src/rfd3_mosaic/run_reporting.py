@@ -11,9 +11,11 @@ from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import yaml
 
+from rfd3_mosaic.run_artifacts import resolve_run_artifact
 from rfd3_mosaic.run_index import read_run_record, valid_run_id
 from rfd3_mosaic.run_layout import dated_run_directory
 
@@ -249,20 +251,7 @@ def _audit_paths(run_directory: Path, worker: dict[str, Any]) -> list[Path]:
     paths: dict[Path, None] = {}
     declared_reports = list(worker.get("reports") or [])
     for value in declared_reports:
-        path = Path(str(value)).expanduser()
-        if not path.is_absolute():
-            path = run_directory / path
-        elif not path.is_file():
-            # Worker summaries intentionally record absolute provenance paths.
-            # Resolve a unique same-named artifact after a run has been copied
-            # or physically reorganized without mutating its frozen summary.
-            matches = [
-                candidate
-                for candidate in run_directory.rglob(path.name)
-                if candidate.is_file() and "software" not in candidate.parts
-            ]
-            if len(matches) == 1:
-                path = matches[0]
+        path = resolve_run_artifact(run_directory, str(value), worker)
         paths[path.resolve()] = None
     # Once a worker or post-hoc audit writes an authoritative report list,
     # older same-named audits may still remain elsewhere in the immutable run
@@ -310,7 +299,7 @@ def _audit_record(path: Path) -> dict[str, Any]:
         passed = payload.get("status") == "passed"
     record.update(
         {
-            "passed": bool(passed),
+            "passed": passed is True,
             "status": payload.get("status"),
             "summary": payload.get("summary"),
             "assembly_shape_contract": payload.get("assembly_shape_contract"),
@@ -559,7 +548,26 @@ def collect_run_status(
     execution_completed = state == "completed"
     generated = bool(execution_completed and structures)
     contract_flagged_count = worker.get("contract_flagged_designs")
-    if isinstance(contract_flagged_count, int):
+    contract_states = [
+        record.get("contract_status")
+        for record in worker.get("design_results", [])
+        if isinstance(record, dict)
+    ]
+    legacy_screening_off = (
+        (worker.get("screening") or {}).get("mode") == "off"
+        and not any(state is not None for state in contract_states)
+    )
+    if not execution_completed or legacy_screening_off:
+        contract_status = "not_evaluated"
+    elif contract_states and any(state is not None for state in contract_states):
+        contract_status = (
+            "flagged" if "flagged" in contract_states
+            else "met" if all(state == "met" for state in contract_states)
+            else "not_evaluated"
+        )
+    elif worker.get("contract_not_evaluated_designs", 0):
+        contract_status = "not_evaluated"
+    elif isinstance(contract_flagged_count, int):
         contract_status = "flagged" if contract_flagged_count > 0 else "met"
     elif generated and passed is not None:
         contract_status = "met" if passed else "flagged_or_advisory"
@@ -844,7 +852,9 @@ def format_status_text(status: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_html_report(status: dict[str, Any]) -> str:
+def render_html_report(
+    status: dict[str, Any], *, report_directory: Path | None = None,
+) -> str:
     """Create a dependency-free report that can be copied with the run."""
 
     worker = status.get("worker") or {}
@@ -888,6 +898,27 @@ def render_html_report(status: dict[str, Any]) -> str:
         or "<li>None available</li>"
     )
     scheduler = status.get("scheduler") or {}
+    decision_items = []
+    for record in worker.get("design_results", []):
+        if (
+            not isinstance(record, dict)
+            or not record.get("decision_explanation")
+            or not status.get("run_directory")
+        ):
+            continue
+        # Canonical per-design paths remain usable after moving the run tree.
+        decision_path = (
+            Path(status["run_directory"]) / "audits" / record["design_id"]
+            / "decision_explanation.md"
+        ).resolve()
+        decision_href = quote(os.path.relpath(
+            decision_path, report_directory or Path(status["run_directory"]),
+        ))
+        decision_items.append(
+            f'<li><a href="{escape(decision_href, quote=True)}">'
+            f'{escape(record["design_id"])}</a> — '
+            f'<code>{escape(str(decision_path))}</code></li>'
+        )
     design = status.get("design") or {}
     design_text = (
         json.dumps(design, sort_keys=True, indent=2)
@@ -929,6 +960,11 @@ pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}}
 <h2>Measured contracts and advisory checks</h2>
 <table><thead><tr><th>Report</th><th>Status</th><th>Summary</th></tr></thead>
 <tbody>{''.join(audit_rows) or '<tr><td colspan="3">No audits available.</td></tr>'}</tbody></table>
+<h2>Decision rules and parameter evidence</h2>
+<p class="muted">Per-design explanations include actual configurations, contract flags,
+advisory reasons and references to proposal acceptance/rejection traces.
+Controller proxy thresholds are engineering settings, not universal designability criteria.</p>
+<ul>{''.join(decision_items) or '<li>No per-design decision explanation recorded.</li>'}</ul>
 <h2>Design provenance</h2>
 <div class="card"><pre>{escape(design_text)}</pre></div>
 <h2>Raw generated outputs</h2>
@@ -958,7 +994,10 @@ def write_report(
     else:
         output_path = Path(output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_html_report(status), encoding="utf-8")
+    output_path.write_text(
+        render_html_report(status, report_directory=output_path.parent),
+        encoding="utf-8",
+    )
     output_path.with_suffix(".txt").write_text(
         format_status_text(status) + "\n",
         encoding="utf-8",
