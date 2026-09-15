@@ -8,6 +8,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
+    compiled_capture_chain_indices,
     generated_chain_core_centers,
     project_generated_polymer_continuity,
     robust_interface_capture_energy,
@@ -33,6 +34,63 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_capture_binding_uses_polymer_endpoints_for_cyclic_and_dihedral_copies(self) -> None:
+        from rfd3_mosaic.geometry import build_cyclic_registry, build_dihedral_registry
+
+        for builder in (build_cyclic_registry, build_dihedral_registry):
+            for order in (2, 3, 5, 10):
+                registry = builder(order)
+                with self.subTest(group=registry.group_name):
+                    count = registry.order
+                    topology = build_scaffold_core_topology(
+                        {
+                            "atom_to_token_map": torch.arange(count * 4),
+                            "asym_id": torch.arange(count).repeat_interleave(4) + 10,
+                            "residue_index": torch.arange(4).repeat(count),
+                            "is_ca": torch.ones(count * 4, dtype=torch.bool),
+                            "is_protein": torch.ones(count * 4, dtype=torch.bool),
+                        },
+                        torch.tensor([True, False, False, True] * count),
+                    )
+                    target = [
+                        registry.transform_ids.index(registry.transform_id_for_offset(1, source_copy_index=i))
+                        for i in range(count)
+                    ]
+                    predecessor = [target.index(i) for i in range(count)]
+                    # Seed i contains the first fixed endpoint of chain i
+                    # and the last fixed endpoint of its predecessor chain.
+                    groups = torch.tensor([[4 * i, 4 * predecessor[i] + 3] for i in range(count)])
+                    expected = tuple(tuple(sorted((i, predecessor[i]))) for i in range(count))
+                    self.assertEqual(compiled_capture_chain_indices(topology, groups), expected)
+                    self.assertEqual(compiled_capture_chain_indices(topology, groups.flip(0)), expected[::-1])
+
+    def test_unconnected_nearby_chain_cannot_replace_a_capture_neighbour(self) -> None:
+        topology = build_scaffold_core_topology(
+            {
+                "atom_to_token_map": torch.arange(12),
+                "asym_id": torch.arange(3).repeat_interleave(4),
+                "residue_index": torch.arange(4).repeat(3),
+                "is_ca": torch.ones(12, dtype=torch.bool),
+                "is_protein": torch.ones(12, dtype=torch.bool),
+            },
+            torch.tensor([True, False, False, True] * 3),
+        )
+        coordinates = torch.zeros(12, 3)
+        coordinates[1:3, 0] = -20.0
+        coordinates[5:7, 0] = 20.0
+        coordinates[9:11, 0] = 1.0  # Closer, but not connected to this seed.
+        original = coordinates.clone()
+        groups = torch.tensor([[0, 7]])
+        energy = robust_interface_capture_energy(
+            coordinates, topology, ScaffoldCoreGuidanceConfig(), groups, capture_progress=0.0
+        )
+        self.assertEqual(float(energy), 0.0)
+        self.assertTrue(torch.equal(coordinates, original))
+        coordinates[9:11, 0] = -0.1
+        self.assertEqual(float(robust_interface_capture_energy(
+            coordinates, topology, ScaffoldCoreGuidanceConfig(), groups, capture_progress=0.0
+        )), 0.0)
+
     def test_fixed_backbone_sidechain_is_not_generated_scaffold(self) -> None:
         topology = build_scaffold_core_topology(
             {

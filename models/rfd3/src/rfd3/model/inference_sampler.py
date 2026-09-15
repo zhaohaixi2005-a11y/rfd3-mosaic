@@ -39,6 +39,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
     build_scaffold_core_topology,
+    compiled_capture_chain_indices,
     project_generated_polymer_continuity,
     robust_assembly_capture_energy,
     scaffold_core_energy,
@@ -2773,6 +2774,27 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             }
             mobility_diagnostics["robust_capture"] = {
                 "enabled": bool(robust_capture_active),
+                "neighbor_policy": (
+                    "compiled_fixed_endpoints"
+                    if scaffold_core_topology is not None
+                    and scaffold_core_topology.generated_runs
+                    else "geometric_nearest_two_terminal_only"
+                ),
+                "endpoint_bindings": (
+                    [
+                        {
+                            "generated_chain_asym_ids": [
+                                chain.asym_id for chain in scaffold_core_topology.chains
+                                if bool(chain.generated_ca_mask.any())
+                            ],
+                            "core_indices_by_seed_copy": compiled_capture_chain_indices(
+                                scaffold_core_topology, motif.group_atom_indices
+                            ),
+                        }
+                        for motif in motif_mobility_controller.motifs
+                    ]
+                    if scaffold_core_topology is not None else []
+                ),
                 "weight": float(robust_capture_weight),
                 "capture_fraction": float(self.motif_mobility_capture_fraction),
                 "window_start": float(self.motif_mobility_start_fraction),

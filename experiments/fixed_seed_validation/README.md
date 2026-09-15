@@ -27,6 +27,13 @@ Full C3 context, exact symmetry, local-fixed-anchor initialization and current
 core/routing guidance remain active. No artificial central exclusion volume or
 new curved-path force is introduced.
 
+The mobile control now uses the corrected capture implementation: in two-anchor
+tasks, neighbours are bound from actual fixed polymer endpoints and cannot
+switch according to instantaneous COM distances. This rule is shared across
+symmetry groups and seed types. The compiler also rejects an invalid supplied
+interface/polymer incidence graph before emitting an inference input. These
+are common safeguards in both arms, not additional experimental variables.
+
 Before interpreting an arm comparison, compare compiled contigs, resolved copy
 relations, materialized lengths and initial coordinates. Equal random seeds
 alone do not prove matched initial inputs across policy changes. Record source

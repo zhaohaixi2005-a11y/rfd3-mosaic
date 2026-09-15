@@ -209,16 +209,21 @@ scaffold-objective proposal 则从上述能量的受限 SE(3) 梯度提出更新
 在组件允许窗口内归一化进度，默认前40% capture、中间至80% settle、最后 polish；
 capture 响应最多按基础响应×5并封顶1，之后收小，几何运动上限仍然生效。
 
-**robust capture** 是另外一个早期目标：对每个刚体副本选最近的两个生成链核心，
+**robust capture** 是另外一个早期目标：双端锚定任务按编译后的固定端点归属，
+绑定每个刚体副本实际连接的生成链核心；采样中不按几何距离更换邻居。
+没有任何双端锚定生成段的 terminal-only 任务仍使用最近两个生成链的兼容规则。
+双端任务中，没有连接端点的刚体不参与此捕获。该归属规则不依赖 Cn/Dn 的阶数。
 从普通中心平滑过渡到接触支持加权中心：
 
 ```text
-c_target = (1-u)*mean(c_plain_1, c_plain_2) + u*mean(c_supported_1, c_supported_2)
+c_target = (1-u)*mean(c_plain_j for j in neighbours) + u*mean(c_supported_j for j in neighbours)
 E_capture = mean ||(c_rigid - c_target)/contact_distance||²
 ```
 
-只有启用此功能、存在生成骨架、允许运动且处于捕获窗口时加入；不足两个链核心时该项为零。
-最近核心的选择是离散的。默认捕获权重1，早期窗口取运动窗口前40%，但以实际配置为准。
+只有启用此功能、存在生成骨架、允许运动且处于捕获窗口时加入。
+双端任务使用绑定的所有不同链核心；未绑定链的刚体不参与。terminal-only 兼容规则在不足两个核心时为零。
+端点身份绑定不随坐标变化；只有 terminal-only 的最近核心选择依赖瞬时几何。
+默认捕获权重1，早期窗口取运动窗口前40%，但以实际配置为准。
 它表达“朝有多链支撑的位置移动”的启发式，不能保证正确装配；空腔/细长/松散目标尤其需要审查。
 
 刚体与界面联合事务同时比较 graph、scaffold 和启用的 core/capture 总能量。

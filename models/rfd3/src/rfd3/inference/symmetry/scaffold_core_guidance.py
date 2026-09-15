@@ -286,6 +286,38 @@ def generated_chain_core_centers(
     return torch.stack(ordinary, dim=0), torch.stack(supported, dim=0)
 
 
+def compiled_capture_chain_indices(
+    topology: ScaffoldCoreTopology,
+    group_atom_indices: torch.Tensor,
+) -> tuple[tuple[int, ...], ...] | None:
+    """Bind seed copies to generated cores through fixed polymer endpoints.
+
+    Indices address the generated-core list, not arbitrary chain IDs. No
+    coordinates or symmetry-name special cases participate in this binding.
+    ``None`` denotes the legacy terminal-only task without two-anchor runs.
+    Empty rows mean that a rigid group has no declared two-anchor connection;
+    it must not attract an unrelated chain merely because it is nearby.
+    """
+    if not topology.generated_runs:
+        return None
+    core_indices = {
+        chain.asym_id: index
+        for index, chain in enumerate(
+            chain for chain in topology.chains if bool(chain.generated_ca_mask.any())
+        )
+    }
+    bindings = []
+    for group in group_atom_indices:
+        atoms = set(group.detach().cpu().tolist())
+        bindings.append(tuple(sorted({
+            core_indices[run.asym_id]
+            for run in topology.generated_runs
+            if run.left_anchor_ca_atom_index in atoms
+            or run.right_anchor_ca_atom_index in atoms
+        })))
+    return tuple(bindings)
+
+
 def robust_assembly_capture_energy(
     coordinates: torch.Tensor,
     topology: ScaffoldCoreTopology,
@@ -294,12 +326,13 @@ def robust_assembly_capture_energy(
     *,
     capture_progress: float,
 ) -> torch.Tensor:
-    """Capture each rigid copy between its two nearest generated cores.
+    """Capture rigid copies using their declared generated-chain neighbours.
 
     ``capture_progress`` blends the Ho-Yeung-style midpoint of ordinary chain
-    COMs into a midpoint of tertiary-support-weighted core centers.  Neighbour
-    identities are chosen from detached geometry, but the selected midpoint
-    and complete rigid-copy centers remain differentiable.
+    COMs into a midpoint of tertiary-support-weighted core centers. For
+    two-anchor scaffolding, fixed endpoint membership determines neighbours
+    throughout sampling. Only terminal-only tasks retain the geometric
+    nearest-two fallback. The centers remain differentiable.
     """
 
     if not 0.0 <= capture_progress <= 1.0:
@@ -316,7 +349,8 @@ def robust_assembly_capture_energy(
         topology,
         config,
     )
-    if len(ordinary) < 2:
+    bindings = compiled_capture_chain_indices(topology, groups)
+    if len(ordinary) < 2 and bindings is None:
         return coordinates.sum() * 0.0
     group_centers = coordinates[groups].mean(dim=1)
     losses: list[torch.Tensor] = []
@@ -330,21 +364,28 @@ def robust_assembly_capture_energy(
         dtype=coordinates.dtype,
         device=coordinates.device,
     )
-    for group_center in group_centers:
-        with torch.no_grad():
-            nearest = torch.topk(
-                torch.linalg.vector_norm(
-                    ordinary.detach() - group_center.detach(),
-                    dim=-1,
-                ),
-                k=2,
-                largest=False,
-            ).indices
+    for group_index, group_center in enumerate(group_centers):
+        if bindings is not None:
+            if not bindings[group_index]:
+                continue
+            nearest = torch.tensor(
+                bindings[group_index], dtype=torch.long, device=coordinates.device
+            )
+        else:
+            with torch.no_grad():
+                nearest = torch.topk(
+                    torch.linalg.vector_norm(
+                        ordinary.detach() - group_center.detach(),
+                        dim=-1,
+                    ),
+                    k=2,
+                    largest=False,
+                ).indices
         ordinary_midpoint = ordinary[nearest].mean(dim=0)
         supported_midpoint = supported[nearest].mean(dim=0)
         target = (1.0 - blend) * ordinary_midpoint + blend * supported_midpoint
         losses.append(torch.sum(torch.square((group_center - target) / scale)))
-    return torch.stack(losses).mean()
+    return torch.stack(losses).mean() if losses else coordinates.sum() * 0.0
 
 
 def robust_interface_capture_energy(

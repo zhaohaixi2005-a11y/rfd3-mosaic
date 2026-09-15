@@ -3182,9 +3182,16 @@ def compile_assembly_rfd3_input(
         ),
     }
     if instances.interfaces and compiled_links:
-        adapter_extra["interleaved_interface_seed_topology"] = (
-            analyze_interleaved_interface_seed_topology(instances).to_dict()
-        )
+        seed_topology = analyze_interleaved_interface_seed_topology(instances)
+        adapter_extra["interleaved_interface_seed_topology"] = seed_topology.to_dict()
+        if (
+            seed_topology.interface_pairs
+            and seed_topology.status == "invalid_interface_unit_graph"
+        ):
+            raise ValueError(
+                "Invalid supplied-interface polymer connection graph: "
+                + "; ".join(seed_topology.violations)
+            )
     if caller_extra:
         protected = set(adapter_extra) & set(caller_extra)
         if protected:
