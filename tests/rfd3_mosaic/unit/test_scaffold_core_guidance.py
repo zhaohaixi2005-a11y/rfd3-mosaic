@@ -13,6 +13,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     project_generated_polymer_continuity,
     robust_interface_capture_energy,
     scaffold_core_energy,
+    scaffold_geometry_guard,
     worst_support_deficit_energy,
 )
 from rfd3.trainer.rfd3 import _copy_sampler_diagnostics
@@ -34,6 +35,126 @@ def features(tokens_per_chain: int = 8):
 
 
 class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
+    def test_geometry_guard_rejects_new_clash_even_when_an_old_clash_improves(self):
+        topology = build_scaffold_core_topology(
+            {
+                "atom_to_token_map": torch.arange(6),
+                "asym_id": torch.arange(3).repeat_interleave(2),
+                "residue_index": torch.arange(2).repeat(3),
+                "is_ca": torch.ones(6, dtype=torch.bool),
+                "is_protein": torch.ones(6, dtype=torch.bool),
+            },
+            torch.zeros(6, dtype=torch.bool),
+        )
+        before = torch.tensor(
+            [
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.0, 3.8, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 3.8, 0.0],
+                    [10.0, 0.0, 0.0],
+                    [10.0, 3.8, 0.0],
+                ]
+            ]
+        )
+        after = before.clone()
+        after[:, 2:4, 0] = 4.0
+        after[:, 4:6, 0] = 5.0
+        guard = scaffold_geometry_guard(before, topology, ScaffoldCoreGuidanceConfig())
+        self.assertTrue(guard(before)["accepted"])
+        self.assertFalse(guard(after)["accepted"])
+
+    def test_continuity_repair_rolls_back_if_projected_candidate_collides(self):
+        topology = build_scaffold_core_topology(
+            features(2), torch.tensor([True, False, True, False])
+        )
+        before = torch.tensor(
+            [[[0.0, 0.0, 0.0], [7.0, 0.0, 0.0], [0.0, 10.0, 0.0], [7.0, 10.0, 0.0]]]
+        )
+
+        def damaging_projection(candidate):
+            value = candidate.clone()
+            value[:, 3] = value[:, 1]
+            return value
+
+        after, diagnostic = project_generated_polymer_continuity(
+            before,
+            topology,
+            projector=damaging_projection,
+            candidate_validator=scaffold_geometry_guard(
+                before, topology, ScaffoldCoreGuidanceConfig()
+            ),
+        )
+        self.assertTrue(torch.equal(after, before))
+        self.assertFalse(diagnostic["applied"])
+        self.assertFalse(diagnostic["within_tolerance"])
+        self.assertEqual(diagnostic["reason"], "geometry_regression")
+
+    def test_core_audit_accepts_explained_noop_and_enforces_measurement_only_quality(
+        self,
+    ):
+        topology = build_scaffold_core_topology(
+            features(2), torch.zeros(4, dtype=torch.bool)
+        )
+        coordinates = torch.tensor(
+            [[[0.0, 0.0, 0.0], [3.8, 0.0, 0.0], [0.0, 10.0, 0.0], [3.8, 10.0, 0.0]]]
+        )
+        config = ScaffoldCoreGuidanceConfig()
+        _, step = apply_scaffold_core_guidance(
+            coordinates, topology, progress=0.5, config=config
+        )
+        self.assertFalse(step["applied"])
+        with tempfile.TemporaryDirectory() as directory:
+            compiled, result = (
+                Path(directory) / "input.json",
+                Path(directory) / "result.json",
+            )
+            plan = {
+                "intra_chain_weight": 0.0,
+                "inter_chain_weight": 1.0,
+                "quality_contract": {"required": False},
+            }
+            diagnostic = {
+                "runtime_active": True,
+                "chain_count": 2,
+                "config": vars(config),
+                "steps": [step],
+                "applied_steps": 0,
+                "final_metrics": scaffold_core_energy(
+                    coordinates[0], topology, config
+                ).detached_dict(),
+            }
+            compiled.write_text(
+                json.dumps({"example": {"extra": {"scaffold_core_guidance": plan}}})
+            )
+            result.write_text(
+                json.dumps({"scaffold_core_guidance_diagnostics": diagnostic})
+            )
+            self.assertTrue(
+                audit_scaffold_core_guidance(
+                    compiled_input=compiled, result_json=result
+                )["passed"]
+            )
+            diagnostic.update(steps=[], execution_mode="measurement_only")
+            plan["quality_contract"] = {
+                "required": True,
+                "maximum_mean_normalized_rg": 0.0,
+                "minimum_mean_tertiary_support_fraction": 0.5,
+                "maximum_long_range_contact_deficit": 0.25,
+            }
+            compiled.write_text(
+                json.dumps({"example": {"extra": {"scaffold_core_guidance": plan}}})
+            )
+            result.write_text(
+                json.dumps({"scaffold_core_guidance_diagnostics": diagnostic})
+            )
+            audit = audit_scaffold_core_guidance(
+                compiled_input=compiled, result_json=result
+            )
+            self.assertTrue(audit["summary"]["step_contract_valid"])
+            self.assertFalse(audit["passed"])
+
     def test_capture_binding_uses_polymer_endpoints_for_cyclic_and_dihedral_copies(self) -> None:
         from rfd3_mosaic.geometry import build_cyclic_registry, build_dihedral_registry
 

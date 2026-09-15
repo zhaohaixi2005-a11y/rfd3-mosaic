@@ -40,6 +40,43 @@ def _c3_registry() -> tuple[list[str], dict[str, list[list[float]]]]:
 
 
 class AssemblyFrontendTestCase(unittest.TestCase):
+    def test_required_core_quality_survives_disabled_core_guidance(self):
+        import yaml
+
+        source = (
+            REPOSITORY_ROOT
+            / "experiments/lrz_public_c3_locked_packing_patch_capture_v100_50step.yaml"
+        )
+        payload = yaml.safe_load(source.read_text())
+        payload["input"] = str((source.parent / payload["input"]).resolve())
+        payload.setdefault("guidance", {}).update(intra_chain_weight=0.0)
+        payload.setdefault("sampling", {})["scaffold_core_quality"] = {"required": True}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            design = root / "required.yaml"
+            design.write_text(yaml.safe_dump(payload))
+            request = lower_experiment_topology(
+                {
+                    "kind": "user_design",
+                    "config": str(design),
+                    "example_id": "required-core",
+                },
+                root / "output",
+                project_directory=REPOSITORY_ROOT,
+                experiment_name="required-core",
+                pose_seed=1234,
+            )
+        self.assertIn(
+            AuditRequirement.SCAFFOLD_CORE_GUIDANCE, request.audit_requirements
+        )
+        self.assertTrue(
+            request.audit_metadata["scaffold_core_guidance"]["quality_contract"][
+                "required"
+            ]
+        )
+        preferences = request.audit_metadata["resolved_design_preferences"]
+        self.assertTrue(preferences["sampler_overrides"]["measure_scaffold_core"])
+
     def test_fixed_motif_interface_creation_records_default_core_guidance(
         self,
     ) -> None:

@@ -644,6 +644,7 @@ def project_generated_polymer_continuity(
     iterations: int = 64,
     relaxation: float = 1.0,
     projector: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Project generated protein tokens onto adjacent-CA geometry.
 
@@ -777,11 +778,27 @@ def project_generated_polymer_continuity(
 
     if projector is not None:
         result = projector(result)
+    safety = candidate_validator(result) if candidate_validator is not None else None
+    if safety is not None and not safety["accepted"]:
+        maximum_initial = float(initial_errors.max().detach().cpu().item())
+        return coordinates, {
+            "applied": False,
+            "reason": "geometry_regression",
+            "geometry_guard": safety,
+            "pair_count": int(len(token_pairs)),
+            "directed_sweeps": directed_sweeps,
+            "iterations": applied_iterations,
+            "maximum_initial_ca_error": maximum_initial,
+            "maximum_final_ca_error": maximum_initial,
+            "within_tolerance": maximum_initial <= tolerance + 1e-6,
+        }
     final_errors = errors(result)
     maximum_initial = float(initial_errors.max().detach().cpu().item())
     maximum_final = float(final_errors.max().detach().cpu().item())
     return result.detach(), {
         "applied": bool(topology.directed_continuity_groups) or applied_iterations > 0,
+        "reason": "accepted",
+        "geometry_guard": safety,
         "pair_count": int(len(token_pairs)),
         "directed_group_count": len(topology.directed_continuity_groups),
         "directed_sweeps": directed_sweeps,
@@ -1209,6 +1226,107 @@ def scaffold_core_window(progress: float, config: ScaffoldCoreGuidanceConfig) ->
     return float(min(1.0, 4.0 * local, 4.0 * (1.0 - local)))
 
 
+def scaffold_geometry_guard(
+    coordinates: torch.Tensor,
+    topology: ScaffoldCoreTopology,
+    config: ScaffoldCoreGuidanceConfig,
+) -> Callable[[torch.Tensor], dict[str, Any]]:
+    """Guard each geometric constraint, not a mean that can hide a new clash.
+
+    This is a CA/segment regression guard for local corrections, not an
+    all-atom or entanglement certificate. The final structure still needs
+    independent validation. Fixed-fixed pairs are excluded from optimization.
+    """
+
+    def deficits(value: torch.Tensor) -> dict[str, torch.Tensor]:
+        ca, segments = [], []
+        for xyz in value:
+            for index, left in enumerate(topology.chains):
+                for right in topology.chains[index:]:
+                    relevant = (
+                        left.generated_ca_mask[:, None]
+                        | right.generated_ca_mask[None, :]
+                    )
+                    if left is right:
+                        gap = torch.abs(
+                            left.residue_indices[:, None]
+                            - right.residue_indices[None, :]
+                        )
+                        relevant = (
+                            relevant
+                            & (gap > 1)
+                            & torch.triu(torch.ones_like(relevant), diagonal=1)
+                        )
+                    distances = torch.cdist(
+                        xyz[left.ca_atom_indices], xyz[right.ca_atom_indices]
+                    )
+                    ca.append(torch.relu(config.clash_distance - distances[relevant]))
+                    if left is right:
+                        continue
+                    a, b = left.ca_segment_atom_pairs, right.ca_segment_atom_pairs
+                    if len(a) and len(b):
+                        relevant_segments = (
+                            left.generated_segment_mask[:, None]
+                            | right.generated_segment_mask[None, :]
+                        )
+                        distances = _segment_to_segment_distances(
+                            xyz[a[:, 0]], xyz[a[:, 1]], xyz[b[:, 0]], xyz[b[:, 1]]
+                        )
+                        segments.append(
+                            torch.relu(
+                                config.clash_distance - distances[relevant_segments]
+                            )
+                        )
+        pairs = topology.adjacent_ca_atom_pairs
+        bond_lengths = torch.linalg.vector_norm(
+            value[:, pairs[:, 1]] - value[:, pairs[:, 0]], dim=-1
+        )
+        empty = value.new_empty(0)
+        return {
+            "ca_overlap": torch.cat(ca) if ca else empty,
+            "cross_chain_segment_overlap": torch.cat(segments) if segments else empty,
+            "continuity": torch.relu(
+                torch.abs(bond_lengths - config.backbone_distance)
+                - config.backbone_tolerance
+            ).flatten(),
+        }
+
+    with torch.no_grad():
+        before = deficits(coordinates.detach())
+
+    def validate(candidate: torch.Tensor) -> dict[str, Any]:
+        with torch.no_grad():
+            if (
+                candidate.shape != coordinates.shape
+                or not torch.isfinite(candidate).all()
+            ):
+                return {"accepted": False, "reason": "invalid_coordinates"}
+            after = deficits(candidate)
+            checks = []
+            for name, original in before.items():
+                increase = after[name] - original
+                finite = bool(
+                    torch.isfinite(original).all() and torch.isfinite(after[name]).all()
+                )
+                checks.append(
+                    {
+                        "rule": name + "_regression",
+                        "pair_count": original.numel(),
+                        "maximum_increase_angstrom": float(increase.max())
+                        if increase.numel() and finite
+                        else None,
+                        "numerical_tolerance_angstrom": 1e-6,
+                        "passed": finite and bool(torch.all(increase <= 1e-6)),
+                    }
+                )
+            return {
+                "accepted": all(item["passed"] for item in checks),
+                "checks": checks,
+            }
+
+    return validate
+
+
 def apply_scaffold_core_guidance(
     coordinates: torch.Tensor,
     topology: ScaffoldCoreTopology,
@@ -1345,6 +1463,7 @@ def apply_scaffold_core_guidance(
     final = initial
     accepted_scale = 0.0
     line_search_trials: list[dict[str, Any]] = []
+    validate_geometry = scaffold_geometry_guard(coordinates, topology, config)
     for attempt in range(config.line_search_steps):
         scale = config.line_search_contraction**attempt
         candidate = coordinates + scale * atom_step.detach()
@@ -1357,6 +1476,11 @@ def apply_scaffold_core_guidance(
             "metrics": trial.detached_dict(), "checks": [],
         }
         line_search_trials.append(trial_record)
+        safety = validate_geometry(candidate)
+        trial_record["geometry_guard"] = safety
+        if not safety["accepted"]:
+            trial_record["first_rejection_reason"] = "geometry_regression"
+            continue
         if not torch.isfinite(trial.total):
             trial_record["first_rejection_reason"] = "nonfinite_total"
             continue

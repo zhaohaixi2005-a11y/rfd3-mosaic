@@ -84,7 +84,9 @@ existing atomic transaction may additionally update one complete joint-rigid
 motif orbit, then regenerate all symmetry copies. A globally fixed motif is
 restored by the hard projector after every denoising/guidance step.
 
-Ordinary users select calibrated `packing: loose|balanced|tight` presets.
+Ordinary users select heuristic `packing: loose|balanced|tight` presets.
+These parameter bundles have not been established as universally calibrated
+across seeds, chain lengths, or symmetry groups.
 Expert `guidance.inter_chain_weight` changes only the broad inter-chain
 contact prior; it no longer scales Mosaic's continuity, orientation, shape or
 safety objectives. This preserves the familiar RFdiffusion intra/inter

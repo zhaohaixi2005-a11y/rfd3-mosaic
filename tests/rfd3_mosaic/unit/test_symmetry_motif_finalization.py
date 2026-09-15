@@ -116,6 +116,156 @@ class _RecordingScaffoldController:
 
 
 class SymmetryMotifFinalizationTestCase(unittest.TestCase):
+    @staticmethod
+    def _geometry_fixture(registry, tokens=2):
+        count = registry.order
+        transforms = {}
+        for index, name in enumerate(registry.transform_ids):
+            matrix = torch.tensor(registry.transform(name), dtype=torch.float32)
+            transforms[str(index)] = (matrix[:3, :3], matrix[:3, 3])
+        fixed = torch.tensor(([True] + [False] * (tokens - 1)) * count)
+        features = {
+            "symmetry_id": registry.group_name,
+            "sym_entity_id": torch.zeros(count * tokens, dtype=torch.long),
+            "sym_transform_id": torch.arange(count).repeat_interleave(tokens),
+            "is_sym_asu": torch.arange(count * tokens) < tokens,
+            "sym_orbit_slot": torch.arange(tokens).repeat(count),
+            "sym_orbit_slot_verified": torch.tensor(True),
+            "sym_transform": transforms,
+            "atom_to_token_map": torch.arange(count * tokens),
+            "asym_id": torch.arange(count).repeat_interleave(tokens),
+            "residue_index": torch.arange(tokens).repeat(count),
+            "is_ca": torch.ones(count * tokens, dtype=torch.bool),
+            "is_protein": torch.ones(count * tokens, dtype=torch.bool),
+            "ref_element": torch.zeros(count * tokens, dtype=torch.long),
+            "is_motif_atom_with_fixed_coord": fixed,
+            "motif_constraint_group_membership": fixed[None, :],
+        }
+        master = torch.stack(
+            (
+                20 + 3.8 * torch.arange(tokens),
+                torch.zeros(tokens),
+                torch.full((tokens,), 8.0),
+            ),
+            dim=-1,
+        )[None]
+        coordinates = apply_symmetry_to_xyz_atomwise(
+            master.repeat(1, count, 1), features, partial_diffusion=True
+        )
+        return features, coordinates
+
+    def test_geometric_guidance_receives_clean_predictions_for_cyclic_and_dihedral_groups(
+        self,
+    ):
+        from rfd3_mosaic.geometry import build_cyclic_registry, build_dihedral_registry
+
+        for builder in (build_cyclic_registry, build_dihedral_registry):
+            for order in (2, 3, 5):
+                registry = builder(order)
+                with self.subTest(group=registry.group_name):
+                    features, coordinates = self._geometry_fixture(registry)
+                    inputs, predictions = [], []
+
+                    class Denoiser(torch.nn.Module):
+                        def forward(self, X_noisy_L, **kwargs):
+                            inputs.append(X_noisy_L.clone())
+                            return {"X_L": coordinates.clone()}
+
+                    def record(candidate, topology, **kwargs):
+                        predictions.append(candidate.clone())
+                        return candidate, {"applied": False, "reason": "zero_objective"}
+
+                    sampler = SampleDiffusionWithSymmetry(
+                        gamma_0=0.6,
+                        num_timesteps=4,
+                        preserve_fixed_motif_during_symmetry=True,
+                        require_motif_constraint_groups=True,
+                        symmetry_state_mode="orbit_average",
+                        symmetry_noise_mode="coupled",
+                        enable_generated_cross_chain_topology_guidance=True,
+                    )
+                    with (
+                        mock.patch(
+                            "rfd3.model.inference_sampler.apply_scaffold_core_guidance",
+                            side_effect=record,
+                        ),
+                        torch.no_grad(),
+                    ):
+                        result = sampler.sample_diffusion_like_af3(
+                            f=features,
+                            diffusion_module=Denoiser(),
+                            diffusion_batch_size=1,
+                            coord_atom_lvl_to_be_noised=coordinates,
+                            initializer_outputs={},
+                            ref_initializer_outputs=None,
+                            f_ref=None,
+                        )
+                    self.assertEqual(len(predictions), 3)
+                    self.assertFalse(torch.allclose(inputs[0], coordinates))
+                    for value in predictions:
+                        torch.testing.assert_close(value, coordinates)
+                    fixed = features["is_motif_atom_with_fixed_coord"]
+                    # Initial orbit averaging canonicalizes the supplied
+                    # target with floating-point rotation roundoff.
+                    torch.testing.assert_close(
+                        result["X_L"][:, fixed],
+                        coordinates[:, fixed],
+                        atol=1e-5,
+                        rtol=0.0,
+                    )
+                    sampler._assert_symmetry_orbit_closed(
+                        result["X_L"], features, label="regression"
+                    )
+
+    def test_final_graph_polish_runs_with_polymer_continuity_and_guard(self):
+        from rfd3_mosaic.geometry import build_cyclic_registry
+
+        features, coordinates = self._geometry_fixture(
+            build_cyclic_registry(2), tokens=10
+        )
+        calls = []
+
+        class Denoiser(torch.nn.Module):
+            def forward(self, X_noisy_L, **kwargs):
+                return {"X_L": coordinates.clone()}
+
+        def record(candidate, features, topology, **kwargs):
+            calls.append(kwargs)
+            self.assertIsNotNone(kwargs["candidate_validator"])
+            self.assertTrue(kwargs["candidate_validator"](candidate)["accepted"])
+            return candidate, {"applied": False, "reason": "all_weights_zero"}
+
+        sampler = SampleDiffusionWithSymmetry(
+            gamma_0=0.6,
+            num_timesteps=3,
+            preserve_fixed_motif_during_symmetry=True,
+            require_motif_constraint_groups=True,
+            symmetry_state_mode="orbit_average",
+            symmetry_noise_mode="coupled",
+            enable_generated_polymer_continuity_guidance=True,
+            enable_symmetric_scaffold_packing=True,
+            graph_interface_guidance_final_polish_steps=2,
+        )
+        with (
+            mock.patch(
+                "rfd3.model.inference_sampler.apply_graph_interface_guidance",
+                side_effect=record,
+            ),
+            torch.no_grad(),
+        ):
+            result = sampler.sample_diffusion_like_af3(
+                f=features,
+                diffusion_module=Denoiser(),
+                diffusion_batch_size=1,
+                coord_atom_lvl_to_be_noised=coordinates,
+                initializer_outputs={},
+                ref_initializer_outputs=None,
+                f_ref=None,
+            )
+        steps = result["graph_interface_guidance_diagnostics"]["steps"]
+        self.assertEqual(sum(step.get("phase") == "final_polish" for step in steps), 2)
+        self.assertEqual(len(calls), 4)
+
     def test_short_trajectory_receives_length_normalized_mobility_schedule(
         self,
     ) -> None:

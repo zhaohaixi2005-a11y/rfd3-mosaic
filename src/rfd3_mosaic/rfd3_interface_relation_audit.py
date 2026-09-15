@@ -1067,9 +1067,13 @@ def audit_interface_relations(
                 contact_count = (
                     int((distances < cutoff).sum()) if distances is not None else 0
                 )
-                contacts_satisfied = contact_count >= int(
-                    contacts["min_heavy_atom_contacts"]
+                # A declared contact relation needs at least one physical
+                # contact. Zero disables a stronger count target, not the
+                # existence of the interface itself.
+                effective_minimum_contacts = max(
+                    1, int(contacts["min_heavy_atom_contacts"])
                 )
+                contacts_satisfied = contact_count >= effective_minimum_contacts
                 report.update(
                     {
                         "declared_contact_cutoff": cutoff,
@@ -1078,6 +1082,8 @@ def audit_interface_relations(
                             contacts["min_heavy_atom_contacts"]
                         ),
                         "contacts_satisfied": contacts_satisfied,
+                        "effective_minimum_heavy_atom_contacts": effective_minimum_contacts,
+                        "physical_contact_exists": contact_count > 0,
                     }
                 )
                 checks.append(contacts_satisfied)

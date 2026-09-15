@@ -43,6 +43,7 @@ from rfd3.inference.symmetry.scaffold_core_guidance import (
     project_generated_polymer_continuity,
     robust_assembly_capture_energy,
     scaffold_core_energy,
+    scaffold_geometry_guard,
 )
 from rfd3.inference.symmetry.scaffold_guidance import (
     ScaffoldGuidanceConfig,
@@ -219,6 +220,7 @@ class SampleDiffusionConfig:
     # RFdiffusion-style balance.  The historical defaults are preserved:
     # no monomer-core field and full generated inter-chain attraction.
     scaffold_core_intra_chain_weight: float = 0.0
+    measure_scaffold_core: bool = False
     scaffold_core_inter_chain_weight: float = 1.0
     scaffold_core_inter_chain_excess_penalty: float = 0.0
     # Finite-group assembly capture for any declared movable rigid orbit with
@@ -1837,7 +1839,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         robust_capture_active, robust_capture_weight = (
             self._assembly_robust_capture_settings()
         )
-        scaffold_core_topology_required = scaffold_core_active or robust_capture_active
+        scaffold_core_observed = scaffold_core_active or self.measure_scaffold_core
+        scaffold_core_topology_required = (
+            scaffold_core_observed
+            or robust_capture_active
+            or self.enable_graph_interface_guidance
+            or self.enable_symmetric_scaffold_packing
+        )
         polymer_continuity_active = bool(
             self.enable_generated_polymer_continuity_guidance
         )
@@ -2403,45 +2411,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
             X_denoised_L = outs["X_L"] if "X_L" in outs else outs
 
-            # Compute the delta between the noisy and denoised coordinates, scaled by t_hat
-            delta_L = (
-                X_noisy_L - X_denoised_L
-            ) / t_hat  # gradient of x wrt. t at x_t_hat
-            d_t = c_t - t_hat
-
-            # NOTE: no classifier-free guidance for symmetry
-
-            if exists(outs.get("sequence_logits_I")):
-                # Compute confidence
-                p = torch.softmax(
-                    outs["sequence_logits_I"], dim=-1
-                ).cpu()  # shape (D, L, 32)
-                seq_entropy = -torch.sum(
-                    p * torch.log(p + 1e-10), dim=-1
-                )  # shape (D, L,)
-                sequence_entropy_traj.append(seq_entropy)
-
-            # Update the coordinates, scaled by the step size
-            X_L = X_noisy_L + step_scale * d_t * delta_L
-            # Independent noise in X_noisy_L means this Euler update is not
-            # guaranteed to be symmetric even when X_denoised_L was
-            # projected. Project the actual state that advances to the next
-            # denoising step, then restore the complete interface groups.
-            if constraint_runtime is not None:
-                X_L = constraint_runtime.project_state_update(
-                    X_L,
-                    step_num=step_num,
-                )
-            else:
-                X_L = self._project_stepwise_updated_coordinates(
-                    X_L,
-                    f,
-                    is_motif_atom_with_fixed_coord,
-                    X_noisy_L,
-                )
+            # Geometric objectives describe clean structures, not the noisy
+            # diffusion state. Correct the denoised estimate inside its bounded
+            # trust region, then use the original noise schedule/Euler update.
             if self.interface_seed_compactness_weight > 0.0:
-                X_L = self._apply_interface_seed_compactness(
-                    X_L,
+                X_denoised_L = self._apply_interface_seed_compactness(
+                    X_denoised_L,
                     f,
                     is_motif_atom_with_fixed_coord,
                     step_num=step_num,
@@ -2451,13 +2426,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 # each chain.  Re-project afterwards to prevent accumulated
                 # numerical or mask-induced deviations from native symmetry.
                 if constraint_runtime is not None:
-                    X_L = constraint_runtime.project_post_guidance(
-                        X_L,
+                    X_denoised_L = constraint_runtime.project_post_guidance(
+                        X_denoised_L,
                         step_num=step_num,
                     )
                 else:
-                    X_L = self._apply_symmetry_preserving_fixed_motif(
-                        X_L,
+                    X_denoised_L = self._apply_symmetry_preserving_fixed_motif(
+                        X_denoised_L,
                         f,
                         is_motif_atom_with_fixed_coord,
                     )
@@ -2496,16 +2471,28 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         "Graph interface patch state was not initialized"
                     )
                 progress = step_num / max(len(noise_schedule) - 2, 1)
-                X_L, interface_step = apply_graph_interface_guidance(
-                    X_L,
+                X_denoised_L, interface_step = apply_graph_interface_guidance(
+                    X_denoised_L,
                     f,
                     graph_interface_topology,
                     progress=progress,
                     config=graph_interface_guidance_config,
                     projector=graph_projector,
                     patch_state=graph_interface_patch_state,
+                    candidate_validator=(
+                        scaffold_geometry_guard(
+                            X_denoised_L,
+                            scaffold_core_topology,
+                            scaffold_core_guidance_config
+                            or self._scaffold_core_guidance_config(),
+                        )
+                        if scaffold_core_topology is not None
+                        else None
+                    ),
                 )
-                interface_step["step_num"] = step_num
+                interface_step.update(
+                    step_num=step_num, coordinate_space="denoised_prediction"
+                )
                 graph_interface_diagnostics.append(interface_step)
 
             if scaffold_core_active:
@@ -2541,16 +2528,54 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         )
 
                 progress = step_num / max(len(noise_schedule) - 2, 1)
-                X_L, core_step = apply_scaffold_core_guidance(
-                    X_L,
+                X_denoised_L, core_step = apply_scaffold_core_guidance(
+                    X_denoised_L,
                     scaffold_core_topology,
                     progress=progress,
                     config=scaffold_core_guidance_config,
                     projector=core_projector,
                 )
-                core_step["step_num"] = step_num
+                core_step.update(
+                    step_num=step_num, coordinate_space="denoised_prediction"
+                )
                 scaffold_core_diagnostics.append(core_step)
 
+            # Compute the delta between the noisy and denoised coordinates, scaled by t_hat
+            delta_L = (
+                X_noisy_L - X_denoised_L
+            ) / t_hat  # gradient of x wrt. t at x_t_hat
+            d_t = c_t - t_hat
+
+            # NOTE: no classifier-free guidance for symmetry
+
+            if exists(outs.get("sequence_logits_I")):
+                # Compute confidence
+                p = torch.softmax(
+                    outs["sequence_logits_I"], dim=-1
+                ).cpu()  # shape (D, L, 32)
+                seq_entropy = -torch.sum(
+                    p * torch.log(p + 1e-10), dim=-1
+                )  # shape (D, L,)
+                sequence_entropy_traj.append(seq_entropy)
+
+            # Update the coordinates, scaled by the step size
+            X_L = X_noisy_L + step_scale * d_t * delta_L
+            # Independent noise in X_noisy_L means this Euler update is not
+            # guaranteed to be symmetric even when X_denoised_L was
+            # projected. Project the actual state that advances to the next
+            # denoising step, then restore the complete interface groups.
+            if constraint_runtime is not None:
+                X_L = constraint_runtime.project_state_update(
+                    X_L,
+                    step_num=step_num,
+                )
+            else:
+                X_L = self._project_stepwise_updated_coordinates(
+                    X_L,
+                    f,
+                    is_motif_atom_with_fixed_coord,
+                    X_noisy_L,
+                )
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
                 self.sigma_data * X_noisy_L / torch.sqrt(t_hat**2 + self.sigma_data**2)
@@ -2561,7 +2586,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         final_graph_interface_energy = None
         final_graph_interface_quality_satisfied = None
-        if graph_interface_topology is not None and scaffold_core_topology is None:
+        if graph_interface_topology is not None:
             if graph_interface_guidance_config is None:
                 raise RuntimeError(
                     "Graph interface guidance config was not initialized"
@@ -2572,7 +2597,8 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             # deterministic polish then improves that one physical patch
             # instead of hopping between sequence windows.
             if (
-                graph_interface_patch_state is not None
+                graph_interface_guidance_config.final_polish_steps > 0
+                and graph_interface_patch_state is not None
                 and not graph_interface_patch_state.locked
             ):
                 graph_interface_patch_state.assignments = (
@@ -2644,10 +2670,21 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     config=graph_interface_guidance_config,
                     projector=graph_projector,
                     patch_state=graph_interface_patch_state,
+                    candidate_validator=(
+                        scaffold_geometry_guard(
+                            X_L,
+                            scaffold_core_topology,
+                            scaffold_core_guidance_config
+                            or self._scaffold_core_guidance_config(),
+                        )
+                        if scaffold_core_topology is not None
+                        else None
+                    ),
                 )
                 interface_step.update(
                     {
                         "phase": "final_polish",
+                        "coordinate_space": "final_structure",
                         "polish_index": polish_index,
                         "step_num": polish_step_num,
                     }
@@ -2683,6 +2720,20 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 tolerance=float(self.generated_polymer_continuity_tolerance),
                 iterations=int(self.generated_polymer_continuity_iterations),
                 projector=final_continuity_projector,
+                candidate_validator=scaffold_geometry_guard(
+                    X_L,
+                    scaffold_core_topology,
+                    replace(
+                        scaffold_core_guidance_config
+                        or self._scaffold_core_guidance_config(),
+                        backbone_distance=float(
+                            self.generated_polymer_continuity_target_ca_distance
+                        ),
+                        backbone_tolerance=float(
+                            self.generated_polymer_continuity_tolerance
+                        ),
+                    ),
+                ),
             )
             final_continuity_step["phase"] = "final_only"
             polymer_continuity_diagnostics.append(final_continuity_step)
@@ -2722,7 +2773,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
 
         final_scaffold_core_energy = None
-        if scaffold_core_active:
+        if scaffold_core_observed:
             if scaffold_core_topology is None:
                 raise RuntimeError("Scaffold core topology was not initialized")
             if scaffold_core_guidance_config is None:
@@ -2899,7 +2950,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 ),
                 "final_proxy": final_proxy,
             }
-        if scaffold_core_active:
+        if scaffold_core_observed:
             if scaffold_core_topology is None:
                 raise RuntimeError("Scaffold core topology was not initialized")
             if (
@@ -2910,6 +2961,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             result["scaffold_core_guidance_diagnostics"] = {
                 "schema_version": 1,
                 "runtime_active": True,
+                "execution_mode": "guidance"
+                if scaffold_core_active
+                else "measurement_only",
                 "chain_count": len(scaffold_core_topology.chains),
                 "config": vars(scaffold_core_guidance_config),
                 "steps": scaffold_core_diagnostics,
@@ -2977,6 +3031,7 @@ class ConditionalDiffusionSampler:
                 "enable_orbit_rigid_motif_mobility",
                 "enable_graph_interface_guidance",
                 "enable_symmetric_scaffold_packing",
+                "measure_scaffold_core",
                 "enable_generated_polymer_continuity_guidance",
                 "enable_assembly_robust_capture",
                 "enable_supplied_interface_robust_capture",

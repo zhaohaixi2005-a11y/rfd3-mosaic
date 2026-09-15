@@ -109,6 +109,7 @@ def audit_graph_interface_guidance(
     locked_patch_assignments = [step.get("patch_assignments") for step in locked_steps]
     patch_identity_contract = bool(
         diagnostics_schema_version < 7
+        or not locked_steps
         or (
             locked_patch_assignments
             and isinstance(locked_patch_assignments[0], dict)
@@ -120,12 +121,18 @@ def audit_graph_interface_guidance(
             )
         )
     )
+    lock_observed = False
+    for step in steps:
+        if "patch_locked" not in step:
+            continue
+        if lock_observed and step["patch_locked"] is not True:
+            patch_identity_contract = False
+        lock_observed = lock_observed or step["patch_locked"] is True
     applied = [step for step in steps if bool(step.get("applied"))]
     adaptive_phase_contract = bool(
         diagnostics_schema_version < 8
         or (
-            applied
-            and all(
+            all(
                 step.get("adaptive_phase") in {"capture", "expand", "polish"}
                 and _finite(step.get("scheduled_target_ca_distance"))
                 and _finite(step.get("time_scheduled_target_ca_distance"))
@@ -354,10 +361,24 @@ def audit_graph_interface_guidance(
         )
     )
     applied_count = int(diagnostics.get("applied_steps", -1))
+    no_op_contract = all(
+        step.get("reason") in {"inactive_window", "all_weights_zero"}
+        or (
+            step.get("reason") == "no_acceptable_trial"
+            and _finite(step.get("energy"))
+            and isinstance(step.get("line_search_trials"), list)
+            and bool(step["line_search_trials"])
+            and all(
+                trial.get("accepted") is False for trial in step["line_search_trials"]
+            )
+        )
+        for step in steps
+        if not step.get("applied")
+    )
     execution_contract = bool(
         steps
-        and applied
         and applied_count == len(applied)
+        and no_op_contract
         and all(finite_applied_steps)
         and final_proxy_contract
     )
@@ -452,6 +473,7 @@ def audit_graph_interface_guidance(
                 for phase in ("capture", "expand", "polish")
             },
             "locked_patch_steps": len(locked_steps),
+            "patch_ever_locked": bool(locked_steps),
             "trajectory_steps": len(steps),
             "applied_steps": len(applied),
             "finite_applied_steps": sum(finite_applied_steps),

@@ -3030,6 +3030,7 @@ def apply_graph_interface_guidance(
     config: GraphInterfaceGuidanceConfig,
     projector: Callable[[torch.Tensor], torch.Tensor] | None = None,
     patch_state: GraphInterfacePatchState | None = None,
+    candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Apply one bounded local-rigid step to the true projected state."""
 
@@ -3271,6 +3272,14 @@ def apply_graph_interface_guidance(
         )
         trial_decision: dict[str, Any] = {"scale": float(scale)}
         line_search_trials.append(trial_decision)
+        if candidate_validator is not None:
+            safety = candidate_validator(candidate)
+            trial_decision["geometry_guard"] = safety
+            if not safety["accepted"]:
+                trial_decision.update(
+                    accepted=False, first_rejection_reason="geometry_regression"
+                )
+                continue
         if graph_interface_proposal_acceptable(
             energy,
             candidate_energy,

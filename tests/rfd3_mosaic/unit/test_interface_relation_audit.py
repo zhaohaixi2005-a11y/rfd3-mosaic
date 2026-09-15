@@ -342,6 +342,28 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
             all(edge["distance_satisfied"] for edge in report["interfaces"])
         )
 
+    def test_zero_contact_target_does_not_accept_an_absent_interface(self):
+        self._write_result(
+            generated_coordinates={"A": (10.0, 0.0, 0.0), "B": (30.0, 0.0, 0.0)}
+        )
+        report = audit_interface_relations(
+            compiled_input=self._compiled_input(
+                {
+                    "mode": "geometric_constraints",
+                    "contacts": {"min_heavy_atom_contacts": 0, "cutoff": 4.5},
+                },
+                satisfaction_stage="output",
+                target_copy_offset=1,
+            ),
+            result_json=self.result_json,
+            result_structure=self.result_structure,
+        )
+        self.assertFalse(report["passed"])
+        for edge in report["interfaces"]:
+            self.assertFalse(edge["satisfied"])
+            self.assertFalse(edge["physical_contact_exists"])
+            self.assertEqual(edge["effective_minimum_heavy_atom_contacts"], 1)
+
     def test_output_contact_relation_audits_generated_chain_atoms(self) -> None:
         # The declared ports are fixed motif atoms.  A design-interface edge
         # must instead judge the generated scaffold on the concrete chains
@@ -437,8 +459,18 @@ class InterfaceRelationAuditTestCase(unittest.TestCase):
     ) -> None:
         self._write_result(
             generated_coordinates={
-                "A": (10.0, 0.0, 0.0),
-                "B": (30.0, 0.0, 0.0),
+                "A": {
+                    10: (10.0, 0.0, 0.0),
+                    11: (10.0, 20.0, 0.0),
+                    12: (10.0, 40.0, 0.0),
+                    13: (10.0, 60.0, 0.0),
+                },
+                "B": {
+                    10: (14.0, 0.0, 0.0),
+                    11: (30.0, 20.0, 0.0),
+                    12: (30.0, 40.0, 0.0),
+                    13: (30.0, 60.0, 0.0),
+                },
             }
         )
         report = audit_interface_relations(

@@ -102,17 +102,38 @@ def audit_scaffold_core_guidance(
     )
     applied = [step for step in steps if bool(step.get("applied"))]
     applied_count = int(diagnostics.get("applied_steps", -1))
+    measurement_only = diagnostics.get("execution_mode") == "measurement_only"
+    no_op_contract = all(
+        step.get("reason") in {"inactive_window", "zero_objective"}
+        or (
+            step.get("reason") == "no_acceptable_trial"
+            and isinstance(step.get("line_search_trials"), list)
+            and bool(step["line_search_trials"])
+            and all(
+                trial.get("accepted") is False for trial in step["line_search_trials"]
+            )
+        )
+        for step in steps
+        if not step.get("applied")
+    )
     step_contract = bool(
-        steps
-        and applied
+        (
+            steps
+            or (
+                measurement_only
+                and expected_intra == 0.0
+                and expected_excess_penalty == 0.0
+            )
+        )
         and applied_count == len(applied)
+        and no_op_contract
         and all(
             isinstance(step.get("initial"), dict)
             and isinstance(step.get("final"), dict)
             and _finite(step["initial"].get("total"))
             and _finite(step["final"].get("total"))
             and float(step["final"]["total"]) <= float(step["initial"]["total"]) + 1e-7
-            for step in applied
+            for step in steps
         )
     )
     # These are controller-loss reference values, not direct coordinate

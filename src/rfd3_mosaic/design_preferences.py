@@ -301,6 +301,8 @@ def compile_design_preferences(
         }
     )
     effective_intra, _, _ = effective_scaffold_core_weights(design)
+    if design.sampling.scaffold_core_quality.required:
+        overrides["measure_scaffold_core"] = True
     if effective_intra > 0.0 or (
         design.guidance is not None and design.guidance.intra_chain_weight is not None
     ):

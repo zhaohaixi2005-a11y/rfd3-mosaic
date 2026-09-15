@@ -9,6 +9,33 @@ from rfd3_mosaic.rfd3_graph_interface_guidance_audit import (
 
 
 class GraphInterfaceGuidanceAuditTestCase(unittest.TestCase):
+    def test_unlocked_safe_rejections_are_execution_not_quality_failures(self):
+        self._write_result()
+        payload = json.loads(self.result.read_text())
+        diagnostic = payload["graph_interface_guidance_diagnostics"]
+        diagnostic["applied_steps"] = 0
+        diagnostic["final_proxy_targets_satisfied"] = False
+        diagnostic["steps"][0].update(
+            applied=False,
+            patch_locked=False,
+            reason="no_acceptable_trial",
+            line_search_trials=[
+                {"accepted": False, "first_rejection_reason": "geometry_regression"}
+            ],
+        )
+        self.result.write_text(json.dumps(payload))
+        report = audit_graph_interface_guidance(
+            compiled_input=self.compiled, result_json=self.result
+        )
+        self.assertTrue(report["passed"])
+        diagnostic["steps"][0]["reason"] = "unexplained_skip"
+        self.result.write_text(json.dumps(payload))
+        self.assertFalse(
+            audit_graph_interface_guidance(
+                compiled_input=self.compiled, result_json=self.result
+            )["passed"]
+        )
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)

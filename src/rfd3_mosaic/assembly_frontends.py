@@ -386,6 +386,7 @@ def lower_experiment_topology(
         scaffold_core_requested = bool(
             effective_intra_chain_weight > 0.0
             or effective_inter_chain_excess_penalty > 0.0
+            or design.sampling.scaffold_core_quality.required
         )
         if scaffold_core_requested:
             audit_requirements.append(AuditRequirement.SCAFFOLD_CORE_GUIDANCE)
