@@ -105,6 +105,30 @@ class AdvisoryScreeningTestCase(unittest.TestCase):
             "advisory.scaffold.passed_peptide_geometry",
         )
 
+    def test_cross_chain_collision_is_a_contract_failure_despite_valid_seeds(self) -> None:
+        scaffold = self.report(
+            "scaffold_validity_audit.json",
+            {
+                "passed": False,
+                "summary": {
+                    "passed_backbone_atom_completeness": True,
+                    "passed_continuity": True,
+                    "passed_symmetry": True,
+                    "passed_clashes": True,
+                    "passed_compactness": True,
+                    "passed_cross_chain_topology": False,
+                },
+            },
+        )
+        result = build_advisory_screening((scaffold,))
+        self.assertEqual(result["contract_status"], "flagged")
+        self.assertEqual(result["recommendation"], "review_contract")
+        self.assertEqual(
+            [flag["code"] for flag in result["contract_flags"]],
+            ["contract.scaffold.passed_cross_chain_topology"],
+        )
+        self.assertTrue(result["generated_output_retained"])
+
     def test_writes_self_describing_advice_without_removing_reports(self) -> None:
         report = self.report("constraint_orbit_audit.json", {"passed": True})
         output = self.root / "screening_advice.json"

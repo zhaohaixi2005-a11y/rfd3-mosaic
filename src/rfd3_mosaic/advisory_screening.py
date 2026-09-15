@@ -195,6 +195,7 @@ def build_advisory_screening(
                         "passed_backbone_atom_completeness",
                         "passed_continuity",
                         "passed_symmetry",
+                        "passed_cross_chain_topology",
                     ),
                     report=path,
                     prefix="contract.scaffold",
