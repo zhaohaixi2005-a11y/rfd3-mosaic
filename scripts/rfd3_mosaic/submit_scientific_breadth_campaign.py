@@ -178,6 +178,16 @@ def _advance_pose_seeds(sampling: dict[str, Any], seed: int) -> None:
                 pose["seed"] = seed + index
 
 
+def _case_seed(case: Case, seed_start: int, designs: int) -> int:
+    """Keep paired arms and case subsets on the same deterministic seed block."""
+
+    def family(name: str) -> str:
+        return name.removesuffix("-locked").removesuffix("-guided")
+
+    families = list(dict.fromkeys(family(item.name) for item in CASES))
+    return seed_start + families.index(family(case.name)) * max(1000, designs)
+
+
 def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     print("+ " + " ".join(command), flush=True)
     environment = os.environ.copy()
@@ -257,16 +267,36 @@ def main() -> None:
     config_dir.mkdir()
 
     records: list[dict[str, Any]] = []
-    for case_index, case in enumerate(selected):
+    for case in selected:
         source = (project / case.source).resolve()
         base = _load(source)
         _resolve_input(base, source)
         case.mutate(base)
+        # Freeze geometry once per scientific task. Generated lengths are
+        # deterministically materialized from the same geometry and ranges.
+        from rfd3_mosaic.pose_optimizer import _evaluation_from_manifest
+        from rfd3_mosaic.pose_tasks import _compile_pose, _freeze_pose
+        from rfd3_mosaic.schema import load_user_design
+
+        task_seed = _case_seed(case, args.seed_start, args.designs)
+        sampling = base.setdefault("sampling", {})
+        sampling.pop("replicates_per_pose", None)
+        sampling["seed"] = task_seed
+        _advance_pose_seeds(sampling, task_seed + 500000)
+        source_task = config_dir / f"{case.name}__source.yaml"
+        source_task.write_text(yaml.safe_dump(base, sort_keys=False))
+        design = load_user_design(source_task)
+        manifest, _, _, _ = _compile_pose(design, output / "geometry" / case.name)
+        if not _evaluation_from_manifest(manifest).feasible:
+            raise ValueError(f"Task {case.name} has no feasible frozen input")
+        if manifest.get("initialization_samples"):
+            design = _freeze_pose(design, manifest["initialization_samples"])
+        base = design.model_dump(mode="json", exclude_none=True, by_alias=True)
         shard_count = math.ceil(args.designs / designs_per_job)
         for shard_index in range(shard_count):
             design_start = shard_index * designs_per_job
             shard_designs = min(designs_per_job, args.designs - design_start)
-            seed = args.seed_start + case_index * 1000 + design_start
+            seed = task_seed + design_start
             payload = deepcopy(base)
             payload["name"] = f"{case.name}-{shard_index:02d}-s{seed}"
             sampling = payload.setdefault("sampling", {})
@@ -277,7 +307,6 @@ def main() -> None:
             sampling.setdefault("preset", "exact_mosaic")
             sampling.setdefault("low_memory_mode", True)
             sampling.setdefault("execution_backend", "explicit_all_copy")
-            _advance_pose_seeds(sampling, seed + 500000)
             payload["output"] = {
                 "root": str(run_root),
                 "campaign": campaign_name,
@@ -301,6 +330,8 @@ def main() -> None:
                 "design_start": design_start,
                 "requested_designs": shard_designs,
                 "seed": seed,
+                "task_seed": task_seed,
+                "pose_scope": "task",
                 "config": str(frozen),
                 "profile": str(profile),
                 "validated": False,

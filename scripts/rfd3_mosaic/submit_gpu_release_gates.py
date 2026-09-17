@@ -59,11 +59,11 @@ GATES: dict[str, dict[str, Any]] = {
         "profile": SMALL_PROFILE,
         "designs": 4,
         "claim": (
-            "generated-only interface packing from independently instantiated "
-            "poses that remain locked during diffusion"
+            "generated-only interface packing from one shared task pose "
+            "that remains locked during diffusion"
         ),
         "acceptance": [
-            "four independently instantiated raw coordinate outputs are produced",
+            "four independent diffusion outputs share one fixed input pose",
             "fixed, symmetry, continuity, clash and topology contracts meet",
             "runtime and post-hoc interface metrics are retained as advisory evidence",
         ],
@@ -346,6 +346,7 @@ def main() -> None:
         payload["name"] = f"{gate_name}-release-gate"
         payload["sampling"] = dict(payload["sampling"])
         payload["sampling"]["designs"] = int(gate["designs"])
+        payload["sampling"].pop("replicates_per_pose", None)
         payload["output"] = dict(payload["output"])
         payload["output"]["campaign"] = "gpu-release-gates"
         frozen = output / f"{gate_name}.yaml"
