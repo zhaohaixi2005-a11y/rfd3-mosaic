@@ -199,6 +199,12 @@ def families(input_path, designs):
         )
 
     payload = base(input_path, "I", designs)
+    payload["symmetry"] = {
+        "id": "I",
+        "axis": [0.0, 0.0, 1.0],
+        "secondary_axis": [1.0, 0.0, 0.0],
+        "center": [0.0, 0.0, 0.0],
+    }
     payload["task"] = "preserve_supplied_geometry"
     payload["constraints"] = [fixed("A165-194", "motif")]
     payload["generation"] = [
