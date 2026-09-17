@@ -46,7 +46,7 @@
   <g id="figure_header">
     <text x="50" y="46" class="eyebrow">METHOD OVERVIEW</text>
     <text x="50" y="79" class="figure-title">Constraint-compiled symmetric assembly design</text>
-    <text x="50" y="104" class="figure-subtitle">One declared design is lowered into independent assembly poses, constrained RFdiffusion3 trajectories and auditable outputs.</text>
+    <text x="50" y="104" class="figure-subtitle">Each task shares one starting pose across diffusion trajectories; separate tasks explore different poses.</text>
     <rect x="50" y="123" width="1500" height="3" rx="1.5" fill="url(#headerRule)"/>
   </g>
 
@@ -136,18 +136,18 @@
     <rect x="720" y="155" width="500" height="5" rx="2.5" fill="#6B63D9"/>
     <text x="744" y="190" class="stage-index" fill="#6B63D9">03 · SAMPLE</text>
     <text x="744" y="220" class="stage-title">Pose ensemble + RFdiffusion3</text>
-    <text x="744" y="242" class="stage-note">Independent assembly hypotheses; one model load</text>
+    <text x="744" y="242" class="stage-note">One starting pose and one model load per task</text>
 
-    <text x="744" y="282" class="section-title">Per-design SE(3) instantiation</text>
-    <text x="1192" y="282" text-anchor="end" class="mono" fill="#6B63D9">pose_i = feasible(seed_i)</text>
+    <text x="744" y="282" class="section-title">Task-level pose preparation</text>
+    <text x="1192" y="282" text-anchor="end" class="mono" fill="#6B63D9">one pose per task</text>
 
     <g id="pose_ensemble">
       <rect x="744" y="298" width="136" height="92" rx="12" fill="#F8F7FF" stroke="#DDD8F4"/>
       <rect x="894" y="298" width="136" height="92" rx="12" fill="#F8F7FF" stroke="#DDD8F4"/>
       <rect x="1044" y="298" width="152" height="92" rx="12" fill="#F8F7FF" stroke="#DDD8F4"/>
-      <text x="758" y="319" class="mono">design 0</text>
-      <text x="908" y="319" class="mono">design 1</text>
-      <text x="1058" y="319" class="mono">design N</text>
+      <text x="758" y="319" class="mono">task 0</text>
+      <text x="908" y="319" class="mono">task 1</text>
+      <text x="1058" y="319" class="mono">task N</text>
 
       <g transform="translate(790 352)">
         <path d="M0 20V-20M-22 8L20-8M-17-15L16 16" class="soft-line"/>
@@ -169,7 +169,7 @@
 
     <path d="M970 390V414" class="flow-indigo"/>
     <rect x="909" y="397" width="122" height="21" rx="10.5" fill="#FFFFFF" stroke="#DDD8F4"/>
-    <text x="970" y="411" text-anchor="middle" class="chip" fill="#6B63D9">multi-example input</text>
+    <text x="970" y="411" text-anchor="middle" class="chip" fill="#6B63D9">N designs per task</text>
 
     <rect x="744" y="422" width="452" height="130" rx="15" fill="#F2F0FF" stroke="#D5CFF4"/>
     <text x="766" y="450" class="section-title">Constrained denoising loop</text>

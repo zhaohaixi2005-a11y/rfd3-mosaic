@@ -87,7 +87,7 @@ def initialize_design(
     pose_orientation: str = "fixed",
     pose_maximum_tilt_deg: float = 30.0,
     pose_seed: int = 0,
-    replicates_per_pose: int = 1,
+    replicates_per_pose: int | None = None,
     packing: str = "balanced",
     cavity: str = "auto",
     diversity: str = "medium",
@@ -104,9 +104,10 @@ def initialize_design(
         raise ValueError("timesteps must be between 2 and 200")
     if designs < 1 or designs > 10000:
         raise ValueError("designs must be between 1 and 10000")
-    if replicates_per_pose < 1 or replicates_per_pose > designs:
+    if replicates_per_pose is not None and replicates_per_pose != designs:
         raise ValueError(
-            "replicates_per_pose must satisfy 1 <= value <= designs"
+            "One task shares one input pose; omit --replicates-per-pose. "
+            "Use prepare-poses for separate tasks with different input poses."
         )
     if n_length < 1 or c_length < 1:
         raise ValueError("terminal generation lengths must be positive")
@@ -262,7 +263,6 @@ def initialize_design(
     sampling: dict[str, Any] = {
         "timesteps": timesteps,
         "designs": designs,
-        "replicates_per_pose": replicates_per_pose,
         "seed": seed,
         **(
             sampling_overrides
@@ -332,7 +332,7 @@ def copy_example(example_id: str, output: Path, *, overwrite: bool) -> Path:
     payload["input"] = str(structure.resolve())
     payload.setdefault("resources", {})["profile"] = "local"
     payload["output"] = {
-        "root": str((destination.parent / "runs").resolve()),
+        "root": str((destination.parent / "runs" / "rfd3-mosaic").resolve()),
         "campaign": str(payload.get("name", example_id)),
     }
     destination.parent.mkdir(parents=True, exist_ok=True)

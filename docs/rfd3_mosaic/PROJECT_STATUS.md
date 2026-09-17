@@ -1,5 +1,10 @@
 # RFD3-Mosaic project status
 
+> Sampling semantics updated on 2026-09-16: one task shares one input pose
+> across all `designs`; different starting poses are separate `prepare-poses`
+> tasks. Runtime mobility remains independent. Earlier dated results below
+> describe their original revisions. See [current task rules](TASK_POSES.zh-CN.md).
+
 ## 2026-08-31 layered SE(3) capture correction
 
 - Layered rigid capture is now a finite-symmetry assembly operation rather

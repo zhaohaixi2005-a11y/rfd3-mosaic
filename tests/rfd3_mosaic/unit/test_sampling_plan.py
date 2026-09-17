@@ -42,13 +42,13 @@ class SamplingPlanTestCase(unittest.TestCase):
         )
 
         self.assertEqual(plan.diffusion.designs, 1000)
-        self.assertEqual(plan.diffusion.replicates_per_pose, 1)
+        self.assertEqual(plan.diffusion.replicates_per_pose, 1000)
         self.assertEqual(plan.diffusion.screening_mode, "advisory")
         self.assertEqual(plan.diffusion.screening_protocol, "auto")
         self.assertTrue(plan.diffusion.retain_all_outputs)
         self.assertTrue(plan.diffusion.dump_trajectories)
 
-    def test_variable_pose_is_resampled_per_design_by_default(self) -> None:
+    def test_variable_pose_is_shared_by_all_designs_in_task(self) -> None:
         plan = compile_sampling_plan(
             design(
                 designs=3,
@@ -65,7 +65,7 @@ class SamplingPlanTestCase(unittest.TestCase):
 
         self.assertEqual(
             [item.pose_seed for item in assignments],
-            [100, 101, 102],
+            [100, 100, 100],
         )
         self.assertEqual(
             [item.diffusion_seed for item in assignments],
@@ -73,14 +73,14 @@ class SamplingPlanTestCase(unittest.TestCase):
         )
         self.assertEqual(
             [item.pose_index for item in assignments],
-            [0, 1, 2],
+            [0, 0, 0],
         )
 
-    def test_replicates_per_pose_is_an_explicit_expert_control(self) -> None:
+    def test_explicit_legacy_replica_count_must_cover_whole_task(self) -> None:
         plan = compile_sampling_plan(
             design(
                 designs=5,
-                replicates_per_pose=2,
+                replicates_per_pose=5,
                 seed=200,
                 initial_pose={
                     "radius": {"minimum": 20.0, "maximum": 30.0},
@@ -94,12 +94,38 @@ class SamplingPlanTestCase(unittest.TestCase):
 
         self.assertEqual(
             [item.pose_index for item in assignments],
-            [0, 0, 1, 1, 2],
+            [0, 0, 0, 0, 0],
         )
         self.assertEqual(
             [item.pose_seed for item in assignments],
-            [100, 100, 101, 101, 102],
+            [100, 100, 100, 100, 100],
         )
+
+    def test_rejects_legacy_multi_pose_task_instead_of_silently_reinterpreting(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValidationError, "prepare-poses"):
+            design(designs=1000, replicates_per_pose=1)
+
+    def test_thousand_outputs_share_pose_but_have_distinct_diffusion_seeds(
+        self,
+    ) -> None:
+        for motion in ("locked", "guided", "free"):
+            declared = design(
+                designs=1000,
+                initial_pose={"radius": {"minimum": 20, "maximum": 30}, "seed": 91},
+            )
+            declared = declared.model_copy(
+                update={
+                    "preferences": declared.preferences.model_copy(
+                        update={"component_motion": motion}
+                    )
+                }
+            )
+            assignments = design_sampling_assignments(compile_sampling_plan(declared))
+            self.assertEqual({item.pose_index for item in assignments}, {0})
+            self.assertEqual({item.pose_seed for item in assignments}, {91})
+            self.assertEqual(len({item.diffusion_seed for item in assignments}), 1000)
 
     def test_fixed_pose_keeps_one_pose_and_varies_diffusion_only(self) -> None:
         plan = compile_sampling_plan(

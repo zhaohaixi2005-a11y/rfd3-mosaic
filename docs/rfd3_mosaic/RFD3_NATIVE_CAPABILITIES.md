@@ -30,7 +30,7 @@ channel only when it represents known scientific input, not because it exists.
 | pLDDT enhancement | `sampling.plddt_enhanced` |
 | Low-memory inference | `sampling.low_memory_mode` |
 | Denoising trajectories | `sampling.dump_trajectories` |
-| Independent noise samples | `sampling.designs` and `replicates_per_pose` |
+| Independent noise samples | `sampling.designs` (one shared input pose per task) |
 | Multiple input specifications with one model load | stochastic `initial_pose` plus `designs` |
 | Cn, Dn, T, O and I symmetry | `symmetry` plus the compiled finite-orbit plan |
 
@@ -110,7 +110,6 @@ The maintained public defaults are:
 sampling:
   timesteps: 200
   designs: 1
-  replicates_per_pose: 1
   seed: 42
   low_memory_mode: true
   is_non_loopy: true
@@ -118,11 +117,11 @@ sampling:
   dump_trajectories: false
 ```
 
-`designs` is the total requested output count. With a stochastic initial pose,
-`replicates_per_pose: 1` gives each output its own pose. Fixed arrangements
-retain one exact pose and vary diffusion only. See the
-[complete workflow guide](WORKFLOW_GUIDE.md) for pose examples and general
-multi-design campaign guidance.
+`designs` is the requested output count from one task-level input pose.
+Each output has an independent diffusion seed. Runtime motion is configured
+separately; `locked` preserves the input pose throughout generation.
+Use `prepare-poses` to create tasks with different starting poses. See
+[task pose rules](TASK_POSES.zh-CN.md).
 
 ## Deliberate semantic replacements
 

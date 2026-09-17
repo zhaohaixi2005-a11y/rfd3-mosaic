@@ -78,26 +78,18 @@ random seed and the resulting quaternion, rotation matrix, radius and axial
 offset are written to pose provenance. Hard linker, clash, topology and user
 constraint checks reject infeasible initializations.
 
-For a movable cross-chain supplied interface under \(C_n\), executable
-compilation adds a necessary-geometry gate to every independently sampled
-pose. Let \(\Delta\phi\) be the smallest circular azimuth interval containing
-the fixed-fragment centers and let \(\eta\) be the acute angle between the
-fragment-center interface-normal proxy and the local ring tangent. Mosaic
-requires
+Pre-diffusion feasibility rejects fixed-copy atom clashes and insufficient
+linker contour length. Cyclic wedge occupancy, tangent alignment, axis
+clearance (3.8 A), fixed-atom chord clearance (2.0 A) and terminal back-turn
+(120 degrees) are advisory routing descriptors. They are not necessary
+conditions for a flexible generated chain and no longer independently reject
+a candidate. Explicit required interfaces and user objectives remain hard.
 
-\[
-\Delta\phi\le \frac{360^\circ}{n},\qquad
-\eta\le\min\left(60^\circ,\frac{180^\circ}{n}\right).
-\]
-
-Every declared generated link must also satisfy the contour bound below, keep
-its endpoint chord at least 3.8 A from the cyclic axis, keep the chord interior
-at least 2.0 A from other fixed atoms, and avoid a terminal tangent back-turn
-greater than 120 degrees. A rejected pose is resampled from its deterministic
-seed stream. Passing poses are not ranked against one another: each design
-keeps its own feasible pose, preserving the assembly-level population. These
-criteria are conservative reachability and routing checks, not a score for a
-good interface or a guarantee that RFD3 will produce a folded backbone.
+One task realizes one input pose and shares it across every diffusion sample.
+`prepare-poses` ranks feasible candidates and freezes different starting poses
+into separate tasks. The same runtime mobility policy remains attached to each
+task; movable trajectories may end at different poses or converge across
+tasks. See [task pose semantics and selection rules](TASK_POSES.zh-CN.md).
 
 `uniform_so3` remains the ordinary default for every symmetry family.  When a
 workflow has an independently justified preferred axis, it may explicitly use

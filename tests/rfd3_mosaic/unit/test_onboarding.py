@@ -127,7 +127,7 @@ class OnboardingTestCase(unittest.TestCase):
         )
         self.assertTrue(design.conditioning.redesign_motif_sidechains)
         self.assertEqual(design.conditioning.ligands[0].selector, "L1")
-        self.assertEqual(design.sampling.replicates_per_pose, 1)
+        self.assertIsNone(design.sampling.replicates_per_pose)
         self.assertEqual(design.sampling.initial_pose.radius.minimum, 20.0)
         self.assertEqual(
             design.sampling.initial_pose.orientation.method,
@@ -225,7 +225,7 @@ class OnboardingTestCase(unittest.TestCase):
 
         self.assertTrue(design.input.is_absolute())
         self.assertEqual(design.resources.profile, "local")
-        self.assertEqual(design.output.root, (self.root / "runs").resolve())
+        self.assertEqual(design.output.root, (self.root / "runs" / "rfd3-mosaic").resolve())
 
     def test_profiles_list_public_options_and_copy_slurm_template(self) -> None:
         profiles = available_profiles()

@@ -87,18 +87,15 @@ subspace, or uses bounded SE(3). High-level `--packing`, `--interface-area`,
 `--cavity` and `--diversity` preferences are also available. Hard symmetry,
 motif, continuity and clash contracts are never disabled by these options.
 
-`--designs N` controls how many independently instantiated designs one run
-produces.  When the design declares a variable initial pose (for example a
-radius interval or `uniform_so3` orientation), every design receives its own
-feasible pre-diffusion pose and its own diffusion seed.  A fully fixed
-arrangement retains one exact pose and varies only diffusion.  The equivalent
-YAML fields are:
+`--designs N` creates N diffusion trajectories sharing one task-level input
+pose. A variable pose is realized once per task. Runtime component mobility
+is independent: locked seeds remain fixed, while movable seeds may end in
+different poses. The equivalent YAML fields are:
 
 ```yaml
 sampling:
   timesteps: 200
   designs: 100
-  replicates_per_pose: 1  # default: one trajectory per variable pose
   seed: 42
   dump_trajectories: false  # optional; trajectory files can be large
   initial_pose:
@@ -112,21 +109,23 @@ sampling:
     retain_all_outputs: true
 ```
 
-The corresponding `init` arguments are `--pose-radius-minimum`,
+The corresponding `init` arguments include `--pose-radius-minimum`,
 `--pose-radius-maximum`, `--pose-axial-minimum`, `--pose-axial-maximum`,
-`--pose-orientation`, `--pose-maximum-tilt-deg`, `--pose-seed` and
-`--replicates-per-pose`. Mosaic does not silently invent a task-specific
-radius or orientation prior.
+`--pose-orientation`, `--pose-maximum-tilt-deg` and `--pose-seed`.
+Pose and diffusion seeds are separate. Re-running the same task replays its
+input pose; renaming a task does not secretly change its random state.
 
-Set `replicates_per_pose` above one only when intentionally comparing several
-diffusion trajectories from the same assembly hypothesis. Mosaic samples pose
-coordinates from the declared radius/axial distribution and Haar-uniform
-SO(3), rejects geometrically invalid proposals, freezes the accepted inputs,
-and sends them to RFD3 as one multi-example input. The model/checkpoint is
-loaded once. Every result has its own structure, metadata, semantic audits and
-scaffold audit below `audits/<design-id>/`.
-Pose sampling does not prefer a central pore or one cage silhouette unless the
-user explicitly declares a corresponding assembly-shape target.
+Use `prepare-poses design.yaml --output-dir tasks --count 4 --candidates 32`
+to rank and freeze different task inputs from an explicitly declared pose
+distribution. Each emitted YAML retains `sampling.designs` and runtime motion
+settings. Selection reports geometry evidence and a conservative, rigid-motion-
+invariant distance-spectrum separation, not folding success or final-pose
+diversity. See [task pose semantics and selection rules](TASK_POSES.zh-CN.md).
+The deprecated `replicates_per_pose` is unnecessary; old multi-pose values
+are rejected with a migration message rather than silently reinterpreted.
+
+The model/checkpoint is loaded once per task. Each result has its own structure,
+metadata and audits below `audits/<design-id>/`.
 The run report records generated outputs, geometry-contract flags and
 advisory recommendations. A flagged design is never deleted. Set
 `screening.mode: off` to suppress recommendations. Required geometry contracts
@@ -189,7 +188,7 @@ are essential; all conditioning and execution controls are optional.
 The maintained complete examples are the normative templates. In particular,
 `supplied-interface-oligomer` demonstrates preserved non-covalent partners,
 independent terminal scaffold, an optional additional generated interface and
-per-design SE(3) pose sampling. The identifier is the name of one maintained
+task-level SE(3) pose selection. The identifier is the name of one maintained
 example, not a restriction to two-component assemblies; general assembly YAML
 may declare multiple components and multiple interface relations.
 

@@ -31,7 +31,6 @@ from rfd3_mosaic.run_layout import dated_experiment_root, utc_run_day
 from rfd3_mosaic.sampling_plan import (
     compile_sampling_plan,
     design_sampling_assignments,
-    pose_plan_is_stochastic,
 )
 from rfd3_mosaic.schema import load_user_design
 from rfd3_mosaic.schema.design import SCAFFOLD_PACKING_MODES
@@ -418,7 +417,6 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
     sampling = payload["sampling"]
     resources = payload["resources"]
     sampling_assignments = None
-    stochastic_pose_sampling = False
     if topology["kind"] == "central_motif":
         effective_constraints = [
             {
@@ -454,7 +452,6 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
         declared = load_user_design(topology["config"])
         sampling_plan = compile_sampling_plan(declared)
         sampling_assignments = design_sampling_assignments(sampling_plan)
-        stochastic_pose_sampling = pose_plan_is_stochastic(sampling_plan)
         constraint_plan = compile_constraint_plan(declared)
         effective_constraints = [
             {
@@ -506,12 +503,8 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
         else 1
     )
     replicates_per_pose = int(sampling["replicates_per_pose"])
-    if not stochastic_pose_sampling:
-        diffusion_samples_per_pose: int | str = sampling["designs"]
-        design_semantics = "fixed_pose_independent_diffusion_samples"
-    else:
-        diffusion_samples_per_pose = replicates_per_pose
-        design_semantics = "independent_pose_and_diffusion_samples"
+    diffusion_samples_per_pose = sampling["designs"]
+    design_semantics = "shared_input_pose_independent_diffusion_samples"
     return {
         "schema_version": 1,
         "name": experiment.name,
@@ -529,6 +522,8 @@ def build_execution_plan(experiment: ResolvedExperiment) -> dict[str, Any]:
             "diffusion_samples_per_compiled_pose": diffusion_samples_per_pose,
             "replicates_per_pose": replicates_per_pose,
             "design_semantics": design_semantics,
+            "pose_scope": "task",
+            "runtime_mobility_independent_of_input_pose": True,
             "seed": sampling["seed"],
             "seed_role": "rfd3_diffusion_rng",
             "execution_backend": sampling["execution_backend"],
@@ -737,7 +732,9 @@ def resolve_experiment(
         "timesteps": timesteps,
         "designs": _positive_integer(sampling.get("designs", 1), "sampling.designs"),
         "replicates_per_pose": _positive_integer(
-            sampling.get("replicates_per_pose", 1),
+            sampling.get("designs", 1)
+            if sampling.get("replicates_per_pose") is None
+            else sampling["replicates_per_pose"],
             "sampling.replicates_per_pose",
         ),
         "seed": _nonnegative_integer(sampling.get("seed", 42), "sampling.seed"),
@@ -787,8 +784,11 @@ def resolve_experiment(
         "protocol": screening_protocol,
         "retain_all_outputs": True,
     }
-    if resolved_sampling["replicates_per_pose"] > resolved_sampling["designs"]:
-        raise ValueError("sampling.replicates_per_pose cannot exceed sampling.designs")
+    if resolved_sampling["replicates_per_pose"] != resolved_sampling["designs"]:
+        raise ValueError(
+            "One task shares one input pose; remove sampling.replicates_per_pose "
+            "and use separate tasks for different poses"
+        )
     if resolved_sampling["scaffold_packing"] not in SCAFFOLD_PACKING_MODES:
         raise ValueError("sampling.scaffold_packing must be off or symmetric_generated")
 

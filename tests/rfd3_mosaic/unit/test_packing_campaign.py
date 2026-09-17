@@ -76,7 +76,10 @@ class PackingCampaignTestCase(unittest.TestCase):
             )
         )
         self.assertTrue(
-            all(design["sampling"]["replicates_per_pose"] == 1 for design in designs)
+            all(
+                design["sampling"].get("replicates_per_pose") is None
+                for design in designs
+            )
         )
 
     def test_can_defer_complete_preflight_to_allocated_worker(self) -> None:

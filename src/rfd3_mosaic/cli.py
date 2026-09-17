@@ -144,7 +144,7 @@ def _parser() -> argparse.ArgumentParser:
     initialize.add_argument("--symmetry", default="C3")
     initialize.add_argument("--name")
     initialize.add_argument("--profile", default="local")
-    initialize.add_argument("--run-root", type=Path, default=Path("runs"))
+    initialize.add_argument("--run-root", type=Path, default=Path("runs/rfd3-mosaic"))
     initialize.add_argument(
         "--motif-selector",
         help="Fixed motif selector, for example A12-20.",
@@ -203,21 +203,16 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help=(
-            "Number of independently instantiated designs. Variable-pose "
-            "tasks receive one feasible pose and diffusion seed per design; "
-            "fixed tasks retain their exact pose."
+            "Number of diffusion trajectories sharing this task's one input "
+            "pose. Runtime component motion is configured independently."
         ),
     )
     initialize.add_argument("--seed", type=int, default=42)
     initialize.add_argument(
         "--replicates-per-pose",
         type=int,
-        default=1,
-        help=(
-            "Diffusion replicates sharing one compiled pose. The default "
-            "of one gives every design an independent pose when stochastic "
-            "initial-pose sampling is declared."
-        ),
+        default=None,
+        help=argparse.SUPPRESS,
     )
     initialize.add_argument("--pose-radius-minimum", type=float)
     initialize.add_argument("--pose-radius-maximum", type=float)
@@ -261,6 +256,22 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     initialize.add_argument("--force", action="store_true")
+
+    prepare = commands.add_parser(
+        "prepare-poses",
+        help="Select distinct feasible starting poses and write one task YAML per pose.",
+    )
+    prepare.add_argument("config", type=Path)
+    prepare.add_argument("--output-dir", required=True, type=Path)
+    prepare.add_argument("--count", type=int, default=4)
+    prepare.add_argument("--candidates", type=int, default=32)
+    prepare.add_argument("--seed", type=int, default=0)
+    prepare.add_argument(
+        "--minimum-separation",
+        type=float,
+        default=1.0,
+        help="Minimum RMS difference of inter-seed CA distance spectra, in angstroms.",
+    )
 
     examples = commands.add_parser(
         "examples",
@@ -1810,6 +1821,32 @@ def _print_capabilities(*, output_format: str) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     parser = _parser()
     arguments = parser.parse_args(argv)
+    if arguments.command == "prepare-poses":
+        from rfd3_mosaic.pose_tasks import prepare_pose_tasks
+
+        try:
+            result = prepare_pose_tasks(
+                arguments.config,
+                arguments.output_dir,
+                count=arguments.count,
+                candidates=arguments.candidates,
+                seed=arguments.seed,
+                minimum_separation=arguments.minimum_separation,
+                progress=print,
+            )
+        except (OSError, ValueError, NotImplementedError) as error:
+            raise SystemExit(str(error)) from error
+        print(
+            f"Prepared {result['selected_tasks']}/{result['requested_tasks']} pose tasks"
+        )
+        for task in result["tasks"]:
+            print(f"rfd3-mosaic run {task['task']}")
+        print(f"Evidence: {arguments.output_dir / 'pose_tasks.json'}")
+        if result["selected_tasks"] < result["requested_tasks"]:
+            print(
+                "Insufficient distinct feasible poses; the requested separation was preserved."
+            )
+        return
     if arguments.command == "capabilities":
         _print_capabilities(output_format=arguments.format)
         return

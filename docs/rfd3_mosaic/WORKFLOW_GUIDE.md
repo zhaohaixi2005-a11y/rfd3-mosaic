@@ -247,14 +247,11 @@ For a larger campaign, set the desired integer output count:
 sampling:
   timesteps: 200
   designs: 250  # choose the count required by the experiment
-  replicates_per_pose: 1
 ```
 
-One YAML produces the requested number of independently named outputs. With a
-stochastic `initial_pose`, the default gives each design its own pose and
-diffusion seed.
-Without `initial_pose`, a locked design retains one declared pose and varies
-only the diffusion trajectory.
+One YAML produces the requested number of independently named outputs, all
+from one shared input pose. Diffusion seeds differ. Runtime rigid motion is a
+separate choice and may change final poses when explicitly enabled.
 
 ## Native RFdiffusion3 conditioning
 
@@ -321,7 +318,6 @@ inference.
 sampling:
   timesteps: 200
   designs: 50
-  replicates_per_pose: 1
   seed: 42000
   low_memory_mode: true
   is_non_loopy: true
@@ -339,7 +335,6 @@ For a stochastic pose declaration:
 ```yaml
 sampling:
   designs: 100
-  replicates_per_pose: 1
   seed: 20000
   initial_pose:
     radius: {minimum: 20.0, maximum: 32.0}
@@ -348,9 +343,11 @@ sampling:
     seed: 10000
 ```
 
-Mosaic produces 100 independent assembly poses and 100 diffusion trajectories.
-Set `replicates_per_pose: 5` only for an intentional experiment with five
-diffusion trajectories per pose; 100 requested designs then use 20 poses.
+Mosaic realizes one assembly pose and generates 100 diffusion trajectories
+from it. Use `rfd3-mosaic prepare-poses design.yaml --output-dir tasks` to
+create separate YAML tasks with distinct frozen poses. Re-running the same task
+replays its input; renaming it does not change its pose. Runtime component
+motion is preserved independently. See [task pose rules](TASK_POSES.zh-CN.md).
 Every assignment is recorded in `pose_manifest.json`.
 
 Available orientation policies are:

@@ -14,8 +14,6 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import AliasChoices, Field, field_validator, model_validator
 
-from rfd3_mosaic.schema.symmetry_names import SYMMETRY_NAME_PATTERN
-
 from rfd3_mosaic.schema.specs import (
     CopyRelationSpec,
     FiniteOrbitActionSpec,
@@ -23,6 +21,7 @@ from rfd3_mosaic.schema.specs import (
     LinkLengthSpec,
     StrictModel,
 )
+from rfd3_mosaic.schema.symmetry_names import SYMMETRY_NAME_PATTERN
 
 Selector = Annotated[str, Field(min_length=1)]
 PositiveLength = Annotated[int, Field(ge=1)]
@@ -606,7 +605,10 @@ class UserSamplingSpec(StrictModel):
     initial_poses: dict[Identifier, UserInitialPoseSpec] = Field(default_factory=dict)
     timesteps: Annotated[int, Field(ge=2, le=200)] = 200
     designs: Annotated[int, Field(ge=1, le=10000)] = 1
-    replicates_per_pose: Annotated[int, Field(ge=1, le=10000)] = 1
+    replicates_per_pose: Annotated[int, Field(ge=1, le=10000)] | None = Field(
+        default=None,
+        description="Deprecated: one task shares one input pose; omit this field.",
+    )
     seed: Annotated[int, Field(ge=0)] = 42
     preset: Literal["exact_mosaic"] = "exact_mosaic"
     low_memory_mode: bool = True
@@ -639,9 +641,14 @@ class UserSamplingSpec(StrictModel):
             raise ValueError(
                 "sampling cannot define both initial_pose and " "initial_poses"
             )
-        if self.replicates_per_pose > self.designs:
+        if (
+            self.replicates_per_pose is not None
+            and self.replicates_per_pose != self.designs
+        ):
             raise ValueError(
-                "sampling.replicates_per_pose cannot exceed " "sampling.designs"
+                "One task shares one input pose across sampling.designs. "
+                "Remove sampling.replicates_per_pose; to explore different "
+                "poses, prepare separate tasks with prepare-poses."
             )
         return self
 

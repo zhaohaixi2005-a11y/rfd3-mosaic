@@ -61,7 +61,7 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install \
-  "rfd3-mosaic[rfd3] @ git+https://github.com/Khmelinskaia-Lab/foundry.git@hx/rfd3-mosaic-product-core"
+  "rfd3-mosaic[rfd3] @ git+https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git@refactor/product-core-v1"
 ```
 
 RFD3 model weights are not redistributed by this repository. Place an
@@ -89,8 +89,14 @@ rfd3-mosaic init design.yaml \
   --side-a A20-35 \
   --side-b B40-55 \
   --symmetry C3 \
-  --designs 100
+  --designs 2
 ```
+
+Replace the input path and selectors with your own structure. The short
+supplied-interface initializer supports Cn; Dn requires an explicit connection
+graph. One task means one YAML and one input pose, even for `designs: 1000`.
+See [task poses and motion modes](docs/rfd3_mosaic/TASK_POSES.zh-CN.md) for
+creating multiple tasks with distinct poses.
 
 Inspect the resolved plan and validate the compiled input before using GPU
 time, then run it:
@@ -183,11 +189,11 @@ Mosaic separates three levels that are often conflated in diffusion inputs:
   single SE(3) body;
 - **generated polymer** is sampled by RFD3 under the compiled constraints.
 
-For movable-assembly workflows, `designs: N` instantiates independent,
-reproducible assembly poses and diffusion seeds. Fully locked arrangements
-retain the declared pose. Multi-example execution lets RFD3 reuse one model
-load without collapsing those per-design inputs into repeated diffusion from
-one pose.
+Each task uses **one input pose**. `designs: N` generates N diffusion
+trajectories from that same pose with one model load. Runtime mobility is
+independent: locked components stay fixed; movable components can follow
+different trajectories while each supplied seed remains internally rigid.
+Use `prepare-poses` to create separate tasks with different input poses.
 
 Bounded-mobile components use coarse-to-fine SE(3) optimization during
 diffusion, allowing broad early pose adaptation followed by progressively
@@ -221,7 +227,7 @@ The execution stack separates five responsibilities:
 | Layer | Responsibility |
 | --- | --- |
 | User specification | Declares the intended assembly and scientific constraints |
-| Mosaic compiler | Resolves topology, symmetry, geometry, polymer paths and per-design poses |
+| Mosaic compiler | Resolves topology, symmetry, geometry, polymer paths and task-level poses |
 | RFdiffusion3 | Generates conditioned protein backbones |
 | Mosaic runtime | Enforces compiled constraints and records guidance behavior |
 | Mosaic audits | Measures declared contracts and advisory structural properties |
@@ -261,7 +267,7 @@ rfd3-mosaic audit RUN_ID_OR_DIRECTORY
 | Cn/Dn symmetry, fixed motifs and supplied interfaces | Supported release target |
 | Locked, bounded-mobile and joint-rigid components | Supported release target |
 | Multiple components, motif orbits and polymer connections | Supported release target |
-| Independent per-design assembly poses | Supported release target |
+| Distinct task-level input poses | Supported release target |
 | Generated-interface guidance | Implemented; scientific calibration continues |
 | T/O/I finite-group execution | Research capability with path-specific GPU evidence |
 | Stabilizers, cosets, quotient orbits and advanced multi-interface cases | Controlled research capability |
@@ -302,8 +308,8 @@ site profiles and frozen validation configurations for reproducible testing.
 ## Development
 
 ```bash
-git clone --branch hx/rfd3-mosaic-product-core \
-  https://github.com/Khmelinskaia-Lab/foundry.git rfd3-mosaic
+git clone --branch refactor/product-core-v1 \
+  https://github.com/zhaohaixi2005-a11y/rfd3-mosaic.git rfd3-mosaic
 cd rfd3-mosaic
 python -m pip install -e ".[rfd3,dev]"
 make local-test

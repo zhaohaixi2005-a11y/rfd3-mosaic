@@ -1,5 +1,10 @@
 # Ho-Yeung LHD101 backbone comparison
 
+> Sampling semantics updated on 2026-09-16: one task shares one input pose
+> across all `designs`; different starting poses are separate `prepare-poses`
+> tasks. Runtime mobility remains independent. Earlier dated results below
+> describe their original revisions. See [current task rules](TASK_POSES.zh-CN.md).
+
 This is a paper-specific validation experiment, not a public Mosaic design
 mode. It uses Mosaic/RFD3 on the LHD101 interface-seed task reported in
 [Chim et al., bioRxiv 2026.07.02.736098](https://www.biorxiv.org/content/10.64898/2026.07.02.736098v1).

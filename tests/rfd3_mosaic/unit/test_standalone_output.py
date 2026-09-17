@@ -7,13 +7,41 @@ import numpy as np
 import yaml
 
 from rfd3_mosaic.output import compile_standalone
-from rfd3_mosaic.output.standalone import _chain_id, _classify_symmetry_pair
+from rfd3_mosaic.output.standalone import (
+    _analyze_assembly_pose_feasibility,
+    _chain_id,
+    _classify_symmetry_pair,
+    _compile_atoms,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 LHD101_CONFIG = REPOSITORY_ROOT / "configs/rfd3_mosaic/single_interface/lhd101_c3.yaml"
 
 
 class StandaloneOutputTestCase(unittest.TestCase):
+    def test_routing_heuristics_are_advisory_but_impossible_contour_still_fails(self):
+        atoms, spec, _, _ = _compile_atoms(
+            LHD101_CONFIG, REPOSITORY_ROOT, strict_validation=False
+        )
+        link = {
+            "link_instance_id": "route",
+            "chain_break": False,
+            "within_maximum_contour": True,
+            "minimum_endpoint_chord_axis_clearance": 0.0,
+            "minimum_interior_chord_fixed_atom_clearance": 0.0,
+            "from_terminal_tangent_to_chord_angle_deg": 180.0,
+            "to_terminal_tangent_to_chord_angle_deg": 180.0,
+        }
+        report = _analyze_assembly_pose_feasibility(atoms, spec, {"links": [link]})
+        self.assertTrue(report["passed"])
+        self.assertGreaterEqual(len(report["link_advisories"][0]["reasons"]), 3)
+        link["within_maximum_contour"] = False
+        report = _analyze_assembly_pose_feasibility(atoms, spec, {"links": [link]})
+        self.assertFalse(report["passed"])
+        self.assertIn(
+            "configured linker cannot span endpoint chord", report["failure_reasons"]
+        )
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.output_directory = Path(self.temporary_directory.name)

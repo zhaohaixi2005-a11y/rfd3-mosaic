@@ -272,7 +272,7 @@ def main() -> None:
             sampling = payload.setdefault("sampling", {})
             sampling["timesteps"] = args.timesteps
             sampling["designs"] = shard_designs
-            sampling["replicates_per_pose"] = 1
+            sampling.pop("replicates_per_pose", None)
             sampling["seed"] = seed
             sampling.setdefault("preset", "exact_mosaic")
             sampling.setdefault("low_memory_mode", True)

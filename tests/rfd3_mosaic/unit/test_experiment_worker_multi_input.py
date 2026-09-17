@@ -202,7 +202,7 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            assignments = (self._assignment(0), self._assignment(1))
+            assignments = tuple(self._assignment(index) for index in range(1000))
 
             merged, examples = _merged_rfd3_input(
                 root / "rfd3_input.json",
@@ -211,8 +211,22 @@ class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
             )
 
             self.assertEqual(len(json.loads(source.read_text())), 1)
-            self.assertEqual(len(json.loads(merged.read_text())), 2)
-            self.assertEqual(len(examples), 2)
+            payload = json.loads(merged.read_text())
+            self.assertEqual(len(payload), 1000)
+            self.assertEqual(len(examples), 1000)
+            self.assertEqual(len({item["input"] for item in payload.values()}), 1)
+            self.assertEqual(
+                {item["extra"]["mosaic_pose_index"] for item in payload.values()}, {0}
+            )
+            self.assertEqual(
+                len(
+                    {
+                        item["extra"]["mosaic_diffusion_seed"]
+                        for item in payload.values()
+                    }
+                ),
+                1000,
+            )
 
     def test_merged_input_refuses_to_overwrite_compiled_pose(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

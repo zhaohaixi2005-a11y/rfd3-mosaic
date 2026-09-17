@@ -70,38 +70,29 @@ class PoseEvaluation:
     maximum_terminal_tangent_angle_deg: float | None
     minimum_inter_group_distance: float | None
     objective_penalty: float
+    crowded_linker_pair_fraction: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "crowded_linker_pair_fraction": self.crowded_linker_pair_fraction,
+            "linker_crowding_rule": "interior endpoint chords closer than 1 A; soft ranking only",
             "score": list(self.score),
             "feasible": self.feasible,
             "hard_clashes": self.hard_clashes,
-            "failed_required_interfaces": list(
-                self.failed_required_interfaces
-            ),
+            "failed_required_interfaces": list(self.failed_required_interfaces),
             "infeasible_links": list(self.infeasible_links),
-            "blocked_linker_corridors": list(
-                self.blocked_linker_corridors
-            ),
-            "required_objective_failures": (
-                self.required_objective_failures
-            ),
+            "blocked_linker_corridors": list(self.blocked_linker_corridors),
+            "required_objective_failures": (self.required_objective_failures),
             "linker_contour_excess": self.linker_contour_excess,
-            "maximum_linker_endpoint_distance": (
-                self.maximum_linker_endpoint_distance
-            ),
+            "maximum_linker_endpoint_distance": (self.maximum_linker_endpoint_distance),
             "minimum_linker_corridor_clearance": (
                 self.minimum_linker_corridor_clearance
             ),
-            "minimum_linker_axis_clearance": (
-                self.minimum_linker_axis_clearance
-            ),
+            "minimum_linker_axis_clearance": (self.minimum_linker_axis_clearance),
             "maximum_terminal_tangent_angle_deg": (
                 self.maximum_terminal_tangent_angle_deg
             ),
-            "minimum_inter_group_distance": (
-                self.minimum_inter_group_distance
-            ),
+            "minimum_inter_group_distance": (self.minimum_inter_group_distance),
             "objective_penalty": self.objective_penalty,
         }
 
@@ -591,6 +582,50 @@ def _write_assembly(design: UserDesignSpec, path: Path) -> None:
     )
 
 
+def _linker_crowding_fraction(links: tuple[dict[str, Any], ...]) -> float:
+    """Fraction of independent interior chords within 1 A, never a hard gate."""
+    from rfd3_mosaic.validation.scaffold_validity import _segment_to_segment_distances
+
+    routes = [
+        link
+        for link in links
+        if not link.get("chain_break")
+        and "from_coordinate" in link
+        and "to_coordinate" in link
+    ]
+    if len(routes) < 2:
+        return 0.0
+    starts = np.asarray([link["from_coordinate"] for link in routes], dtype=float)
+    ends = np.asarray([link["to_coordinate"] for link in routes], dtype=float)
+    vectors = ends - starts
+    distances, _, _ = _segment_to_segment_distances(
+        starts + 0.1 * vectors,
+        ends - 0.1 * vectors,
+        starts + 0.1 * vectors,
+        ends - 0.1 * vectors,
+    )
+    pairs = []
+    for left in range(len(routes)):
+        endpoints = {
+            (
+                routes[left][f"{side}_fragment_instance_id"],
+                routes[left].get(f"{side}_label_seq_id"),
+            )
+            for side in ("from", "to")
+        }
+        for right in range(left + 1, len(routes)):
+            other = {
+                (
+                    routes[right][f"{side}_fragment_instance_id"],
+                    routes[right].get(f"{side}_label_seq_id"),
+                )
+                for side in ("from", "to")
+            }
+            if not endpoints.intersection(other):
+                pairs.append(distances[left, right])
+    return float(np.mean(np.asarray(pairs) < 1.0)) if pairs else 0.0
+
+
 def _evaluation_from_manifest(manifest: dict[str, Any]) -> PoseEvaluation:
     validation = manifest["validation"]
     clashes = validation["inter_group_clashes"]
@@ -606,6 +641,7 @@ def _evaluation_from_manifest(manifest: dict[str, Any]) -> PoseEvaluation:
     hard_clashes = int(clashes["total_hard_clashes"])
     required_failures = int(objectives.get("required_failure_count", 0))
     link_reports = tuple(linkers.get("links", ()))
+    crowded_fraction = _linker_crowding_fraction(link_reports)
     contour_excess = float(
         sum(
             max(
@@ -692,26 +728,18 @@ def _evaluation_from_manifest(manifest: dict[str, Any]) -> PoseEvaluation:
         float(len(infeasible_links)),
         float(hard_clashes),
         float(required_failures),
+        crowded_fraction,
         # Straight-chord obstruction is a routing preference, not proof that
         # a flexible linker is geometrically impossible.
         float(len(blocked_corridors)),
         contour_excess,
         objective_penalty,
-        float("inf")
-        if maximum_tangent_angle is None
-        else maximum_tangent_angle,
+        float("inf") if maximum_tangent_angle is None else maximum_tangent_angle,
         float("inf")
         if minimum_corridor_clearance is None
         else -minimum_corridor_clearance,
-        float("inf")
-        if minimum_axis_clearance is None
-        else -minimum_axis_clearance,
         float("inf") if maximum_endpoint is None else maximum_endpoint,
-        (
-            -minimum_distance
-            if minimum_distance is not None
-            else float("-inf")
-        ),
+        (-minimum_distance if minimum_distance is not None else float("-inf")),
     )
     return PoseEvaluation(
         score=score,
@@ -728,6 +756,7 @@ def _evaluation_from_manifest(manifest: dict[str, Any]) -> PoseEvaluation:
         maximum_terminal_tangent_angle_deg=maximum_tangent_angle,
         minimum_inter_group_distance=minimum_distance,
         objective_penalty=objective_penalty,
+        crowded_linker_pair_fraction=crowded_fraction,
     )
 
 

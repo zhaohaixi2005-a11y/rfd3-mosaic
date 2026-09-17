@@ -80,11 +80,12 @@ The supplied interface and ligand remain one rigid seed. The explicit
 additional symmetry-related interface. Omitting it preserves the supplied
 interface without inventing a second one.
 
-The pose interval is explicit rather than inferred from a protein-specific
-template. With the default `--replicates-per-pose 1`, the command above
-compiles 50 independent rigid assembly poses and gives each pose one RFD3
-diffusion trajectory. Omit all pose options to retain the supplied assembly
-placement exactly.
+The declared pose distribution is sampled once for this task. All 50 designs
+share that input pose and use different diffusion seeds. Runtime motion remains
+controlled by `--component-motion`: `guided` may change each design's final
+pose while keeping seed internal geometry fixed; `locked` preserves the chosen
+pose throughout generation. Use `prepare-poses` to create separate tasks with
+different frozen starting poses; see [task pose rules](TASK_POSES.zh-CN.md).
 
 The short initializer covers the common two-sided declaration. It does not
 limit Mosaic to dimers: general YAML may declare any number of rigid or

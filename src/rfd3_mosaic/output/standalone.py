@@ -403,6 +403,8 @@ def _analyze_scaffold_link_geometry(
                 "from_label_seq_id": from_geometry["label_seq_id"],
                 "to_label_seq_id": to_geometry["label_seq_id"],
                 "endpoint_distance": endpoint_distance,
+                "from_coordinate": from_coordinate.tolist(),
+                "to_coordinate": to_coordinate.tolist(),
                 "from_terminal_tangent_to_chord_angle_deg": (
                     _vector_angle_degrees(
                         from_geometry["tangent"],
@@ -630,11 +632,9 @@ def _analyze_assembly_pose_feasibility(
 ) -> dict[str, Any]:
     """Evaluate necessary pre-RFD3 geometry for finite-group capture.
 
-    This is deliberately a feasibility report rather than a pose score.  Cn
-    retains its physically meaningful wedge/tangent checks.  Dn and the
-    polyhedral groups use local group-action neighbours, excluded volume and
-    polymer contour constraints; they are never forced into a fictitious
-    single-axis radial model.
+    Only excluded volume and polymer contour failures reject a pose here.
+    Chord, wedge and tangent descriptors are routing heuristics: a flexible
+    generated chain need not follow its endpoint chord.
     """
 
     grouped: dict[str, list[_CompiledAtom]] = {}
@@ -667,6 +667,7 @@ def _analyze_assembly_pose_feasibility(
             source_fragment_ids=source_fragment_ids,
         )
         failures: list[str] = []
+        warnings: list[str] = []
         if (
             minimum_copy_atom_distance is not None
             and minimum_copy_atom_distance < 2.0 - 1e-6
@@ -674,6 +675,7 @@ def _analyze_assembly_pose_feasibility(
             failures.append("symmetry-related rigid copies have a hard atom clash")
 
         common_report: dict[str, Any] = {
+            "advisory_reasons": warnings,
             "motion_group_instance_id": group_id,
             "source_fragment_ids": sorted(by_fragment),
             "orbit_id": orbit_id,
@@ -715,10 +717,10 @@ def _analyze_assembly_pose_feasibility(
         radial = group_relative - np.dot(group_relative, axis) * axis
         radial_norm = float(np.linalg.norm(radial))
         if radial_norm <= 1e-8:
-            failures.append("joint seed center lies on the cyclic axis")
+            warnings.append("joint seed center lies on the cyclic axis")
             common_report.update(
                 {
-                    "passed": False,
+                    "passed": not failures,
                     "failure_reasons": failures,
                     "local_adjacency_model": "cyclic_wedge_and_tangent",
                 }
@@ -753,11 +755,11 @@ def _analyze_assembly_pose_feasibility(
         wedge_angle = 360.0 / symmetry_order
         maximum_tangent_deviation = min(60.0, wedge_angle / 2.0)
         if angular_span > wedge_angle + 1e-6:
-            failures.append("joint seed spans more than one cyclic protomer wedge")
+            warnings.append("joint seed spans more than one cyclic protomer wedge")
         if tangent_deviation is None or tangent_deviation > (
             maximum_tangent_deviation + 1e-6
         ):
-            failures.append("supplied interface normal is not locally tangential")
+            warnings.append("supplied interface normal is not locally tangential")
         common_report.update(
             {
                 "radial_distance": radial_norm,
@@ -775,6 +777,7 @@ def _analyze_assembly_pose_feasibility(
         group_reports.append(common_report)
 
     link_failures: list[dict[str, Any]] = []
+    link_advisories: list[dict[str, Any]] = []
     cyclic_geometry = any(
         report.get("symmetry_type") == "cyclic" for report in group_reports
     )
@@ -782,6 +785,7 @@ def _analyze_assembly_pose_feasibility(
         if bool(link["chain_break"]):
             continue
         reasons: list[str] = []
+        warnings = []
         axis_clearance = link.get("minimum_endpoint_chord_axis_clearance")
         fixed_clearance = link.get("minimum_interior_chord_fixed_atom_clearance")
         if not bool(link["within_maximum_contour"]):
@@ -793,16 +797,20 @@ def _analyze_assembly_pose_feasibility(
             and axis_clearance is not None
             and float(axis_clearance) < 3.8
         ):
-            reasons.append("endpoint chord crosses the cyclic-axis exclusion tube")
+            warnings.append("endpoint chord approaches the cyclic axis")
         if fixed_clearance is not None and float(fixed_clearance) < 2.0:
-            reasons.append("endpoint chord intersects another fixed component")
+            warnings.append("endpoint chord intersects another fixed component")
         for name in (
             "from_terminal_tangent_to_chord_angle_deg",
             "to_terminal_tangent_to_chord_angle_deg",
         ):
             angle = link.get(name)
             if angle is not None and float(angle) > 120.0:
-                reasons.append(f"{name} is more than 120 degrees")
+                warnings.append(f"{name} is more than 120 degrees")
+        if warnings:
+            link_advisories.append(
+                {"link_instance_id": link["link_instance_id"], "reasons": warnings}
+            )
         if reasons:
             link_failures.append(
                 {
@@ -823,14 +831,21 @@ def _analyze_assembly_pose_feasibility(
         "passed": bool(evaluated and not failures),
         "joint_seed_groups": group_reports,
         "link_failures": link_failures,
+        "link_advisories": link_advisories,
+        "advisory_reasons": [
+            reason
+            for report in group_reports
+            for reason in report.get("advisory_reasons", [])
+        ]
+        + [reason for report in link_advisories for reason in report["reasons"]],
         "failure_reasons": failures,
         "criteria": {
             "cyclic_wedge_angle_deg": "360 / n (Cn only)",
             "maximum_tangent_deviation_deg": "min(60, 180 / n) (Cn only)",
-            "minimum_axis_clearance_angstrom": "3.8 (Cn only)",
+            "minimum_axis_clearance_angstrom": "3.8 (Cn advisory only)",
             "minimum_symmetry_copy_atom_distance_angstrom": 2.0,
-            "minimum_fixed_atom_corridor_clearance_angstrom": 2.0,
-            "maximum_terminal_backturn_deg": 120.0,
+            "advisory_fixed_atom_corridor_clearance_angstrom": 2.0,
+            "advisory_terminal_backturn_deg": 120.0,
             "linker_contour": "ceil(endpoint_distance / 3.8) - 1 <= max_length",
         },
         "interpretation": (

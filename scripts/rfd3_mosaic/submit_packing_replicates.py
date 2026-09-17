@@ -110,10 +110,9 @@ def main() -> None:
         type=int,
         default=2,
         help=(
-            "Independent outputs per GPU job. Variable-pose designs receive "
-            "one independently seeded pre-diffusion pose per output. Locked "
-            "designs freeze each selected pose during diffusion; guided "
-            "designs may subsequently apply bounded motion (default: 2)."
+            "Independent diffusion outputs sharing one input pose per GPU "
+            "job. Locked jobs keep that pose; guided jobs allow bounded "
+            "rigid motion within each trajectory (default: 2)."
         ),
     )
     parser.add_argument(
@@ -173,6 +172,7 @@ def main() -> None:
             payload = dict(base)
             payload["input"] = str(source_input)
             payload["sampling"] = dict(base["sampling"])
+            payload["sampling"].pop("replicates_per_pose", None)
             payload["sampling"]["seed"] = seed
             payload["sampling"]["designs"] = arguments.designs_per_job
             initial_pose = payload["sampling"].get("initial_pose")
@@ -183,7 +183,7 @@ def main() -> None:
                 )
             initial_pose = dict(initial_pose)
             # A repeated campaign seed identifies one paired assembly-pose
-            # population.  Locked and guided jobs therefore receive the same
+            # task input. Locked and guided jobs therefore receive the same
             # pose seeds, while different --seed values cannot silently reuse
             # the same pre-RFD3 coordinates.
             initial_pose["seed"] = 1_000_000 + seed

@@ -573,6 +573,9 @@ def execute(
                     else "fixed_input_pose"
                 ),
                 "requested_designs": len(assignments),
+                "pose_scope": "task",
+                "input_pose_shared_across_designs": len(assemblies) == 1,
+                "runtime_mobility_independent_of_input_pose": True,
                 "compiled_pose_count": len(assemblies),
                 "model_load_count": 1,
                 "assignments": [

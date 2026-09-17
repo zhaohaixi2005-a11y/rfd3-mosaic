@@ -356,7 +356,7 @@ class ContinuousPoseOptimizerTestCase(unittest.TestCase):
         )
         self.assertEqual(evaluation.infeasible_links, ())
         self.assertEqual(evaluation.score[0], 0.0)
-        self.assertEqual(evaluation.score[6], 1.0)
+        self.assertEqual(evaluation.score[7], 1.0)
 
     def test_single_group_pose_accepts_absent_pair_distance(self) -> None:
         evaluation = _evaluation_from_manifest(

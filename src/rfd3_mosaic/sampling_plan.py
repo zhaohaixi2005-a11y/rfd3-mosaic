@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil
 
 from pydantic import Field
 
@@ -90,17 +89,14 @@ def design_sampling_assignments(
 ) -> tuple[DesignSamplingAssignment, ...]:
     """Expand ``designs`` without confusing pose and diffusion randomness.
 
-    A pose-capable design receives one independently seeded assembly pose per
-    ``replicates_per_pose`` outputs.  A fixed design retains exactly one pose
-    and varies only the diffusion trajectory.  Sequential seed derivation is
-    intentional: it is transparent to users, deterministic, and exactly
-    replayable without storing hidden RNG state.
+    One task realizes one input pose, shared by every diffusion trajectory.
+    Runtime component mobility is an independent choice: shared starting
+    coordinates do not imply shared final coordinates for movable tasks.
+    Different input poses belong to separate tasks, never to design indices.
     """
 
     diffusion = plan.diffusion
     stochastic_pose = pose_plan_is_stochastic(plan)
-    replicas = diffusion.replicates_per_pose if stochastic_pose else diffusion.designs
-    pose_count = ceil(diffusion.designs / replicas)
     component_seeded_pose = False
     if plan.initial_pose is not None:
         base_pose_seed = plan.initial_pose.seed
@@ -112,23 +108,21 @@ def design_sampling_assignments(
 
     assignments: list[DesignSamplingAssignment] = []
     for design_index in range(diffusion.designs):
-        pose_index = design_index // replicas if stochastic_pose else 0
         assignments.append(
             DesignSamplingAssignment(
                 design_index=design_index,
-                pose_index=pose_index,
-                replicate_index=design_index % replicas,
+                pose_index=0,
+                replicate_index=design_index,
                 pose_seed=(
                     None
-                    if component_seeded_pose and pose_index == 0
-                    else base_pose_seed + pose_index
+                    if component_seeded_pose
+                    else base_pose_seed
                     if stochastic_pose and base_pose_seed is not None
                     else None
                 ),
                 diffusion_seed=diffusion.seed + design_index,
             )
         )
-    assert pose_count == len({item.pose_index for item in assignments})
     return tuple(assignments)
 
 
@@ -179,7 +173,7 @@ def compile_sampling_plan(design: UserDesignSpec) -> SamplingPlan:
         diffusion=DiffusionSamplingPlan(
             timesteps=sampling.timesteps,
             designs=sampling.designs,
-            replicates_per_pose=sampling.replicates_per_pose,
+            replicates_per_pose=sampling.designs,
             seed=sampling.seed,
             preset=sampling.preset,
             low_memory_mode=sampling.low_memory_mode,
