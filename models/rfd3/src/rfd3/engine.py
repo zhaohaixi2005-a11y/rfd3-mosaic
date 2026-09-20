@@ -220,12 +220,19 @@ class RFD3Output:
                 json.dump(self.metadata, f, indent=4)
 
         # Trajectory saving
-        prefix = str(base_path)[:-1].rstrip("_model_")
-        suffix = str(base_path)[-1]
+        prefix, separator, suffix = base_path.name.rpartition("_model_")
+        if separator and suffix.isdecimal():
+            denoised_path = base_path.with_name(f"{prefix}_denoised_model_{suffix}")
+            noisy_path = base_path.with_name(f"{prefix}_noisy_model_{suffix}")
+        else:
+            # Custom example IDs need not carry a model index. Preserve their
+            # complete name, and never parse a parent directory as that index.
+            denoised_path = base_path.with_name(f"{base_path.name}_denoised")
+            noisy_path = base_path.with_name(f"{base_path.name}_noisy")
         if self.denoised_trajectory_stack is not None:
             to_cif_file(
                 self.denoised_trajectory_stack,
-                "_denoised_model_".join([prefix, suffix]),
+                denoised_path,
                 file_type="cif.gz",
                 include_entity_poly=False,
             )
@@ -233,7 +240,7 @@ class RFD3Output:
         if self.noisy_trajectory_stack is not None:
             to_cif_file(
                 self.noisy_trajectory_stack,
-                "_noisy_model_".join([prefix, suffix]),
+                noisy_path,
                 file_type="cif.gz",
                 include_entity_poly=False,
             )

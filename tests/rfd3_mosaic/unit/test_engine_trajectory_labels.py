@@ -93,6 +93,34 @@ class EngineTrajectoryLabelsTestCase(unittest.TestCase):
             for frame in result.denoised_trajectory_stack.coord:
                 np.testing.assert_allclose(frame, expected, atol=1e-4, rtol=0.0)
 
+    def test_dump_preserves_complete_names_and_multidigit_model_indices(self):
+        results, _, _ = self._forward(align=False)
+        result = results[0]
+        cases = (
+            ("probe_model_10", "probe_denoised_model_10", "probe_noisy_model_10"),
+            (
+                "assembly_model_model_123",
+                "assembly_model_denoised_model_123",
+                "assembly_model_noisy_model_123",
+            ),
+            ("custom", "custom_denoised", "custom_noisy"),
+            ("custom_model_final", "custom_model_final_denoised", "custom_model_final_noisy"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output_directory = Path(temporary) / "parent_model_55"
+            for example_id, denoised_name, noisy_name in cases:
+                with self.subTest(example_id=example_id):
+                    result.example_id = example_id
+                    with patch("rfd3.engine.to_cif_file") as write_cif:
+                        result.dump(output_directory, verbose=False)
+                    paths = [Path(call.args[1]) for call in write_cif.call_args_list]
+                    self.assertEqual(
+                        paths,
+                        [output_directory / name for name in (example_id, denoised_name, noisy_name)],
+                    )
+                    self.assertIs(write_cif.call_args_list[1].args[0], result.denoised_trajectory_stack)
+                    self.assertIs(write_cif.call_args_list[2].args[0], result.noisy_trajectory_stack)
+
 
 if __name__ == "__main__":
     unittest.main()
