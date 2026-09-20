@@ -2,9 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
+from biotite.structure import AtomArray
 
 from rfd3_mosaic.rfd3_scaffold_audit import _audit_final_generated_route_ownership
 from rfd3_mosaic.structure import AtomRecord
@@ -139,14 +139,16 @@ class GeneratedRouteOwnershipTestCase(unittest.TestCase):
 
     def test_final_audit_uses_output_coordinates_and_runtime_fixed_mask(self):
         inputs = _c3_input(center=True)
-        runtime = SimpleNamespace(
-            atom_name=np.asarray(["CA"] * 9),
-            is_protein=np.ones(9, dtype=bool),
-            chain_id=np.asarray(inputs["chain_ids"]),
-            res_id=np.asarray(inputs["residue_numbers"]),
-            is_motif_atom_with_fixed_coord=np.asarray(inputs["fixed_mask"]),
-            coord=_c3_input()["coordinates"],
-        )
+        # Use the actual parser container: it does NOT carry model feature
+        # annotation is_protein until the inference feature transform runs.
+        runtime = AtomArray(9)
+        runtime.atom_name = np.asarray(["CA"] * 9)
+        runtime.res_name = np.asarray(["GLY"] * 9)
+        runtime.chain_id = np.asarray(inputs["chain_ids"])
+        runtime.res_id = np.asarray(inputs["residue_numbers"])
+        runtime.set_annotation("is_motif_atom_with_fixed_coord", np.asarray(inputs["fixed_mask"]))
+        runtime.coord = _c3_input()["coordinates"]
+        self.assertFalse(hasattr(runtime, "is_protein"))
         atoms = tuple(
             AtomRecord("ATOM", i + 1, "CA", "", "GLY", chain, residue, "", tuple(xyz), "C")
             for i, (chain, residue, xyz) in enumerate(zip(

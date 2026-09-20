@@ -235,9 +235,15 @@ def _audit_final_generated_route_ownership(
         return {"declared": False, "applicable": False, "passed": True}
     if atom_array is None:
         atom_array = _build_runtime_input(input_path)
-    ca = (np.asarray(atom_array.atom_name) == "CA") & np.asarray(
-        atom_array.is_protein, dtype=bool
-    )
+    protein = getattr(atom_array, "is_protein", None)
+    if protein is None:
+        # Input parsing returns a Biotite AtomArray before the model feature
+        # transform adds is_protein. Identify amino-acid residues here rather
+        # than assuming inference feature annotations already exist.
+        from biotite.structure import filter_amino_acids
+
+        protein = filter_amino_acids(atom_array)
+    ca = (np.asarray(atom_array.atom_name) == "CA") & np.asarray(protein, dtype=bool)
     input_chain_ids = np.asarray(atom_array.chain_id)[ca]
     input_residues = np.asarray(atom_array.res_id)[ca]
     input_fixed = np.asarray(atom_array.is_motif_atom_with_fixed_coord, dtype=bool)[ca]
