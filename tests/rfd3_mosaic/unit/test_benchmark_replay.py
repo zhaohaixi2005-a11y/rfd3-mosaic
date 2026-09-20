@@ -27,3 +27,20 @@ class BenchmarkReplayTests(unittest.TestCase):
         for count, size in ((0, 5), (50, 0), (-1, 5), (50, -1)):
             with self.assertRaises(ValueError):
                 replay.partition_designs(count, size)
+
+    def test_runtime_grouping_preserves_shards_and_respects_time_budget(self):
+        rows = [{"task": "slow" if i < 4 else "fast", "designs": 2,
+                 "script": str(i)} for i in range(12)]
+        groups = replay.group_by_runtime(rows, {"slow": 3600, "fast": 300}, 12000)
+        self.assertEqual(sorted(r["script"] for g in groups for r in g["rows"]),
+                         sorted(r["script"] for r in rows))
+        self.assertTrue(all(g["estimated_seconds"] <= 12000 for g in groups))
+        self.assertLess(len(groups), len(rows))
+
+    def test_impossible_or_unknown_runtime_budget_fails_explicitly(self):
+        rows = [{"task": "slow", "designs": 5, "script": "job"}]
+        for estimate in (0, -1, float("nan"), float("inf"), 10000):
+            with self.assertRaises(ValueError):
+                replay.group_by_runtime(rows, {"slow": estimate}, 1000)
+        with self.assertRaises(KeyError):
+            replay.group_by_runtime(rows, {}, 1000)

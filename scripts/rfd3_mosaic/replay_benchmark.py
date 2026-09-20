@@ -26,6 +26,37 @@ def partition_designs(count: int, chunk_size: int) -> list[tuple[int, int]]:
                        for start in range(1, count, chunk_size)]
 
 
+def group_by_runtime(rows, seconds_per_design, budget_seconds=28800):
+    """First-fit decreasing with 25% timing margin and 3 min per shard startup.
+
+    Groups only change scheduler occupancy; every frozen shard remains an
+    independent worker with its original seed range and audit directory.
+    Measured times are estimates, not a guarantee against a slower GPU.
+    """
+    import math
+    if not math.isfinite(budget_seconds) or budget_seconds <= 0:
+        raise ValueError("Runtime budget must be finite and positive")
+    timed = []
+    for row in rows:
+        rate = float(seconds_per_design[row["task"]])
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError("Runtime estimates must be finite and positive")
+        cost = 180 + 1.25 * row["designs"] * rate
+        if cost > budget_seconds:
+            raise ValueError(f"One shard exceeds runtime budget: {row['script']}")
+        timed.append((cost, row))
+    bins = []
+    for cost, row in sorted(timed, key=lambda item: -item[0]):
+        for group in bins:
+            if group["estimated_seconds"] + cost <= budget_seconds:
+                group["rows"].append(row)
+                group["estimated_seconds"] += cost
+                break
+        else:
+            bins.append({"rows": [row], "estimated_seconds": cost})
+    return bins
+
+
 def sha(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -138,31 +169,63 @@ def dispatch(path: Path, index: int) -> None:
     scripts = json.loads(path.read_text())
     if not 0 <= index < len(scripts):
         raise ValueError("Array index outside manifest")
-    os.execv("/bin/bash", ["/bin/bash", scripts[index]])
+    selected = scripts[index]
+    if isinstance(selected, str):
+        os.execv("/bin/bash", ["/bin/bash", selected])
+    failed = False
+    for script in selected:
+        # One shard failing must not erase unrelated benchmarks in this group.
+        result = subprocess.run(["/bin/bash", script])
+        failed = failed or result.returncode != 0
+    raise SystemExit(1 if failed else 0)
 
 
 def submit(args) -> None:
     receipt = json.loads(args.manifest.read_text())
-    if not receipt.get("prepared") or receipt.get("submissions"):
-        raise ValueError("Not prepared, or already/uncertainly submitted; inspect receipts before retrying")
+    if not receipt.get("prepared"):
+        raise ValueError("Not prepared")
+    previous = receipt.get("submissions", [])
+    dependency = None
+    stages = ("canary", "bulk")
+    if previous:
+        # Retry only a scheduler-confirmed QOS rejection, never an uncertain
+        # network result or an accepted job. Keep the rejected receipt intact.
+        rejected = previous[-1]
+        canaries = [s for s in previous if s["stage"] == "canary" and s["status"] == "submitted"]
+        safe_retry = (
+            args.retry_qos_rejection and len(canaries) == 1
+            and rejected["stage"] == "bulk" and rejected.get("returncode", 0) != 0
+            and not rejected.get("stdout", "").strip()
+            and "QOSMaxSubmitJobPerUserLimit" in rejected.get("stderr", "")
+            and not any(s["stage"] == "bulk" and s["status"] == "submitted" for s in previous)
+        )
+        if not safe_retry:
+            raise ValueError("Already or uncertainly submitted; inspect receipts before retrying")
+        dependency = canaries[0]["job_id"]
+        stages = ("bulk",)
     if args.concurrency < 1:
         raise ValueError("Concurrency must be positive")
-    receipt["submissions"] = []
+    receipt.setdefault("submissions", [])
     output = args.manifest.parent
-    dependency = None
-    for stage in ("canary", "bulk"):
+    timings = json.loads(args.runtime_estimates.read_text()) if args.runtime_estimates else None
+    for stage in stages:
         rows = [r for r in receipt["records"] if r["stage"] == stage]
         if not rows:
             continue
         jobs = output / (stage + "_scripts.json")
-        save(jobs, [r["script"] for r in rows])
+        groups = (
+            group_by_runtime(rows, timings, args.runtime_budget_seconds)
+            if stage == "bulk" and timings is not None
+            else [{"rows": [r], "estimated_seconds": None} for r in rows]
+        )
+        save(jobs, [[r["script"] for r in g["rows"]] for g in groups])
         slurm = receipt["profile"]["slurm"]
         lines = ["#!/bin/bash -l", "#SBATCH --job-name=mosaic-replay-" + stage]
         for flag, key in (("partition", "partition"), ("gres", "gres"), ("cpus-per-task", "cpus"),
                           ("mem", "memory"), ("time", "walltime"), ("account", "account"), ("qos", "qos")):
             if slurm.get(key):
                 lines.append(f"#SBATCH --{flag}={slurm[key]}")
-        lines += [f"#SBATCH --array=0-{len(rows)-1}%{args.concurrency}",
+        lines += [f"#SBATCH --array=0-{len(groups)-1}%{args.concurrency}",
                   f"#SBATCH --output={output}/{stage}-%A_%a.out",
                   f"#SBATCH --error={output}/{stage}-%A_%a.err"]
         if dependency:
@@ -171,7 +234,12 @@ def submit(args) -> None:
                   + " dispatch " + shlex.quote(str(jobs)) + ' "$SLURM_ARRAY_TASK_ID"']
         script = output / (stage + ".sbatch")
         script.write_text("\n".join(lines) + "\n")
-        submission = {"stage": stage, "status": "submission_started", "script": str(script)}
+        submission = {
+            "stage": stage, "status": "submission_started", "script": str(script),
+            "submission_driver_sha256": sha(Path(__file__)),
+            "array_tasks": len(groups), "shards": len(rows),
+            "runtime_budget_seconds": args.runtime_budget_seconds if timings else None,
+        }
         receipt["submissions"].append(submission)
         save(args.manifest, receipt)
         result = subprocess.run(["sbatch", "--parsable", str(script)], text=True, capture_output=True)
@@ -185,13 +253,16 @@ def submit(args) -> None:
             save(args.manifest, receipt)
             raise RuntimeError("Unrecognized scheduler receipt; do not blindly resubmit")
         submission.update(status="submitted", job_id=job)
-        for i, row in enumerate(rows):
-            row["job_id"] = f"{job}_{i}"
-            row["expected_run_directory"] = str(Path(row["run_root"]) / row["job_id"])
-            save(Path(row["script"]).parent / "submission.json", {
-                "job_id": row["job_id"], "executor": "slurm", "script": row["script"],
-                "run_root": row["run_root"], "expected_run_directory": row["expected_run_directory"],
-            })
+        for i, group in enumerate(groups):
+            for position, row in enumerate(group["rows"]):
+                row["job_id"] = f"{job}_{i}"
+                row["group_position"] = position
+                row["group_estimated_seconds"] = group["estimated_seconds"]
+                row["expected_run_directory"] = str(Path(row["run_root"]) / row["job_id"])
+                save(Path(row["script"]).parent / "submission.json", {
+                    "job_id": row["job_id"], "executor": "slurm", "script": row["script"],
+                    "run_root": row["run_root"], "expected_run_directory": row["expected_run_directory"],
+                })
         save(args.manifest, receipt)
         dependency = job
         print(f"Submitted {stage}: array {job}, shards {len(rows)}, designs {sum(r['designs'] for r in rows)}", flush=True)
@@ -210,6 +281,9 @@ def main():
     sub = commands.add_parser("submit")
     sub.add_argument("manifest", type=Path)
     sub.add_argument("--concurrency", type=int, default=4)
+    sub.add_argument("--runtime-estimates", type=Path, help="Observed seconds per design by task; combine shards within time budget")
+    sub.add_argument("--runtime-budget-seconds", type=float, default=28800)
+    sub.add_argument("--retry-qos-rejection", action="store_true")
     dis = commands.add_parser("dispatch")
     dis.add_argument("manifest", type=Path)
     dis.add_argument("index", type=int)
