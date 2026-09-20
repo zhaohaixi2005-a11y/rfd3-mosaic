@@ -7,6 +7,7 @@ This is an explicit spatial design constraint, not a knot/link invariant.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -62,6 +63,52 @@ def route_deficits_from_config(coordinates, topology, config):
         coordinates, topology, clearance=config.routing_clearance,
         anchor_taper=config.routing_anchor_taper_residues,
     )
+
+
+def route_nonregression_check(before, after, *, tolerance=1e-3):
+    """Protect satisfied route pairs without freezing every violated pair.
+
+    Route ownership is one spatial objective. An already violated point/route
+    pair may worsen only if neither the squared sum nor the worst violation
+    increases. Every pair already within the declared tolerance stays there.
+    This does not replace pairwise physical clash/continuity protection.
+    """
+    if not math.isfinite(tolerance) or tolerance < 0.0:
+        raise ValueError("Route tolerance must be finite and non-negative")
+    record = {
+        "rule": "route_ownership_regression",
+        "aggregation": "satisfied_pairs_squared_sum_and_maximum",
+        "pair_count": before.numel(),
+        "routing_tolerance_angstrom": float(tolerance),
+        "numerical_tolerance_angstrom": 1e-6,
+        "squared_numerical_tolerance_angstrom2": 1e-8,
+    }
+    if before.shape != after.shape:
+        return record | {"passed": False, "reason": "route_shape_mismatch"}
+    if not bool(torch.isfinite(before).all() and torch.isfinite(after).all()):
+        return record | {"passed": False, "reason": "nonfinite_route_deficits"}
+    satisfied = before <= tolerance
+    before_sum = float(before.square().sum())
+    after_sum = float(after.square().sum())
+    before_max = float(before.max()) if before.numel() else 0.0
+    after_max = float(after.max()) if after.numel() else 0.0
+    preserve_satisfied = bool(torch.all(after[satisfied] <= tolerance))
+    preserve_sum = after_sum <= before_sum + 1e-8
+    preserve_max = after_max <= before_max + 1e-6
+    return record | {
+        "passed": preserve_satisfied and preserve_sum and preserve_max,
+        "satisfied_pair_count": int(satisfied.sum()),
+        "satisfied_pairs_preserved": preserve_satisfied,
+        "squared_excess_before_angstrom2": before_sum,
+        "squared_excess_after_angstrom2": after_sum,
+        "squared_sum_nonregression": preserve_sum,
+        "maximum_excess_before_angstrom": before_max,
+        "maximum_excess_after_angstrom": after_max,
+        "maximum_nonregression": preserve_max,
+        "maximum_pairwise_increase_angstrom": (
+            float((after - before).max()) if before.numel() else 0.0
+        ),
+    }
 
 
 def apply_generated_route_guidance(
@@ -174,8 +221,10 @@ def apply_generated_route_guidance(
                 after = values(candidate)
                 descent = bool(torch.isfinite(after).all() and
                                after.square().sum() < before.square().sum() - 1e-8)
-                route_safe = bool(torch.all(after[before <= config.routing_tolerance] <= config.routing_tolerance)
-                                  and after.max() <= before.max() + 1e-6)
+                route_guard = route_nonregression_check(
+                    before, after, tolerance=config.routing_tolerance
+                )
+                route_safe = route_guard["passed"]
                 actual_step = torch.linalg.vector_norm(candidate - result, dim=-1).max()
                 bounded = bool(actual_step <= maximum_step + 1e-5)
                 fixed_preserved = bool(torch.all(
@@ -185,6 +234,7 @@ def apply_generated_route_guidance(
                 trials.append({"scale": scale, "accepted": accepted,
                                "geometry_guard": geometry, "route_descent": descent,
                                "route_nonregression": route_safe,
+                               "route_guard": route_guard,
                                "maximum_actual_atom_step": float(actual_step),
                                "bounded_after_projection": bounded,
                                "fixed_atoms_preserved": fixed_preserved})

@@ -461,9 +461,9 @@ class RFD3InferenceEngine(BaseInferenceEngine):
             # Append to outputs
             if self.dump_trajectories:
                 X_denoised_L_traj_i = _reshape_trajectory(
-                    X_noisy_L_traj[idx], self.align_trajectory_structures
+                    X_denoised_L_traj[idx], self.align_trajectory_structures
                 )
-                X_noisy_L_traj_i = _reshape_trajectory(X_denoised_L_traj[idx], False)
+                X_noisy_L_traj_i = _reshape_trajectory(X_noisy_L_traj[idx], False)
                 denoised_trajectory_stack = (
                     build_stack_from_atom_array_and_batched_coords(
                         X_denoised_L_traj_i, pipeline_output["atom_array"]

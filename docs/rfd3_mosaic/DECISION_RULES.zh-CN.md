@@ -1792,6 +1792,13 @@ delta_token = M(p) * smoothed_negative_gradient_token / G
 5. 精确投影后实际最大原子位移不超过 `M(p)+1e-5 Å`。
 
 已违反的路线对允许在总平方和下降、最大值不恶化的前提下变化；不能以新碰撞换取路线改善。
+共享的 `scaffold_geometry_guard` 使用同一条路线规则保护 core、packing 和刚体候选，
+但允许 `E_route_after <= E_route_before + 1e-8 Å²`，因为这些候选还可能在优化其他目标。
+专门的路线修正器仍要求上述严格下降。两者都禁止已经合格的路线对重新越界，
+并要求最大违反量不增加超过 `1e-6 Å`。
+例如旧违反量 `[4,3,1] Å` 变成 `[4,2,2] Å`，平方和由 26 降到 24、最大值不变，
+且没有原本合格的点变坏，应允许继续检查其他条件；逐对要求 `[4,2,2]<=[4,3,1]`
+会错误地拒绝这种调整。原子/线段碰撞和链连续性的逐对检查不因此放宽。
 所有候选失败时保留原坐标。这些限制可能使实际移动远小于上限，甚至为零。
 `scaffold_core_guidance_diagnostics.route_steps` 记录初末残余、每个试步的条件与投影后实际位移。
 默认 `routing_tolerance=1e-3 Å` 是路线检查容差，不能和几何保护的 `1e-6 Å` 数值回退容差混用。
@@ -1840,3 +1847,45 @@ capture/expand/polish 阶段、阶段有效权重、接触先验随时间的缩�
 不能让 patch 使用退火后的目标，刚体更新却使用未退火的原始配置；
 也不能在同一次 line search 的不同候选间重新定义评价目标。
 这修复了控制器目标不一致，不能单凭此改动推断 packing 或骨架通过率已经提高。
+
+### 23.5 Ho-Yeung 原实现：借鉴依据与适用边界
+
+核查的是作者 RFdiffusion1 fork 提交
+[`a81ed1930941e95b3c3c5dbbc9e790bb5e80791b`](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/tree/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b)，
+不是把 Mosaic/RFD3 的复现实验当作作者原始模型。
+该版本的 LHD101 路径没有独立的防中心穿绕约束。值得借鉴的是锚点关联的初始化、
+链内接触引导和相邻生成主体驱动的 seed 移动；它们各自对穿绕率的贡献需要对照实验，
+不能由展示图片推断。
+
+作者 `get_init_xyz` 把生成残基放到序列上最近的固定残基锚点附近，再正向加噪。
+当前 Mosaic 的 `local_fixed_anchor` 已按同链左右固定锚点插值，单侧时取该侧锚点。
+两者都具备局部锚点初始化，但 RFdiffusion1 和 RFD3 的噪声过程不同，不能直接互换调度。
+
+作者 motif drag 的实际更新，设 a 是 14 个原子槽位之一：
+
+```text
+delta(seed,a) = alpha * ((c_generated_neighbor1,a + c_generated_neighbor2,a)/2
+                         - c_seed,a)
+alpha = (asy_motif_weight/T) * random_integer(5,...,15)*0.1
+        * (C_initial/C_current) * (N_generated_per_chain/N_total_per_chain)
+```
+
+`C_current` 在第一条聚合物链上统计固定残基行的 Cα 距离不超过 8 Å 的接触，
+包括自身和序列近邻；它不是原始跨链 interface 的保真度。
+源码对 `[residue,14,3]` 沿 residue 求均值，故得到 `[14,3]`，
+不同原子槽位可以有不同位移。这是启发式拖动，不是严格的整个 seed 刚体平移。
+Mosaic 保留“生成主体引导 seed”的思想，但依照编译后的端点邻接关系，
+使用完整刚体的受限 SE(3) 更新；locked 模式不移动 seed。
+不能为了复刻作者的形状而放松用户声明的固定原子或 interface 内部几何。
+
+作者示例的 `weight_inter=0.1` 同时搭配 `olig_inter_all=False`，且无自定义链间接触，
+因此实际非对角接触矩阵为零，不能将其解释为链间排斥。
+有效引导主要是链内接触，`guide_scale=2`、quadratic 调度即 `2*(t/T)^2`。
+作者还逐 design 重抽 pose 和 70–100 的链长；当前任务内共享 pose 的约定继续保留。
+作者 `xyz + dist` 将标量加到 xyz 三轴，名义 dist 也不能直接当作 Mosaic 的真实径向半径。
+Cn/Dn 编译连接图、多 seed、packing、精确对称和独立最终审计都不因借鉴而删减。
+
+源码依据：[局部初始化](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/blob/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b/rfdiffusion/kinematics.py#L283)、
+[motif drag](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/blob/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b/scripts/run_inference.py#L105)、
+[接触矩阵](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/blob/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b/rfdiffusion/potentials/manager.py#L6)、
+[官方示例](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/blob/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b/examples/design_interfaceseed_oligos.sh)。

@@ -1,16 +1,19 @@
 import math
 import unittest
+from unittest.mock import patch
 
 import torch
 
 from rfd3.inference.symmetry.generated_routes import (
     apply_generated_route_guidance,
     generated_route_deficits,
+    route_nonregression_check,
 )
 from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     build_scaffold_core_topology,
     scaffold_geometry_deficits,
+    scaffold_geometry_guard,
 )
 
 
@@ -27,6 +30,63 @@ def topology(chains, tokens=3, residue_indices=None):
 
 
 class GeneratedRouteTests(unittest.TestCase):
+    def test_route_guard_allows_improvement_that_trades_existing_violations(self):
+        before = torch.tensor([2., 4., 0.])
+        after = torch.tensor([3., 3., 0.])
+        check = route_nonregression_check(before, after)
+        self.assertTrue(check["passed"])
+        self.assertEqual(check["maximum_pairwise_increase_angstrom"], 1.)
+        self.assertLess(check["squared_excess_after_angstrom2"],
+                        check["squared_excess_before_angstrom2"])
+
+    def test_route_guard_rejects_new_violations_or_worse_sum_or_maximum(self):
+        cases = (
+            ([2., 4., 0.], [2., 3., .01], "satisfied_pairs_preserved"),
+            ([3., 4.], [1., 4.1], "maximum_nonregression"),
+            ([1., 4.], [3.5, 3.5], "squared_sum_nonregression"),
+        )
+        for before, after, failed_rule in cases:
+            with self.subTest(rule=failed_rule):
+                check = route_nonregression_check(torch.tensor(before), torch.tensor(after))
+                self.assertFalse(check["passed"])
+                self.assertFalse(check[failed_rule])
+
+    def test_route_guard_handles_empty_nonfinite_and_mismatched_residuals(self):
+        self.assertTrue(route_nonregression_check(torch.empty(0), torch.empty(0))["passed"])
+        cases = (
+            (torch.tensor([float("nan")]), torch.tensor([0.])),
+            (torch.tensor([0.]), torch.tensor([float("inf")])),
+            (torch.tensor([0., 1.]), torch.tensor([0.])),
+        )
+        for before, after in cases:
+            self.assertFalse(route_nonregression_check(before, after)["passed"])
+        for tolerance in (float("nan"), float("inf"), -1.):
+            with self.assertRaises(ValueError):
+                route_nonregression_check(torch.tensor([0.]), torch.tensor([0.]), tolerance=tolerance)
+
+    def test_shared_guard_allows_route_tradeoff_but_still_rejects_physical_regression(self):
+        topo, _ = topology(2)
+        x = torch.tensor([[[-3.8, 0., 0.], [0., 0., 0.], [3.8, 0., 0.],
+                           [-3.8, 12., 0.], [0., 12., 0.], [3.8, 12., 0.]]])
+        config = ScaffoldCoreGuidanceConfig(routing_ownership_weight=1.)
+        before, after = torch.tensor([2., 4., 0.]), torch.tensor([3., 3., 0.])
+        # Isolate the route acceptance rule while retaining actual physical
+        # geometry: the second candidate breaks a previously valid CA bond.
+        route_function = "rfd3.inference.symmetry.scaffold_core_guidance.route_deficits_from_config"
+        for break_bond in (False, True):
+            with self.subTest(break_bond=break_bond), patch(
+                route_function, side_effect=[before, after]
+            ):
+                guard = scaffold_geometry_guard(x, topo, config)
+                candidate = x.clone()
+                if break_bond:
+                    candidate[0, 1, 2] += 3.
+                report = guard(candidate)
+            checks = {item["rule"]: item for item in report["checks"]}
+            self.assertTrue(checks["route_ownership_regression"]["passed"])
+            self.assertEqual(report["accepted"], not break_bond)
+            self.assertEqual(checks["continuity_regression"]["passed"], not break_bond)
+
     def test_invalid_coordinates_and_multi_design_batches_fail_explicitly(self):
         topo, _ = topology(2)
         config = ScaffoldCoreGuidanceConfig(routing_ownership_weight=1.)

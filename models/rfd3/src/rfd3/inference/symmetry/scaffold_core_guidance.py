@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 import torch
 
-from .generated_routes import route_deficits_from_config
+from .generated_routes import route_deficits_from_config, route_nonregression_check
 
 
 @dataclass(frozen=True)
@@ -1276,11 +1276,13 @@ def scaffold_geometry_guard(
     topology: ScaffoldCoreTopology,
     config: ScaffoldCoreGuidanceConfig,
 ) -> Callable[[torch.Tensor], dict[str, Any]]:
-    """Guard each geometric constraint, not a mean that can hide a new clash.
+    """Guard physical geometry per pair and route ownership as one objective.
 
     This is a CA/segment regression guard for local corrections, not an
     all-atom or entanglement certificate. The final structure still needs
     independent validation. Fixed-fixed pairs are excluded from optimization.
+    Route ownership preserves satisfied pairs, squared sum and maximum;
+    already violated route pairs may trade within those bounds.
     """
 
 
@@ -1297,6 +1299,11 @@ def scaffold_geometry_guard(
             after = scaffold_geometry_deficits(candidate, topology, config)
             checks = []
             for name, original in before.items():
+                if name == "route_ownership":
+                    checks.append(route_nonregression_check(
+                        original, after[name], tolerance=config.routing_tolerance
+                    ))
+                    continue
                 increase = after[name] - original
                 finite = bool(
                     torch.isfinite(original).all() and torch.isfinite(after[name]).all()
