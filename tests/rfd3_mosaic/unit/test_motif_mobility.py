@@ -607,6 +607,27 @@ class MotifMobilityTestCase(unittest.TestCase):
         )
         self.assertEqual(patch_state.assignments, {})
         self.assertFalse(controller.last_joint_transaction_applied)
+        self.assertFalse(diagnostics["packing_step"]["applied"])
+        self.assertFalse(diagnostics["packing_step"]["patch_locked"])
+        self.assertEqual(diagnostics["packing_step"]["patch_assignments"], {})
+        self.assertTrue(diagnostics["packing_step"]["proposal_patch_state"]["patch_assignments"])
+
+    def test_joint_packing_rolls_back_a_geometry_guard_rejection(self):
+        (coordinates, _, controller, boundary, axis, scaffold_config,
+         interfaces, interface_config, features) = self._joint_packing_mobility_case()
+        state = GraphInterfacePatchState(assignments={})
+        target, result, diagnostics = controller.update_orbits_with_interface_packing(
+            coordinates, features, progress=.5, topology=boundary, axis=axis,
+            principal_axes=(axis.direction,), scaffold_config=scaffold_config,
+            interface_topology=interfaces, interface_config=interface_config,
+            patch_state=state, projector=lambda x: x, apply_update=True,
+            candidate_validator=lambda x: {"accepted": False, "reason": "test_collision"},
+        )
+        self.assertFalse(diagnostics["committed"])
+        self.assertIn("geometry_safe", diagnostics["failed_conditions"])
+        self.assertTrue(torch.equal(result, coordinates))
+        self.assertTrue(torch.equal(target, coordinates))
+        self.assertEqual(state.assignments, {})
 
     def test_joint_packing_mobility_rolls_back_on_proposal_error(self):
         (

@@ -19,10 +19,39 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     rf_contact_prior_schedule_scale,
     rf_oligomer_contact_prior,
     scheduled_interface_ca_distance,
+    resolve_graph_interface_patch_assignments,
 )
 
 
 class GraphInterfaceGuidanceTestCase(unittest.TestCase):
+    def test_patch_windows_do_not_cross_adjacent_global_chain_ids(self):
+        count = 30
+        features = {
+            "symmetry_id": "C3",
+            "sym_transform_id": torch.arange(3).repeat_interleave(10),
+            "atom_to_token_map": torch.arange(count),
+            "asym_id": torch.arange(6).repeat_interleave(5),
+            "residue_index": torch.arange(5).repeat(6),
+            "is_ca": torch.ones(count, dtype=torch.bool),
+            "is_virtual": torch.zeros(count, dtype=torch.bool),
+            "token_bonds": torch.zeros((count, count), dtype=torch.bool),
+        }
+        fixed = torch.zeros(count, dtype=torch.bool)
+        fixed[1::5] = True  # Leaves consecutive generated IDs across chain ends.
+        topology = build_symmetric_scaffold_interface_topology(features, fixed)
+        xyz = torch.randn((1, count, 3), generator=torch.Generator().manual_seed(73)) * 10
+        config = GraphInterfaceGuidanceConfig()
+        assignments = resolve_graph_interface_patch_assignments(xyz, topology, config)
+        for assignment in assignments.values():
+            for ids in (assignment.left_token_ids, assignment.right_token_ids):
+                self.assertEqual(len(torch.unique(features["asym_id"][list(ids)])), 1)
+                positions = features["residue_index"][list(ids)]
+                self.assertTrue(torch.all(positions[1:] == positions[:-1] + 1))
+        output, _ = apply_graph_interface_guidance(
+            xyz, features, topology, progress=.5, config=config
+        )
+        self.assertTrue(torch.equal(output[:, fixed], xyz[:, fixed]))
+
     @staticmethod
     def _three_by_three_topology() -> GraphInterfaceTopology:
         left = torch.tensor([True, True, True, False, False, False])

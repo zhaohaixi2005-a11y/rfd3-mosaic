@@ -35,6 +35,7 @@ from rfd3.inference.symmetry.local_neighbourhood import (
 from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
 )
+from rfd3.inference.symmetry.geometry_restoration import restore_generated_geometry
 from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
@@ -2157,6 +2158,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 ),
                                 additional_state_energy=core_state_energy,
                                 proposal_selection_seed=int(torch.initial_seed()),
+                                candidate_validator=(
+                                    scaffold_geometry_guard(
+                                        proposal_coordinates,
+                                        scaffold_core_topology,
+                                        scaffold_core_guidance_config
+                                        or self._scaffold_core_guidance_config(),
+                                    ) if scaffold_core_topology is not None else None
+                                ),
                             )
                             packing_step = dict(joint_diagnostics["packing_step"])
                             packing_step.update(
@@ -2212,6 +2221,15 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         # intra guidance cannot alter established jobs.
                         if core_pose_energy is not None:
                             scaffold_update_arguments["pose_energy"] = core_pose_energy
+                        if scaffold_core_topology is not None:
+                            scaffold_update_arguments["candidate_validator"] = (
+                                scaffold_geometry_guard(
+                                    proposal_coordinates,
+                                    scaffold_core_topology,
+                                    scaffold_core_guidance_config
+                                    or self._scaffold_core_guidance_config(),
+                                )
+                            )
                         target = motif_mobility_controller.update_orbits_from_scaffold(
                             proposal_coordinates,
                             **scaffold_update_arguments,
@@ -2583,6 +2601,30 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             X_noisy_L_traj.append(X_noisy_L_scaled)
             X_denoised_L_traj.append(X_denoised_L)
             t_hats.append(t_hat)
+
+        final_geometry_restoration = None
+        # Repair the actual final state before packing polish. Diffusion can
+        # reintroduce violations after a locally guarded guidance step.
+        if polymer_continuity_active and scaffold_core_topology is not None:
+            def geometry_projector(candidate):
+                if constraint_runtime is not None:
+                    return constraint_runtime.project_post_guidance(
+                        candidate, step_num=max(len(noise_schedule) - 2, 0)
+                    )
+                return self._project_stepwise_updated_coordinates(
+                    candidate, f, is_motif_atom_with_fixed_coord, fixed_target
+                )
+
+            X_L, final_geometry_restoration = restore_generated_geometry(
+                X_L, scaffold_core_topology,
+                replace(
+                    scaffold_core_guidance_config or self._scaffold_core_guidance_config(),
+                    backbone_distance=float(self.generated_polymer_continuity_target_ca_distance),
+                    backbone_tolerance=float(self.generated_polymer_continuity_tolerance),
+                ),
+                projector=geometry_projector,
+                iterations=int(self.generated_polymer_continuity_iterations),
+            )
 
         final_graph_interface_energy = None
         final_graph_interface_quality_satisfied = None
@@ -2986,6 +3028,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     self.generated_polymer_continuity_iterations
                 ),
                 "steps": polymer_continuity_diagnostics,
+                "geometry_restoration": final_geometry_restoration,
                 "all_steps_within_tolerance": all(
                     bool(step["within_tolerance"])
                     for step in polymer_continuity_diagnostics

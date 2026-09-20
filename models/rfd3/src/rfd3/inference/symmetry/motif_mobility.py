@@ -1029,6 +1029,7 @@ class OrbitRigidMotifController:
         pose_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
         proposal_response_scale: float | None = None,
         proposal_selection_seed: int | None = None,
+        candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
     ) -> torch.Tensor:
         """Jointly propose and atomically apply scaffold-driven orbit poses.
 
@@ -1390,10 +1391,23 @@ class OrbitRigidMotifController:
                         )
                     return energy
 
+                def validate_pose(rotation, translation, *, active_motif=motif):
+                    master = self._master_coordinates_for_pose(
+                        active_motif, rotation, translation,
+                    )
+                    target = insert_master_orbit(
+                        baseline_target, master, active_motif.group_atom_indices,
+                        active_motif.group_transform_ids, self.sym_transforms,
+                    )
+                    return candidate_validator(self._insert_mobile_target(
+                        scaffold, target[None, ...],
+                    ))
+
                 proposal = propose_bounded_se3_step(
                     current_rotation,
                     current_translation,
                     energy_function,
+                    candidate_validator=(validate_pose if candidate_validator is not None else None),
                     maximum_step_translation=(
                         maximum_step_translation
                         if motif.mobility_subspace == "tilt_only"
@@ -1574,6 +1588,12 @@ class OrbitRigidMotifController:
                 any_candidate
                 and float(proposed_total.item()) < float(initial_total.item()) - 1e-12
             )
+            if candidate_validator is not None:
+                geometry = candidate_validator(self._insert_mobile_target(
+                    scaffold, candidate_target[None, ...]
+                ))
+                extra["geometry_guard"] = geometry
+                joint_accepted = joint_accepted and bool(geometry["accepted"])
             extra.update(
                 {
                     "accepted": joint_accepted,
@@ -1652,6 +1672,7 @@ class OrbitRigidMotifController:
         polish_response_scale: float = 1.0,
         additional_state_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
         proposal_selection_seed: int | None = None,
+        candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         """Propose motif poses and generated packing as one transaction.
 
@@ -1745,11 +1766,19 @@ class OrbitRigidMotifController:
                 config=interface_config,
                 projector=projector,
                 patch_state=patch_state,
+                candidate_validator=candidate_validator,
             )
         except Exception:
             rollback_mutable_state()
             raise
         adaptive_phase = str(packing_step.get("adaptive_phase", "polish"))
+        # Before/after must score the SAME discrete patch. An unlocked patch
+        # can be reselected at this step; yesterday's assignment is not a
+        # valid baseline for today's objective.
+        baseline_graph = graph_interface_energy(
+            baseline_coordinates, interface_topology, interface_config,
+            patch_assignments=patch_state.assignments,
+        )
         if adaptive_phase not in phase_response_scales:
             rollback_mutable_state()
             raise ValueError(f"Unknown joint packing adaptive phase {adaptive_phase!r}")
@@ -1784,6 +1813,7 @@ class OrbitRigidMotifController:
                 pose_energy=packing_aware_pose_energy,
                 proposal_response_scale=proposal_response_scale,
                 proposal_selection_seed=proposal_selection_seed,
+                candidate_validator=candidate_validator,
             )
         except Exception:
             rollback_mutable_state()
@@ -1885,6 +1915,15 @@ class OrbitRigidMotifController:
             and global_safe
             and junction_safe
         )
+        try:
+            geometry = (
+                candidate_validator(candidate_coordinates)
+                if candidate_validator is not None else {"accepted": True}
+            )
+        except Exception:
+            rollback_mutable_state()
+            raise
+        accepted = accepted and bool(geometry["accepted"])
         committed = bool(accepted and apply_update)
 
         diagnostics = {
@@ -1901,6 +1940,7 @@ class OrbitRigidMotifController:
             "packing_improved": packing_improved,
             "packing_contract_safe": packing_contract_safe,
             "packing_decision": packing_decision,
+            "geometry_guard": geometry,
             "failed_conditions": [
                 name for name, passed in (
                     ("transaction_has_change", transaction_has_change),
@@ -1910,6 +1950,7 @@ class OrbitRigidMotifController:
                     ("edge_safe", edge_safe),
                     ("global_safe", global_safe),
                     ("junction_safe", junction_safe),
+                    ("geometry_safe", bool(geometry["accepted"])),
                 ) if not passed
             ],
             "minimum_combined_decrease": 1e-10,
@@ -1938,6 +1979,22 @@ class OrbitRigidMotifController:
             self.last_joint_transaction_applied = True
             target = candidate_target
             coordinates = candidate_coordinates
+
+        # Keep attempted state as evidence, but publish only COMMITTED state
+        # in the trajectory consumed by the identity audit. A rolled-back
+        # tentative lock is not a lock/unlock event in the sampler.
+        packing_step["proposal_patch_state"] = {
+            key: packing_step.get(key)
+            for key in ("patch_locked", "patch_lock_reason", "patch_assignments")
+        }
+        packing_step["patch_locked"] = patch_state.locked
+        packing_step["patch_lock_reason"] = patch_state.lock_reason
+        packing_step["patch_assignments"] = {
+            edge_id: {"left_token_ids": list(assignment.left_token_ids),
+                      "right_token_ids": list(assignment.right_token_ids)}
+            for edge_id, assignment in sorted(patch_state.assignments.items())
+        }
+        packing_step["applied"] = bool(committed and packing_step.get("applied"))
 
         if self._diagnostic_trajectory:
             self._diagnostic_trajectory[-1].update(

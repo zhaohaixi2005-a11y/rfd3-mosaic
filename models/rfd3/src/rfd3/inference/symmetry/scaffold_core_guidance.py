@@ -1226,6 +1226,68 @@ def scaffold_core_window(progress: float, config: ScaffoldCoreGuidanceConfig) ->
     return float(min(1.0, 4.0 * local, 4.0 * (1.0 - local)))
 
 
+def scaffold_geometry_deficits(
+    value: torch.Tensor,
+    topology: ScaffoldCoreTopology,
+    config: ScaffoldCoreGuidanceConfig,
+    *,
+    segment_distance: float | None = None,
+) -> dict[str, torch.Tensor]:
+    """Per-constraint CA/segment/bond violations in Angstroms."""
+    ca, segments = [], []
+    for xyz in value:
+        for index, left in enumerate(topology.chains):
+            for right in topology.chains[index:]:
+                relevant = (
+                    left.generated_ca_mask[:, None]
+                    | right.generated_ca_mask[None, :]
+                )
+                if left is right:
+                    gap = torch.abs(
+                        left.residue_indices[:, None]
+                        - right.residue_indices[None, :]
+                    )
+                    relevant = (
+                        relevant
+                        & (gap > 1)
+                        & torch.triu(torch.ones_like(relevant), diagonal=1)
+                    )
+                distances = torch.cdist(
+                    xyz[left.ca_atom_indices], xyz[right.ca_atom_indices]
+                )
+                ca.append(torch.relu(config.clash_distance - distances[relevant]))
+                if left is right:
+                    continue
+                a, b = left.ca_segment_atom_pairs, right.ca_segment_atom_pairs
+                if len(a) and len(b):
+                    relevant_segments = (
+                        left.generated_segment_mask[:, None]
+                        | right.generated_segment_mask[None, :]
+                    )
+                    distances = _segment_to_segment_distances(
+                        xyz[a[:, 0]], xyz[a[:, 1]], xyz[b[:, 0]], xyz[b[:, 1]]
+                    )
+                    segments.append(
+                        torch.relu(
+                            (config.clash_distance if segment_distance is None else segment_distance)
+                            - distances[relevant_segments]
+                        )
+                    )
+    pairs = topology.adjacent_ca_atom_pairs
+    bond_lengths = torch.linalg.vector_norm(
+        value[:, pairs[:, 1]] - value[:, pairs[:, 0]], dim=-1
+    )
+    empty = value.new_empty(0)
+    return {
+        "ca_overlap": torch.cat(ca) if ca else empty,
+        "cross_chain_segment_overlap": torch.cat(segments) if segments else empty,
+        "continuity": torch.relu(
+            torch.abs(bond_lengths - config.backbone_distance)
+            - config.backbone_tolerance
+        ).flatten(),
+    }
+
+
 def scaffold_geometry_guard(
     coordinates: torch.Tensor,
     topology: ScaffoldCoreTopology,
@@ -1238,61 +1300,9 @@ def scaffold_geometry_guard(
     independent validation. Fixed-fixed pairs are excluded from optimization.
     """
 
-    def deficits(value: torch.Tensor) -> dict[str, torch.Tensor]:
-        ca, segments = [], []
-        for xyz in value:
-            for index, left in enumerate(topology.chains):
-                for right in topology.chains[index:]:
-                    relevant = (
-                        left.generated_ca_mask[:, None]
-                        | right.generated_ca_mask[None, :]
-                    )
-                    if left is right:
-                        gap = torch.abs(
-                            left.residue_indices[:, None]
-                            - right.residue_indices[None, :]
-                        )
-                        relevant = (
-                            relevant
-                            & (gap > 1)
-                            & torch.triu(torch.ones_like(relevant), diagonal=1)
-                        )
-                    distances = torch.cdist(
-                        xyz[left.ca_atom_indices], xyz[right.ca_atom_indices]
-                    )
-                    ca.append(torch.relu(config.clash_distance - distances[relevant]))
-                    if left is right:
-                        continue
-                    a, b = left.ca_segment_atom_pairs, right.ca_segment_atom_pairs
-                    if len(a) and len(b):
-                        relevant_segments = (
-                            left.generated_segment_mask[:, None]
-                            | right.generated_segment_mask[None, :]
-                        )
-                        distances = _segment_to_segment_distances(
-                            xyz[a[:, 0]], xyz[a[:, 1]], xyz[b[:, 0]], xyz[b[:, 1]]
-                        )
-                        segments.append(
-                            torch.relu(
-                                config.clash_distance - distances[relevant_segments]
-                            )
-                        )
-        pairs = topology.adjacent_ca_atom_pairs
-        bond_lengths = torch.linalg.vector_norm(
-            value[:, pairs[:, 1]] - value[:, pairs[:, 0]], dim=-1
-        )
-        empty = value.new_empty(0)
-        return {
-            "ca_overlap": torch.cat(ca) if ca else empty,
-            "cross_chain_segment_overlap": torch.cat(segments) if segments else empty,
-            "continuity": torch.relu(
-                torch.abs(bond_lengths - config.backbone_distance)
-                - config.backbone_tolerance
-            ).flatten(),
-        }
 
     with torch.no_grad():
-        before = deficits(coordinates.detach())
+        before = scaffold_geometry_deficits(coordinates.detach(), topology, config)
 
     def validate(candidate: torch.Tensor) -> dict[str, Any]:
         with torch.no_grad():
@@ -1301,7 +1311,7 @@ def scaffold_geometry_guard(
                 or not torch.isfinite(candidate).all()
             ):
                 return {"accepted": False, "reason": "invalid_coordinates"}
-            after = deficits(candidate)
+            after = scaffold_geometry_deficits(candidate, topology, config)
             checks = []
             for name, original in before.items():
                 increase = after[name] - original

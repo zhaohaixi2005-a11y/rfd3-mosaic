@@ -203,6 +203,16 @@ class GraphInterfaceEdge:
     contact_cutoff: float
     distance_target: float | None
     distance_tolerance: float | None
+    left_sequence_ids: torch.Tensor | None = None
+    right_sequence_ids: torch.Tensor | None = None
+
+    @property
+    def left_contiguity_ids(self) -> torch.Tensor:
+        return self.left_generated_token_ids if self.left_sequence_ids is None else self.left_sequence_ids
+
+    @property
+    def right_contiguity_ids(self) -> torch.Tensor:
+        return self.right_generated_token_ids if self.right_sequence_ids is None else self.right_sequence_ids
 
 
 @dataclass(frozen=True)
@@ -467,6 +477,24 @@ def build_graph_interface_topology(
         device=device,
     )
     generated = ~fixed & ~is_virtual
+    # Token IDs are identities, not polymer adjacency: consecutive global
+    # IDs can straddle a chain break or a missing residue. Encode an explicit
+    # gap there for every sequence-window and backbone calculation.
+    residue_index = torch.as_tensor(
+        features.get("residue_index", torch.arange(asym_id.numel(), device=device)),
+        dtype=torch.long, device=device,
+    )
+
+    def sequence_ids(mask: torch.Tensor) -> torch.Tensor:
+        tokens = atom_to_token[mask]
+        if tokens.numel() == 0:
+            return tokens.clone()
+        adjacent = (
+            (tokens[1:] == tokens[:-1] + 1)
+            & (asym_id[tokens[1:]] == asym_id[tokens[:-1]])
+            & (residue_index[tokens[1:]] == residue_index[tokens[:-1]] + 1)
+        )
+        return torch.cat((tokens.new_zeros(1), (2 - adjacent.long()).cumsum(0)))
     edges = []
     used_generated = torch.zeros_like(fixed)
     for index in range(edge_count):
@@ -509,6 +537,8 @@ def build_graph_interface_topology(
                 right_generated_ca_mask=right_generated,
                 left_generated_token_ids=atom_to_token[left_generated],
                 right_generated_token_ids=atom_to_token[right_generated],
+                left_sequence_ids=sequence_ids(left_generated),
+                right_sequence_ids=sequence_ids(right_generated),
                 requested_contact_count=max(int(minima[index].item()), 0),
                 requested_residues_per_side=max(
                     int(coverage_minima[index].item()), 0
@@ -1267,10 +1297,10 @@ def graph_interface_capacity_preflight(
             )
         )
         left_contiguous = _maximum_contiguous_available(
-            edge.left_generated_token_ids
+            edge.left_contiguity_ids
         )
         right_contiguous = _maximum_contiguous_available(
-            edge.right_generated_token_ids
+            edge.right_contiguity_ids
         )
         requested_contiguous = (
             edge.requested_contiguous_residues_per_side
@@ -1445,8 +1475,8 @@ def _resolve_edge_patch(
     )
     automatic_continuity = min(
         automatic_continuity,
-        _maximum_contiguous_available(edge.left_generated_token_ids),
-        _maximum_contiguous_available(edge.right_generated_token_ids),
+        _maximum_contiguous_available(edge.left_contiguity_ids),
+        _maximum_contiguous_available(edge.right_contiguity_ids),
     )
     if edge.requested_residues_per_side > min(
         left_available,
@@ -1498,8 +1528,8 @@ def _resolve_edge_patch(
         if assignment is not None
         else _best_paired_contiguous_patch(
             distance_matrix,
-            edge.left_generated_token_ids,
-            edge.right_generated_token_ids,
+            edge.left_contiguity_ids,
+            edge.right_contiguity_ids,
             target_distance=target_ca_distance,
             left_window_count=max(left_count, continuity_target, 1),
             right_window_count=max(right_count, continuity_target, 1),
@@ -2005,13 +2035,13 @@ def graph_interface_energy(
                 * (
                     _backbone_geometry_loss(
                         left_points,
-                        edge.left_generated_token_ids,
+                        edge.left_contiguity_ids,
                         target_distance=config.backbone_ca_distance,
                         tolerance=config.backbone_ca_tolerance,
                     )
                     + _backbone_geometry_loss(
                         right_points,
-                        edge.right_generated_token_ids,
+                        edge.right_contiguity_ids,
                         target_distance=config.backbone_ca_distance,
                         tolerance=config.backbone_ca_tolerance,
                     )

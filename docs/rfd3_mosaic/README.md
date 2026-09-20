@@ -19,6 +19,8 @@ RFD3-Mosaic.
 - [Capability boundary](../../DEVELOPMENT_STATUS.md)
 - [Native RFdiffusion3 capability mapping](RFD3_NATIVE_CAPABILITIES.md)
 - [Packing-guidance semantics](PACKING_GUIDANCE.md)
+- [Decision rules, formulas and thresholds (中文)](DECISION_RULES.zh-CN.md)
+- [Source coverage relative to upstream (中文)](DECISION_RULES_CODE_INDEX.zh-CN.md)
 - [Rigid-mobility mathematical contract](RIGID_MOBILITY_MATHEMATICAL_CONTRACT.md)
 - [Structure-metric provenance](STRUCTURE_METRIC_PROVENANCE.md)
 - [Evidence for backbone-evaluation formulas](BACKBONE_EVALUATION_EVIDENCE.md)

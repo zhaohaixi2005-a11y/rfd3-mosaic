@@ -999,6 +999,9 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
         self.assertEqual(diagnostics["trajectory_projection_steps"], 0)
         self.assertEqual(len(diagnostics["steps"]), 1)
         self.assertEqual(diagnostics["steps"][0]["phase"], "final_only")
+        self.assertEqual(
+            diagnostics["geometry_restoration"]["phase"], "final_geometry_restoration"
+        )
 
     def test_scaffold_source_honors_interval_and_refreshes_only_on_apply(
         self,

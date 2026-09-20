@@ -526,6 +526,24 @@ class ScaffoldOrbitEnergyTestCase(unittest.TestCase):
 
 
 class BoundedSE3ProposalTestCase(unittest.TestCase):
+    def test_unsafe_full_step_backtracks_to_safe_improving_pose(self):
+        proposal = propose_bounded_se3_step(
+            torch.eye(3, dtype=torch.float64),
+            torch.zeros(3, dtype=torch.float64),
+            lambda rotation, translation: (translation[0] - 2).square(),
+            maximum_step_translation=1.0,
+            maximum_step_rotation_degrees=1.0,
+            maximum_total_translation=10.0,
+            maximum_total_rotation_degrees=10.0,
+            candidate_validator=lambda rotation, translation: {
+                "accepted": float(translation[0]) <= 0.6,
+            },
+        )
+        self.assertTrue(proposal.accepted)
+        self.assertAlmostEqual(float(proposal.translation[0]), 0.5)
+        self.assertFalse(proposal.line_search_trials[0]["geometry_guard"]["accepted"])
+        self.assertTrue(proposal.line_search_trials[1]["geometry_guard"]["accepted"])
+
     def test_seeded_capture_samples_reproducibly_from_near_optimal_pool(self) -> None:
         identity = torch.eye(3, dtype=torch.float64)
 

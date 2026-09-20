@@ -950,6 +950,7 @@ def propose_bounded_se3_step(
     deterministic_multistart: bool = False,
     selection_seed: int | None = None,
     minimum_best_gain_fraction: float = 0.75,
+    candidate_validator: Callable[[torch.Tensor, torch.Tensor], dict[str, Any]] | None = None,
 ) -> SE3Proposal:
     """Take one bounded SE(3) proposal with a deterministic line search.
 
@@ -1207,6 +1208,11 @@ def propose_bounded_se3_step(
                 and candidate_value is not None
                 and candidate_value < float(initial_detached.item())
             )
+            geometry = (
+                candidate_validator(candidate_rotation, candidate_translation)
+                if finite and candidate_validator is not None
+                else {"accepted": finite}
+            )
             trial_index = len(line_search_trials)
             line_search_trials.append(
                 {
@@ -1217,9 +1223,10 @@ def propose_bounded_se3_step(
                     "finite": finite,
                     "improves": improves,
                     "selected": False,
+                    "geometry_guard": geometry,
                 }
             )
-            if not finite:
+            if not finite or not geometry["accepted"]:
                 continue
             if improves:
                 candidate = (
