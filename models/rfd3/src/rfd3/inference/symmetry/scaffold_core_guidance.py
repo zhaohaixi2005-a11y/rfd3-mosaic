@@ -17,12 +17,12 @@ An expert may independently request a soft *excess* penalty through
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import torch
 
-from .generated_routes import route_deficits_from_config, route_nonregression_check
+from .generated_routes import route_deficits_from_config, route_nonregression_check, route_tolerance
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class ScaffoldCoreTopology:
     adjacent_ca_atom_pairs: torch.Tensor
     adjacent_pair_colors: torch.Tensor
     directed_continuity_groups: tuple[torch.Tensor, ...]
+    scaffold_contract: Any = None
 
 
 @dataclass(frozen=True)
@@ -605,7 +606,7 @@ def build_scaffold_core_topology(
         raise ValueError("Scaffold core guidance found no protein CA chains")
     if not any(torch.any(chain.generated_ca_mask) for chain in chains):
         raise ValueError("Scaffold core guidance found no generated protein tokens")
-    return ScaffoldCoreTopology(
+    topology = ScaffoldCoreTopology(
         chains=tuple(chains),
         generated_runs=tuple(generated_runs),
         atom_to_token=atom_to_token,
@@ -644,6 +645,9 @@ def build_scaffold_core_topology(
             )
         ),
     )
+    from .reference_scaffold import bind_reference_scaffold
+
+    return replace(topology, scaffold_contract=bind_reference_scaffold(f, topology))
 
 
 def project_generated_polymer_continuity(
@@ -1301,7 +1305,7 @@ def scaffold_geometry_guard(
             for name, original in before.items():
                 if name == "route_ownership":
                     checks.append(route_nonregression_check(
-                        original, after[name], tolerance=config.routing_tolerance
+                        original, after[name], tolerance=route_tolerance(topology, config)
                     ))
                     continue
                 increase = after[name] - original

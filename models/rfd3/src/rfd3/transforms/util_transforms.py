@@ -35,9 +35,9 @@ af3_sequence_encoding = AF3SequenceEncoding()
 
 def assert_single_representative(token, central_atom="CB"):
     mask = get_af3_token_representative_masks(token, central_atom=central_atom)
-    assert (
-        np.sum(mask) == 1
-    ), f"No representative atom (CB) found. mask: {mask}\nToken: {token}"
+    assert np.sum(mask) == 1, (
+        f"No representative atom (CB) found. mask: {mask}\nToken: {token}"
+    )
 
 
 def assert_single_token(token):
@@ -213,6 +213,124 @@ class AggregateFeaturesLikeAF3WithoutMSA(Transform):
             data["feats"]["partial_t"] = torch.from_numpy(
                 atom_array.get_annotation("partial_t")
             )
+
+        # Preserve the complete-scaffold contract as inference metadata. The
+        # binding is made AFTER atom processing, using real protein CA identity;
+        # a reordering/drop cannot silently change the template correspondence.
+        contract = (data.get("specification", {}).get("extra") or {}).get(
+            "mosaic_scaffold_contract"
+        )
+        if contract is not None:
+            from rfd3_mosaic.validation.scaffold_contract import (
+                validate_scaffold_contract,
+            )
+
+            contract = validate_scaffold_contract(contract)
+            ca = (np.asarray(atom_array.atom_name) == "CA") & np.asarray(
+                atom_array.is_protein, dtype=bool
+            )
+            indices = np.flatnonzero(ca)
+            observed = list(
+                zip(
+                    np.asarray(atom_array.chain_id)[ca].tolist(),
+                    np.asarray(atom_array.res_id)[ca].tolist(),
+                )
+            )
+            expected = [
+                (r["chain_id"], r["residue_number"]) for r in contract["residues"]
+            ]
+            fixed = np.asarray(atom_array.is_motif_atom_with_fixed_coord, dtype=bool)[
+                ca
+            ]
+            if observed != expected or fixed.tolist() != [
+                r["fixed"] for r in contract["residues"]
+            ]:
+                raise ValueError(
+                    "Scaffold contract protein CA identity/fixed-mask mapping changed during transforms"
+                )
+            data["feats"]["mosaic_scaffold_contract"] = contract
+            data["feats"]["mosaic_scaffold_ca_atom_indices"] = torch.from_numpy(indices)
+            if contract["schema_version"] == 2:
+                from rfd3_mosaic.validation.generated_backbone import BACKBONE_ATOMS
+
+                lookup = {}
+                for index, (chain, residue, atom) in enumerate(
+                    zip(
+                        atom_array.chain_id,
+                        atom_array.res_id,
+                        atom_array.atom_name,
+                        strict=True,
+                    )
+                ):
+                    if atom not in BACKBONE_ATOMS:
+                        continue
+                    key = (str(chain), int(residue), str(atom))
+                    if key in lookup:
+                        raise ValueError(f"Duplicate scaffold backbone identity {key}")
+                    lookup[key] = index
+                try:
+                    backbone_indices = np.asarray(
+                        [
+                            [
+                                lookup[(r["chain_id"], r["residue_number"], atom)]
+                                for atom in BACKBONE_ATOMS
+                            ]
+                            for r in contract["residues"]
+                        ],
+                        dtype=np.int64,
+                    )
+                except KeyError as error:
+                    raise ValueError(
+                        f"Missing scaffold backbone atom after transforms: {error}"
+                    ) from error
+                expected_fixed = np.asarray([r["fixed"] for r in contract["residues"]])[
+                    :, None
+                ]
+                actual_fixed = np.asarray(
+                    atom_array.is_motif_atom_with_fixed_coord, dtype=bool
+                )[backbone_indices]
+                reference = np.asarray(
+                    [r["reference_backbone"] for r in contract["residues"]]
+                )
+                observed = np.asarray(atom_array.coord_to_be_noised)[backbone_indices]
+                if (
+                    not np.all(actual_fixed == expected_fixed)
+                    or not np.isfinite(observed).all()
+                    or np.any(
+                        np.linalg.norm(observed - reference, axis=-1)
+                        > contract["limits"]["geometry_tolerance"]
+                    )
+                ):
+                    raise ValueError(
+                        "Complete scaffold N/CA/C/O coordinates or fixed mask changed during transforms"
+                    )
+                data["feats"]["mosaic_scaffold_backbone_atom_indices"] = (
+                    torch.from_numpy(backbone_indices)
+                )
+                transport = (data.get("specification", {}).get("extra") or {}).get(
+                    "mosaic_reference_transport"
+                )
+                if transport is not None:
+                    import copy
+
+                    # Preserve immutable compiler metadata; the mobility
+                    # runtime validates/owns transported reference state.
+                    data["feats"]["mosaic_reference_transport"] = copy.deepcopy(
+                        transport
+                    )
+                    atom_lookup = {(str(c), int(r), str(a)): i for i, (c, r, a) in enumerate(zip(
+                        atom_array.chain_id, atom_array.res_id, atom_array.atom_name, strict=True))}
+                    try:
+                        transport_indices = np.asarray([atom_lookup[(r["chain_id"], r["residue_number"], r["atom_name"])]
+                                                        for r in transport["fixed_atoms"]], dtype=np.int64)
+                    except KeyError as error:
+                        raise ValueError("Reference transport fixed atom identity is missing after transforms") from error
+                    selected_fixed = np.flatnonzero(np.asarray(atom_array.is_motif_atom_with_fixed_coord, dtype=bool))
+                    if not np.array_equal(np.sort(transport_indices), selected_fixed) or np.any(
+                        np.linalg.norm(atom_array.coord[transport_indices]-np.asarray([r["coordinate"] for r in transport["fixed_atoms"]]), axis=-1)
+                        > contract["limits"]["fixed_ca_tolerance"]):
+                        raise ValueError("Reference transport fixed atom binding changed during transforms")
+                    data["feats"]["mosaic_transport_fixed_atom_indices"] = torch.from_numpy(transport_indices)
 
         return data
 

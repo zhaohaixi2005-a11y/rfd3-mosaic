@@ -35,6 +35,17 @@ class CapabilityRecord(StrictModel):
 
 CAPABILITIES: tuple[CapabilityRecord, ...] = (
     CapabilityRecord(
+        id="complete_scaffold_partial_diffusion",
+        title="Complete-scaffold pose preparation and partial-diffusion handoff",
+        maturity=CapabilityMaturity.CPU_VALIDATED,
+        public_interface=True,
+        summary=("Construct bounded generated runs from an explicit backbone prior, fit whole joint seeds, "
+                 "and bind a full Cn/Dn task to checked backbone, helix-support and separation limits, with transactional rigid seed/reference mobility. "
+                 "No generation yield or folding success claim."),
+        evidence=("CPU closure, full-group frame, artifact and runtime contract regression tests",),
+        dependencies=("public_fixed_xyz",),
+    ),
+    CapabilityRecord(
         id="c3_fixed_xyz_central",
         title="C3 exact fixed central motif",
         maturity=CapabilityMaturity.STABLE,
@@ -562,6 +573,8 @@ def required_capabilities_for_design(
         require("graph_interface_guidance")
         if task_optimizes_fixed_components:
             require("joint_packing_mobility")
+    if design.sampling.scaffold_artifact is not None:
+        require("complete_scaffold_partial_diffusion")
     if design.sampling.scaffold_packing == "symmetric_generated":
         require("graph_interface_guidance")
         if design.task == UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY:

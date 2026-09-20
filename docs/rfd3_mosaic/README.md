@@ -12,6 +12,8 @@ RFD3-Mosaic.
    design patterns.
 4. Consult the [command-line reference](USER_CLI.md) for complete command and
    configuration details.
+5. For a supplied complete backbone prior, use the experimental
+   [complete-scaffold preparation guide (中文)](COMPLETE_SCAFFOLD.zh-CN.md).
 
 ## Scientific scope
 
@@ -34,3 +36,5 @@ profiles, not restrictions imposed by Mosaic.
 Chronological plans, root-cause analyses and site-specific validation records
 are maintained outside the public documentation tree. They are not part of
 the user manual.
+
+完整流程检查与本轮证据：[WORKFLOW_AUDIT.zh-CN.md](WORKFLOW_AUDIT.zh-CN.md)。

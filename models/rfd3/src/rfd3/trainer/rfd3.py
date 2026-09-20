@@ -36,6 +36,7 @@ _SAMPLER_DIAGNOSTIC_KEYS = (
     "scaffold_core_guidance_diagnostics",
     "generated_polymer_continuity_diagnostics",
     "constraint_runtime_diagnostics",
+    "scaffold_contract_diagnostics",
 )
 
 

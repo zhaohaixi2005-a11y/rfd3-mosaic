@@ -34,6 +34,19 @@ Use `--format json` with either command for machine-readable output.
 
 ## Core lifecycle
 
+For reference-conditioned scaffold preparation:
+
+```bash
+rfd3-mosaic prepare-scaffold design.yaml --blueprint scaffold.yaml --output-dir prepared-task
+rfd3-mosaic validate prepared-task/design.yaml
+rfd3-mosaic run prepared-task/design.yaml
+```
+
+The first command uses CPU geometry only. Its blueprint, exact scope, output
+files and unresolved-result semantics are documented in the
+[complete-scaffold guide](COMPLETE_SCAFFOLD.zh-CN.md). It is distinct from
+`prepare-poses`, which selects seed poses without constructing a full backbone.
+
 Every design follows the same lifecycle:
 
 ```text

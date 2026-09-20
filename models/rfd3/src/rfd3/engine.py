@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from os import PathLike
@@ -39,6 +40,49 @@ from rfd3.utils.io import (
 
 logging.basicConfig(level=logging.INFO)
 ranked_logger = RankedLogger(__name__, rank_zero_only=True)
+
+
+def _mosaic_atomic_json(path: Path, payload: dict) -> None:
+    """Publish a complete ledger snapshot, including after an interrupted design."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=path.parent, suffix=".tmp", delete=False
+    ) as handle:
+        temporary = Path(handle.name)
+        try:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _mosaic_fatal_error(error: BaseException) -> bool:
+    # CUDA errors can poison the process/context. Never retry OOM or I/O failures
+    # as though they were sample-specific geometric failures.
+    if (
+        isinstance(error, (MemoryError, OSError, KeyboardInterrupt, SystemExit))
+        or type(error).__name__ == "OutOfMemoryError"
+    ):
+        return True
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "out of memory",
+            "device-side assert",
+            "illegal memory access",
+            "cuda error",
+            "cudnn_status",
+            "cublas_status",
+            "nccl error",
+        )
+    )
 
 
 def _requires_true_precision(inference_sampler: dict | None) -> bool:
@@ -99,11 +143,7 @@ def _restore_inference_geometry_precision(
         value = source.get(key)
         if isinstance(value, torch.Tensor) and value.is_floating_point():
             target = pipeline_output.get(key)
-            device = (
-                target.device
-                if isinstance(target, torch.Tensor)
-                else value.device
-            )
+            device = target.device if isinstance(target, torch.Tensor) else value.device
             pipeline_output[key] = value.to(
                 device=device,
                 dtype=torch.float32,
@@ -275,9 +315,7 @@ class RFD3InferenceEngine(BaseInferenceEngine):
         low_memory_mode: bool,
         **kwargs,
     ):
-        exact_orbit_precision = _requires_true_precision(
-            inference_sampler
-        )
+        exact_orbit_precision = _requires_true_precision(inference_sampler)
         super().__init__(
             transform_overrides={"diffusion_batch_size": diffusion_batch_size},
             inference_sampler_overrides={**inference_sampler},
@@ -286,11 +324,7 @@ class RFD3InferenceEngine(BaseInferenceEngine):
                 "cleanup_virtual_atoms": cleanup_virtual_atoms,
                 "read_sequence_from_sequence_head": read_sequence_from_sequence_head,
                 "output_full_json": output_full_json,
-                **(
-                    {"precision": "32-true"}
-                    if exact_orbit_precision
-                    else {}
-                ),
+                **({"precision": "32-true"} if exact_orbit_precision else {}),
             },
             **kwargs,
         )
@@ -362,6 +396,184 @@ class RFD3InferenceEngine(BaseInferenceEngine):
         self.out_dir = out_dir
 
     def _run_multi(self, specs) -> None | Dict[str, List[RFD3Output]]:
+        extras = {
+            key: (
+                value.extra
+                if isinstance(value, DesignInputSpecification)
+                else value.get("extra", {})
+            )
+            or {}
+            for key, value in specs.items()
+        }
+        marked = [extra.get("mosaic_batch_protocol") == 1 for extra in extras.values()]
+        if not any(marked):
+            return self._run_multi_upstream(specs)
+        if not all(marked):
+            raise ValueError(
+                "Cannot mix Mosaic isolated designs with ordinary upstream inputs"
+            )
+        return self._run_multi_mosaic(specs, extras)
+
+    def _run_multi_mosaic(self, specs, extras):
+        """Isolate explicit Mosaic designs while retaining one loaded model.
+
+        A per-design loader also isolates input-transform failures, which occur
+        before the model-forward loop. Three consecutive nonfatal failures stop
+        a broken campaign; process/accelerator/I/O failures stop immediately.
+        """
+        if self.trainer.fabric.world_size != 1:
+            raise ValueError(
+                "Mosaic batch isolation currently requires one inference process"
+            )
+        identifiers = [extra.get("mosaic_example_id") for extra in extras.values()]
+        if any(not isinstance(key, str) or not key for key in identifiers) or len(
+            set(identifiers)
+        ) != len(identifiers):
+            raise ValueError(
+                "Mosaic batch requires a unique explicit identity per design"
+            )
+        ledger = {
+            "schema_version": 1,
+            "status": "running",
+            "expected_example_ids": identifiers,
+            "failure_policy": {
+                "maximum_consecutive_failures": 3,
+                "fatal_errors_stop_immediately": True,
+            },
+            "designs": {
+                extras[key]["mosaic_example_id"]: {
+                    "example_id": extras[key]["mosaic_example_id"],
+                    "engine_example_id": key,
+                    "design_index": extras[key].get("mosaic_design_index"),
+                    "generation_status": "pending",
+                    "result_jsons": [],
+                }
+                for key in specs
+            },
+        }
+        out_dir = self.out_dir
+
+        def publish():
+            states = [row["generation_status"] for row in ledger["designs"].values()]
+            ledger["requested_designs"] = len(states)
+            for state in ("generated", "failed", "not_run", "pending", "running"):
+                ledger[f"{state}_designs"] = states.count(state)
+            if out_dir is not None:
+                _mosaic_atomic_json(Path(out_dir) / "design_outcomes.json", ledger)
+
+        publish()
+        outputs, consecutive_failures = {}, 0
+        for key, specification in specs.items():
+            row = ledger["designs"][extras[key]["mosaic_example_id"]]
+            row.update(generation_status="running", stage="input_or_inference")
+            publish()
+            stop_error = None
+            try:
+                if out_dir is None:
+                    result = self._run_multi_upstream({key: specification})
+                    if not result or len(result.get(key, [])) != 1:
+                        raise ValueError("Mosaic design must produce exactly one model")
+                    outputs.update(result)
+                else:
+                    # The mirror/auditor must never observe an in-progress gzip
+                    # or JSON. Publish final files only after all dumps succeed.
+                    with tempfile.TemporaryDirectory(
+                        prefix=".mosaic-design-", dir=out_dir
+                    ) as staging:
+                        self.out_dir = Path(staging)
+                        try:
+                            self._run_multi_upstream({key: specification})
+                        finally:
+                            self.out_dir = out_dir
+                        files = list(Path(staging).iterdir())
+                        metadata = Path(staging) / f"{key}_model_0.json"
+                        structure = Path(staging) / f"{key}_model_0.cif.gz"
+                        if (
+                            not metadata.is_file()
+                            or not structure.is_file()
+                            or structure.stat().st_size == 0
+                        ):
+                            raise ValueError(
+                                "Mosaic design lacks final metadata or structure"
+                            )
+                        if not isinstance(json.loads(metadata.read_text()), dict):
+                            raise ValueError("Mosaic result metadata must be an object")
+                        if len(list(Path(staging).glob("*model_*.json"))) != 1:
+                            raise ValueError(
+                                "Mosaic design must produce exactly one model"
+                            )
+                        if any((Path(out_dir) / path.name).exists() for path in files):
+                            raise FileExistsError(
+                                "Refusing to overwrite existing Mosaic output files"
+                            )
+                        # Metadata is the final commit marker for this design.
+                        for path in sorted(files, key=lambda path: path == metadata):
+                            path.replace(Path(out_dir) / path.name)
+                        row["result_jsons"] = [
+                            str((Path(out_dir) / metadata.name).resolve())
+                        ]
+                row.update(generation_status="generated", stage="complete")
+                consecutive_failures = 0
+            except BaseException as error:
+                if not isinstance(error, (Exception, KeyboardInterrupt, SystemExit)):
+                    raise
+                consecutive_failures += 1
+                fatal = _mosaic_fatal_error(error)
+                row.update(
+                    generation_status="failed",
+                    error_type=type(error).__name__,
+                    error=str(error),
+                    fatal=fatal,
+                )
+                ranked_logger.error(
+                    f"Mosaic design {key} failed: {type(error).__name__}: {error}"
+                )
+                if fatal or consecutive_failures >= 3:
+                    stop_error = error
+            finally:
+                self.out_dir = out_dir
+            if stop_error is not None:
+                ledger["stop_reason"] = f"{type(stop_error).__name__}: {stop_error}"
+                for remaining in ledger["designs"].values():
+                    if remaining["generation_status"] == "pending":
+                        remaining.update(
+                            generation_status="not_run", reason="batch_stopped"
+                        )
+                ledger["status"] = (
+                    "partial"
+                    if any(
+                        r["generation_status"] == "generated"
+                        for r in ledger["designs"].values()
+                    )
+                    else "failed"
+                )
+                publish()
+                raise stop_error
+            publish()
+        failed = any(
+            row["generation_status"] != "generated"
+            for row in ledger["designs"].values()
+        )
+        ledger["status"] = (
+            (
+                "partial"
+                if any(
+                    r["generation_status"] == "generated"
+                    for r in ledger["designs"].values()
+                )
+                else "failed"
+            )
+            if failed
+            else "completed"
+        )
+        publish()
+        if failed:
+            raise RuntimeError(
+                "Mosaic batch has failed designs; see design_outcomes.json"
+            )
+        return outputs
+
+    def _run_multi_upstream(self, specs) -> None | Dict[str, List[RFD3Output]]:
         # ==============================================================================
         # Prepare pipeline and inference loader
         # ==============================================================================
@@ -418,20 +630,14 @@ class RFD3InferenceEngine(BaseInferenceEngine):
         # Wraps around the trainer validation step to create atom arrays for saving.
         t0 = time.time()
         with torch.no_grad():
-            full_precision_geometry = _snapshot_inference_geometry(
-                pipeline_output
-            )
+            full_precision_geometry = _snapshot_inference_geometry(pipeline_output)
             pipeline_output = self.trainer.fabric.to_device(pipeline_output)
             pipeline_output = _restore_inference_geometry_precision(
                 pipeline_output,
                 source=full_precision_geometry,
             )
-            source_dtype = full_precision_geometry[
-                "coord_atom_lvl_to_be_noised"
-            ].dtype
-            device_dtype = pipeline_output[
-                "coord_atom_lvl_to_be_noised"
-            ].dtype
+            source_dtype = full_precision_geometry["coord_atom_lvl_to_be_noised"].dtype
+            device_dtype = pipeline_output["coord_atom_lvl_to_be_noised"].dtype
             ranked_logger.warning(
                 "Inference geometry precision restored: "
                 f"source={source_dtype}, device={device_dtype}"
@@ -572,6 +778,11 @@ class RFD3InferenceEngine(BaseInferenceEngine):
                 if "extra" not in example_spec:
                     example_spec["extra"] = {}
                 example_spec["extra"]["task_name"] = prefix
+            extra = (
+                example_spec.extra
+                if isinstance(example_spec, DesignInputSpecification)
+                else example_spec["extra"]
+            )
 
             # ... Create n_batches for example
             for batch_id in range((n_batches) if exists(n_batches) else 1):
@@ -579,6 +790,7 @@ class RFD3InferenceEngine(BaseInferenceEngine):
                 example_id = f"{prefix}_{batch_id}" if exists(n_batches) else prefix
                 if (
                     self.skip_existing
+                    and extra.get("mosaic_batch_protocol") != 1
                     and exists(self.out_dir)
                     and example_id in existing_example_ids
                 ):

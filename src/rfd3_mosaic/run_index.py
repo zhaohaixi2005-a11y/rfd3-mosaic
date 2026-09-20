@@ -127,7 +127,7 @@ def update_run_state(
 ) -> Path:
     """Upsert lifecycle state from the allocated worker."""
 
-    if state not in {"running", "completed", "failed"}:
+    if state not in {"running", "completed", "partial", "failed"}:
         raise ValueError(f"Invalid indexed run state: {state!r}")
     root_path = Path(root).expanduser().resolve()
     path = _index_path(root_path, job_id)
@@ -246,7 +246,7 @@ def rebuild_run_index(root: str | Path) -> dict[str, Any]:
             if not isinstance(summary, dict):
                 raise ValueError("worker summary is not a JSON mapping")
             state = str(summary.get("status") or "")
-            if state not in {"running", "completed", "failed"}:
+            if state not in {"running", "completed", "partial", "failed"}:
                 raise ValueError(f"unsupported worker status {state!r}")
             resolved_path = run_directory / "resolved_config.yaml"
             resolved: dict[str, Any] = {}

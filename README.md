@@ -31,6 +31,14 @@ The framework supports fixed-motif scaffolding, supplied-interface
 preservation, multi-component assembly graphs, controlled rigid-body motion
 and reproducible batch generation through one consistent workflow.
 
+For an explicit packed-backbone reference, the experimental
+[`prepare-scaffold` workflow](docs/rfd3_mosaic/COMPLETE_SCAFFOLD.zh-CN.md)
+constructs and checks a complete scaffold on CPU, freezes one task pose, and
+connects it to partial diffusion with matching geometry audits. This currently
+supports full Cn/Dn assemblies with bounded generated runs, required backbone
+and helix-support audits, and coupled rigid seed/reference motion; generation
+yield and folding success are not established by the CPU checks.
+
 > [!IMPORTANT]
 > RFD3-Mosaic is an actively developed research preview. Cn and Dn workflows
 > form the current release target; finite polyhedral groups and advanced

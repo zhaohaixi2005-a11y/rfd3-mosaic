@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from rfd3_mosaic.result_auditing import (
     ResultAuditOutcome,
     find_result_json,
     find_result_jsons,
+    generation_completeness,
     infer_existing_run_audits,
     run_result_audits,
 )
@@ -29,6 +31,7 @@ class PosthocAuditTestCase(unittest.TestCase):
         self.input = self.run / "input" / "rfd3_input.json"
         self.result = self.run / "result_model_0.json"
         self.result.write_text("{}\n", encoding="utf-8")
+        self.result.with_suffix(".cif").write_text("data_fixture\n")
         (self.run / "resolved_config.yaml").write_text(
             yaml.safe_dump(
                 {
@@ -56,16 +59,12 @@ class PosthocAuditTestCase(unittest.TestCase):
         self._write_compiled_input(
             {
                 "symmetry_multiplicity": 3,
-                "motif_constraint_orbits": [
-                    {"mobility_mode": "orbit_rigid"}
-                ],
+                "motif_constraint_orbits": [{"mobility_mode": "orbit_rigid"}],
                 "assembly_interface_relations": [
                     {
                         "required": True,
                         "satisfaction_stage": "output",
-                        "target_geometry": {
-                            "mode": "geometric_constraints"
-                        },
+                        "target_geometry": {"mode": "geometric_constraints"},
                     }
                 ],
             }
@@ -280,9 +279,7 @@ class PosthocAuditTestCase(unittest.TestCase):
 
         self.assertTrue(result.passed)
         summary = json.loads(
-            (self.run / "experiment_summary.json").read_text(
-                encoding="utf-8"
-            )
+            (self.run / "experiment_summary.json").read_text(encoding="utf-8")
         )
         self.assertEqual(summary["status"], "completed")
         self.assertNotIn("error", summary)
@@ -332,9 +329,7 @@ class PosthocAuditTestCase(unittest.TestCase):
 
         self.assertFalse(result.passed)
         summary = json.loads(
-            (self.run / "experiment_summary.json").read_text(
-                encoding="utf-8"
-            )
+            (self.run / "experiment_summary.json").read_text(encoding="utf-8")
         )
         self.assertEqual(summary["status"], "completed")
         self.assertNotIn("error", summary)
@@ -438,6 +433,214 @@ class PosthocAuditTestCase(unittest.TestCase):
         )
         self.assertEqual(update_index.call_args.kwargs["state"], "completed")
         self.assertIsNone(update_index.call_args.kwargs["error"])
+
+    def _frozen_assignments(self, count: int) -> list[str]:
+        assignments = [
+            {
+                "design_index": i,
+                "pose_index": 0,
+                "replicate_index": i,
+                "example_id": f"design_{i:05d}_pose_00000_rep_{i:03d}",
+            }
+            for i in range(count)
+        ]
+        (self.run / "sampling_manifest.json").write_text(
+            json.dumps({"assignments": assignments})
+        )
+        config = yaml.safe_load((self.run / "resolved_config.yaml").read_text())
+        config["sampling"] = {"designs": count}
+        (self.run / "resolved_config.yaml").write_text(yaml.safe_dump(config))
+        return [item["example_id"] for item in assignments]
+
+    def test_same_count_wrong_or_duplicate_identity_is_incomplete(self) -> None:
+        names = self._frozen_assignments(2)
+        config = {"sampling": {"designs": 2}}
+        for results in (
+            (self.run / f"input_{names[0]}_0_model_0.json", self.result),
+            (
+                self.run / f"input_{names[0]}_0_model_0.json",
+                self.run / f"other_{names[0]}_0_model_0.json",
+            ),
+        ):
+            report = generation_completeness(
+                self.run, results, resolved_config=config, previous_summary={}
+            )
+            self.assertFalse(report["complete"])
+            self.assertEqual(report["missing_example_ids"], [names[1]])
+        results = tuple(self.run / f"input_{name}_0_model_0.json" for name in names)
+        for result in results:
+            result.write_text("{}")
+            result.with_suffix(".cif").write_text("data_fixture\n")
+        report = generation_completeness(
+            self.run, results, resolved_config=config, previous_summary={}
+        )
+        self.assertTrue(report["complete"])
+        self.assertTrue(report["identity_verified"])
+
+    def test_failed_generation_ledger_cannot_be_overridden_by_existing_files(
+        self,
+    ) -> None:
+        names = self._frozen_assignments(2)
+        results = tuple(self.run / f"input_{name}_0_model_0.json" for name in names)
+        (self.run / "design_outcomes.json").write_text(
+            json.dumps(
+                {
+                    "expected_example_ids": names,
+                    "designs": {
+                        names[0]: {"generation_status": "generated"},
+                        names[1]: {"generation_status": "failed"},
+                    },
+                }
+            )
+        )
+        report = generation_completeness(
+            self.run,
+            results,
+            resolved_config={"sampling": {"designs": 2}},
+            previous_summary={},
+        )
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["incomplete_outcome_ids"], [names[1]])
+
+    def test_successful_partial_reaudit_preserves_generation_failure(self) -> None:
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        names = self._frozen_assignments(3)
+        self.result.rename(self.run / f"input_{names[0]}_0_model_0.json")
+        (self.run / "experiment_summary.json").write_text(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error_type": "RuntimeError",
+                    "error": "inference stopped",
+                    "requested_designs": 3,
+                }
+            )
+        )
+        for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
+            (self.run / name).write_text('{"passed": true}\n')
+        with patch("rfd3_mosaic.posthoc_audit._update_index"):
+            result = audit_existing_run(self.run, reuse_reports=True)
+        summary = json.loads((self.run / "experiment_summary.json").read_text())
+        self.assertFalse(result.passed)
+        self.assertEqual(summary["status"], "failed")
+        self.assertFalse(summary["execution_completed"])
+        self.assertEqual(summary["error"], "inference stopped")
+        self.assertTrue(summary["posthoc_audit"]["execution_completed"])
+        self.assertEqual(
+            summary["generation_completeness"]["missing_example_ids"], names[1:]
+        )
+
+    def test_complete_frozen_cohort_recovers_only_audit_failure(self) -> None:
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        names = self._frozen_assignments(1)
+        self.result.rename(self.run / f"input_{names[0]}_0_model_0.json")
+        self.result.with_suffix(".cif").rename(self.run / f"input_{names[0]}_0_model_0.cif")
+        (self.run / "experiment_summary.json").write_text(
+            json.dumps(
+                {
+                    "status": "partial",
+                    "error_type": "RuntimeError",
+                    "error": "audit interrupted",
+                    "requested_designs": 1,
+                }
+            )
+        )
+        (self.run / "design_outcomes.json").write_text(
+            json.dumps(
+                {
+                    "expected_example_ids": names,
+                    "designs": {
+                        names[0]: {
+                            "generation_status": "generated",
+                            "audit_status": "failed",
+                            "audit_error": "audit interrupted",
+                        }
+                    },
+                    "status": "completed",
+                }
+            )
+        )
+        for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
+            (self.run / name).write_text('{"passed": true}\n')
+        with patch("rfd3_mosaic.posthoc_audit._update_index"):
+            result = audit_existing_run(self.run, reuse_reports=True)
+        summary = json.loads((self.run / "experiment_summary.json").read_text())
+        self.assertTrue(result.passed)
+        self.assertEqual(summary["status"], "completed")
+        self.assertTrue(summary["execution_completed"])
+        self.assertEqual(summary["failure_history"][0]["error"], "audit interrupted")
+        self.assertNotIn("error", summary)
+        ledger = json.loads((self.run / "design_outcomes.json").read_text())
+        self.assertEqual(ledger["status"], "completed")
+        self.assertEqual(ledger["designs"][names[0]]["audit_status"], "completed")
+        self.assertEqual(
+            ledger["designs"][names[0]]["audit_failure_history"], ["audit interrupted"]
+        )
+
+    def test_current_missing_structure_cannot_reuse_cached_pass_as_completed(self):
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        self.result.with_suffix(".cif").unlink()
+        (self.run / "experiment_summary.json").write_text('{"status":"completed"}')
+        for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
+            (self.run / name).write_text('{"passed": true}')
+        with patch("rfd3_mosaic.posthoc_audit._update_index"):
+            outcome = audit_existing_run(self.run, reuse_reports=True)
+        summary = json.loads((self.run / "experiment_summary.json").read_text())
+        self.assertFalse(outcome.passed)
+        self.assertEqual(summary["status"], "partial")
+        self.assertIn(self.result.name, summary["generation_completeness"]["artifact_errors"])
+
+    def test_generation_process_failure_cannot_be_erased_by_complete_file_set(
+        self,
+    ) -> None:
+        names = self._frozen_assignments(1)
+        ledger = {
+            "expected_example_ids": names,
+            "status": "completed",
+            "designs": {names[0]: {"generation_status": "generated"}},
+        }
+        for extra in (
+            {"inference_error": "worker exit 1"},
+            {"ledger_error": "invalid native receipt"},
+            {"status": "running"},
+            {"status": None},
+        ):
+            (self.run / "design_outcomes.json").write_text(
+                json.dumps({**ledger, **extra})
+            )
+            report = generation_completeness(
+                self.run,
+                (self.run / f"input_{names[0]}_0_model_0.json",),
+                resolved_config={"sampling": {"designs": 1}},
+                previous_summary={},
+            )
+            self.assertFalse(report["complete"])
+            self.assertTrue(report["ledger_errors"])
+
+    def test_reaudit_refreshes_explanation_payload_and_evidence_hash(self) -> None:
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        reports = [
+            self.run / name
+            for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json")
+        ]
+        for report in reports:
+            report.write_text('{"passed": true}\n')
+        with patch("rfd3_mosaic.posthoc_audit._update_index"):
+            audit_existing_run(self.run, reuse_reports=True)
+            reports[1].write_text(
+                '{"passed": false, "summary": {"passed_continuity": false}}\n'
+            )
+            audit_existing_run(self.run, reuse_reports=True)
+        explanation = json.loads((self.run / "decision_explanation.json").read_text())
+        self.assertEqual(explanation["screening"]["contract_status"], "flagged")
+        snapshot = next(
+            item for item in explanation["audits"] if item["path"] == reports[1].name
+        )
+        self.assertEqual(
+            snapshot["sha256"], hashlib.sha256(reports[1].read_bytes()).hexdigest()
+        )
+        self.assertFalse(snapshot["payload"]["summary"]["passed_continuity"])
+        self.assertIn("`flagged`", (self.run / "decision_explanation.md").read_text())
 
 
 if __name__ == "__main__":

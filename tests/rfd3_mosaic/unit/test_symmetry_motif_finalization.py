@@ -723,6 +723,142 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
             )
         )
 
+    def test_denoiser_consumes_committed_mobile_conditioning(self) -> None:
+        """Exercise the model-call boundary, not just the sync helper/counter."""
+
+        for mode in ("locked", "proposal_only", "accepted"):
+            with self.subTest(mode=mode):
+                features = self._c3_features()
+                features.update(
+                    {
+                        "sym_entity_id": torch.zeros(9, dtype=torch.long),
+                        "sym_transform_id": torch.arange(3).repeat_interleave(3),
+                        "is_sym_asu": torch.tensor([True] * 3 + [False] * 6),
+                        "sym_orbit_slot": torch.arange(3).repeat(3),
+                    }
+                )
+                canonical = torch.tensor(
+                    [[[5.0, 0.0, 0.0], [7.0, 1.0, 0.5], [8.0, 2.0, 1.0]]]
+                )
+                coordinates = apply_symmetry_to_xyz_atomwise(
+                    canonical.repeat(1, 3, 1), features, partial_diffusion=True
+                )
+                moved_canonical = canonical.clone()
+                moved_canonical[:, :2] += torch.tensor([0.5, 0.25, 0.0])
+                moved_target = apply_symmetry_to_xyz_atomwise(
+                    moved_canonical.repeat(1, 3, 1), features, partial_diffusion=True
+                )
+                fixed = torch.tensor([True, True, False] * 3)
+                features.update(
+                    {
+                        "is_motif_atom_with_fixed_coord": fixed,
+                        "ref_element": torch.zeros(9, dtype=torch.long),
+                        "motif_pos": coordinates[0].clone(),
+                        "motif_constraint_group_membership": fixed[None, :],
+                        "motif_constraint_target_coordinates": coordinates[:, None].clone(),
+                        "motif_constraint_orbit_mobility_mode": torch.tensor(
+                            [0 if mode == "locked" else 1]
+                        ),
+                        "is_ca": torch.ones(9, dtype=torch.bool),
+                    }
+                )
+                original_motif_pos = features["motif_pos"].clone()
+                original_group_targets = features[
+                    "motif_constraint_target_coordinates"
+                ].clone()
+
+                class MovingController(_RecordingScaffoldController):
+                    def update_orbits_from_scaffold(self, *args, **kwargs):
+                        super().update_orbits_from_scaffold(*args, **kwargs)
+                        if self.last_update_applied:
+                            self.fixed_target = moved_target.clone()
+                        if 0.10 < float(kwargs["progress"]) < 0.85:
+                            # Also offer a different pose in proposal-only mode:
+                            # it must never leak into committed conditioning.
+                            return moved_target.clone()
+                        return self.fixed_target.clone()
+
+                controller = MovingController(coordinates)
+                received = []
+
+                class RecordingDiffusion(torch.nn.Module):
+                    def forward(self, X_noisy_L, f, **kwargs):
+                        received.append(
+                            {
+                                "features": f,
+                                "motif_pos": f["motif_pos"].clone(),
+                                "group_targets": f[
+                                    "motif_constraint_target_coordinates"
+                                ].clone(),
+                                "noisy": X_noisy_L.clone(),
+                            }
+                        )
+                        return {"X_L": coordinates.clone()}
+
+                sampler = SampleDiffusionWithSymmetry(
+                    gamma_0=0.6,
+                    num_timesteps=6,
+                    preserve_fixed_motif_during_symmetry=True,
+                    require_motif_constraint_groups=True,
+                    symmetry_state_mode="orbit_average",
+                    symmetry_noise_mode="coupled",
+                    enable_orbit_rigid_motif_mobility=mode != "locked",
+                    motif_mobility_proposal_source="scaffold_boundary",
+                    motif_mobility_apply_updates=mode == "accepted",
+                    motif_mobility_update_interval=2,
+                    motif_mobility_target_update_count=0,
+                )
+                with (
+                    mock.patch(
+                        "rfd3.model.inference_sampler.OrbitRigidMotifController.from_features",
+                        return_value=controller,
+                    ),
+                    mock.patch(
+                        "rfd3.model.inference_sampler.build_boundary_topology",
+                        return_value=SimpleNamespace(junction_pairs=torch.tensor([[1, 2]])),
+                    ),
+                    torch.no_grad(),
+                ):
+                    result = sampler.sample_diffusion_like_af3(
+                        f=features,
+                        diffusion_module=RecordingDiffusion(),
+                        diffusion_batch_size=1,
+                        coord_atom_lvl_to_be_noised=coordinates,
+                        initializer_outputs={"chunked_pairwise_embedder": object()},
+                        ref_initializer_outputs=None,
+                        f_ref=None,
+                    )
+
+                self.assertEqual(len(received), 5)
+                self.assertFalse(torch.allclose(moved_target[:, fixed], coordinates[:, fixed]))
+                # The only accepted proposal occurs after model call 2. Calls
+                # 3 and 4 must use its new pose for both conditioning and state.
+                for step, record in enumerate(received):
+                    expected = moved_target if mode == "accepted" and step >= 3 else coordinates
+                    expected_motif_pos = original_motif_pos.clone()
+                    expected_motif_pos[fixed] = expected[0, fixed]
+                    torch.testing.assert_close(
+                        record["motif_pos"], expected_motif_pos, atol=1e-5, rtol=0.0
+                    )
+                    torch.testing.assert_close(
+                        record["group_targets"], expected[:, None], atol=1e-5, rtol=0.0
+                    )
+                    torch.testing.assert_close(
+                        record["noisy"][:, fixed], expected[:, fixed], atol=1e-5, rtol=0.0
+                    )
+                    if mode == "locked":
+                        self.assertIs(record["features"], features)
+                    else:
+                        self.assertIsNot(record["features"], features)
+                torch.testing.assert_close(features["motif_pos"], original_motif_pos)
+                torch.testing.assert_close(
+                    features["motif_constraint_target_coordinates"], original_group_targets
+                )
+                expected_final = moved_target if mode == "accepted" else coordinates
+                torch.testing.assert_close(
+                    result["X_L"][:, fixed], expected_final[:, fixed], atol=1e-5, rtol=0.0
+                )
+
     def test_static_fixed_target_is_projected_once_into_exact_c3(
         self,
     ) -> None:

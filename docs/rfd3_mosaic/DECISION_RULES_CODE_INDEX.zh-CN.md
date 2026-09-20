@@ -4,12 +4,39 @@
 `production@551a90103a51d0bff27e269fe454fdba4aefb274`，实现版本为
 `e20a04e0b45fb3224b23248e23e31aa5eb7a815f` 及后续 benchmark、生成区域归属整改。这不是与当前最新上游的比较。
 
-逐文件列出差异中的 **126 个生产 Python 文件、22 个维护脚本**。
+原始索引列出差异中的 **126 个生产 Python 文件、22 个维护脚本**；新增完整骨架实现另列如下。
 每行给出主文档章节和该文件的职责；包导出、工程适配和空文件不算新科学公式。
 同一公式可能跨编译、采样和审计三个入口，因此多个文件引用同一章节不表示重复算法。
 
 这一清单核对文件覆盖，不声称逐行代码经过形式化证明，也不声称每种模式已经通过 GPU 或实验验证。
 独立工具、可选研究路径和默认生成流程的区别，以主文档调用条件和实际运行配置为准。
+
+## 早期方案与当前实现
+
+主文档第 24 节记录早期候选设计。当前完整骨架路径采用第 25 节的 **全装配 seed/扭转角联合求解、
+实际生成骨架验收与共同参考移动**；它不依赖未校准的端口打分系数，也没有接入先跑完整 diffusion
+再挑共享 pose 的额外 GPU 搜索。普通共享 pose、静态可达性与 core 引导按原章节列出。
+
+| 新增实现 | 主文档章节 | 职责 |
+|---|---|---|
+| [scaffold_tasks.py](../../src/rfd3_mosaic/scaffold_tasks.py) | 25.1–25.3、25.7 | 精确长度、整个 seed 拟合、独立验收、准备目录完整发布 |
+| [scaffold_pose.py](../../src/rfd3_mosaic/scaffold_pose.py) | 25.1 | 模板对称帧和群一致性 |
+| [scaffold_builder.py](../../src/rfd3_mosaic/scaffold_builder.py) | 25.2–25.3 | 内部坐标、扭转导数及单个生成区几何工具 |
+| [scaffold_assembly.py](../../src/rfd3_mosaic/scaffold_assembly.py) | 25.2–25.3 | seed 与全部生成区同时求解、全装配排斥、显式有限预算 |
+| [scaffold_input.py](../../src/rfd3_mosaic/scaffold_input.py) | 25.6–25.7 | artifact、固定身份、群作用、参考移动计划绑定 |
+| [scaffold_contract.py](../../src/rfd3_mosaic/validation/scaffold_contract.py) | 25.4–25.5 | CA 形状/支撑/分离，v2 必需真实骨架验收 |
+| [generated_backbone.py](../../src/rfd3_mosaic/validation/generated_backbone.py) | 25.4 | 实际 alpha 氢键指派、漏声明 H、独立骨架几何 |
+| [reference_transport.py](../../src/rfd3_mosaic/validation/reference_transport.py) | 25.6 | SE(3) 弧长运输、群共轭、边界与最终重放 |
+| [reference_scaffold.py](../../models/rfd3/src/rfd3/inference/symmetry/reference_scaffold.py) | 25.5 | 原生特征绑定、CA 和完整骨架可微残差 |
+| [scaffold_transport.py](../../models/rfd3/src/rfd3/inference/symmetry/scaffold_transport.py) | 25.6 | 采样中的参考/seed/生成区共同准备与提交 |
+
+既有 `engine.py`、`experiment_worker.py`、`result_auditing.py`、`posthoc_audit.py`、
+`run_reporting.py` 新增故障隔离与部分结果语义见 25.8；`inference_sampler.py`、
+`trainer/rfd3.py`、`rfd3_scaffold_audit.py` 新增最终骨架诊断和独立重放见 25.6–25.7。
+可选 `metrics/hbonds_metrics.py` 和 `testing/testing_utils.py` 的旧工程引用/条件统计修复见 25.9。
+
+开发工作区中的参考坐标分析脚本及 JSON 仅为离线证据，路径与测量定义见主文档
+第 24.6–24.7 节；它们不是软件安装后自动提供的评分工具。
 
 ## 生产实现
 

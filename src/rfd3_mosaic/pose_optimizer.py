@@ -470,6 +470,7 @@ def initialize_global_seed_layout(
     slot_angle = asu_angle / len(component_ids)
     phase = (((sample_index + 1) * golden) % 1.0 - 0.5) * slot_angle
     tilt_levels = (-24.0, -12.0, 0.0, 12.0, 24.0)
+    _, _, radial_x, radial_y = _symmetry_frame(design)
     initial_poses: dict[str, UserInitialPoseSpec] = {}
     for component_index, component_id in enumerate(component_ids):
         if polyhedral:
@@ -503,7 +504,10 @@ def initialize_global_seed_layout(
                 ((sample_index + component_index) % 3) - 1
             ) * axial_scale
         angle = math.radians(azimuth)
-        radial_direction = (math.cos(angle), math.sin(angle), 0.0)
+        radial_direction = tuple(
+            float(value)
+            for value in math.cos(angle) * radial_x + math.sin(angle) * radial_y
+        )
         tilt = tilt_levels[
             (sample_index + 2 * component_index) % len(tilt_levels)
         ]

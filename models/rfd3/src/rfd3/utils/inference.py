@@ -381,6 +381,31 @@ def ensure_inference_sampler_matches_design_spec(
     """
     has_symmetry_specification = []
     for item in design_spec.values():
+        extra = getattr(item, "extra", None) if hasattr(item, "extra") else item.get("extra")
+        contract = (extra or {}).get("mosaic_scaffold_contract")
+        if contract is not None:
+            from rfd3_mosaic.validation.scaffold_contract import validate_scaffold_contract
+
+            validate_scaffold_contract(contract)
+            sampler = inference_sampler or {}
+            compatible = (
+                sampler.get("kind", "default") == "symmetry"
+                and sampler.get("symmetry_state_mode") == "orbit_average"
+                and sampler.get("symmetry_noise_mode") == "coupled"
+                and sampler.get("symmetry_execution_backend", "explicit_all_copy") == "explicit_all_copy"
+                and sampler.get("preserve_fixed_motif_during_symmetry", False)
+                and not sampler.get("enable_orbit_rigid_motif_mobility", False)
+                and float(sampler.get("interface_seed_compactness_weight", 0.0)) == 0.0
+            )
+            if not compatible:
+                raise ValueError(
+                    "Explicit scaffold contracts require the locked exact symmetry "
+                    "sampler with coupled noise, explicit_all_copy and preserved "
+                    "fixed motifs; another sampler would ignore the contract"
+                )
+            partial_t = getattr(item, "partial_t", None) if hasattr(item, "partial_t") else item.get("partial_t")
+            if partial_t is None or not np.isfinite(float(partial_t)) or float(partial_t) <= 0:
+                raise ValueError("Explicit scaffold contracts require positive complete-template partial_t")
         if hasattr(item, "symmetry"):
             has_symmetry = item.symmetry is not None
         else:

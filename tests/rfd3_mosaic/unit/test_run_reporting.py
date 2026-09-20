@@ -120,6 +120,78 @@ class RunReportingTestCase(unittest.TestCase):
         self.assertEqual(len(scaffold_audits), 1)
         self.assertTrue(scaffold_audits[0]["passed"])
 
+    def test_missing_or_broken_evidence_does_not_reuse_cached_contract_success(
+        self,
+    ) -> None:
+        run = self._completed_run()
+        summary_path = run / "experiment_summary.json"
+        summary = json.loads(summary_path.read_text())
+        summary.update(
+            {
+                "produced_designs": 1,
+                "contract_met_designs": 1,
+                "recommended_designs": 1,
+                "design_results": [
+                    {"contract_status": "met", "reports": summary["reports"]}
+                ],
+            }
+        )
+        self._write_json(summary_path, summary)
+        report = run / "scaffold_validity_audit.json"
+        for data in (None, "{", "{}", '{"passed": "yes"}', '{"status": "unknown"}'):
+            if data is None:
+                report.unlink()
+            else:
+                report.write_text(data)
+            status = collect_run_status(
+                RunReference(job_id="12345", run_directory=run), include_scheduler=False
+            )
+            self.assertEqual(status["contract_status"], "not_evaluated")
+            self.assertFalse(status["current_evidence"]["complete"])
+            self.assertIsNone(status["current_evidence"]["recommended_designs"])
+            text = format_status_text(status)
+            self.assertNotIn("contract_met=1", text)
+            self.assertNotIn("recommended=1", text)
+            self.assertEqual(status["worker"]["contract_met_designs"], 1)
+
+    def test_changed_current_contract_overrides_cached_summary(self) -> None:
+        run = self._completed_run()
+        summary_path = run / "experiment_summary.json"
+        summary = json.loads(summary_path.read_text())
+        summary.update(
+            {
+                "produced_designs": 1,
+                "contract_met_designs": 1,
+                "recommended_designs": 1,
+                "design_results": [
+                    {"contract_status": "met", "reports": summary["reports"]}
+                ],
+            }
+        )
+        self._write_json(summary_path, summary)
+        self._write_json(
+            run / "scaffold_validity_audit.json",
+            {"passed": False, "summary": {"passed_continuity": False}},
+        )
+        status = collect_run_status(
+            RunReference(job_id="12345", run_directory=run), include_scheduler=False
+        )
+        self.assertEqual(status["contract_status"], "flagged")
+        self.assertEqual(status["current_evidence"]["contract_met_designs"], 0)
+        self.assertEqual(status["current_evidence"]["recommended_designs"], 0)
+
+    def test_partial_generation_is_a_terminal_worker_state(self) -> None:
+        run = self._completed_run()
+        summary_path = run / "experiment_summary.json"
+        summary = json.loads(summary_path.read_text())
+        summary["status"] = "partial"
+        self._write_json(summary_path, summary)
+        status = collect_run_status(
+            RunReference(job_id="12345", run_directory=run), include_scheduler=False
+        )
+        self.assertEqual(status["state"], "partial")
+        self.assertFalse(status["execution_completed"])
+
     def test_relocated_run_resolves_frozen_absolute_audit_paths(self) -> None:
         source = self._completed_run("24681")
         target = self.root / "2026-08-19" / "design" / "24681"

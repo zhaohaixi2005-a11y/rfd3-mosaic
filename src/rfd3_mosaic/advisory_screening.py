@@ -197,6 +197,7 @@ def build_advisory_screening(
                         "passed_symmetry",
                         "passed_cross_chain_topology",
                         "passed_generated_route_ownership",
+                        "passed_scaffold_contract",
                     ),
                     report=path,
                     prefix="contract.scaffold",

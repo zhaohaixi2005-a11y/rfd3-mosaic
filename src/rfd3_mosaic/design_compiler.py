@@ -739,7 +739,10 @@ def _generic_orbit_direction(
             point /= np.linalg.norm(point)
             orbit = np.stack(
                 [
-                    _apply_transform(registry.transform(item), point)
+                    # This is a direction relative to the symmetry centre,
+                    # not a world-space point: affine translations do not act
+                    # on it. Otherwise an origin shift changes the pose prior.
+                    registry.transform(item)[:3, :3] @ point
                     for item in registry.transform_ids
                 ]
             )
@@ -796,7 +799,7 @@ def _automatic_simple_component_plan(
     unit_point = radial_direction + axial_fraction * axis
     orbit = np.stack(
         [
-            _apply_transform(registry.transform(item), unit_point)
+            registry.transform(item)[:3, :3] @ unit_point
             for item in registry.transform_ids
         ]
     )
@@ -1960,6 +1963,8 @@ def lower_user_design(
         bound_constraints=bound,
         interface_usage=interface_usage,
         runtime_constraint_metadata={
+            **({"mosaic_scaffold_artifact": str(design.sampling.scaffold_artifact)}
+               if design.sampling.scaffold_artifact is not None else {}),
             "cylindrical_constraints": cylindrical_constraints,
             "automatic_copy_relations": automatic_relation_provenance,
             "sequence_conditioning": [

@@ -273,6 +273,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Minimum RMS difference of inter-seed CA distance spectra, in angstroms.",
     )
 
+    scaffold = commands.add_parser(
+        "prepare-scaffold",
+        help="Build and validate one complete template-conditioned partial-diffusion task on CPU.",
+    )
+    scaffold.add_argument("config", type=Path)
+    scaffold.add_argument("--blueprint", required=True, type=Path)
+    scaffold.add_argument("--output-dir", required=True, type=Path)
+
     examples = commands.add_parser(
         "examples",
         help="List or copy maintained, portable user examples.",
@@ -815,6 +823,7 @@ def _write_public_experiment(
         exclude={
             "initial_pose",
             "initial_poses",
+            "scaffold_artifact",
             "scaffold_core_quality",
             "is_non_loopy",
             "plddt_enhanced",
@@ -1570,11 +1579,34 @@ def _print_public_design_plan(
         "rigid_components": rigid_components,
         "assembly_lowering": lowering,
     }
+    if design.sampling.scaffold_artifact is not None:
+        artifact = json.loads(design.sampling.scaffold_artifact.read_text())
+        contract = artifact["native_input"]["extra"]["mosaic_scaffold_contract"]
+        payload["complete_scaffold"] = {
+            "artifact": str(design.sampling.scaffold_artifact),
+            "mode": "complete_scaffold_partial_diffusion",
+            "binding_status": "declared; validate checks actual structure and compiler hashes",
+            "structure_sha256": artifact["structure_sha256"],
+            "partial_t_angstrom": artifact["partial_t"],
+            "shared_initial_pose": True,
+            "route_reference": "explicit_full_scaffold",
+            "limits": contract["limits"],
+            "helix_blocks": contract["helix_blocks"],
+            "support_edges": contract["support_edges"],
+            "formula_document": "docs/rfd3_mosaic/DECISION_RULES.zh-CN.md",
+            "formula_section": 25,
+        }
     if output_format == "json":
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     print("RFD3-Mosaic public design plan")
     print("decision rules: docs/rfd3_mosaic/DECISION_RULES.zh-CN.md")
+    if "complete_scaffold" in payload:
+        scaffold = payload["complete_scaffold"]
+        print(f"complete scaffold: {scaffold['artifact']}")
+        print(f"initialization: shared full scaffold; partial_t={scaffold['partial_t_angstrom']} A")
+        print("route/packing criteria: explicit reference shape + same-chain block support + segment separation")
+        print("scaffold limits: " + json.dumps(scaffold["limits"], sort_keys=True))
     print(
         "parameter evidence: resolved_preferences now; "
         "runtime config/effective_config after sampling"
@@ -1821,6 +1853,24 @@ def _print_capabilities(*, output_format: str) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     parser = _parser()
     arguments = parser.parse_args(argv)
+    if arguments.command == "prepare-scaffold":
+        from rfd3_mosaic.scaffold_tasks import ScaffoldConstructionUnresolved, prepare_scaffold_task
+
+        try:
+            result = prepare_scaffold_task(
+                arguments.config, arguments.blueprint, arguments.output_dir, progress=print,
+            )
+        except ScaffoldConstructionUnresolved as error:
+            arguments.output_dir.mkdir(parents=True, exist_ok=False)
+            evidence = arguments.output_dir / "preparation_report.json"
+            evidence.write_text(json.dumps(error.report, indent=2, allow_nan=False)+"\n")
+            raise SystemExit(f"{error}\nNo runnable task created. Evidence: {evidence}") from error
+        except (OSError, ValueError, NotImplementedError) as error:
+            raise SystemExit(str(error)) from error
+        print(f"Prepared complete-scaffold task: {result['task']}")
+        print(f"rfd3-mosaic run {result['task']}")
+        print(f"Evidence: {arguments.output_dir / 'preparation_report.json'}")
+        return
     if arguments.command == "prepare-poses":
         from rfd3_mosaic.pose_tasks import prepare_pose_tasks
 

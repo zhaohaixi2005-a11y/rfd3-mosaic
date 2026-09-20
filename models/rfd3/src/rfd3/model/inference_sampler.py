@@ -1,3 +1,4 @@
+import copy
 import inspect
 import logging
 import time
@@ -512,7 +513,7 @@ class SampleDiffusionWithMotif(SampleDiffusionConfig):
             epsilon_L = (
                 self.noise_scale
                 * torch.sqrt(torch.square(t_hat) - torch.square(c_t_minus_1))
-                * torch.normal(mean=0.0, std=1.0, size=X_L.shape, device=X_L.device)
+                * torch.normal(mean=0.0, std=1.0, size=X_L.shape, device=X_L.device, dtype=X_L.dtype)
             )
             epsilon_L[..., is_motif_atom_with_fixed_coord, :] = (
                 0  # No noise injection for fixed atoms
@@ -1493,6 +1494,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             std=1.0,
             size=fixed_target.shape,
             device=fixed_target.device,
+            dtype=fixed_target.dtype,
         )
         noise = expand_symmetry_coupled_displacements(
             raw_noise,
@@ -1808,7 +1810,6 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
 
         L = f["ref_element"].shape[0]
         D = diffusion_batch_size
-        denoiser_f = f if network_f is None else network_f
         if self._uses_local_symmetry_neighbourhood:
             if local_symmetry_context is None or network_f is None:
                 raise ValueError(
@@ -1828,6 +1829,10 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         )
         if mobile_orbit_count:
             f = self._copy_motif_mobility_runtime_features(f)
+        # Bind after detaching runtime conditioning: accepted pose updates
+        # replace motif_pos in this mapping, and the chunked denoiser must
+        # consume that same mapping rather than the original input features.
+        denoiser_f = f if network_f is None else network_f
         fixed_target = coord_atom_lvl_to_be_noised.clone()
         motif_mobility_controller = None
         scaffold_guidance_topology = None
@@ -1843,10 +1848,33 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         scaffold_core_diagnostics: list[dict[str, Any]] = []
         generated_route_diagnostics: list[dict[str, Any]] = []
         polymer_continuity_diagnostics: list[dict[str, Any]] = []
+        reference_transport = None
+        reference_scaffold_active = f.get("mosaic_scaffold_contract") is not None
+        if reference_scaffold_active:
+            if (
+                not self._uses_exact_symmetry_orbits
+                or self.symmetry_noise_mode != "coupled"
+                or self._uses_local_symmetry_neighbourhood
+                or D != 1
+            ):
+                raise ValueError(
+                    "Explicit scaffold contracts require batch size one, "
+                    "explicit_all_copy, exact orbit-average state and coupled noise"
+                )
+            if "partial_t" not in f:
+                raise ValueError("Explicit scaffold contracts require complete-template partial diffusion")
+            if (mobile_orbit_count or self.enable_orbit_rigid_motif_mobility) and f.get("mosaic_reference_transport") is None:
+                raise ValueError("Mobile complete seeds require a validated coupled reference transport plan")
+            if float(self.interface_seed_compactness_weight) > 0.0:
+                raise ValueError("Legacy seed compactness cannot be combined with an explicit scaffold contract")
+        route_guidance_active = (
+            reference_scaffold_active
+            or bool(self.enable_generated_cross_chain_topology_guidance)
+        )
         scaffold_core_active = (
             float(self.scaffold_core_intra_chain_weight) > 0.0
             or float(self.scaffold_core_inter_chain_excess_penalty) > 0.0
-            or bool(self.enable_generated_cross_chain_topology_guidance)
+            or route_guidance_active
         )
         robust_capture_active, robust_capture_weight = (
             self._assembly_robust_capture_settings()
@@ -1901,6 +1929,26 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
         if scaffold_core_topology_required:
             scaffold_core_guidance_config = self._scaffold_core_guidance_config()
+            if reference_scaffold_active:
+                reference = scaffold_core_topology.scaffold_contract
+                if reference is None:
+                    raise ValueError("Explicit scaffold contract was not bound to runtime coordinates")
+                initial_ca = fixed_target[0, reference.ca_atom_indices]
+                tolerance = reference.contract["limits"]["geometry_tolerance"]
+                if not torch.isfinite(initial_ca).all() or bool(torch.any(
+                    torch.linalg.vector_norm(initial_ca - reference.reference_ca, dim=-1) > tolerance
+                )):
+                    raise ValueError("Partial-diffusion input does not preserve the complete scaffold reference")
+                # An explicit validated contract is mandatory even when the
+                # historical straight-route switch/compiled links are absent.
+                scaffold_core_guidance_config = replace(
+                    scaffold_core_guidance_config,
+                    routing_ownership_weight=1.0,
+                    routing_tolerance=tolerance,
+                )
+            if f.get("mosaic_reference_transport") is not None:
+                from rfd3.inference.symmetry.scaffold_transport import ScaffoldReferenceTransport
+                reference_transport = ScaffoldReferenceTransport(f, scaffold_core_topology)
             ranked_logger.info(
                 "Scaffold intra/inter guidance initialized: "
                 f"chains={len(scaffold_core_topology.chains)}, "
@@ -2057,7 +2105,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             proposal_hook = None
             if motif_mobility_controller is not None:
 
-                def proposal_hook(
+                def legacy_proposal_hook(
                     proposal_coordinates: torch.Tensor,
                     progress: float,
                 ) -> ConstraintProposalResult:
@@ -2255,6 +2303,57 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         applied=bool(motif_mobility_controller.last_update_applied),
                     )
 
+                proposal_hook = legacy_proposal_hook
+                if reference_transport is not None:
+                    def proposal_hook(proposal_coordinates, progress):
+                        nonlocal motif_mobility_controller, graph_interface_patch_state
+                        nonlocal graph_interface_diagnostics, scaffold_core_topology, scaffold_core_guidance_config
+                        # Existing controllers propose with their original objectives
+                        # and bounds. Their mutable state is isolated until the
+                        # coupled seed/reference/generated transaction is accepted.
+                        old_controller = motif_mobility_controller
+                        old_patch = graph_interface_patch_state
+                        old_diagnostics = graph_interface_diagnostics
+                        old_topology = scaffold_core_topology
+                        old_config = scaffold_core_guidance_config
+                        motif_mobility_controller = copy.deepcopy(old_controller)
+                        graph_interface_patch_state = copy.deepcopy(old_patch)
+                        graph_interface_diagnostics = list(old_diagnostics)
+                        scaffold_core_topology = replace(old_topology, scaffold_contract=None)
+                        scaffold_core_guidance_config = replace(old_config, routing_ownership_weight=0.0)
+                        try:
+                            proposal = legacy_proposal_hook(proposal_coordinates, progress)
+                            candidate_controller = motif_mobility_controller
+                            candidate_patch = graph_interface_patch_state
+                            candidate_diagnostics = graph_interface_diagnostics
+                        finally:
+                            motif_mobility_controller = old_controller
+                            graph_interface_patch_state = old_patch
+                            graph_interface_diagnostics = old_diagnostics
+                            scaffold_core_topology = old_topology
+                            scaffold_core_guidance_config = old_config
+                        if not proposal.applied:
+                            return ConstraintProposalResult(target=constraint_runtime.fixed_target, applied=False)
+                        def transport_projector(candidate, target):
+                            proposal_features = dict(f)
+                            self._synchronize_mobile_motif_conditioning(
+                                proposal_features, target, is_motif_atom_with_fixed_coord)
+                            return self._joint_projector(proposal_features).project(candidate, constraint_target=target,
+                                constraint_mask=is_motif_atom_with_fixed_coord, restore=True,
+                                label="Coupled scaffold reference transport")
+                        try:
+                            prepared = reference_transport.prepare(proposal_coordinates, proposal, projector=transport_projector)
+                        except ValueError as error:
+                            reference_transport.rejected.append({"progress": float(progress), "reason": str(error)})
+                            return ConstraintProposalResult(target=constraint_runtime.fixed_target, applied=False)
+                        reference_transport.commit(prepared, progress=progress)
+                        motif_mobility_controller = candidate_controller
+                        graph_interface_patch_state = candidate_patch
+                        graph_interface_diagnostics = candidate_diagnostics
+                        scaffold_core_topology = replace(old_topology, scaffold_contract=reference_transport.reference)
+                        f["mosaic_scaffold_contract"] = reference_transport.reference.contract
+                        return ConstraintProposalResult(target=proposal.target, coordinates=prepared[0], applied=True)
+
             conditioning_synchronizer = None
             if motif_mobility_controller is not None:
 
@@ -2338,7 +2437,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             epsilon_L = (
                 self.noise_scale
                 * torch.sqrt(torch.square(t_hat) - torch.square(c_t_minus_1))
-                * torch.normal(mean=0.0, std=1.0, size=X_L.shape, device=X_L.device)
+                * torch.normal(mean=0.0, std=1.0, size=X_L.shape, device=X_L.device, dtype=X_L.dtype)
             )
             if self.symmetry_noise_mode == "coupled":
                 epsilon_L = expand_symmetry_coupled_displacements(
@@ -2573,7 +2672,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             # the LAST clean prediction, even after core guidance's time window.
             # Only the denoised estimate is corrected; the diffusion noise law
             # and the noisy state are left to the existing sampler.
-            if self.enable_generated_cross_chain_topology_guidance:
+            if route_guidance_active:
                 if scaffold_core_topology is None or scaffold_core_guidance_config is None:
                     raise RuntimeError("Generated route topology was not initialized")
                 X_denoised_L, route_step = apply_generated_route_guidance(
@@ -3048,6 +3147,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     "anchor_taper_residues": scaffold_core_guidance_config.routing_anchor_taper_residues,
                     "tolerance_angstrom": scaffold_core_guidance_config.routing_tolerance,
                     "continuous_topology_certificate": False,
+                } if not reference_scaffold_active else {
+                    "scope": "complete_reference_protein_ca_layout",
+                    "reference": "declared_full_scaffold_in_common_fixed_frame",
+                    "samples": "all_protein_ca_and_complete_interchain_ca_segments",
+                    "limits": scaffold_core_topology.scaffold_contract.contract["limits"],
+                    "reference_deformation_certificate": "delta_ij-eps_i-eps_j >= minimum_interchain_segment_distance within declared tolerance",
+                    "continuous_topology_certificate": False,
+                    "replaces_straight_chord_ownership": True,
                 },
             }
         if polymer_continuity_active:
@@ -3070,6 +3177,23 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     for step in polymer_continuity_diagnostics
                 ),
             }
+        if reference_scaffold_active:
+            from rfd3_mosaic.validation.scaffold_contract import audit_scaffold_contract
+            reference = scaffold_core_topology.scaffold_contract
+            contract = reference.contract
+            arguments = {}
+            if contract["schema_version"] == 2:
+                arguments = {"backbone_coordinates": X_L[0, reference.backbone_atom_indices].detach().cpu().double().numpy(),
+                             "residue_names": [r["residue_name"] for r in contract["residues"]]}
+            audit = audit_scaffold_contract(contract=contract,
+                coordinates=X_L[0, reference.ca_atom_indices].detach().cpu().double().numpy(),
+                chain_ids=[r["chain_id"] for r in contract["residues"]],
+                residue_numbers=[r["residue_number"] for r in contract["residues"]],
+                fixed_mask=[r["fixed"] for r in contract["residues"]], **arguments)
+            result["scaffold_contract_diagnostics"] = {"schema_version": 1,
+                "contract_met": audit["passed"], "audit": audit,
+                "scope": "final sampler backbone; exported structure independently re-audited by Mosaic worker",
+                "reference_transport": reference_transport.diagnostics() if reference_transport is not None else None}
         return result
 
 

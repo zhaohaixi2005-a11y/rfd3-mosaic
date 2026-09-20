@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 from rfd3_mosaic.pose_optimizer import (
     PoseEvaluation,
     _evaluation_from_manifest,
@@ -445,6 +447,45 @@ class ContinuousPoseOptimizerTestCase(unittest.TestCase):
             initialized.sampling.initial_poses["alpha"].radial_direction,
             initialized.sampling.initial_poses["beta"].radial_direction,
         )
+
+    def test_global_radial_proposals_follow_the_declared_axis(self) -> None:
+        # A proper rigid rotation maps z->x, x->y and y->z. For these frames
+        # the chosen perpendicular bases also correspond under that rotation.
+        rotation = np.array(((0.0, 0.0, 1.0),
+                             (1.0, 0.0, 0.0),
+                             (0.0, 1.0, 0.0)))
+        for symmetry_id in ("C3", "D3", "T"):
+            with self.subTest(symmetry=symmetry_id):
+                proposals = []
+                for axis in ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)):
+                    payload = self.design.model_dump(mode="json")
+                    payload["symmetry"] = {"id": symmetry_id, "axis": axis}
+                    if symmetry_id != "C3":
+                        payload["symmetry"]["secondary_axis"] = (
+                            (1.0, 0.0, 0.0) if axis[2] == 1.0
+                            else (0.0, 1.0, 0.0)
+                        )
+                    design = UserDesignSpec.model_validate(payload)
+                    initialized = initialize_global_seed_layout(
+                        design, sample_index=2, sample_count=8,
+                    )
+                    proposals.append(initialized.sampling.initial_poses)
+                    for pose in initialized.sampling.initial_poses.values():
+                        radial = np.asarray(pose.radial_direction)
+                        self.assertAlmostEqual(float(np.dot(radial, axis)), 0.0)
+                        self.assertAlmostEqual(float(np.linalg.norm(radial)), 1.0)
+                for component in proposals[0]:
+                    original, rotated = (poses[component] for poses in proposals)
+                    np.testing.assert_allclose(
+                        rotated.radial_direction,
+                        rotation @ np.asarray(original.radial_direction),
+                        atol=1e-12, rtol=0,
+                    )
+                    self.assertEqual(original.radius, rotated.radius)
+                    self.assertEqual(original.axial_offset, rotated.axial_offset)
+                    # This fix changes the radial frame only, not the declared
+                    # orientation convention or its existing proposal values.
+                    self.assertEqual(original.orientation, rotated.orientation)
 
     def test_global_initializer_supports_full_polyhedral_orbits(self) -> None:
         tetrahedral = self.design.model_copy(update={"symmetry": "T"})

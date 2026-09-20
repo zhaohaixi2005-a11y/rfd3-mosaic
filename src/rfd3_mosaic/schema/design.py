@@ -603,6 +603,10 @@ class UserSamplingSpec(StrictModel):
 
     initial_pose: UserInitialPoseSpec | None = None
     initial_poses: dict[Identifier, UserInitialPoseSpec] = Field(default_factory=dict)
+    scaffold_artifact: Path | None = Field(
+        default=None,
+        description="Validated complete-scaffold artifact from prepare-scaffold; locked full-group partial diffusion.",
+    )
     timesteps: Annotated[int, Field(ge=2, le=200)] = 200
     designs: Annotated[int, Field(ge=1, le=10000)] = 1
     replicates_per_pose: Annotated[int, Field(ge=1, le=10000)] | None = Field(
@@ -637,6 +641,8 @@ class UserSamplingSpec(StrictModel):
 
     @model_validator(mode="after")
     def reject_ambiguous_pose_declarations(self) -> "UserSamplingSpec":
+        if self.scaffold_artifact is not None and self.execution_backend != "explicit_all_copy":
+            raise ValueError("Complete-scaffold partial diffusion requires execution_backend=explicit_all_copy")
         if self.initial_pose is not None and self.initial_poses:
             raise ValueError(
                 "sampling cannot define both initial_pose and " "initial_poses"
@@ -1419,4 +1425,13 @@ def load_user_design(path: str | Path) -> UserDesignSpec:
         if not root.is_absolute():
             root = source.parent / root
         output = output.model_copy(update={"root": root.resolve()})
-    return design.model_copy(update={"input": structure, "output": output})
+    sampling = design.sampling
+    if sampling.scaffold_artifact is not None:
+        artifact = sampling.scaffold_artifact.expanduser()
+        if not artifact.is_absolute():
+            artifact = source.parent / artifact
+        artifact = artifact.resolve()
+        if not artifact.is_file():
+            raise FileNotFoundError(f"Scaffold artifact does not exist: {artifact}")
+        sampling = sampling.model_copy(update={"scaffold_artifact": artifact})
+    return design.model_copy(update={"input": structure, "output": output, "sampling": sampling})

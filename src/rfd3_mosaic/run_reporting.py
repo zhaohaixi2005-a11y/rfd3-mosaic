@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 import yaml
 
+from rfd3_mosaic.advisory_screening import build_advisory_screening
 from rfd3_mosaic.run_artifacts import resolve_run_artifact
 from rfd3_mosaic.run_index import read_run_record, valid_run_id
 from rfd3_mosaic.run_layout import dated_run_directory
@@ -115,9 +116,7 @@ def resolve_run_reference(
         job_id = path.name if valid_run_id(path.name) else None
         if (path / "experiment_summary.json").is_file() or job_id:
             return RunReference(job_id=job_id, run_directory=path)
-        raise ValueError(
-            "Directory is neither a run nor submission directory: " f"{path}"
-        )
+        raise ValueError(f"Directory is neither a run nor submission directory: {path}")
 
     if not valid_run_id(raw):
         raise FileNotFoundError(f"Run reference does not exist: {path}")
@@ -165,8 +164,7 @@ def resolve_run_reference(
     if submission_candidates:
         return _reference_from_submission(submission_candidates[0])
     raise FileNotFoundError(
-        f"No run directory or submission receipt for JobID {raw} under "
-        f"{search_root}"
+        f"No run directory or submission receipt for JobID {raw} under {search_root}"
     )
 
 
@@ -268,7 +266,7 @@ def _audit_paths(run_directory: Path, worker: dict[str, Any]) -> list[Path]:
             canonical = min(
                 candidates,
                 key=lambda path: (
-                    len(path.relative_to(run_directory).parts),
+                    len(path.relative_to(run_directory.resolve()).parts),
                     str(path),
                 ),
             )
@@ -297,6 +295,12 @@ def _audit_record(path: Path) -> dict[str, Any]:
     passed = payload.get("passed")
     if passed is None:
         passed = payload.get("status") == "passed"
+        if payload.get("status") not in {"passed", "failed"}:
+            record["error"] = "audit report has no valid decision"
+            return record
+    elif not isinstance(passed, bool):
+        record["error"] = "audit report decision is not boolean"
+        return record
     record.update(
         {
             "passed": passed is True,
@@ -313,7 +317,7 @@ def _logical_state(
     scheduler: dict[str, Any] | None,
 ) -> str:
     worker_state = str(worker.get("status") or "").lower()
-    if worker_state in {"completed", "failed"}:
+    if worker_state in {"completed", "failed", "partial"}:
         return worker_state
     scheduler_state = str((scheduler or {}).get("state") or "").upper()
     if scheduler_state in {"PENDING", "CONFIGURING", "SUSPENDED"}:
@@ -546,23 +550,26 @@ def collect_run_status(
             for path in sorted(run_directory.glob(pattern))
         ]
     execution_completed = state == "completed"
-    generated = bool(execution_completed and structures)
+    generated = bool(
+        structures and (execution_completed or worker.get("produced_designs", 0) > 0)
+    )
     contract_flagged_count = worker.get("contract_flagged_designs")
     contract_states = [
         record.get("contract_status")
         for record in worker.get("design_results", [])
         if isinstance(record, dict)
     ]
-    legacy_screening_off = (
-        (worker.get("screening") or {}).get("mode") == "off"
-        and not any(state is not None for state in contract_states)
-    )
+    legacy_screening_off = (worker.get("screening") or {}).get(
+        "mode"
+    ) == "off" and not any(state is not None for state in contract_states)
     if not execution_completed or legacy_screening_off:
         contract_status = "not_evaluated"
     elif contract_states and any(state is not None for state in contract_states):
         contract_status = (
-            "flagged" if "flagged" in contract_states
-            else "met" if all(state == "met" for state in contract_states)
+            "flagged"
+            if "flagged" in contract_states
+            else "met"
+            if all(state == "met" for state in contract_states)
             else "not_evaluated"
         )
     elif worker.get("contract_not_evaluated_designs", 0):
@@ -573,6 +580,74 @@ def collect_run_status(
         contract_status = "met" if passed else "flagged_or_advisory"
     else:
         contract_status = "not_evaluated"
+    evidence_complete = bool(declared_reports) and all(
+        not audit.get("error") for audit in audits
+    )
+    current_counts = {
+        key: worker.get(key)
+        for key in (
+            "contract_met_designs",
+            "contract_flagged_designs",
+            "recommended_designs",
+            "review_designs",
+        )
+    }
+    if not evidence_complete:
+        contract_status = "not_evaluated"
+        current_counts = dict.fromkeys(current_counts)
+    elif any(value is not None for value in contract_states):
+        # Current reports, not cached worker counters, determine the current
+        # verdict. Keep the untouched worker payload as historical evidence.
+        try:
+            screening = worker.get("screening") or {}
+            current = build_advisory_screening(
+                [
+                    resolve_run_artifact(run_directory, str(path), worker)
+                    for path in declared_reports
+                ],
+                mode=screening.get("mode", "advisory"),
+                protocol=screening.get("protocol", "auto"),
+            )
+            contract_status = current["contract_status"]
+            records = worker.get("design_results") or []
+            if records and all(
+                isinstance(record, dict) and record.get("reports") for record in records
+            ):
+                decisions = [
+                    build_advisory_screening(
+                        [
+                            resolve_run_artifact(run_directory, str(path), worker)
+                            for path in record["reports"]
+                        ],
+                        mode=screening.get("mode", "advisory"),
+                        protocol=screening.get("protocol", "auto"),
+                    )
+                    for record in records
+                ]
+                current_counts = {
+                    "contract_met_designs": sum(
+                        item["contract_status"] == "met" for item in decisions
+                    ),
+                    "contract_flagged_designs": sum(
+                        item["contract_status"] == "flagged" for item in decisions
+                    ),
+                    "recommended_designs": sum(
+                        item["recommendation"] == "recommended_for_next_stage"
+                        for item in decisions
+                    ),
+                    "review_designs": sum(
+                        item["recommendation"] != "recommended_for_next_stage"
+                        for item in decisions
+                    ),
+                }
+            else:
+                current_counts = dict.fromkeys(current_counts)
+        except (OSError, TypeError, ValueError):
+            evidence_complete = False
+            contract_status = "not_evaluated"
+            current_counts = dict.fromkeys(current_counts)
+    if not execution_completed:
+        contract_status = "not_evaluated"
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -581,6 +656,7 @@ def collect_run_status(
         "execution_completed": execution_completed,
         "generated": generated,
         "contract_status": contract_status,
+        "current_evidence": {"complete": evidence_complete, **current_counts},
         "result_semantics": "generation_contracts_advice_v1",
         # Compatibility aggregate: all legacy top-level audits passed.  New
         # callers should use execution_completed/generated/contract_status.
@@ -599,9 +675,7 @@ def collect_run_status(
         "artifacts": {
             "structures": structures,
             "logs": logs,
-            "structure_archive": (
-                worker.get("structure_archive") if worker else None
-            ),
+            "structure_archive": (worker.get("structure_archive") if worker else None),
             "plain_cif_directory": (
                 worker.get("plain_cif_directory") if worker else None
             ),
@@ -628,6 +702,19 @@ def format_status_text(status: dict[str, Any]) -> str:
         contract_met = worker.get("accepted_designs")
     if contract_flagged is None:
         contract_flagged = worker.get("rejected_designs")
+    current = status.get("current_evidence")
+    if current is not None and (
+        not current["complete"]
+        or any(
+            record.get("contract_status") is not None
+            for record in worker.get("design_results", [])
+            if isinstance(record, dict)
+        )
+    ):
+        contract_met = current["contract_met_designs"]
+        contract_flagged = current["contract_flagged_designs"]
+        recommended = current["recommended_designs"]
+        review = current["review_designs"]
     verdict = (
         "PASSED"
         if status["passed"] is True
@@ -636,24 +723,27 @@ def format_status_text(status: dict[str, Any]) -> str:
         else "PENDING"
     )
     structures = status.get("artifacts", {}).get("structures") or []
-    generated = status["state"] == "completed" and (
-        (isinstance(produced, int) and produced > 0) or bool(structures)
+    generated = (
+        status.get("generated", False)
+        or status["state"] == "completed"
+        and ((isinstance(produced, int) and produced > 0) or bool(structures))
     )
     result = verdict
     if generated:
         # Generation and user preference are deliberately separate.  Audit
         # counts remain visible below, but Mosaic does not turn a completed
         # raw structure into an overall aesthetic/scientific verdict.
-        result = "GENERATED"
+        result = "GENERATED" if status["state"] == "completed" else "PARTIAL OUTPUT"
     lines = [
         "RFD3-Mosaic run status",
         f"job:        {status['job_id'] or 'unknown'}",
         f"experiment: {status['experiment'] or 'unknown'}",
         f"state:      {status['state']}",
         f"result:     {result}",
+        f"contracts:  {status.get('contract_status', 'not_evaluated')}",
         f"run:        {status['run_directory'] or 'not created yet'}",
     ]
-    if generated:
+    if generated and status["state"] == "completed":
         lines.append("execution:   COMPLETED (raw coordinate output produced)")
     scheduler = status.get("scheduler") or {}
     if scheduler:
@@ -719,8 +809,7 @@ def format_status_text(status: dict[str, Any]) -> str:
                 bounds = assembly_shape.get(key)
                 if isinstance(bounds, dict):
                     requested.append(
-                        f"{label}={bounds.get('minimum')}.."
-                        f"{bounds.get('maximum')} A"
+                        f"{label}={bounds.get('minimum')}..{bounds.get('maximum')} A"
                     )
             if requested:
                 lines.append("shape:       " + ", ".join(requested))
@@ -831,14 +920,10 @@ def format_status_text(status: dict[str, Any]) -> str:
     )
     for path in structures:
         lines.append(f"  - {path}")
-    plain_cif_directory = (status.get("artifacts") or {}).get(
-        "plain_cif_directory"
-    )
+    plain_cif_directory = (status.get("artifacts") or {}).get("plain_cif_directory")
     if plain_cif_directory:
         lines.append(f"plain CIF directory: {plain_cif_directory}")
-    structure_archive = (status.get("artifacts") or {}).get(
-        "structure_archive"
-    )
+    structure_archive = (status.get("artifacts") or {}).get("structure_archive")
     if isinstance(structure_archive, dict) and structure_archive.get("archive"):
         lines.append(
             "CIF archive: "
@@ -847,13 +932,15 @@ def format_status_text(status: dict[str, Any]) -> str:
         )
     if worker.get("error"):
         lines.append(
-            f"failure:     {worker.get('error_type', 'Error')}: " f"{worker['error']}"
+            f"failure:     {worker.get('error_type', 'Error')}: {worker['error']}"
         )
     return "\n".join(lines)
 
 
 def render_html_report(
-    status: dict[str, Any], *, report_directory: Path | None = None,
+    status: dict[str, Any],
+    *,
+    report_directory: Path | None = None,
 ) -> str:
     """Create a dependency-free report that can be copied with the run."""
 
@@ -863,6 +950,17 @@ def render_html_report(
     if contract_met is None:
         contract_met = worker.get("accepted_designs")
     recommended = worker.get("recommended_designs")
+    current = status.get("current_evidence")
+    if current is not None and (
+        not current["complete"]
+        or any(
+            record.get("contract_status") is not None
+            for record in worker.get("design_results", [])
+            if isinstance(record, dict)
+        )
+    ):
+        contract_met = current["contract_met_designs"]
+        recommended = current["recommended_designs"]
     verdict = (
         "passed"
         if status["passed"] is True
@@ -871,13 +969,17 @@ def render_html_report(
         else "pending"
     )
     structures = status.get("artifacts", {}).get("structures") or []
-    generated = status["state"] == "completed" and (
-        (isinstance(produced, int) and produced > 0) or bool(structures)
+    generated = (
+        status.get("generated", False)
+        or status["state"] == "completed"
+        and ((isinstance(produced, int) and produced > 0) or bool(structures))
     )
     verdict_label = verdict.upper()
     if generated:
         verdict = "pending"
-        verdict_label = "GENERATED"
+        verdict_label = (
+            "GENERATED" if status["state"] == "completed" else "PARTIAL OUTPUT"
+        )
     audit_rows = []
     for audit in status["audits"]:
         summary = audit.get("summary")
@@ -906,18 +1008,25 @@ def render_html_report(
             or not status.get("run_directory")
         ):
             continue
-        # Canonical per-design paths remain usable after moving the run tree.
         decision_path = (
-            Path(status["run_directory"]) / "audits" / record["design_id"]
-            / "decision_explanation.md"
-        ).resolve()
-        decision_href = quote(os.path.relpath(
-            decision_path, report_directory or Path(status["run_directory"]),
-        ))
+            resolve_run_artifact(
+                Path(status["run_directory"]),
+                str(record["decision_explanation"]),
+                worker,
+            )
+            .with_suffix(".md")
+            .resolve()
+        )
+        decision_href = quote(
+            os.path.relpath(
+                decision_path,
+                report_directory or Path(status["run_directory"]),
+            )
+        )
         decision_items.append(
             f'<li><a href="{escape(decision_href, quote=True)}">'
-            f'{escape(record["design_id"])}</a> — '
-            f'<code>{escape(str(decision_path))}</code></li>'
+            f"{escape(record['design_id'])}</a> — "
+            f"<code>{escape(str(decision_path))}</code></li>"
         )
     design = status.get("design") or {}
     design_text = (
@@ -928,7 +1037,7 @@ def render_html_report(
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RFD3-Mosaic report — {escape(str(status['job_id'] or 'run'))}</title>
+<title>RFD3-Mosaic report — {escape(str(status["job_id"] or "run"))}</title>
 <style>
 :root{{--bg:#0b1020;--card:#151d31;--text:#e8edf7;--muted:#9ba8bd;
 --accent:#7dd3fc;--pass:#34d399;--fail:#fb7185;--pending:#fbbf24}}
@@ -947,24 +1056,24 @@ th{{color:var(--muted)}} code,pre{{font-family:ui-monospace,monospace;overflow-w
 pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}}
 </style></head><body><main>
 <div class="muted">RFD3-MOSAIC / RUN REPORT</div>
-<h1>{escape(str(status['experiment'] or 'Unnamed experiment'))}</h1>
+<h1>{escape(str(status["experiment"] or "Unnamed experiment"))}</h1>
 <div><span class="badge {verdict}">{verdict_label}</span></div>
 <section class="grid">
-<div class="card"><div class="label">Job ID</div><div class="value">{escape(str(status['job_id'] or 'unknown'))}</div></div>
-<div class="card"><div class="label">Execution</div><div class="value">{escape(status['state'].upper())}</div></div>
-<div class="card"><div class="label">Scheduler</div><div class="value">{escape(str(scheduler.get('state') or 'unavailable'))}</div></div>
-<div class="card"><div class="label">Runtime</div><div class="value">{escape(str(scheduler.get('elapsed') or 'unknown'))}</div></div>
-<div class="card"><div class="label">Geometry contracts met</div><div class="value">{escape(str(contract_met if isinstance(produced, int) else 'unknown'))}/{escape(str(produced if isinstance(produced, int) else 'unknown'))}</div></div>
-<div class="card"><div class="label">Advisory recommendations</div><div class="value">{escape(str(recommended if recommended is not None else 'unknown'))}</div></div>
+<div class="card"><div class="label">Job ID</div><div class="value">{escape(str(status["job_id"] or "unknown"))}</div></div>
+<div class="card"><div class="label">Execution</div><div class="value">{escape(status["state"].upper())}</div></div>
+<div class="card"><div class="label">Scheduler</div><div class="value">{escape(str(scheduler.get("state") or "unavailable"))}</div></div>
+<div class="card"><div class="label">Runtime</div><div class="value">{escape(str(scheduler.get("elapsed") or "unknown"))}</div></div>
+<div class="card"><div class="label">Geometry contracts met</div><div class="value">{escape(str(contract_met if isinstance(produced, int) else "unknown"))}/{escape(str(produced if isinstance(produced, int) else "unknown"))}</div></div>
+<div class="card"><div class="label">Advisory recommendations</div><div class="value">{escape(str(recommended if recommended is not None else "unknown"))}</div></div>
 </section>
 <h2>Measured contracts and advisory checks</h2>
 <table><thead><tr><th>Report</th><th>Status</th><th>Summary</th></tr></thead>
-<tbody>{''.join(audit_rows) or '<tr><td colspan="3">No audits available.</td></tr>'}</tbody></table>
+<tbody>{"".join(audit_rows) or '<tr><td colspan="3">No audits available.</td></tr>'}</tbody></table>
 <h2>Decision rules and parameter evidence</h2>
 <p class="muted">Per-design explanations include actual configurations, contract flags,
 advisory reasons and references to proposal acceptance/rejection traces.
 Controller proxy thresholds are engineering settings, not universal designability criteria.</p>
-<ul>{''.join(decision_items) or '<li>No per-design decision explanation recorded.</li>'}</ul>
+<ul>{"".join(decision_items) or "<li>No per-design decision explanation recorded.</li>"}</ul>
 <h2>Design provenance</h2>
 <div class="card"><pre>{escape(design_text)}</pre></div>
 <h2>Raw generated outputs</h2>
@@ -972,9 +1081,9 @@ Controller proxy thresholds are engineering settings, not universal designabilit
 screens are reported separately and do not erase generated artifacts.</p>
 <ul>{structure_items}</ul>
 <h2>Execution details</h2>
-<div class="card"><div class="label">Run directory</div><code>{escape(str(status['run_directory'] or 'not created'))}</code>
-<div class="label" style="margin-top:14px">Failure</div><div>{escape(str(worker.get('error') or 'none'))}</div></div>
-<p class="muted">Generated {escape(status['generated_at'])}; schema {status['schema_version']}.</p>
+<div class="card"><div class="label">Run directory</div><code>{escape(str(status["run_directory"] or "not created"))}</code>
+<div class="label" style="margin-top:14px">Failure</div><div>{escape(str(worker.get("error") or "none"))}</div></div>
+<p class="muted">Generated {escape(status["generated_at"])}; schema {status["schema_version"]}.</p>
 </main></body></html>"""
 
 

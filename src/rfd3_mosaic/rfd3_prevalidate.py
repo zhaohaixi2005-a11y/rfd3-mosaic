@@ -713,6 +713,16 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
     sequence_is_declared_variable = (
         declared_unfixed_sequence or declared_sequence_redesign
     )
+    partial_conditioning = report.get("partial_scaffold_conditioning_audit")
+    if isinstance(partial_conditioning, dict):
+        # Complete inputs explicitly unfix their generated residues. That is
+        # different from requesting sequence redesign of a coordinate-fixed
+        # seed. Check the complete per-atom policy, not selector nonemptiness.
+        sequence_is_declared_variable = bool(
+            partial_conditioning["expected_variable_motif_sequence"]
+        )
+        if not partial_conditioning.get("passed"):
+            failures.append("complete-scaffold fixed coordinate/sequence masks do not match the declared input selectors")
     if (
         not sequence_is_declared_variable
         and report["fixed_sequence_atom_count"] != report["motif_atom_count"]
@@ -912,6 +922,30 @@ def prevalidate_rfd3_input(
     motif_mask = get_motif_features(atom_array)["is_motif_atom"].astype(bool)
     expected_symmetry_id = str(raw_spec["symmetry"]["id"]).upper()
     extra = raw_spec.get("extra") or {}
+    partial_conditioning_audit = None
+    if extra.get("generated_coordinate_initialization") == "complete_scaffold_partial_diffusion":
+        source = design.atom_array_input
+        expected_coordinate = np.asarray(design.select_fixed_atoms.get_mask(), dtype=bool)
+        expected_sequence = ~np.asarray(design.select_unfixed_sequence.get_mask(), dtype=bool)
+        source_keys = list(zip(source.chain_id.tolist(), source.res_id.tolist(), source.atom_name.tolist()))
+        source_indices = {key: index for index, key in enumerate(source_keys)}
+        built_keys = list(zip(atom_array.chain_id.tolist(), atom_array.res_id.tolist(), atom_array.atom_name.tolist()))
+        if (len(source_indices) != len(source_keys) or len(built_keys) != len(source_keys)
+                or set(built_keys) != set(source_keys)):
+            raise ValueError("Complete-scaffold atom identities changed during native construction")
+        mapping = np.asarray([source_indices[key] for key in built_keys], dtype=int)
+        expected_coordinate, expected_sequence = expected_coordinate[mapping], expected_sequence[mapping]
+        coordinate_mismatches = int(np.count_nonzero(expected_coordinate != atom_array.is_motif_atom_with_fixed_coord.astype(bool)))
+        sequence_mismatches = int(np.count_nonzero(expected_sequence != atom_array.is_motif_atom_with_fixed_seq.astype(bool)))
+        partial_conditioning_audit = {
+            "passed": coordinate_mismatches == 0 and sequence_mismatches == 0,
+            "expected_fixed_coordinate_atom_count": int(expected_coordinate.sum()),
+            "expected_fixed_sequence_atom_count": int(expected_sequence.sum()),
+            "coordinate_mask_mismatch_count": coordinate_mismatches,
+            "sequence_mask_mismatch_count": sequence_mismatches,
+            "expected_variable_motif_sequence": bool(np.any(expected_coordinate & ~expected_sequence)),
+            "basis": "source InputSelection masks joined to built atoms by chain/residue/atom identity",
+        }
     compiler = str(extra.get("compiler") or "")
     constraint_groups = extra.get("motif_constraint_groups") or []
     constraint_orbits = extra.get("motif_constraint_orbits") or []
@@ -1058,6 +1092,7 @@ def prevalidate_rfd3_input(
             atom_array.is_motif_atom_with_fixed_seq.astype(bool).sum()
         ),
         "declared_unfixed_sequence": raw_spec.get("select_unfixed_sequence"),
+        "partial_scaffold_conditioning_audit": partial_conditioning_audit,
         "declared_redesign_motif_sidechains": bool(
             raw_spec.get("redesign_motif_sidechains", False)
         ),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -64,6 +65,138 @@ def find_result_json(run_directory: str | Path) -> Path:
     return candidates[0]
 
 
+def generation_completeness(
+    run_directory: Path,
+    result_jsons: tuple[Path, ...],
+    *,
+    resolved_config: Mapping[str, Any],
+    previous_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Check the frozen requested cohort, independently of audit success.
+
+    Modern runs bind every result to a pose-manifest assignment. Older runs
+    without assignments retain count-based compatibility, explicitly labelled
+    as such; auditing an available subset never changes the requested count.
+    """
+    requested = (resolved_config.get("sampling") or {}).get(
+        "designs", previous_summary.get("requested_designs", 1)
+    )
+    if type(requested) is not int or requested < 1:
+        raise ValueError("Frozen requested design count must be a positive integer")
+    expected: list[str] = []
+    manifest_path = run_directory / "sampling_manifest.json"
+    if not manifest_path.is_file():
+        manifest_path = run_directory / "pose_manifest.json"
+    source = "legacy_requested_count"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assignments = manifest.get("assignments")
+        if not isinstance(assignments, list) or not assignments:
+            raise ValueError("Frozen pose manifest has no design assignments")
+        for item in assignments:
+            values = [
+                item.get(key)
+                for key in ("design_index", "pose_index", "replicate_index")
+            ]
+            if any(type(value) is not int or value < 0 for value in values):
+                raise ValueError("Frozen pose assignment has invalid design identity")
+            canonical = (
+                f"design_{values[0]:05d}_pose_{values[1]:05d}_rep_{values[2]:03d}"
+            )
+            if item.get("example_id", canonical) != canonical:
+                raise ValueError(
+                    "Frozen assignment example_id disagrees with its indices"
+                )
+            expected.append(canonical)
+        if len(set(expected)) != len(expected) or len(expected) != requested:
+            raise ValueError("Frozen pose assignments disagree with requested designs")
+        source = manifest_path.name + ".assignments"
+    else:
+        payload = json.loads(
+            find_compiled_input(run_directory).read_text(encoding="utf-8")
+        )
+        if payload and all(
+            re.fullmatch(r"design_\d+_pose_\d+_rep_\d+", key) for key in payload
+        ):
+            expected = list(payload)
+            if len(expected) != requested:
+                raise ValueError(
+                    "Frozen compiled examples disagree with requested designs"
+                )
+            source = "compiled_example_ids"
+    missing: list[str] = []
+    duplicates: list[str] = []
+    unexpected: list[str] = []
+    result_identities: dict[str, str] = {}
+    if expected:
+        counts = dict.fromkeys(expected, 0)
+        for result in result_jsons:
+            match = re.search(
+                r"(?:^|_)(design_\d+_pose_\d+_rep_\d+)(?:_0)?_model_0\.json$",
+                result.name,
+            )
+            if match is None or match[1] not in counts:
+                unexpected.append(result.name)
+            else:
+                counts[match[1]] += 1
+                result_identities[result.name] = match[1]
+        missing = [key for key, count in counts.items() if count == 0]
+        duplicates = [key for key, count in counts.items() if count > 1]
+    ledger_incomplete: list[str] = []
+    ledger_errors: dict[str, Any] = {}
+    ledger_path = run_directory / "design_outcomes.json"
+    if ledger_path.is_file():
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger_ids = ledger.get("expected_example_ids")
+        if (
+            not expected
+            or not isinstance(ledger_ids, list)
+            or len(ledger_ids) != len(expected)
+            or set(ledger_ids) != set(expected)
+        ):
+            raise ValueError("Design outcome ledger disagrees with frozen assignments")
+        outcomes = ledger.get("designs") or {}
+        ledger_incomplete = [
+            key
+            for key in expected
+            if (outcomes.get(key) or {}).get("generation_status") != "generated"
+        ]
+        ledger_errors = {
+            key: ledger[key]
+            for key in ("inference_error", "ledger_error", "unexpected_results")
+            if ledger.get(key)
+        }
+        if ledger.get("status") != "completed":
+            ledger_errors["generation_status"] = ledger.get("status")
+    artifact_errors = {}
+    for result in result_jsons:
+        try:
+            if not isinstance(json.loads(result.read_text()), dict):
+                raise ValueError("Result metadata must be a JSON object")
+            structures = [p for p in (result.with_suffix(".cif.gz"), result.with_suffix(".cif"), result.with_suffix(".pdb")) if p.is_file()]
+            if not structures or any(p.stat().st_size == 0 for p in structures):
+                raise ValueError("Result structure is missing or empty")
+        except (OSError, ValueError) as error:
+            artifact_errors[result.name] = str(error)
+    return {
+        "complete": len(result_jsons) == requested
+        and not (
+            missing or duplicates or unexpected or ledger_incomplete or ledger_errors or artifact_errors
+        ),
+        "identity_verified": bool(expected),
+        "source": source,
+        "expected_count": requested,
+        "observed_count": len(result_jsons),
+        "missing_example_ids": missing,
+        "duplicate_example_ids": duplicates,
+        "unexpected_results": unexpected,
+        "incomplete_outcome_ids": ledger_incomplete,
+        "ledger_errors": ledger_errors,
+        "artifact_errors": artifact_errors,
+        "result_example_ids": result_identities,
+    }
+
+
 def find_compiled_input(run_directory: str | Path) -> Path:
     """Locate one frozen compiler input across current and legacy layouts."""
 
@@ -114,9 +247,7 @@ def run_result_audits(
         )
     result_path = Path(result_json).resolve()
     report_root = (
-        Path(output_directory).resolve()
-        if output_directory is not None
-        else root
+        Path(output_directory).resolve() if output_directory is not None else root
     )
     if report_root != root and root not in report_root.parents:
         raise ValueError(
@@ -191,8 +322,7 @@ def gate_result_audits(
     failed = failed_audit_paths(list(reports))
     if failed:
         raise RuntimeError(
-            "Required result audits failed: "
-            + ", ".join(path.name for path in failed)
+            "Required result audits failed: " + ", ".join(path.name for path in failed)
         )
     print(
         "Required result audits: PASSED ("
@@ -277,24 +407,18 @@ def infer_existing_run_audits(
     elif kind in {"central_motif", "user_design"}:
         requirements = [AuditRequirement.EXACT_CONSTRAINT_ORBIT]
     else:
-        raise ValueError(
-            f"Unsupported or missing frozen topology kind {kind!r}"
-        )
+        raise ValueError(f"Unsupported or missing frozen topology kind {kind!r}")
 
     if kind == "user_design":
         relations = extra.get("assembly_interface_relations") or []
         if not isinstance(relations, list):
-            raise ValueError(
-                "assembly_interface_relations must be a frozen list"
-            )
+            raise ValueError("assembly_interface_relations must be a frozen list")
         if any(not isinstance(relation, dict) for relation in relations):
             raise ValueError(
                 "Every frozen assembly interface relation must be a mapping"
             )
         if relations:
-            requirements.append(
-                AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS
-            )
+            requirements.append(AuditRequirement.ASSEMBLY_INTERFACE_RELATIONS)
         if any(
             bool(relation.get("required", True))
             and relation.get("satisfaction_stage") == "output"
@@ -303,9 +427,7 @@ def infer_existing_run_audits(
             for relation in relations
         ):
             requirements.append(AuditRequirement.GRAPH_INTERFACE_GUIDANCE)
-        automatic_packing = extra.get(
-            "automatic_symmetric_scaffold_packing"
-        )
+        automatic_packing = extra.get("automatic_symmetric_scaffold_packing")
         if (
             isinstance(automatic_packing, dict)
             and automatic_packing.get("mode") == "symmetric_generated"
@@ -315,9 +437,7 @@ def infer_existing_run_audits(
         core_plan = extra.get("scaffold_core_guidance")
         # Backward-compatible discovery for runs frozen before the independent
         # scaffold-core plan was serialized.
-        if not isinstance(core_plan, dict) and isinstance(
-            automatic_packing, dict
-        ):
+        if not isinstance(core_plan, dict) and isinstance(automatic_packing, dict):
             if (
                 float(automatic_packing.get("intra_chain_weight", 0.0)) > 0.0
                 or float(automatic_packing.get("inter_chain_weight", 1.0)) < 1.0
@@ -330,24 +450,15 @@ def infer_existing_run_audits(
         if not isinstance(orbits, list):
             raise ValueError("motif_constraint_orbits must be a frozen list")
         if any(not isinstance(orbit, dict) for orbit in orbits):
-            raise ValueError(
-                "Every frozen motif constraint orbit must be a mapping"
-            )
-        if any(
-            orbit.get("mobility_mode") == "orbit_rigid"
-            for orbit in orbits
-        ):
-            requirements.append(
-                AuditRequirement.BOUNDED_COMPONENT_MOBILITY
-            )
+            raise ValueError("Every frozen motif constraint orbit must be a mapping")
+        if any(orbit.get("mobility_mode") == "orbit_rigid" for orbit in orbits):
+            requirements.append(AuditRequirement.BOUNDED_COMPONENT_MOBILITY)
 
     mapping = input_path.parent / "mapping.json"
     specification: Path | None = None
     if kind == "interface_seed":
         if not mapping.is_file():
-            raise FileNotFoundError(
-                f"Frozen adapter mapping is missing: {mapping}"
-            )
+            raise FileNotFoundError(f"Frozen adapter mapping is missing: {mapping}")
         specification = _interface_seed_specification(
             compiled_directory=input_path.parent,
             config=resolved_config,

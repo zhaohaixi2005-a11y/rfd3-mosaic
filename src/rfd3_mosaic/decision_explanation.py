@@ -26,6 +26,7 @@ DECISION_POLICY = {
 
 _MECHANISMS = {
     "constraint_runtime_diagnostics": "Exact constraints and projection",
+    "scaffold_contract_diagnostics": "Final complete-backbone contract and coupled seed/reference motion",
     "motif_mobility_diagnostics": "Bounded rigid-component motion and joint acceptance",
     "graph_interface_guidance_diagnostics": "Generated interface attraction, patch selection and acceptance",
     "scaffold_core_guidance_diagnostics": "Generated core, continuity and routing guidance",

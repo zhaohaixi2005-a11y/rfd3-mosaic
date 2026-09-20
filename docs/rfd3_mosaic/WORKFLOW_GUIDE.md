@@ -10,6 +10,12 @@ assembly they intend to build; Mosaic compiles that declaration into explicit,
 replayable RFdiffusion3 inputs. It does not require users to author RFD3 JSON,
 symmetry matrices, Slurm scripts or one YAML file per generated structure.
 
+If a task requires the packing pattern of a supplied complete backbone,
+[`prepare-scaffold`](COMPLETE_SCAFFOLD.zh-CN.md) adds a CPU construction and
+validation step before this lifecycle. It writes an ordinary task bound to
+one complete scaffold for partial diffusion. This experimental path currently
+requires locked, full Cn/Dn assemblies and bounded generated runs.
+
 ## The five-command workflow
 
 After installation and one-time checkpoint/profile setup, an ordinary design

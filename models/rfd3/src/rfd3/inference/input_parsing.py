@@ -439,9 +439,27 @@ class DesignInputSpecification(BaseModel):
                     data["input"], cif_parser_args=data.get("cif_parser_args")
                 )["atom_array"]
 
-                # Center for symmetric design
+                # A complete partial-diffusion scaffold is expressed in its
+                # declared symmetry/contract frame. Re-centering only its
+                # coordinates would invalidate those frozen transforms and
+                # reference coordinates (even Cn may have a nonzero axial COM).
+                complete_scaffold = (data.get("extra") or {}).get(
+                    "generated_coordinate_initialization"
+                ) == "complete_scaffold_partial_diffusion"
+                if complete_scaffold:
+                    declared_symmetry = data.get("symmetry") or {}
+                    if (not exists(data.get("partial_t"))
+                            or declared_symmetry.get("use_declared_frames") is not True
+                            or not declared_symmetry.get("declared_preexpanded_chain_layout")
+                            or not (data.get("extra") or {}).get("mosaic_scaffold_contract")):
+                        raise ValueError(
+                            "Complete scaffold input requires partial diffusion, "
+                            "declared preexpanded frames and a scaffold contract"
+                        )
+                # Preserve historical centering for ordinary symmetric input.
                 if exists(data.get("symmetry")) and data["symmetry"].get("id"):
-                    atom_array = center_symmetric_src_atom_array(atom_array)
+                    if not complete_scaffold:
+                        atom_array = center_symmetric_src_atom_array(atom_array)
 
                 if "atom_id" in atom_array.get_annotation_categories():
                     atom_array.del_annotation("atom_id")
@@ -701,6 +719,15 @@ class DesignInputSpecification(BaseModel):
             atom_array_in = set_common_annotations(
                 atom_array_in, set_src_component_to_res_name=False
             )
+            if (self.extra or {}).get("generated_coordinate_initialization") == "complete_scaffold_partial_diffusion":
+                # Partial inputs bypass contig accumulation, which normally
+                # assigns src_component. Full-chain selectors must survive
+                # this bypass for exact motif membership and atom slots.
+                atom_array_in.set_annotation(
+                    "src_component",
+                    np.asarray([f"{chain}{int(residue)}" for chain, residue in
+                                zip(atom_array_in.chain_id, atom_array_in.res_id, strict=True)]),
+                )
 
             # ... Override motif annotations from pipeline
             zeros = np.zeros(atom_array_in.array_length(), dtype=int)

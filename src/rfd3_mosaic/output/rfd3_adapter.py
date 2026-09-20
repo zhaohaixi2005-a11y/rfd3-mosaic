@@ -2756,6 +2756,7 @@ def compile_assembly_rfd3_input(
         }
 
     caller_extra = dict(extra_metadata or {})
+    scaffold_artifact = caller_extra.pop("mosaic_scaffold_artifact", None)
     native_options = dict(caller_extra.pop("rfd3_native_options", {}) or {})
     declared_cylindrical_constraints = list(
         caller_extra.pop("cylindrical_constraints", ()) or ()
@@ -3244,6 +3245,14 @@ def compile_assembly_rfd3_input(
                 "origin is fixed"
             )
         payload[example_id]["ori_token"] = [0.0, 0.0, 0.0]
+    if scaffold_artifact is not None:
+        from rfd3_mosaic.scaffold_input import apply_scaffold_input
+
+        payload = apply_scaffold_input(
+            payload, artifact_path=Path(scaffold_artifact), output_directory=output
+        )
+        adapter_structure_path = output / payload[example_id]["input"]
+        contig = payload[example_id]["contig"]
     input_path = output / "rfd3_input.json"
     input_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",

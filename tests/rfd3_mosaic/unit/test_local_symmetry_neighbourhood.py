@@ -28,11 +28,13 @@ class _LocalRecordingDiffusion(torch.nn.Module):
         super().__init__()
         self.calls = 0
         self.atom_counts = []
+        self.feature_mappings = []
         self.sequence_head = _ArgmaxSequenceHead()
 
     def forward(self, X_noisy_L, f, **_):
         self.calls += 1
         self.atom_counts.append(X_noisy_L.shape[-2])
+        self.feature_mappings.append(f)
         token_count = int(f["atom_to_token_map"].max().item()) + 1
         logits = torch.zeros(
             (X_noisy_L.shape[0], token_count, 4),
@@ -337,6 +339,9 @@ class LocalSymmetryNeighbourhoodTestCase(unittest.TestCase):
 
         self.assertEqual(diffusion.calls, 2)
         self.assertEqual(diffusion.atom_counts, [6, 6])
+        self.assertTrue(
+            all(f is context.feature_view.features for f in diffusion.feature_mappings)
+        )
         self.assertEqual(result["X_L"].shape, (1, 24, 3))
         self.assertEqual(result["sequence_logits_I"].shape, (1, 24, 4))
         self.assertTrue(torch.all(result["sequence_indices_I"] == 2))
@@ -351,6 +356,17 @@ class LocalSymmetryNeighbourhoodTestCase(unittest.TestCase):
         )
         self.assertTrue(torch.all(rms <= tolerance))
         self.assertTrue(torch.all(maximum <= tolerance))
+
+    def test_local_dynamic_mobility_remains_unsupported(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not yet support dynamic motif"):
+            SampleDiffusionWithSymmetry(
+                gamma_0=0.6,
+                symmetry_execution_backend="local_neighbourhood",
+                preserve_fixed_motif_during_symmetry=True,
+                symmetry_state_mode="orbit_average",
+                symmetry_noise_mode="coupled",
+                enable_orbit_rigid_motif_mobility=True,
+            )
 
 
 if __name__ == "__main__":

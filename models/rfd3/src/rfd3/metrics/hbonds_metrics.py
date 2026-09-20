@@ -11,12 +11,13 @@ from rfd3.constants import (
     SELECTION_PROTEIN,
     association_schemes_stripped,
 )
+from rfd3.transforms.conditioning_base import get_motif_features
 from rfd3.transforms.hbonds import (
     add_hydrogen_atom_positions,
     calculate_hbonds,
 )
 
-from foundry.metrics.base import Metric
+from foundry.metrics.metric import Metric
 from foundry.utils.ddp import RankedLogger
 
 logging.basicConfig(level=logging.INFO)
@@ -164,15 +165,13 @@ def calculate_hbond_stats(
         input_atom_array = input_atom_array_stack[i]
         output_atom_array = output_atom_array_stack[i]
 
-        if not (
-            "active_donor" in input_atom_array.get_annotation_categories()
-            or "active_acceptor" in input_atom_array.get_annotation_categories()
-        ):
-            # print("active donor/acceptor not in annotation")
-            continue
-        if np.sum(input_atom_array.active_donor == 0) and np.sum(
-            input_atom_array.active_acceptor == 0
-        ):
+        # Sparse conditioning is normal. Skip only when neither kind has an
+        # active request, not whenever both arrays contain an unmarked atom.
+        input_atom_array = input_atom_array.copy()
+        for annotation in ("active_donor", "active_acceptor"):
+            if annotation not in input_atom_array.get_annotation_categories():
+                input_atom_array.set_annotation(annotation, np.zeros(len(input_atom_array), dtype=bool))
+        if not (np.any(input_atom_array.active_donor) or np.any(input_atom_array.active_acceptor)):
             continue
 
         # Select possible donors and acceptors for the model output
@@ -222,7 +221,7 @@ def calculate_hbond_stats(
 
         # Ensure the produced hbonds matches input hbond requirements: have the same atom type, residue name, and atom name
         for idx in given_hbond_donors_index:
-            if bool(
+            if np.any(
                 output_atom_array[
                     (output_atom_array.chain_id == input_atom_array.chain_id[idx])
                     & (output_atom_array.res_id == input_atom_array.res_id[idx])
@@ -235,7 +234,7 @@ def calculate_hbond_stats(
                 correct_donors += 1
 
         for idx in given_hbond_acceptors_index:
-            if bool(
+            if np.any(
                 output_atom_array[
                     (output_atom_array.chain_id == input_atom_array.chain_id[idx])
                     & (output_atom_array.res_id == input_atom_array.res_id[idx])

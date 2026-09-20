@@ -55,6 +55,12 @@ Issues = "https://github.com/zhaohaixi2005-a11y/rfd3-mosaic/issues"
 
 
 [project.optional-dependencies]
+scaffold = [
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "pydantic>=2.8",
+    "PyYAML>=6.0",
+]
 rfd3na = [
     "pydantic>=2.8",
 ]

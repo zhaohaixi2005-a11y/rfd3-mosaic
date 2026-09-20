@@ -1,7 +1,9 @@
 # Mosaic 的操作、触发条件、公式与筛选依据
 
 本文对应 `refactor/product-core-v1` 的本地实现，说明 Mosaic 在 RFD3 外增加的决策。
-公式描述代码行为，不代表这些权重和阈值已经经过实验或基准验证。
+第 1–23 节的公式描述代码行为，不代表这些权重和阈值已经经过实验或基准验证。
+**第 24 节另行记录 contig 长度、pose 与螺旋 packing 的离线诊断和待实现方案；
+这些新评分、系数与选择流程尚未接入生产代码，不能当作当前运行规则或已验证功能。**
 **必须同时看本次实例化参数：显式设置、预设和编译器会覆盖默认值。**
 本文没有把 RFD3 学习到的去噪预测解释成一组人工规则，也没有声称覆盖仓库全部实验分支。
 
@@ -15,6 +17,7 @@
 - “为什么这一步被拒绝？”：第 6 节的接受规则及日志复算方法。
 - “为什么 seed 移动但内部不变？”：第 4、7 节。
 - “怎样选起点、保留不同 pose？”：第 3 节及 [任务与 pose](TASK_POSES.zh-CN.md)。
+- “contig 长度怎样影响距离、角度与螺旋 packing？”：第 24 节；注意其中的实现状态。
 - “生成了文件为什么仍判失败？”：第 9 节。
 
 每个决策应能追溯到：**作用对象 → 实际参数 → 公式 → 触发条件 → 判定 → 证据**。
@@ -39,6 +42,7 @@
 | pose 采样、搜索与多样性 | 第 3、14 节 | `compile.py`、`pose_*.py` |
 | 局部邻域、attention 和精度 | 第 20 节 | `local_neighbourhood.py`、`model/layers/block_utils.py`、`alignment.py` |
 | 最终审计、统计和证据 | 第 9、19、21 节 | `rfd3_*_audit.py`、`validation/`、运行及报告模块 |
+| contig 长度—端口联合评分、目标螺旋 packing | 第 24 节 | 离线诊断/待实现；无生产评分入口及已校准系数 |
 
 部分算法属于独立工具或研究路径，是否参与某次任务应由编译配置和运行记录确认。
 本文的覆盖不表示所有模式均已通过 GPU 验证，也不表示每次生成都会同时运行所有算法。
@@ -109,15 +113,19 @@
 
 来源：`src/rfd3_mosaic/pose_optimizer.py`、`output/standalone.py`。
 
-两个连接端点的距离为 `d`，中间生成残基数的几何下界为：
+两个连接端点的距离为 `d`，当前对所需中间残基数采用以下工程估计：
 
 ```text
 n_min = max(0, ceil(d / 3.8 Å) - 1)
-可行的必要条件：n_min <= linker.maximum_length
+此项筛查的通过条件：n_min <= linker.maximum_length
 ```
 
-例如端点相距 38 Å，下界为 9 个中间残基。它来自近似 Cα 步长和三角不等式；
-满足下界不保证能避障、满足端点方向或折叠。直线走廊被挡也不能证明柔性链无法绕行。
+例如端点相距 38 Å，公式给出 9 个中间残基。`3.8 Å` 来自近似 Cα 步长；但当前
+`standalone._terminal_anchor` 优先使用 C 端的 C 和 N 端的 N，缺失时才回退到 Cα
+或残基质心。因此这里是工程轮廓长度筛查，不能把实际实现称为对 Cα 路径严格推导的
+三角不等式下界。runtime route 使用固定 Cα 锚点，两处端点距离可能不同，应按原子
+身份解读。满足此筛查不保证能避障、满足端点方向或折叠；直线走廊被挡也不能证明
+柔性链无法绕行。
 当前优化器把直线走廊障碍（内部弦距固定原子小于 2 Å）放在软排序中。
 
 硬失败计数包含固定块碰撞、必需界面失败、linker 长度不足和必需输出目标失败。
@@ -142,6 +150,12 @@ score = (not feasible, hard_count, 失败必需界面数, 不可行连接数,
 后三类角度/走廊/端点指标缺失时相应字段为 `+inf`；最后的组间距离缺失时字段为
 `-inf`，这是当前实现的缺失值排序约定，不是物理测量值。轴线净空仅报告，不参与该排名。
 
+**当前局限：**角度与净空在这个字典序中拥有高于跨度的绝对优先级；角度改善很小，
+也可能压过跨度增大很多。它不是蛋白折叠自由能，不能据此宣称最靠前的 pose 最容易
+形成紧凑 scaffold。`prepare-poses` 当前进行采样、评分、冻结与去重，并没有调用
+`optimize_design_poses` 做局部优化。评分通过、经过优化、真实生成成功是不同结论。
+净空、跨度与朝向之间的有限取舍仍需用同长度、同 diffusion seed 的对照校准。
+
 任务级去重则收集不同刚体实例之间的 Cα 距离，排序为向量 `s`，计算：
 
 ```text
@@ -151,6 +165,8 @@ D_pose(A,B) = sqrt(mean((s_A-s_B)²))
 
 默认 `minimum_separation=1 Å` 是描述符分辨率。整体平移/旋转不制造差异，但不同形状
 可能有同样的距离谱；它不是生成骨架 RMSD，也不保证后续可移动模式的最终多样性。
+
+按 contig 长度联合评价目标折叠相容性的新增方案见第 24 节；它尚未替换上面的实际 `score`。
 
 ## 4. 扩散中，什么是始终被约束的
 
@@ -682,6 +698,10 @@ backbone/junction≤.02、exclusivity≤.05、最小 Cα 距离≥3.5 Å。
 | 采样过程的调用时机 | [inference_sampler.py](../../models/rfd3/src/rfd3/model/inference_sampler.py) |
 | pose 可行性和排序 | [pose_optimizer.py](../../src/rfd3_mosaic/pose_optimizer.py) |
 | 同任务起点冻结与跨任务去重 | [pose_tasks.py](../../src/rfd3_mosaic/pose_tasks.py) |
+| 完整骨架任务、参考对称帧与完整 seed 刚体拟合 | [scaffold_tasks.py](../../src/rfd3_mosaic/scaffold_tasks.py)、[scaffold_pose.py](../../src/rfd3_mosaic/scaffold_pose.py)：第 25 节 |
+| CPU 内部坐标闭合、参考形状目标及独立骨架验收 | [scaffold_builder.py](../../src/rfd3_mosaic/scaffold_builder.py)：`repair_backbone` |
+| 冻结骨架 artifact、精确原子映射与 partial 输入 | [scaffold_input.py](../../src/rfd3_mosaic/scaffold_input.py)：`apply_scaffold_input` |
+| 完整曲线合同的运行时残差与独立最终检查 | [reference_scaffold.py](../../models/rfd3/src/rfd3/inference/symmetry/reference_scaffold.py)、[scaffold_contract.py](../../src/rfd3_mosaic/validation/scaffold_contract.py)、[rfd3_scaffold_audit.py](../../src/rfd3_mosaic/rfd3_scaffold_audit.py) |
 | 最终合同与建议映射 | [advisory_screening.py](../../src/rfd3_mosaic/advisory_screening.py) |
 | 每个设计的证据索引 | [decision_explanation.py](../../src/rfd3_mosaic/decision_explanation.py) |
 
@@ -849,7 +869,8 @@ n_selected=max(floor((l+u)/2),r)
 l>u 或 n_selected>u ⇒ 拒绝
 ```
 
-区间中点是默认长度偏好，达到轮廓长度下界是几何必要条件。绑定后所有同组连接使用同一
+区间中点是默认长度偏好，达到这里的估计下界是当前工程轮廓筛查的要求；C/N 锚点代入
+名义 Cα 步长的局限见第 3 节，不等于第 24.2 节严格步长上限推导。绑定后所有同组连接使用同一
 确定长度。结果带出选择策略和每个物理实例的下界；此操作不证明柔性链能避障或折叠。
 
 ### 12.5 关系兼容性与图候选排名
@@ -922,6 +943,24 @@ frame 因序列化出现微小非正交时，SVD 极分解投影到最近正旋�
 原子的目标必须在声明容差内一致；冲突时报错，不按组输入顺序覆盖。
 
 移动模式更新的是刚体目标 `X_target`，更新被提交时同时刷新模型条件；不能只改输出坐标。
+这里的“刷新”必须抵达**下一次实际调用 diffusion model 的特征字典**，而不只是
+runtime 内部另一个同名字段。设第 k 次已提交的完整 seed 目标为 `T_k`，固定原子集合为 M，
+模型读取的 motif 坐标为 `F_k`，则每次去噪前必须满足：
+
+```text
+F_k[i] = T_k[i]                       i ∈ M
+group_target_k[g,i] = T_k[i]          i 属于固定组 g
+accepted move: T_(k+1) = proposed target，并同步 F_(k+1)
+rejected move: T_(k+1) = T_k，F_(k+1) = F_k
+```
+
+这是数据一致性约束，没有新能量或可调权重。移动模式使用本次设计私有的 runtime 特征，
+避免改变下一个 design 共用的冻结输入；`denoiser_f` 必须在该私有字典创建之后绑定。
+chunked pairwise 路径每次从此字典的 `motif_pos` 重算 motif 距离条件。
+单看“conditioning 刷新次数”或最终 seed RMSD 不能证明模型读到了新条件；回归检查须
+捕获实际 model 调用参数，并检查接受和拒绝更新之后的值。当前 `local_neighbourhood`
+仍明确不支持动态 motif mobility；该修正不扩展这一能力。
+
 生命周期必须为 `created→running→finalized`，重复初始化或终结后继续更新报错。
 最终固定目标检查：
 
@@ -1595,7 +1634,7 @@ COMPLETED 只表示进程层状态，不替代结构审计。存在 CIF 不等�
 软件没有凭空得到全原子 Rosetta 能量、真实结合自由能、独立回折叠成功率、结构聚类多样性
 或实验成功率。只有相应工具实际运行且输出可追溯时，才能将这些指标加入结果声明。
 
-## 22. 如何维护这份公式说明
+## 如何维护这份公式说明
 
 本文解释的是相对 `551a901` 的新增/修改算法在 `e20a04e` 实现中的重要数学与决策，
 并不把上游原有神经网络内部每一层重新推导。神经网络、扩散日程等未改变部分仍属于
@@ -1889,3 +1928,669 @@ Cn/Dn 编译连接图、多 seed、packing、精确对称和独立最终审计�
 [motif drag](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/blob/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b/scripts/run_inference.py#L105)、
 [接触矩阵](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/blob/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b/rfdiffusion/potentials/manager.py#L6)、
 [官方示例](https://github.com/Khmelinskaia-Lab/RFdiffusion_interfaceseed/blob/a81ed1930941e95b3c3c5dbbc9e790bb5e80791b/examples/design_interfaceseed_oligos.sh)。
+
+## 24. contig 长度、共享 pose 与单体螺旋 packing：诊断、方案与实现边界
+
+**状态更新：2026-09-21。第 25 节已经实现模板条件下的联合 CPU 构建、partial 输入、真实骨架验收
+和共同参考移动。本节保留早期诊断与候选公式；通用结构库枚举和经验系数仍未实现或校准。**
+本节保留问题证据、设计目标和方法边界，具体已执行公式以第 25 节为准。
+代码、CPU 几何实例或文档完成均不表示 GPU 生成效果已经验证。
+
+| 内容 | 当前状态 | 是否影响当前生成 |
+|---|---|---|
+| 同任务共享一个初始 pose、逐 design 改扩散 seed | 已实现；第 21.2 节 | 是 |
+| 按工程轮廓长度检查、静态评分、去重并冻结 pose | 已实现；第 3 节 | 是 |
+| 链内接触、Rg、逐残基支撑及最差窗口引导 | 已实现；第 8、17 节 | 以运行配置为准；不等于指定螺旋折叠 |
+| 本节参考结构的端口、固定片段和螺旋接触测量 | 已完成离线计算 | 否 |
+| 长度—位置—旋转联合评分及紧致度下界筛选 | 待实现、待校准 | 否 |
+| 模板先验、完整 seed 刚体拟合、CPU 闭合后冻结共享 pose | 完整 Cn/Dn 联合构建及有界移动已实现；第 25 节 | 仅显式准备并绑定 scaffold artifact 时 |
+| 完整 scaffold partial 输入、声明的块间支撑与曲线合同 | 受限分支已实现；不是二级结构或通用折叠保证 | 以第 25 节触发条件为准 |
+| 通用结构家族库枚举 | 未实现 | 否 |
+| 移动 seed 时参考/生成区共同变化及重验 | 已实现；25.6 | 绑定移动 scaffold artifact 时 |
+
+### 24.1 作用对象与 contig 长度
+
+用户目标是让同一单体中的多个螺旋形成有支撑的折叠，保留固定 seed 中的 sheet，
+减少主要靠孤立长螺旋跨接的结果。它不等于增加螺旋比例，也不要求所有螺旋短、反平行，
+或全部属于严格的 coiled-coil；后者还需超螺旋和侧链 packing 等额外证据。
+
+每个双锚生成区间 e 使用自己的**实际生成长度** `L_e`，单位 aa。不能把另一个 linker、
+单端 tail 或另一条链的残基数加进该区间的长度预算。区间若声明为 80–100，需按实际
+绑定长度评价；若要求一个 pose 覆盖整个范围，就检查所需支持的各长度，不能只用 100。
+对称 tie group 的长度约束保持一致，不得为提高评分而突破用户声明范围。
+
+单体紧致度按**最终物理聚合物链**计算。本任务中，一个单体的两个固定片段来自两个
+不同 interface seed，不能误把一个原始 interface seed 的两条链当成完整单体。
+通用实现须读取实际 chain/atom mapping 和连接图，不能写死本例的 31+30 个残基。
+
+### 24.2 长度可达性与归一化跨度
+
+两端固定 Cα 之间有 L 个生成残基时，共有 L+1 个相邻 Cα 步长。由三角不等式：
+
+```text
+d_CA <= sum_(j=1..L+1) step_length_j
+若每一步显式允许的上限为 b_max_j：d_CA <= sum_j b_max_j
+若统一上限为 b_max：d_CA <= (L+1)*b_max
+```
+
+**拟议拒绝条件：**在明确采用的主链几何模型下，端点距离超过全部允许步长上限之和。
+这是该模型的必要条件，通过不保证能避障、满足端点方向或折叠。
+`3.8 Å` 是名义 Cα 步长，不是普适的严格上限。第 3 节的当前实现优先使用 C/N 锚点
+再代入 3.8，因此仍是工程轮廓筛查，不能冒称上述严格 Cα 证明已经实现。
+
+可额外报告一个无量纲描述符：
+
+```text
+rho = d_CA / [3.8 Å * (L+1)]
+```
+
+它表达相对名义轮廓的伸展程度，**不是越小越好的折叠分数**，也没有新增通用通过阈值。
+本次 PI25/PI31 为 0.1308/0.1343，当前 p0/p1 locked 为 0.1215/0.1213；只最小化该值，
+反而会偏好尚未形成期望 packing 的当前摆放。不能用自由链的 `sqrt(L)` 关系或
+`distance = a*L` 直接宣称预测了折叠螺旋 scaffold 的最佳跨度。
+
+### 24.3 固定片段对完整单体紧致度的严格下界
+
+设最终单体含 m 个固定 Cα 坐标 `x_i`、L 个生成 Cα，`N=m+L`：
+
+```text
+xf = mean_fixed(x_i)
+Rg_fixed² = sum_fixed ||x_i-xf||² / m
+Rg_full² >= sum_fixed ||x_i-xf||² / (m+L)
+         = m/(m+L) * Rg_fixed²
+Rg_lower = sqrt(m/(m+L)) * Rg_fixed       # 单位 Å
+```
+
+推导：对任意完整单体质心 c，固定点贡献为
+`sum_fixed||x_i-xf||² + m||xf-c||²`，生成点贡献非负。允许生成点全部重合在 xf 时
+可取等号，但这忽略了连续性和排斥，通常不能物理实现；所以这是乐观下界，不是预测 Rg。
+
+**拟议触发条件：**只有用户或明确折叠目标声明 `Rg_full <= R_target`，且
+`Rg_lower > R_target` 时，才可据此拒绝当前 pose。没有指定目标时只报告；不能无限压缩装配。
+对可移动模式需在实际候选刚体坐标上重算，不能沿用初始值。
+
+### 24.4 端口相对位姿与完整固定片段叠合
+
+在每个固定端点残基上，用 N、CA、C 建立右手正交坐标系。以 CA 为原点 p：
+
+```text
+ex = normalize(C - CA)
+ey = normalize((N - CA) - dot(N - CA, ex)*ex)
+ez = cross(ex, ey)
+F = [ex, ey, ez]                    # 三个列向量
+```
+
+缺原子、非有限坐标或近共线时，该描述符应标记不可用，并说明原因；不能用零误差代替。
+两端框架为 Fa/Fb、原点为 a/b：
+
+```text
+u(P) = Fa.T @ (b-a)                 # 完整相对平移，单位 Å
+Q(P) = Fa.T @ Fb                    # 完整相对旋转，SO(3)
+theta(R) = acos(clip((trace(R)-1)/2, -1, 1))   # 弧度
+```
+
+它们对整体平移和旋转不变，包含跨度、方向和扭转。目标不是让两个切线对准端点直线，
+也不是令相对旋转趋零；回折 scaffold 可以需要不同方向。
+
+当参考 k 与候选有明确对应的 m 个固定 Cα 时，可另外计算：
+
+```text
+e_k = min_(R in SO(3), t) sqrt(sum_i ||x_i - (R*y_i_k+t)||² / m)
+delta_L_k = L - L_k
+```
+
+这要求对同一最终单体的全部固定片段**一起做一次刚体叠合**，禁止反射，禁止两个片段
+各自独立叠合。小误差表示固定布局接近一个已有 scaffold 的实例，不等于折叠概率。
+没有明确残基对应的其他 seed，不能套用 PI 结构的 RMSD。没有参考代表未知，不代表失败。
+
+### 24.5 contig 长度—位置—旋转的联合软评分
+
+**待实现且无已校准默认参数。** 对一个双锚生成区间，参考 k 同时携带
+`(L_k, u_k, Q_k)` 和其适用的 seed/端口/目标折叠信息：
+
+```text
+E_e(P,L_e) = min_(k in compatible_references) [
+    ((L_e-L_k)/s_L)²
+  + ||u_e(P)-u_k||²/s_x²
+  + theta(Q_k.T @ Q_e(P))²/s_theta²
+]
+```
+
+| 系数 | 含义 | 单位 | 数值状态 |
+|---|---|---|---|
+| `s_L > 0` | 生成长度差的比较尺度 | aa | 待校准，无通用默认值 |
+| `s_x > 0` | 相对位置差的比较尺度 | Å | 待校准，无通用默认值 |
+| `s_theta > 0` | 完整相对旋转差的比较尺度 | rad | 待校准，无通用默认值 |
+
+偏差等于对应尺度时，该项贡献 1 分；尺度越小，该偏差受到的惩罚越大。三项必须与
+**同一个参考 k**比较，不能分别取不同参考的最佳长度、位置和角度。当前公式采用各向
+同性位置尺度和平方误差，是可审查的经验相容性先验，不是物理能量或经统计拟合的概率。
+
+若一个目标折叠包含多个生成段，参考 k 必须携带全部区间的联合布局。一个明确的候选
+聚合方式是对独立对称边轨道集合 O 取平均，再对同一个联合参考取最小值：
+
+```text
+E_joint_pose(P,{L_e}) = min_k mean_(e in O) E_components(e,k)
+```
+
+其中 `E_components(e,k)` 是上式方括号内三项的和，**内部不再对 k 取最小值**。
+按独立边轨道归一化，避免 Cn 的副本数本身放大权重；另行报告逐边项和最差边，不能用
+平均值掩盖坏连接。完整装配还需验证各边组合是否相容；局部匹配不证明全局可实现。
+
+**拟议触发与失败语义：**只有显式选择目标折叠先验、具有兼容参考和明确系数时，才启用
+该软排名；仍先执行固定碰撞、必需界面、长度可达性等独立检查。分数低不能抵消硬失败。
+缺参考、缺合法端口框架、长度/拓扑超出参考适用域应标记未评分或未知，不得当成零分
+通过，也不得仅因参考库有限就作物理不可行的拒绝。当前没有自动拒绝分数阈值。
+
+长度变化改变参考相容性与候选排名；不能按长度缩放 seed 坐标、键长或内部 interface。
+四个精选 PI 不足以校准三项尺度。应先冻结目标 packing 的标签定义，用更多正负样本
+及不同长度的配对生成结果校准，记录数据版本、适用域和留出验证；不能拿示例最小值
+直接设为所有 Cn/Dn、所有 seed 的标准。分数接近时保留不同 pose/参考簇。
+
+### 24.6 不同螺旋之间的同链支撑：离线描述符
+
+现有 core 已有非局部接触、Rg 和最差支撑窗口，但没有把“同一单体的不同螺旋片段
+彼此 packing”作为本节所述的独立目标。当前接触 deficit 下降不能直接证明这个目标达到。
+
+本次离线测量使用 PyMOL `cmd.dss()` 指派二级结构，按连续 H 划段，仅保留长度至少
+8 aa 的 H 段用于该描述符。设 `h(i)` 为 H 段身份，`r_i` 为链内残基序号：
+
+```text
+supported(i) = 1, 若存在 j 满足：
+    same_physical_chain(i,j)
+    h(i) != h(j)，且两者属于受检 H 段
+    abs(r_i-r_j) >= 8
+    ||CA_i-CA_j|| < 8 Å
+否则 supported(i) = 0
+
+coverage(H) = sum_(i in H) supported(i) / |H|
+longest_unsupported(H) = H 内 supported(i)=0 的最长连续残基数
+coverage_all = sum_H sum_(i in H) supported(i) / sum_H |H|
+```
+
+`coverage_all` 按残基数加权，不能直接平均各 H 的比例。本次汇总的是含生成残基的
+受检 H 段；这些实例的相应 H 段均在生成区。未来跨固定/生成边界的 H 段须明确报告
+生成掩码与汇总范围，不能混称全部都是生成残基。
+未检测到受检螺旋时，覆盖率应标记不适用，不能算作 100% 通过。
+
+8 Å、序列间隔 8、H 段长度至少 8 是本次公开的描述符设置，不是已验证的通用合格线。
+不计同一螺旋的局部接触，不让其他链或跨链 seed 界面接触替代单体内部支撑；同一物理链
+中的固定 H 段可以提供支撑，所以这项并非只计算生成 H 与生成 H 的接触。sheet 与 helix
+接触不计入这项专门描述，也不因此否认其结构价值。长螺旋本身不直接判失败。
+它不测侧链疏水埋藏，不识别严格 coiled-coil，不证明序列可设计性；二级结构指派改变
+可能影响分段。该指标尚未进入生产 loss 或 required 审计。
+
+### 24.7 实际坐标证据与局限
+
+来源：Hoyeung `obligate_oligomer` 的 PI25/PI31/PI56/PI57 展示骨架，以及
+2026-09-20 `route-guard-lhd-c3-interface-p{0,1}-{locked,guided}-d000` 四个结果。
+下表为链 A，离线报告保留全部链。参考每链固定两端序列为 31+30 aa，与当前
+7mwr 的 B211–241/A165–194 对应。
+
+| 结构 | 每链生成 aa | 受检生成 H 段长度 | 其他 H 段接触覆盖 | 全链 Cα Rg |
+|---|---:|---|---:|---:|
+| PI25 / C3 | 90 | 17, 10, 14 | 70.7% | 16.26 Å |
+| PI31 / C3 | 85 | 22, 17 | 82.1% | 15.60 Å |
+| PI56 / C4 | 88 | 15, 14, 13, 14 | 80.4% | 14.61 Å |
+| PI57 / C4 | 79 | 21, 15 | 86.1% | 14.98 Å |
+| Mosaic p0 locked | 100 | 16, 48 | 23.4% | 24.15 Å |
+| Mosaic p0 guided | 100 | 13, 48 | 27.9% | 22.67 Å |
+| Mosaic p1 locked | 100 | 49, 17 | 39.4% | 27.21 Å |
+| Mosaic p1 guided | 100 | 53, 13 | 28.8% | 27.39 Å |
+
+当前四例最长 H 中有连续 19–22 个残基缺少上述其他 H 接触；两个 C3 参考的各受检
+生成 H 最长缺口为 1–3。数据支持比较单体内部组织方式，不能推出“超过 22 aa 即不合理”。
+
+| 结构 | 两端固定 Cα 距离 | 同单体 61 个固定 Cα 的 Rg | 全链 Rg 严格下界 |
+|---|---:|---:|---:|
+| PI25 | 45.22 Å | 20.05 Å | 12.74 Å |
+| PI31 | 43.90 Å | 17.62 Å | 11.39 Å |
+| Mosaic p0 locked | 46.62 Å | 27.30 Å | 16.80 Å |
+| Mosaic p1 locked | 46.54 Å | 29.52 Å | 18.17 Å |
+
+端点距离相似，完整固定片段分布却不同。对同一单体的全部 61 个固定 Cα 一起叠合，
+p0/p1 locked 与 PI25 的 RMSD 分别为 10.71/15.09 Å。参考记录的是最终骨架几何，
+未证明是作者最初输入；locked 的固定几何可以代表当前初始摆放，guided 最终几何不能
+当作初始输入。尚不能证明 pose 是生成差异的唯一原因。
+
+四个 PI 是精选参考，不是未经筛选的完整生成队列；未找到对应原始任务记录，不能据此
+推断作者参数、partial diffusion 历史或成功率。参考生成部分是 GLY/backbone，不能
+用这些文件判断设计序列的侧链质量。对完整跨链 interface 的 244 个 N/CA/C/O 原子
+进行无异常点剔除的刚体叠合，参考相对原始 seed 的 backbone RMSD 为 0.32–0.46 Å、
+Cα RMSD 为 0.21–0.33 Å；参考不是精确保留原 seed 的替代输入。若用作模板，必须
+恢复原始 seed 内部几何并验证接头，而不是放松固定合同。
+
+离线可复算材料保存在开发工作区 `rfd3-mosaic-review/architecture-review-2026-09-20/`：
+`compare_reference_ports.py`/`reference_port_geometry.json`、
+`compare_reference_helices.py`/`reference_helical_packing.json`、
+`reference_seed_backbone_fit.json` 和 `HOYEUNG_PI_REFERENCE_PROVENANCE.zh-CN.md`。
+这些属于开发审查证据，不是本仓库安装后自动提供的生产模块或运行日志。
+
+### 24.8 如何选共享 pose、如何保持已有约束
+
+**方案修订：**用户要求避免反复 GPU 搜索和调权重，因此不以逐 pose 的 GPU 小批试跑
+作为默认选 pose 的工作流。第 24.10 节规定先在 CPU 上联合构造完整骨架与 pose，
+输出具体坐标和几何检查结果，再冻结实现、参数、输入和判据，执行统一的模型验收。
+第 24.5 节参考评分仅可辅助缩小候选范围，不能替代骨架构造及闭合证据。
+本次没有提交新的 GPU 任务；这里也没有规定未经授权的新任务数量或预算。
+验收比较采用预定 seed 列表、精确 contig 长度和生产运动模式，不能拿不同模式的
+最佳图片或未完成早期轨迹比较，更不能每看一批结果就改阈值并重复报“通过”。
+
+对候选 p，预先冻结单体支撑、固定 seed、对称、连续性、碰撞/路线等判据后：
+
+```text
+observed_hit_rate(p) = target_met_count(p) / completed_and_audited_count(p)
+```
+
+分母为零时不定义该比例；缺审计/运行失败单独列出，并同时报告 requested、generated、
+audited、target_met，不能删除失败记录提高表观命中。报告样本量和统计不确定性，
+最终用未参与选择的 seeds 验证，减少小样本挑选偏差。该比例不是实验成功率。
+
+正式任务的 1000 个 designs 继续共用同一个已冻结初始 pose，验收队列属于单独任务。
+locked 保持初始 seed 位置；可移动模式只允许完整 seed 的 SE(3) 更新，并按真实 Cn/Dn
+连接图和对称作用展开。若声明保持某个新的紧致度/参考相容范围，刚体候选验收也要复核
+该范围；**这一新增复核当前尚未实现**。内部固定几何、界面身份及已有路线/碰撞合同
+不因目标 fold 而放宽。任务间保留不同初始 pose 不证明可移动结果永不收敛。
+
+未来实现应记录每条边实际 L、端口原子身份、u/Q、参考 ID/版本及适用域、三个原始
+误差项、三个系数、逐项分数、最差边、硬失败及未知原因，并记录每个候选的完整生成计数。
+这是拟议日志要求；当前 `decision_explanation` 和旧结果尚不包含这套新增评分证据。
+
+### 24.9 筛选与生成能力的边界、方法依据
+
+新增最终过滤器只改变保留集合，不提高生成命中率；pose 先验可改善输入选择，
+但不能单独保证当前 RFD3 生成指定的 helix–turn–helix 或螺旋束。
+现有 core 的远距离 sigmoid 接触梯度会衰减，受保护的小步坐标修正不等于可靠重写
+折叠拓扑；增加总权重不是已验证的修复。默认网络中的 non-loopy 条件也不是螺旋束条件。
+
+后续路径需要分别验证：具有训练支持的 SS/adjacency 折叠条件；或兼容完整 scaffold
+模板加受控 partial diffusion；或改进结构引导。当前 Mosaic 尚无完成的通用模板映射、
+固定遮罩及 partial diffusion 用户工作流。不能把 RFdiffusion1 的 YAML 直接接到
+当前 RFD3 权重。第 25 节实现了条件受限的模板工作流；它不等于通用折叠条件或效果验证。
+
+- [A kinematic view of loop closure](https://pubmed.ncbi.nlm.nih.gov/14735570/)：固定前后结构的几何边界共同约束链段闭合；不提供本节系数。
+- [RFdiffusion 原始论文](https://www.nature.com/articles/s41586-023-06415-8)及[官方 Fold Conditioning](https://github.com/RosettaCommons/RFdiffusion#fold-conditioning)：折叠条件需要相应模型训练支持；不证明 Mosaic 已支持同样输入。
+- [RFD3 官方输入说明](https://github.com/RosettaCommons/foundry/blob/production/models/rfd3/docs/input.md)：区分 non-loopy 与 partial diffusion；不等于 Mosaic 通用模板工作流。
+- [De novo design of obligate ABC-type heterotrimeric proteins](https://www.nature.com/articles/s41594-022-00879-4)：显式螺旋参数、螺旋束和 hairpin 设计的实例；不证明 Hoyeung PI 的原始生成流程或本项目成功率。
+
+本节的公式公开了建议怎样比较候选，**没有宣称这些系数已校准、这些新判据已生效，
+或外观符合参考就等于可设计、可折叠和可实验实现。**
+
+### 24.10 联合构造与生成：设计目标与实现边界（首版见第 25 节）
+
+**范围与状态。** 本节将 pose 选择与单体折叠统一为一个构造问题，替代“先摆 seed，
+再靠多个引导损失修形状”的不完整方案。第 25 节已实现模板先验下的联合构造：先拟合
+完整 seed 的刚体 pose 初值，再联合优化 seed 与生成区，最后独立检查和冻结输入。这不是
+下述所有离散结构变量的同时优化，也没有实现通用骨架库枚举；有界 seed 运动的共同参考变换见 25.6。
+不支持的组合明确拒绝，不能悄悄降为 locked，或宣称任意长度和任意 seed 已解决。
+
+**A. 变量与精确不变量。** 读取实际连接图及每段精确生成长度 L_e。每个完整 interface
+seed 只有一个刚体变量 T_s，对称副本由已编译群作用 G_g 产生：
+
+```text
+x_(s,g,a) = G_g T_s x0_(s,a),   T_s in SE(3)
+对生成区间 e：sum_j helix_length_(e,j) + sum_k turn_length_(e,k) = L_e
+```
+
+固定 sheet 保持在 seed 内；若目标家族还包含生成 sheet/其他段，长度守恒式相应计入。
+长度由明确的骨架片段库/参数化结构家族分配，结构家族同时给出哪些不同 SSE 应接触。
+不能让长度只决定环半径，也不能要求所有任务具有相同螺旋数、平行关系或参考形状。
+每个候选必须公开家族、长度分配、SSE 接触图及所用几何范围；这些范围是设计假设或
+结构库统计，不是未经证明的通用物理阈值。搜索有显式预算，避免无限枚举。
+
+**B. 联合闭合。** 一起求解 seed 刚体、螺旋块位姿与生成区内部自由度 q。圆柱或 Cα
+折线只能初始化，发布的候选必须具有完整主链。每个接头满足真实端点框架闭合：
+
+```text
+F_FK(q; left_fixed_frame) = right_fixed_frame
+||translation(F_target^-1 F_FK)|| <= epsilon_position
+theta(rotation(F_target^-1 F_FK)) <= epsilon_rotation
+```
+
+FK 是由明确键几何和主链内部坐标构造得到的前向运动学；角度阈值以弧度计。
+还要分别检查接头 C–N 键长、键角、肽键构型及链内非键碰撞，不能用端点 Cα 近邻代替。
+末端接头涉及生成原子的自由度可以变化，固定 seed 自身的原子不能改变。
+可复用经过验证的 loop-closure 实现，但当前 `feasibility_restoration.py` 仅绑定长度，
+不是已有闭合求解器。CPU 搜索的中间试探可以未闭合或有碰撞；最终通过独立检查后才
+发布。seed 刚体与精确对称始终由参数化保持，不能把 runtime 的全部逐步不退步规则
+直接照搬到离线求解器，导致它无法离开局部状态。
+
+**C. 输出几何实例，不只输出分数。** CPU 必须给出完整坐标 X_template、固定/生成
+身份映射、连接图、SSE 接触图和逐项检查报告。它能证明该实例在规定数值容差内满足
+长度、固定几何、对称、闭合、已检查的碰撞和目标几何合同；不能证明序列可设计性。
+没有生成侧链时不能声称完整全原子 packing 已通过。未找到解报告为“指定结构家族和
+预算内未找到解”；只有第 24.2–24.3 节等明确必要条件违反时，才可报告对应要求不可行。
+
+**D. 同一骨架必须进入生成。** 若最后只交给 RFD3 固定 seed，CPU 构造的三级结构信息
+会丢失。优先接入当前权重已经具备的完整骨架 partial diffusion：
+
+```text
+X_sigma0 = project_symmetry_and_seed(
+    X_template + sigma0 * M_generated * epsilon_symmetry_coupled
+)
+```
+
+固定原子不加噪声；生成部分保持可变，同任务共用冻结 pose、骨架与映射，逐 design
+改变随机 seed。低噪声结构细化会限制结构变化范围，必须如实描述这种多样性，不能将
+它宣称为无条件重新生成任意 fold。上式是初始化机制，不是保持所有几何合同的证明。
+完整骨架与精确 contig 不一致时应在生成前拒绝，不能通过 partial_t 自动插入缺失残基。
+
+方案设计时确认的接入点和风险如下；第 25 节记录了首版具体实现和仍拒绝的组合：
+
+| 环节 | 设计时已存在机制 | 当时确认的接入缺口（首版处理见第 25 节） |
+|---|---|---|
+| `inference/input_parsing.py` | partial 分支保留完整输入坐标，区别于普通生成区初始化 | Mosaic 公开 schema/编译器未提供完整骨架输入工作流 |
+| `schema/design.py`、`design_compiler.py`、`output/rfd3_adapter.py` | 输出固定片段和数字 contig | 不能只透传 `partial_t`；需新的完整坐标与身份映射分支 |
+| `inference/symmetry/symmetry_utils.py` | compiler-declared preexpanded 布局可复用完整装配 | 完整 C3 模板若走普通扩增会再次复制；必须保留精确矩阵和链映射 |
+| partial 固定掩码 | 可显式选择固定坐标与序列 | 默认值不替代 Mosaic 合同；需重映射 seed 坐标和原序列策略，生成区独立解除序列约束 |
+| `model/inference_sampler.py` | 离散噪声日程裁剪、模板加耦合噪声 | 记录实际 sigma0 和首轮 churn 后 sigma_hat；partial_t 不是所有实际噪声的严格上限 |
+
+PI 模板只作为一种初始化：生成长度 79–90 不等于当前 100，且 seed 并非完全一致。
+必须先恢复原始完整 seed 的刚体副本，只修复生成区连接；不能直接替换结构后宣称成功。
+
+**E. 防穿绕规则须与目标形状相容。** 对四个实际 Hoyeung 参考直接调用当前独立 NumPy
+`generated_route_ownership` 审计，在原固定几何上以双锚中间生成区建立路线，使用
+默认 clearance=3.2 Å、taper=2、Cα 和相邻中点，得到：
+
+| 参考 | 违反路线判据的采样点/全部采样点 | 最大违反量 |
+|---|---:|---:|
+| PI25 | 60/543（11.05%） | 3.3066 Å |
+| PI31 | 114/513（22.22%） | 6.4837 Å |
+| PI56 | 120/708（16.95%） | 7.4485 Å |
+| PI57 | 16/636（2.52%） | 1.3318 Å |
+
+四例均完整覆盖双锚生成区，无参考线段 Hausdorff 余量冲突。即使仅作诊断把 clearance
+设为零，PI25/PI31/PI56 仍失败。这证明当前“更靠近自己的端点直线段”的分区规则会
+排斥某些用户期望的实际形状；并不证明这些参考发生真实穿链，也不证明当前长螺旋只由
+这条规则造成。不能继续仅调其权重，或为通过参考而直接关闭碰撞保护。
+新的结构模式应从完整且已经检查的曲线骨架定义允许变形和空间约束，再检查所有对称
+副本；禁止将 Cα 无 clash、路线分数或有限线段检查当成任意开链拓扑不缠绕的数学保证。
+
+本次只读证伪脚本为开发工作区中的 `audit_reference_routes.py`，完整结果为
+`reference_route_ownership_audit.json`（与第 24.7 节相同目录），保存结构和审计源码
+SHA-256、默认及零余量结果。PI31 的违规包含链 A 的 H45–66 中 16 个 Cα 及 H87–103
+中 3 个 Cα，不能将冲突仅归为连接处噪声或中点采样。
+
+一种可以严格检查的**保守候选保护条件**如下；第 25 节已在显式 scaffold 模式实现。
+给定已检查的完整 Cα 折线
+骨架 B，和具有相同顶点对应及连接图的候选 X，对每条物理链定义：
+
+```text
+epsilon_i = max_(vertex a in chain i) ||X_a-B_a||
+delta_ij = min_(segment e in chain i, f in chain j) distance(B_e,B_f)
+若 delta_ij - epsilon_i - epsilon_j > 0：
+    B(t)=(1-t)*B+t*X 在所有 t in [0,1] 上，两链的 Cα 线段均不相交
+```
+
+理由是对应线段内任意点的位移不超过链的最大顶点位移，故两线段距离下界为
+`delta_ij-t*(epsilon_i+epsilon_j)`。可加明确正净空要求，但不能把单一数值宣称为
+通用原子排斥半径。此证书要求共同坐标系，不能分别独立对齐各链再组合；B 本身必须
+是目标布局，否则可能保留已有互锁。它仅证明这条共同线性插值中链间 Cα 线段不相交，
+不证明原子 packing、自结、开放链拓扑或序列设计性。固定界面处的小距离会使全链最大
+位移条件很保守；条件不满足只表示本证书不能证明安全，不能推出实际候选一定穿链。
+新方案不能未经评估就将它设为通用硬阈值，更不能靠不断缩小扩散步长掩盖其过度保守。
+
+**F. 运动和验收使用同一合同。** locked 模式固定 seed pose；可移动模式必须联合提出
+seed 刚体更新和生成骨架/接头补偿，并重验闭合、空间和 SSE 接触合同。仅移动 seed
+不能继续使用旧骨架的通过报告。做不到联合补偿的提案不能提交，也不能静默改变用户模式。
+检查应针对有结构意义的干净预测/最终结果，不强制高噪声状态具有最终肽键几何。
+
+代码实现收束为三个职责：编译共同结构问题、求解并独立验证完整骨架、把冻结骨架与
+同一合同送入 native partial sampler 并独立审计输出。参考先验只辅助搜索，逐 H 支撑
+只辅助定义/验收目标；它们都不能各自冒充完整解决方案。GPU 验收在 CPU 几何、掩码、
+原子映射、对称展开和初始化交接检查通过后进行，冻结版本和判据，不以连续加权重试跑
+代替机制验证。即便通过几何合同，也仍需后续序列设计和独立结构验证。
+
+方法依据：[Design of complicated all-α protein structures](https://www.nature.com/articles/s41594-023-01147-9)
+展示了按总残基数组合 helix–loop–helix 片段并筛选骨架的路线；
+[GeneralizedKIC](https://docs.rosettacommons.org/docs/latest/scripting_documentation/RosettaScripts/composite_protocols/generalized_kic/GeneralizedKIC)
+提供固定端点下的链段闭合机制。这些先例支持构造路线，不能替代本项目的实现和验收
+证据，也不证明通用高成功率；当前没有安装或运行新的 Rosetta 闭合后端。
+
+## 25. 完整骨架的联合构建、partial diffusion 与 v2 验收
+
+**实现状态：2026-09-21。** 公开入口为 `prepare-scaffold`，执行路径为
+`scaffold_tasks → scaffold_assembly → scaffold_input → RFD3 input/transforms → sampler → rfd3_scaffold_audit`。
+本节描述当前代码，替代第 24 节早期设计讨论中的未实现状态。支持完整 regular Cn/Dn（n≥2）、
+`explicit_all_copy`、两端固定的生成区；支持锁定或有界刚体移动 seed。端部生成、quotient/mixed、
+local-neighbourhood、配体、柱坐标约束及额外 residue conditioning 的组合仍明确拒绝。
+普通模式保留。CPU 验证不等于模型生成成功率或实验可折叠性。
+
+### 25.1 固定身份与长度，构建整体 pose 初值
+
+先编译实际 contig，确定每条物理链及每段精确生成长度 L；blueprint 的
+`chains[entity][registry_index]` 明确模板副本顺序。模板须有每个残基的 N/CA/C/O。
+多个变长区须声明 `reference_generated_lengths`；固定序列按原任务的 sequence mask 检查。
+任何后续重新编译若改变 contig 则拒绝，不能以缩短 L 换取通过。
+
+对模板副本共同作 proper Kabsch，寻找单个 Q∈SO(3)：
+
+```text
+min_Q Σ_g ||Q R_template,g Q^T - R_registry,g||_F²
+stack(I-R_g)c = stack(t_g)
+对每个实体、g、h：RMSD(G_g X_h, X_(g*h)) <= maximum_template_symmetry_rmsd
+```
+
+旋转搜索为 8 个确定性起点，每次最多 200 次评估；群不确定的轴向中心采用共同质心和
+最小范数中心。全部 N/CA/C/O 参与群一致性检查。每个 joint interface seed 只拟合一个
+proper ΔT，所有界面片段共同参加 `min mean_a ||ΔT x_a-y_a||²`；拟合 RMSD 不超过
+显式 `maximum_template_seed_rmsd`。由原始 seed 坐标重新编译，模板局部变形不会进入固定界面。
+该拟合只是联合求解初值，**不再在此永久冻结 pose**。
+
+### 25.2 同一个全装配求解问题
+
+变量同时包含每个 master seed 的平移 t_k、旋转向量 ω_k，及所有生成区的 φ/ψ。
+同一 seed 所有原子共同变换，副本通过编译群派生，不能独立优化；每个生成区有 2L+1 个
+扭转变量。左端 carbonyl O 确定出链肽平面，不把左端 ψ 当自由变量再留下未转动的 O。
+前向运动学 FK 使用标准主链近似：
+
+| 量 | 构建模型值 |
+|---|---:|
+| C–N / N–CA / CA–C / C–O | 1.329 / 1.458 / 1.525 / 1.229 Å |
+| CA–C–N / C–N–CA / N–CA–C / CA–C–O | 116.2 / 121.7 / 111.2 / 120.8° |
+| 肽键 ω | trans，180° |
+
+右固定残基内部几何使用输入自身数值。固定界面内部结构不改变。给定端点的轮廓必要条件为
+`||C_left-N_right|| <= (L+1)*1.329 + L*(1.458+1.525) + ε_close`；端点在联合求解中可动，
+不能把某个初始 pose 不满足此条件解释成所有 pose 无解。
+
+同长度使用参考 φ/ψ。变长须给原/新 H/L 字符串，长度准确且连续块次序一致；块内展开角度
+后重采样 torsion。每对长度 m、n 的对应块选 `min(m,n)` 个等距取整、互不重复的离散地标。
+参考接触端点只用这些单射对应，并重新检查新序列间隔。**不插值或拉伸 Cartesian 原子**。
+新增位点由 FK、支撑与装配检查约束，不宣称自动保留原折叠。
+
+用 Y 表示 FK 预测右端 N/CA/C，Y* 表示当前右 seed 的同名原子；B 为初始对齐模板地标。
+参考接触 P 限于生成区内序列间隔≥8、参考 CA 距离≤8 Å。完整残差为：
+
+```text
+r_close = vec(Y(t,ω,q)-Y*(t,ω)) / ε_close
+r_contact,ij = (||CA_i-CA_j||-d_reference,ij) / ε_contact
+r_shape,i = sqrt(w_shape) * (CA_i-B_i)
+r_helix,j = 2 sin((q_j-q_initial,j)/2) / s_H       # 声明 H 内的 φ/ψ
+r_edge,i = [min_(j in partner) ||CA_i-CA_j||-d_contact]_+
+  每条声明支撑边的两个方向，分别取距离最小的 ceil(f_min*|H|) 个残差
+r_window = [min_(i in window,j in declared_partner_union) ||CA_i-CA_j||-d_contact]_+
+  每个长度 W+1 的窗口至少有一次支撑；W=maximum_unsupported_run
+r_clash,ij = sqrt(w_clash) * [d_clash+m_clash-min_(a,b in N/CA/C/O)||x_ia-x_jb||]_+
+min_(t,ω,q) (1/2) ||concat(r_close,r_contact,r_shape,r_helix,r_edge,r_window,r_clash)||²
+```
+
+碰撞项覆盖 ASU 对整个对称装配的非局部残基对（含其他 seed、其他生成区、其他链）；排除
+同链相同/相邻残基。每对采用最近骨架原子分支，不把未闭合的右端 FK 当实际右 seed。
+这些是**几何构建残差**，不是 kcal/mol 的折叠自由能。
+
+| 设置 | 默认与理由 |
+|---|---|
+| ε_close | 0.005 Å，数值闭合精度 |
+| ε_contact | 2 Å，参考接触距离容差 |
+| shape_bound | `closure.maximum_reference_ca_deviation`，缺省为 `limits.maximum_ca_deviation` |
+| w_shape | `1/shape_bound²`，必须正；防止仅闭合后丢失参考形状 |
+| s_H | 30°，周期性扭转先验尺度，不是允许 φ/ψ 的硬窗口 |
+| d_clash / m_clash | 2 / 0.1 Å，独立验收距离及求解余量 |
+| w_clash | `1/d_clash²`，必须正；不允许静默关闭完整装配排斥 |
+| translation_bound | 缺省 `maximum_template_seed_rmsd`，可由 construction 明确覆盖 |
+| rotation_bound | 显式角度，或 `2 asin(min(1, translation_bound/(2 R_seed,max)))` |
+
+旋转默认值来自半径 R 上一点的位移 `2R sin(θ/2)`，只是有出处的搜索尺度，不是折叠
+适宜角度。各平移/旋转向量分量限于 ±bound/√3，因此搜索盒包含于声明的范数球内。
+位置、角度和长度通过同一个 FK 及上述目标耦合，不再另加一个无依据的距离系数表。
+
+SciPy least_squares + LSMR：默认 2 次起点、每次 150 次评估，允许 1–32 / 1–5000；
+后续起点扭转扰动标准差 15°，随机种子记录。torsion 用解析 Jacobian，6 个刚体分量用
+中心差分 h=10⁻⁶。线性 atol/btol=10⁻¹⁰，最多 10×变量数次迭代；非线性
+ftol/xtol/gtol=10⁻⁹。选择预算内第一个通过独立验收的解，不宣称全局最优或跨任务自动多样化。
+
+### 25.3 独立接受条件
+
+优化器 `success` 不是验收结论。最终坐标须同时满足：闭合最大误差≤ε_close，参考地标
+最大偏移≤shape_bound，每个参考接触误差≤ε_contact；各生成区键长误差≤0.04 Å、
+键角及 trans 肽平面误差≤8°；全装配非相邻 N/CA/C/O 最小距离≥d_clash；以及下述 v2 合同。
+构建几何阈值可以通过获准的 closure 字段修改并记录，不能自动放宽。
+
+任一失败就尝试下一个有限起点；全失败记录 `unresolved`，不发布可运行任务、不转 GPU 搜索。
+达到评估预算但独立检查全过，可以接受；优化器成功但检查失败仍拒绝。
+`unresolved` 只表示给定先验和预算没有找到见证，不是不存在结构的证明。
+
+### 25.4 v2：真实生成骨架、实际 alpha 螺旋与支撑
+
+新 artifact 使用 schema_version=2；每个残基保存 reference CA、N/CA/C/O、残基名与固定掩码。
+旧 v1 可读，但报告 `legacy_ca_only_contract_not_evaluated`，不把 CA-only 结论当完整骨架质量。
+`maximum_unsupported_run` 在 v2 必须显式提供。其余 CA/支撑/分离 limits 也必须显式给出。
+
+从真实 N/CA/C/O 作 DSSP-like alpha 四转角氢键指派：
+
+```text
+H_j = N_j + (C_(j-1)-O_(j-1))/|C_(j-1)-O_(j-1)|    # N–H 近似 1 Å
+E_ij = 27.888*(1/r_ON + 1/r_CH - 1/r_OH - 1/r_CN) kcal/mol
+turn_i = (E_(i,i+4) < -0.5)
+turn_(i-1) 且 turn_i 成立：残基 i..i+3 标记 H
+```
+
+PRO 不作为 NH donor，断链（C–N≥2 Å）不跨越指派。只识别 alpha 四转角，不是完整 DSSP，
+不赋予 beta/coiled-coil 身份。方法依据 [DSSP 官方实现](https://github.com/PDB-REDO/dssp/blob/trunk/libdssp/src/dssp.cpp)。
+这里的 E 只用于氢键判别；不混入以 Å 为单位的几何目标。
+
+每个声明 H 块须至少 80% 为实际 H，边界默认容许 1 残基偏差；所有实际生成 H 均需被覆盖，
+不能只声明固定部分。不能把同一条真实长螺旋拆成两块互称支撑。同链不同真实 H 才能提供
+单体内部支撑；对整条实际 H 再量化声明伙伴并集的覆盖率和最长无支撑连续段。
+声明块之间每条支撑边仍须独立达标；每条边不能借其他边抵消不达标。
+
+`backbone_policy` 默认工程容差：键长 0.10 Å、键角 15°、肽平面 20°、非局部骨架最小距 2 Å。
+生成残基内部 N–CA、CA–C、C–O，及至少一端生成的 C–N 接头、键角和肽平面必须通过。
+生成质量审计的非局部碰撞排除固定–固定对，准备器仍检查全部装配。
+参考几何靶值依据 [Engh–Huber](https://doi.org/10.1107/S0108767391001071)，区分 Gly/Pro 键长；
+这些容差、0.8 比例、1 残基边界**是可审查的工程设置，不是论文证明的普适成功阈值**。
+运行时允许平面的 cis 或 trans，构建器用 trans；不等于完成残基特异 Ramachandran 或侧链验证。
+
+### 25.5 空间分离证书与 runtime 引导
+
+B 为通过构建验收后冻结的完整参考，X 为候选；所有 CA 按同一物理链和残基身份对应：
+
+```text
+ε_i = max_(a in chain i) ||X_a-B_a||
+δ_ij = min_(finite CA segments e in chain i,f in chain j) distance(B_e,B_f)
+δ_ij - ε_i - ε_j >= d_min - τ
+同时：候选实际有限 CA 线段最小距 >= d_min - τ
+τ=geometry_tolerance < d_min
+```
+
+线段内部点的位移不超过端点最大位移，所以参考到候选的公共直线插值保持正的链间净空。
+证书保守，失败不等于已经穿链；它不证明自结、开放链拓扑或实际 noisy 轨迹处处无交叉。
+
+CA 合同逐项检查生成偏移、固定偏移、相邻 CA 距离、每边支撑、最长无支撑窗口和上述净空。
+v2 runtime 还增加生成 N/CA/C/O 对参考的偏移、键长/键角/平面/骨架碰撞残差。
+角度超限（弧度）乘 1.329 Å 转成等效弧长；骨架碰撞每个残基对只取最近原子对，分块
+无梯度选最近索引，再对选中距离求导，避免完整原子对 autograd 图。真实 H 指派是最终
+独立硬判定，不伪装成可微 alpha 氢键能量。
+
+`v_a=[超限]_+`；core 项为 `mean((v/3.8 Å)²)`，独立 route 步最小化 `sum(v²)`。
+显式合同强制启用，routing weight=1，不依赖旧直线走廊开关。每次干净预测最多两轮修正，
+沿用位移归一化/平滑、相邻 token 差≤0.08 Å、阶段单步上限 `0.2+0.8*(1-progress)` Å 和回溯。
+候选须满足既有几何/对称保护：已满足项不能超 τ；平方和不增超过 10⁻⁸ Å²；最大超限
+不增超过 10⁻⁶ Å。独立 route 步还要求平方和下降超过 10⁻⁸ Å²。允许已有违反项之间有限
+取舍，不保证收敛。最终必须重测完整 v2，不把引导执行过当通过。
+
+### 25.6 移动 seed：与参考和生成区一起接受
+
+编译物保存每个实际固定原子的 joint seed 归属、原坐标、群轨道和运动边界；不按近邻猜归属。
+生成段两端的 seed 分别为 L、R，参考 CA 弧长定义 u_i∈[0,1]：
+
+```text
+u_i = Σ_(left..i) ||B_(j+1)-B_j|| / Σ_(left..right) ||B_(j+1)-B_j||
+T_i = T_L exp[u_i log(T_L^-1 T_R)]
+B_i(new) = T_i B_i(initial)
+X_i(proposed) = T_i(new) T_i(old)^-1 X_i(candidate)
+T_group,g = G_g G_master^-1 T_master G_master G_g^-1
+```
+
+SE(3) screw 插值保证公共坐标系变换下等变；相对旋转达到模糊的 π 分支时拒绝。
+每次都从初始 B 重建，避免反复坐标插值累计漂移。每个残基所有原子使用同一 proper 变换，
+固定 seed 原子只使用该 seed 的完整刚体变换。锁定组要求恒等；移动组核对原始位姿的
+平移范数、旋转角度上限和群共轭，径向子空间另核对轴向/切向禁用分量。
+
+更新事务：隔离 controller/patch 状态 → 原控制器提议 → 拟合并核验整个固定 seed →
+运输参考与生成区 → 参考重新通过 v2 → 旧/新参考间按 25.5 的同类下界检查连续分离 →
+精确对称/固定投影 → 新候选相对新参考的残差不退步 → 同时提交 controller、patch、seed、参考和生成区。
+任一失败保留此前全部状态并记录理由。不能只移动 seed、留下旧参考要求生成区同时追两个目标。
+
+结果包含冻结 plan SHA-256、每次接受的群变换和最终变换。最终审计从初始合同重放每次移动、
+重新验证参考过渡，核对实际 CIF 所有固定原子；缺记录、超界或坐标不符均失败。
+锁定输出可以整体共同对齐一次；移动输出按重放坐标直接核对，不能逐链独立对齐掩盖错误。
+运动空间/最初预算限制仍适用，reference transport 不是新的无限自由度。
+
+### 25.7 输入交接、噪声与最终结果
+
+artifact 绑定结构/编译合同 SHA-256、实际长度、固定坐标与序列掩码、接口映射和群矩阵。
+worker 在生成前重读 artifact/CIF 并重验完整骨架；只在真实几何通过后替代旧直线 pose gate。
+partial 分支保留完整 src_component，特征层按 N/CA/C/O 和全部固定原子的实际身份再绑定；
+掩码、坐标、数量不一致即失败。准备目录全部写好后才通过同文件系统 rename 发布。
+
+```text
+σ(t) = σ_data * [s_max^(1/p)+t*(s_min^(1/p)-s_max^(1/p))]^p
+仅保留 σ <= partial_t；不足两项拒绝
+X0 = fixed_seed_and_symmetry_projection(B + σ0 M_generated ε)
+σ_hat = σ_previous*(1+γ)
+```
+
+partial_t 是 Å 尺度阈值，不是步数/百分比，也不是最终偏移上限。同任务全 designs 共用
+初始 pose/B/合同，噪声 seed 不同；移动模式各 design 的最终 pose 可不同。新任务名不自动
+产生新几何，不同 prior/pose 要明确准备不同任务并保留报告。
+
+sampler 退出前独立测量实际输出 N/CA/C/O，保存 `scaffold_contract_diagnostics.contract_met`；
+失败仍可输出原始结构作诊断，但不能算合格。worker 再从输出 CIF 独立审计（含实际残基名），
+并与已有固定界面、对称、移动和 scaffold 审计共同汇总。没有检查的环节不能计为通过。
+
+### 25.8 批次故障、完整性与后处理
+
+worker 以 `mosaic_batch_protocol=1` 请求逐 design 隔离，普通 upstream 调用不受影响。
+`design_outcomes.json` 保存全部预期 example_id 和 pending/running/generated/failed/not_run；
+模型只加载一次，每个 design 写独立暂存目录，结构先发布、完整元数据最后发布。
+普通异常记录后继续；连续 3 次普通异常或 CUDA/OOM/文件系统错误停止，剩余项明确 not_run。
+这不是自动重试或续跑机制，现有运行目录拒绝覆盖。
+
+```text
+generation_complete = 身份集合与冻结 sampling manifest 相等
+                      且无重复/意外身份，且每项结构和元数据完整
+completed 必须满足 generation_complete；只产生部分结果为 partial
+contract_met 还必须逐项通过所有适用的独立结构审计
+```
+
+即使 native 子进程失败，worker 仍审计已完整产生的结果。后处理只更新审计证据，不能把
+partial 改成 completed；重生成 decision explanation 和哈希。报告优先重新检查当前文件，
+审计缺失/损坏记 not_evaluated，不能沿用历史 met。老任务缺身份 manifest 时可做数量检查，
+但明确 `identity_verified=false`，不冒充已验证预期 design 身份。
+
+实现位置：`scaffold_assembly.py`、`validation/generated_backbone.py`、
+`validation/scaffold_contract.py`、`validation/reference_transport.py`、原生
+`reference_scaffold.py`/`scaffold_transport.py`/`inference_sampler.py`，以及
+`engine.py`、`experiment_worker.py`、`result_auditing.py`、`posthoc_audit.py`、`run_reporting.py`。
+
+### 25.9 旧原生氢键统计的工程修复
+
+可选 `metrics/hbonds_metrics.py` 的旧 Metric 导入已对齐 `foundry.metrics.metric`，补上
+`get_motif_features` 导入。稀疏 donor/acceptor 标记现在仅在**两类均无任何 active 原子**时跳过；
+原先“两个数组各自有零值就跳过”会把常见稀疏条件误判成无条件。缺少某类注释按该类无要求处理。
+满足比例仍为 `匹配身份且在输出形成所需氢键的指定原子数 / 指定原子数`；某类无要求时比例为 1。
+空的输出身份匹配按未满足处理，不对空数组作 bool 转换。此项没有改变 25.4 的 alpha 判别，
+也没有替换默认的 hbplus 指标入口。测试工具筛选输入参数改用实际 `DesignInputSpecification.model_fields`，
+清除不存在的 `valid_keys_` 引用。

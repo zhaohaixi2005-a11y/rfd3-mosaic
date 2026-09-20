@@ -25,6 +25,8 @@ the requested name.
 
 ## Maintained campaign and collection helpers
 
+- `sync_generated_cifs.py`: verifies and downloads final generated CIFs over
+  SSH using Python's standard library; see the example below.
 - `submit_gpu_release_gates.py`: freezes and submits the non-redundant current
   GPU evidence matrix through `rfd3-mosaic run/submit`. Each gate carries a
   machine-readable acceptance list and writes its evidence into the run
@@ -51,6 +53,52 @@ the requested name.
 Historical direct-execution scripts and personal campaign records are kept
 outside the public source tree. They do not define the current
 compiler/worker/report contract.
+
+## Download final structures after a run
+
+```bash
+python scripts/rfd3_mosaic/sync_generated_cifs.py \
+  --host USER@HOST --socket /path/to/existing-ssh.sock \
+  --ssh-option UserKnownHostsFile=/path/to/known_hosts \
+  --run-dir /remote/path/to/task/job \
+  --relative-destination task/job \
+  --destination-root /local/collection
+```
+
+For several runs on one host, replace `--run-dir` and
+`--relative-destination` with `--manifest runs.json`:
+
+```json
+{
+  "runs": [
+    {"remote_run_dir": "/remote/run-one", "destination": "task-one/job-one"},
+    {"remote_run_dir": "/remote/run-two", "destination": "task-two/job-two"}
+  ]
+}
+```
+
+Each destination receives a `generated_structures_cif/` directory containing
+plain final CIFs and the script's `.mosaic_sync.json` verification record.
+Only structures with matching final `*_model_0.json` metadata qualify;
+noisy/denoised trajectories are excluded. The gzip source is preferred when
+both compressed and plain versions exist. Each run uses one SSH inventory
+request and at most one batched tar transfer. No remote files are modified.
+
+Downloads stay in a temporary directory until source size/SHA256, gzip
+integrity and decompressed size/SHA256 have been verified. Each final CIF is
+replaced atomically; interrupted downloads cannot truncate an existing final
+file. Matching local files are verified and skipped. Different unrecognized
+or locally modified files are refused, not overwritten. Rerun the same
+command to collect newly completed designs; this is a one-shot collector,
+not a background service. It verifies transfer integrity, not scientific
+quality or full mmCIF syntax. A failed request exits nonzero; already verified
+outputs remain available.
+
+Use `--jobs 2` to sync independent runs concurrently (default 1, maximum 4).
+A failed run does not stop collection from the others. Incomplete result JSON
+is retried three times, 0.2 seconds apart, then explicitly reported as
+`pending`; completed structures in that run are still collected. Any failed
+or pending run makes the command exit nonzero after all runs are processed.
 
 ## Rule for new scripts
 

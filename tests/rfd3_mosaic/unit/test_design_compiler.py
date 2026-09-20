@@ -985,6 +985,74 @@ class DesignCompilerTestCase(unittest.TestCase):
             atol=1e-12,
         )
 
+    def test_automatic_pose_is_invariant_to_global_translation(self) -> None:
+        # Centre the selected A1-2 motif at the symmetry centre so that the
+        # automatic placement path is necessary in both coordinate frames.
+        source_lines = self.structure.read_text().splitlines(keepends=True)
+        centers = (np.zeros(3), np.array((73.0, -41.0, 23.0)))
+        for symmetry_id in ("C3", "D3", "T"):
+            with self.subTest(symmetry=symmetry_id):
+                relative_orbits = []
+                sampled_radii = []
+                for index, center in enumerate(centers):
+                    shifted = self.root / f"translated-{symmetry_id}-{index}.pdb"
+                    lines = []
+                    for line in source_lines:
+                        if line.startswith("ATOM"):
+                            xyz = np.array((
+                                float(line[30:38]) - 7.5,
+                                float(line[38:46]),
+                                float(line[46:54]),
+                            )) + center
+                            line = (
+                                line[:30]
+                                + "".join(f"{value:8.3f}" for value in xyz)
+                                + line[54:]
+                            )
+                        lines.append(line)
+                    shifted.write_text("".join(lines))
+                    lowered = lower_user_design(self._design(
+                        input=str(shifted),
+                        symmetry={"id": symmetry_id, "center": center.tolist()},
+                        task="preserve_supplied_geometry",
+                        generation=[{
+                            "kind": "terminal", "anchor": "A1-2",
+                            "terminus": "n", "length": 20,
+                        }],
+                        constraints=[{"kind": "fixed_xyz", "selector": "A1-2"}],
+                    ))
+                    metadata = {}
+                    transforms = build_master_group_transforms(
+                        lowered.specification,
+                        base_directory=self.root,
+                        sample_metadata=metadata,
+                    )
+                    sample = metadata["fixed_component_001"]
+                    sampled_radii.append(sample["sampled_radius"])
+                    transform = transforms["fixed_component_001"]
+                    # All eight selected atoms, not just the motif centroid.
+                    points = np.column_stack((
+                        np.arange(8, dtype=float) - 3.5,
+                        np.zeros(8), np.zeros(8),
+                    )) + center
+                    master = points @ transform[:3, :3].T + transform[:3, 3]
+                    registry = build_transform_registry(
+                        lowered.specification.symmetry.transform_sets["declared"]
+                    )
+                    relative_orbits.append(np.stack([
+                        master @ registry.transform(item)[:3, :3].T
+                        + registry.transform(item)[:3, 3] - center
+                        for item in registry.transform_ids
+                    ]))
+                self.assertAlmostEqual(sampled_radii[0], sampled_radii[1])
+                np.testing.assert_allclose(
+                    relative_orbits[0], relative_orbits[1], atol=1e-10, rtol=0,
+                )
+                if symmetry_id == "C3":
+                    # The centred/z-axis legacy radius remains unchanged:
+                    # target separation = 2 * extent(3.5) + 6 = 13 A.
+                    self.assertAlmostEqual(sampled_radii[0], 13.0 / np.sqrt(3))
+
     def test_lowers_between_generation_with_orbit_relation(self) -> None:
         lowered = lower_user_design(
             self._design(

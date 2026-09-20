@@ -32,6 +32,10 @@ def generated_route_deficits(coordinates, topology, *, clearance=3.2, anchor_tap
     Fixed endpoints are excluded. Sampling midpoints also checks between CAs;
     it does not certify the complete continuous curve or an all-atom surface.
     """
+    if getattr(topology, "scaffold_contract", None) is not None:
+        from .reference_scaffold import reference_scaffold_guidance_deficits
+
+        return reference_scaffold_guidance_deficits(coordinates, topology.scaffold_contract)
     terms = []
     for index, run in enumerate(topology.generated_runs):
         competitors = [other for j, other in enumerate(topology.generated_runs)
@@ -63,6 +67,11 @@ def route_deficits_from_config(coordinates, topology, config):
         coordinates, topology, clearance=config.routing_clearance,
         anchor_taper=config.routing_anchor_taper_residues,
     )
+
+
+def route_tolerance(topology, config):
+    reference = getattr(topology, "scaffold_contract", None)
+    return reference.contract["limits"]["geometry_tolerance"] if reference is not None else config.routing_tolerance
 
 
 def route_nonregression_check(before, after, *, tolerance=1e-3):
@@ -133,6 +142,7 @@ def apply_generated_route_guidance(
     if config.routing_ownership_weight <= 0:
         return coordinates, {"applied": False, "reason": "disabled", "steps": []}
     result = coordinates.detach()
+    tolerance = route_tolerance(topology, config)
     maximum_step = config.maximum_token_step + (1.0 - progress) * (1.0 - config.maximum_token_step)
     maximum_step = max(config.maximum_token_step, maximum_step)
 
@@ -142,7 +152,7 @@ def apply_generated_route_guidance(
     def summary(v):
         return {
             "checked_constraints": v.numel(),
-            "violated_constraints": int((v > config.routing_tolerance).sum()),
+            "violated_constraints": int((v > tolerance).sum()),
             "maximum_excess_angstrom": float(v.max()) if v.numel() else 0.0,
             "squared_excess_angstrom2": float(v.square().sum()),
         }
@@ -154,7 +164,7 @@ def apply_generated_route_guidance(
         with torch.enable_grad():
             source = result.detach().requires_grad_(True)
             before = values(source)
-            if not before.numel() or not torch.any(before > config.routing_tolerance):
+            if not before.numel() or not torch.any(before > tolerance):
                 break
             loss = before.square().sum()
             gradient = torch.autograd.grad(loss, source)[0][0]
@@ -222,7 +232,7 @@ def apply_generated_route_guidance(
                 descent = bool(torch.isfinite(after).all() and
                                after.square().sum() < before.square().sum() - 1e-8)
                 route_guard = route_nonregression_check(
-                    before, after, tolerance=config.routing_tolerance
+                    before, after, tolerance=tolerance
                 )
                 route_safe = route_guard["passed"]
                 actual_step = torch.linalg.vector_norm(candidate - result, dim=-1).max()
@@ -251,4 +261,5 @@ def apply_generated_route_guidance(
         "progress": progress, "coordinate_space": "denoised_prediction",
         "maximum_token_step": maximum_step, "initial": initial, "final": final,
         "within_tolerance": final["violated_constraints"] == 0,
+        "contract_kind": "explicit_full_scaffold" if getattr(topology, "scaffold_contract", None) is not None else "straight_chord_ownership",
     }

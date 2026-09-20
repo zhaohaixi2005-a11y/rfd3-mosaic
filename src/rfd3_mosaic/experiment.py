@@ -270,6 +270,16 @@ def _runtime_dependency_files(payload: dict[str, Any]) -> list[tuple[str, Path]]
                 ("public design structure", design.input),
             ]
         )
+        if design.sampling.scaffold_artifact is not None:
+            artifact_path = design.sampling.scaffold_artifact
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            structure_path = Path(artifact["structure_path"])
+            if not structure_path.is_absolute():
+                structure_path = artifact_path.parent / structure_path
+            dependencies.extend([
+                ("complete scaffold artifact", artifact_path),
+                ("complete scaffold structure", structure_path.resolve()),
+            ])
 
     provenance = payload["provenance"]
     dependencies.extend(

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
+import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -28,7 +32,6 @@ from rfd3_mosaic.provenance.source_snapshot import (
     verify_source_snapshot_tree,
 )
 from rfd3_mosaic.result_auditing import (
-    find_result_jsons,
     gate_result_audits,
     run_result_audits,
 )
@@ -54,6 +57,10 @@ _AUTHORING_SOURCE_ROLES = frozenset(
 )
 
 
+class ExistingRunError(RuntimeError):
+    """This worker is not a resume command and must not replace a prior run."""
+
+
 def _load(path: Path) -> dict[str, Any]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -72,6 +79,232 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=path.parent, suffix=".tmp", delete=False
+    ) as handle:
+        temporary = Path(handle.name)
+        try:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _design_example_id(assignment: DesignSamplingAssignment) -> str:
+    return (
+        f"design_{assignment.design_index:05d}"
+        f"_pose_{assignment.pose_index:05d}_rep_{assignment.replicate_index:03d}"
+    )
+
+
+def _initial_outcome_ledger(
+    assignments: tuple[DesignSamplingAssignment, ...],
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "status": "running",
+        "requested_designs": len(assignments),
+        "expected_example_ids": [_design_example_id(item) for item in assignments],
+        "designs": {
+            _design_example_id(item): {
+                **item.__dict__,
+                "example_id": _design_example_id(item),
+                "generation_status": "pending",
+                "result_jsons": [],
+            }
+            for item in assignments
+        },
+    }
+
+
+def _reconcile_design_outcomes(
+    run_dir: Path,
+    example_assignments: dict[str, DesignSamplingAssignment],
+    *,
+    inference_error: str | None,
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    """Verify identities and committed files even after the native process fails."""
+    ledger = _initial_outcome_ledger(tuple(example_assignments.values()))
+    ledger_path = run_dir / "design_outcomes.json"
+    if ledger_path.is_file():
+        try:
+            native = json.loads(ledger_path.read_text())
+            if set(native["expected_example_ids"]) != set(example_assignments) or set(
+                native["designs"]
+            ) != set(example_assignments):
+                raise ValueError(
+                    "Native outcome identities disagree with frozen assignments"
+                )
+            for key in example_assignments:
+                ledger["designs"][key].update(native["designs"][key])
+            if "stop_reason" in native:
+                ledger["stop_reason"] = native["stop_reason"]
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            ledger["ledger_error"] = str(error)
+    candidates: dict[str, list[Path]] = {key: [] for key in example_assignments}
+    unexpected: list[str] = []
+    for path in sorted(run_dir.glob("*model_0.json")):
+        matches = [
+            key
+            for key in candidates
+            if re.search(rf"(?:^|_){re.escape(key)}(?:_0)?_model_0\.json$", path.name)
+        ]
+        if len(matches) == 1:
+            candidates[matches[0]].append(path)
+        else:
+            unexpected.append(str(path))
+    valid: dict[str, Path] = {}
+    for key, paths in candidates.items():
+        row = ledger["designs"][key]
+        row["result_jsons"] = [str(path) for path in paths]
+        if not paths:
+            previous = row["generation_status"]
+            row["generation_status"] = (
+                "failed"
+                if previous in ("running", "generated", "failed")
+                else "not_run"
+            )
+            row.setdefault("reason", "no_committed_output")
+            continue
+        try:
+            if len(paths) != 1:
+                raise ValueError("Multiple output files claim the same design identity")
+            path = paths[0]
+            if not isinstance(json.loads(path.read_text()), dict):
+                raise ValueError("Result metadata must be a JSON object")
+            structures = [
+                candidate
+                for candidate in (path.with_suffix(".cif.gz"), path.with_suffix(".cif"))
+                if candidate.is_file()
+            ]
+            if len(structures) != 1:
+                raise ValueError("A generated design requires exactly one final CIF")
+            structure = structures[0]
+            opener = gzip.open if structure.suffix == ".gz" else open
+            total = 0
+            with opener(structure, "rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    total += len(block)
+            if total == 0:
+                raise ValueError("Generated CIF is empty")
+            valid[key] = path
+            row["output_present"] = True
+            # An explicit native failure stays visible, even if a partial
+            # publication left an independently auditable coordinate file.
+            if row["generation_status"] != "failed":
+                row["generation_status"] = "generated"
+        except (OSError, EOFError, ValueError, TypeError) as error:
+            row.update(
+                generation_status="failed",
+                stage="output_validation",
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+    ledger["unexpected_results"] = unexpected
+    if inference_error is not None:
+        ledger["inference_error"] = inference_error
+    states = [row["generation_status"] for row in ledger["designs"].values()]
+    for state in ("generated", "failed", "not_run"):
+        ledger[f"{state}_designs"] = states.count(state)
+    complete = (
+        states.count("generated") == len(states)
+        and not unexpected
+        and not ledger.get("ledger_error")
+        and inference_error is None
+    )
+    ledger["status"] = "completed" if complete else ("partial" if valid else "failed")
+    _atomic_json(ledger_path, ledger)
+    return ledger, valid
+
+
+def _audit_generated_design(
+    run_dir: Path,
+    example_id: str,
+    result_json: Path,
+    assignment: DesignSamplingAssignment,
+    assembly: Any,
+    screening_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Audit one committed design; a broken audit cannot hide other outputs."""
+    design_id = result_json.stem.removesuffix("_model_0")
+    audit_directory = run_dir / "audits" / design_id
+    record = {
+        **assignment.__dict__,
+        "example_id": example_id,
+        "design_id": design_id,
+        "compiled_input": str(assembly.input_path),
+        "result_json": str(result_json),
+        "generated": True,
+        "contract_met": False,
+        "contract_status": "not_evaluated",
+        "recommendation": "review_required",
+        "accepted": False,
+        "reports": [],
+        "mobility_trajectory": None,
+        "audit_status": "failed",
+        "rejection_reason": None,
+    }
+    try:
+        audit_outcome = run_result_audits(
+            run_directory=run_dir,
+            rfd3_input=assembly.input_path,
+            result_json=result_json,
+            semantic_audits=assembly.semantic_audits,
+            output_directory=audit_directory,
+            python=sys.executable,
+            command_runner=_run,
+        )
+        record["reports"] = [str(path) for path in audit_outcome.reports]
+        if audit_outcome.mobility_trajectory is not None:
+            record["mobility_trajectory"] = str(audit_outcome.mobility_trajectory)
+        accepted = True
+        try:
+            gate_result_audits(
+                audit_outcome.reports, python=sys.executable, command_runner=_run
+            )
+        except RuntimeError as error:
+            accepted = False
+            record["rejection_reason"] = str(error)
+        screening_path = audit_directory / "screening_advice.json"
+        screening = write_advisory_screening(
+            screening_path,
+            audit_outcome.reports,
+            mode=str(screening_config.get("mode", "advisory")),
+            protocol=str(screening_config.get("protocol", "auto")),
+        )
+        decision_path = write_decision_explanation(
+            audit_directory / "decision_explanation.json",
+            result_json=result_json,
+            compiled_input=assembly.input_path,
+            reports=audit_outcome.reports,
+            screening=screening,
+        )
+        record.update(
+            contract_met=screening["contract_status"] == "met",
+            contract_status=screening["contract_status"],
+            recommendation=screening["recommendation"],
+            screening_advice=str(screening_path),
+            decision_explanation=str(decision_path),
+            accepted=accepted,
+            audit_status="completed",
+        )
+    except Exception as error:
+        record.update(
+            audit_error_type=type(error).__name__,
+            audit_error=str(error),
+            rejection_reason=f"Audit did not complete: {error}",
+        )
+    return record
 
 
 def _sampling_assignments(
@@ -154,20 +387,15 @@ def _merged_rfd3_input(
                 "mosaic_pose_seed": assignment.pose_seed,
                 "mosaic_diffusion_seed": assignment.diffusion_seed,
                 "mosaic_replicate_index": assignment.replicate_index,
+                "mosaic_batch_protocol": 1,
+                "mosaic_example_id": _design_example_id(assignment),
             }
         )
-        example_id = (
-            f"design_{assignment.design_index:05d}"
-            f"_pose_{assignment.pose_index:05d}"
-            f"_rep_{assignment.replicate_index:03d}"
-        )
+        example_id = _design_example_id(assignment)
         merged[example_id] = source
         by_example[example_id] = assignment
 
-    destination.write_text(
-        json.dumps(merged, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_json(destination, merged)
     return destination, by_example
 
 
@@ -296,6 +524,18 @@ def _require_compiled_pose_feasibility(
 ) -> dict[str, Any] | None:
     """Fail one sampled pose before RFD3 when its required geometry is invalid."""
 
+    payload = json.loads(compiled_input.read_text(encoding="utf-8"))
+    example = next(iter(payload.values()))
+    extra = example.get("extra") or {}
+    if (
+        extra.get("mosaic_scaffold_contract") is not None
+        or extra.get("scaffold_input") is not None
+    ):
+        from rfd3_mosaic.scaffold_input import audit_prepared_scaffold_input
+
+        return audit_prepared_scaffold_input(
+            example, input_directory=compiled_input.parent
+        )
     if not _requires_assembly_pose_feasibility(compiled_input):
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -310,9 +550,7 @@ def _require_compiled_pose_feasibility(
         )
     if not bool(report.get("passed")):
         reasons = report.get("failure_reasons") or ["unspecified geometry failure"]
-        raise ValueError(
-            "Pre-RFD3 assembly pose rejected: " + "; ".join(reasons)
-        )
+        raise ValueError("Pre-RFD3 assembly pose rejected: " + "; ".join(reasons))
     return report
 
 
@@ -338,7 +576,7 @@ def _record_worker_state(
         )
     except (KeyError, OSError, TypeError, ValueError) as index_error:
         print(
-            "WARNING: could not update the RFD3-Mosaic run index: " f"{index_error}",
+            f"WARNING: could not update the RFD3-Mosaic run index: {index_error}",
             flush=True,
         )
 
@@ -420,6 +658,11 @@ def execute(
     *,
     source_root: Path | None = None,
 ) -> None:
+    if (run_dir / "input").exists() or (run_dir / "design_outcomes.json").exists():
+        raise ExistingRunError(
+            "Run directory already contains frozen inputs or a design ledger; "
+            "retain it for audit and submit remaining designs to a new run directory"
+        )
     config = _load(resolved_config)
     run_dir.mkdir(parents=True, exist_ok=True)
     frozen = run_dir / "resolved_config.yaml"
@@ -464,10 +707,7 @@ def execute(
         "runtime_provenance": str(runtime_provenance_path),
     }
     summary_path = run_dir / "experiment_summary.json"
-    summary_path.write_text(
-        json.dumps(started, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_json(summary_path, started)
     _record_worker_state(config, run_dir, "running")
 
     topology = config["topology"]
@@ -478,6 +718,7 @@ def execute(
 
     kind = topology["kind"]
     assignments = _sampling_assignments(config)
+    _atomic_json(run_dir / "design_outcomes.json", _initial_outcome_ledger(assignments))
     stochastic_pose_sampling = _uses_stochastic_pose_sampling(config)
     unique_pose_indices = sorted({assignment.pose_index for assignment in assignments})
     stochastic_pose_population = len(unique_pose_indices) > 1
@@ -600,6 +841,21 @@ def execute(
         + "\n",
         encoding="utf-8",
     )
+    _atomic_json(
+        run_dir / "sampling_manifest.json",
+        {
+            "schema_version": 1,
+            "requested_designs": len(assignments),
+            "assignments": [
+                {
+                    **assignment.__dict__,
+                    "example_id": example_id,
+                    "compiled_input": str(assemblies[assignment.pose_index].input_path),
+                }
+                for example_id, assignment in example_assignments.items()
+            ],
+        },
+    )
     # Preserve the long-standing top-level report location while retaining
     # every pose-specific prevalidation beside its compiled input.
     if len(prevalidation_reports) == 1:
@@ -716,9 +972,15 @@ def execute(
             "++inference_sampler.generated_routing_ownership_weight="
             + str(cross_chain_topology.get("routing_ownership_weight", 1.0))
         )
-        for name, default in (("routing_clearance", 3.2), ("routing_anchor_taper_residues", 2.0), ("routing_tolerance", 1e-3)):
+        for name, default in (
+            ("routing_clearance", 3.2),
+            ("routing_anchor_taper_residues", 2.0),
+            ("routing_tolerance", 1e-3),
+        ):
             inference_command.append(
-                "++inference_sampler.generated_" + name + "="
+                "++inference_sampler.generated_"
+                + name
+                + "="
                 + str(cross_chain_topology.get(name, default))
             )
     # Resolved preferences also carry the independent intra/inter scaffold
@@ -727,115 +989,50 @@ def execute(
     # while explicitly declining creation of a second generated interface.
     inference_command.extend(_resolved_guidance_overrides(assemblies[0].input_path))
     plain_cif_directory = run_dir / "generated_structures_cif"
-    with GeneratedCifMirror(run_dir, plain_cif_directory):
-        _run(inference_command)
-
-    result_jsons = find_result_jsons(run_dir)
+    inference_error = None
+    try:
+        with GeneratedCifMirror(run_dir, plain_cif_directory):
+            _run(inference_command)
+    except Exception as error:
+        # The subprocess may have committed many designs before failing. Audit
+        # those designs and preserve its error independently of audit outcomes.
+        inference_error = f"{type(error).__name__}: {error}"
+    ledger, valid_results = _reconcile_design_outcomes(
+        run_dir,
+        example_assignments,
+        inference_error=inference_error,
+    )
     expected_designs = requested_designs
-    if len(result_jsons) != expected_designs:
-        raise RuntimeError(
-            "RFD3 output count does not match sampling.designs: "
-            f"expected={expected_designs}, observed={len(result_jsons)}"
-        )
-
+    result_jsons = tuple(valid_results.values())
     design_results: list[dict[str, Any]] = []
     all_reports: list[Path] = []
     mobility_trajectories: list[Path] = []
-    observed_examples: set[str] = set()
     screening_config = config["sampling"].get("screening") or {
         "mode": "advisory",
         "protocol": "auto",
         "retain_all_outputs": True,
     }
-    for result_json in result_jsons:
-        matching_examples = [
-            example_id
-            for example_id in example_assignments
-            if example_id in result_json.stem
-        ]
-        if len(matching_examples) != 1:
-            raise RuntimeError(
-                "Cannot map RFD3 result to exactly one design assignment: "
-                f"result={result_json.name}, matches={matching_examples}"
-            )
-        example_id = matching_examples[0]
-        observed_examples.add(example_id)
+    for example_id, result_json in valid_results.items():
         assignment = example_assignments[example_id]
-        assembly = assemblies[assignment.pose_index]
-        design_id = result_json.stem.removesuffix("_model_0")
-        audit_directory = run_dir / "audits" / design_id
-        audit_outcome = run_result_audits(
-            run_directory=run_dir,
-            rfd3_input=assembly.input_path,
-            result_json=result_json,
-            semantic_audits=assembly.semantic_audits,
-            output_directory=audit_directory,
-            python=sys.executable,
-            command_runner=_run,
+        record = _audit_generated_design(
+            run_dir,
+            example_id,
+            result_json,
+            assignment,
+            assemblies[assignment.pose_index],
+            screening_config,
         )
-        accepted = True
-        rejection_reason = None
-        try:
-            gate_result_audits(
-                audit_outcome.reports,
-                python=sys.executable,
-                command_runner=_run,
-            )
-        except RuntimeError as error:
-            accepted = False
-            rejection_reason = str(error)
-        screening_path = audit_directory / "screening_advice.json"
-        screening = write_advisory_screening(
-            screening_path,
-            audit_outcome.reports,
-            mode=str(screening_config.get("mode", "advisory")),
-            protocol=str(screening_config.get("protocol", "auto")),
+        design_results.append(record)
+        all_reports.extend(Path(path) for path in record["reports"])
+        if record["mobility_trajectory"] is not None:
+            mobility_trajectories.append(Path(record["mobility_trajectory"]))
+        ledger["designs"][example_id].update(
+            audit_status=record["audit_status"],
+            contract_status=record["contract_status"],
         )
-        contract_met = screening["contract_status"] == "met"
-        decision_path = write_decision_explanation(
-            audit_directory / "decision_explanation.json",
-            result_json=result_json,
-            compiled_input=assembly.input_path,
-            reports=audit_outcome.reports,
-            screening=screening,
-        )
-        all_reports.extend(audit_outcome.reports)
-        if audit_outcome.mobility_trajectory is not None:
-            mobility_trajectories.append(audit_outcome.mobility_trajectory)
-        design_results.append(
-            {
-                "design_index": assignment.design_index,
-                "design_id": design_id,
-                "pose_index": assignment.pose_index,
-                "replicate_index": assignment.replicate_index,
-                "pose_seed": assignment.pose_seed,
-                "diffusion_seed": assignment.diffusion_seed,
-                "compiled_input": str(assembly.input_path),
-                "result_json": str(result_json),
-                "generated": True,
-                "contract_met": contract_met,
-                "contract_status": screening["contract_status"],
-                "recommendation": screening["recommendation"],
-                "screening_advice": str(screening_path),
-                "decision_explanation": str(decision_path),
-                # Backward-compatible aliases for older campaign collectors.
-                # New reporting must use generated/contract/recommendation.
-                "accepted": accepted,
-                "rejection_reason": rejection_reason,
-                "reports": [str(path) for path in audit_outcome.reports],
-                "mobility_trajectory": (
-                    str(audit_outcome.mobility_trajectory)
-                    if audit_outcome.mobility_trajectory is not None
-                    else None
-                ),
-            }
-        )
-    missing_examples = set(example_assignments) - observed_examples
-    if missing_examples:
-        raise RuntimeError(
-            "RFD3 did not produce outputs for compiled design examples: "
-            + ", ".join(sorted(missing_examples))
-        )
+        if record.get("audit_error"):
+            ledger["designs"][example_id]["audit_error"] = record["audit_error"]
+        _atomic_json(run_dir / "design_outcomes.json", ledger)
     design_results.sort(key=lambda item: int(item["design_index"]))
 
     accepted_count = sum(bool(record["accepted"]) for record in design_results)
@@ -851,15 +1048,40 @@ def execute(
         record["recommendation"] == "recommended_for_next_stage"
         for record in design_results
     )
-    structure_archive = create_generated_cif_archive(
-        result_jsons,
-        run_dir / "generated_structures_cif.zip",
-        requested_designs=expected_designs,
+    archive_error = None
+    try:
+        structure_archive = create_generated_cif_archive(
+            result_jsons,
+            run_dir / "generated_structures_cif.zip",
+            requested_designs=expected_designs,
+        )
+    except Exception as error:
+        structure_archive = None
+        archive_error = f"{type(error).__name__}: {error}"
+    audit_failed_count = sum(
+        record["audit_status"] != "completed" for record in design_results
     )
+    completed = (
+        ledger["status"] == "completed"
+        and audit_failed_count == 0
+        and archive_error is None
+    )
+    status = "completed" if completed else ("partial" if design_results else "failed")
 
     completion = {
-        "status": "completed",
-        "execution_completed": True,
+        "status": status,
+        "generation_status": ledger["status"],
+        "execution_completed": completed,
+        "design_outcomes": str(run_dir / "design_outcomes.json"),
+        "failed_designs": ledger["failed_designs"],
+        "not_run_designs": ledger["not_run_designs"],
+        "audit_execution": {
+            "status": "failed" if audit_failed_count else "completed",
+            "audited_designs": len(design_results) - audit_failed_count,
+            "failed_designs": audit_failed_count,
+        },
+        "inference_error": inference_error,
+        "archive_error": archive_error,
         "experiment": config["name"],
         "topology": kind,
         "resolved_config_sha256": _sha256(frozen),
@@ -868,7 +1090,7 @@ def execute(
         "pose_manifest": str(pose_manifest_path),
         "model_load_count": 1,
         "produced_designs": len(design_results),
-        "generated_designs": len(design_results),
+        "generated_designs": ledger["generated_designs"],
         "contract_met_designs": contract_met_count,
         "contract_flagged_designs": contract_flagged_count,
         "contract_not_evaluated_designs": contract_unevaluated_count,
@@ -894,18 +1116,21 @@ def execute(
         ),
         "mobility_trajectories": [str(path) for path in mobility_trajectories],
     }
-    summary_path.write_text(
-        json.dumps(completion, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    _record_worker_state(config, run_dir, "completed")
+    _atomic_json(summary_path, completion)
+    _record_worker_state(config, run_dir, status)
     print(
-        "RFD3-Mosaic experiment completed: "
+        f"RFD3-Mosaic experiment {status}: "
         f"generated={len(design_results)}/{expected_designs} "
         f"contract_met={contract_met_count} "
         f"recommended={recommended_count}",
         flush=True,
     )
+    if not completed:
+        raise RuntimeError(
+            f"Mosaic run {status}: generated={ledger['generated_designs']}/{expected_designs}, "
+            f"failed={ledger['failed_designs']}, not_run={ledger['not_run_designs']}, "
+            f"audit_failed={audit_failed_count}; see experiment_summary.json and design_outcomes.json"
+        )
 
 
 def main() -> None:
@@ -925,28 +1150,60 @@ def main() -> None:
                 else None
             ),
         )
+    except ExistingRunError:
+        # Do not let a mistaken rerun replace the original run's summary.
+        raise
     except Exception as error:
         summary_path = run_dir / "experiment_summary.json"
         failed: dict[str, Any] = {
             "status": "failed",
+            "execution_completed": False,
             "error_type": type(error).__name__,
             "error": str(error),
         }
         if summary_path.is_file():
             existing = json.loads(summary_path.read_text(encoding="utf-8"))
             if isinstance(existing, dict):
+                if existing.get("status") == "partial":
+                    failed["status"] = "partial"
                 failed = {**existing, **failed}
         run_dir.mkdir(parents=True, exist_ok=True)
-        summary_path.write_text(
-            json.dumps(failed, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        ledger_path = run_dir / "design_outcomes.json"
+        if ledger_path.is_file():
+            ledger = json.loads(ledger_path.read_text())
+            for row in ledger.get("designs", {}).values():
+                if row.get("generation_status") in ("pending", "running"):
+                    row.update(
+                        generation_status=(
+                            "failed"
+                            if row["generation_status"] == "running"
+                            else "not_run"
+                        ),
+                        reason="worker_stopped",
+                    )
+            states = [
+                row["generation_status"] for row in ledger.get("designs", {}).values()
+            ]
+            for state in ("generated", "failed", "not_run"):
+                ledger[f"{state}_designs"] = states.count(state)
+            if ledger.get("status") == "running":
+                ledger["status"] = "partial" if "generated" in states else "failed"
+            _atomic_json(ledger_path, ledger)
+            failed.update(
+                requested_designs=len(states),
+                generated_designs=states.count("generated"),
+                failed_designs=states.count("failed"),
+                not_run_designs=states.count("not_run"),
+                generation_status=ledger["status"],
+                design_outcomes=str(ledger_path),
+            )
+        _atomic_json(summary_path, failed)
         try:
             config = _load(arguments.resolved_config.resolve())
         except (OSError, TypeError, ValueError):
             config = None
         if config is not None:
-            _record_worker_state(config, run_dir, "failed", error=str(error))
+            _record_worker_state(config, run_dir, failed["status"], error=str(error))
         raise
 
 

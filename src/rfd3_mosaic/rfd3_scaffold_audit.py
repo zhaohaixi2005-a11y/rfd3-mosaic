@@ -21,9 +21,7 @@ def _declared_assembly_shape(input_path: Path) -> dict | None:
 
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or len(payload) != 1:
-        raise ValueError(
-            "RFD3 input must contain exactly one example for shape audit"
-        )
+        raise ValueError("RFD3 input must contain exactly one example for shape audit")
     example = next(iter(payload.values()))
     shape = (example.get("extra") or {}).get("assembly_shape")
     if shape is None:
@@ -63,22 +61,16 @@ def _evaluate_assembly_shape_contract(
             raise ValueError(f"assembly_shape.{field} must be a mapping")
         minimum = float(requested["minimum"])
         maximum = float(requested["maximum"])
-        finite_observed = (
-            isinstance(observed, (int, float))
-            and np.isfinite(float(observed))
+        finite_observed = isinstance(observed, (int, float)) and np.isfinite(
+            float(observed)
         )
-        passed = bool(
-            finite_observed
-            and minimum <= float(observed) <= maximum
-        )
+        passed = bool(finite_observed and minimum <= float(observed) <= maximum)
         checks.append(
             {
                 "field": field,
                 "requested_minimum": minimum,
                 "requested_maximum": maximum,
-                "observed": (
-                    float(observed) if finite_observed else None
-                ),
+                "observed": (float(observed) if finite_observed else None),
                 "passed": passed,
             }
         )
@@ -88,9 +80,7 @@ def _evaluate_assembly_shape_contract(
         "declared": True,
         "passed": all(check["passed"] for check in checks),
         "checks": checks,
-        "measurement": (
-            "final_output_ca_morphology_about_declared_symmetry_center"
-        ),
+        "measurement": ("final_output_ca_morphology_about_declared_symmetry_center"),
     }
 
 
@@ -145,8 +135,7 @@ def _load_declared_symmetry_transforms(
             "RFD3 input lacks a complete runtime-ordered transform registry"
         )
     transforms = tuple(
-        np.asarray(matrices[transform_id], dtype=float)
-        for transform_id in order
+        np.asarray(matrices[transform_id], dtype=float) for transform_id in order
     )
     multiplicity = int(extra.get("symmetry_multiplicity", len(order)))
     if len(transforms) != multiplicity:
@@ -157,9 +146,7 @@ def _load_declared_symmetry_transforms(
     if raw_layout is not None and not isinstance(raw_layout, list):
         raise ValueError("preexpanded_chain_layout must be a list")
     chain_layout = (
-        tuple(dict(record) for record in raw_layout)
-        if raw_layout is not None
-        else None
+        tuple(dict(record) for record in raw_layout) if raw_layout is not None else None
     )
     return transforms, multiplicity, chain_layout
 
@@ -189,6 +176,7 @@ def _fixed_geometry_chain_rg_floor(input_path: Path, *, atom_array=None) -> floa
     """
 
     import numpy as np
+
     if atom_array is None:
         atom_array = _build_runtime_input(input_path)
     fixed = np.asarray(
@@ -207,19 +195,17 @@ def _fixed_geometry_chain_rg_floor(input_path: Path, *, atom_array=None) -> floa
             continue
         center = coordinates.mean(axis=0)
         radii.append(
-            float(
-                np.sqrt(
-                    np.mean(
-                        np.sum(np.square(coordinates - center), axis=-1)
-                    )
-                )
-            )
+            float(np.sqrt(np.mean(np.sum(np.square(coordinates - center), axis=-1))))
         )
     return max(radii, default=0.0)
 
 
 def _audit_final_generated_route_ownership(
-    *, input_path: Path | None, output_atoms: tuple, atom_array=None,
+    *,
+    input_path: Path | None,
+    output_atoms: tuple,
+    atom_array=None,
+    result_metadata=None,
 ) -> dict:
     """Measure declared route ownership from final coordinates, not logs."""
 
@@ -228,10 +214,10 @@ def _audit_final_generated_route_ownership(
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or len(payload) != 1:
         raise ValueError("RFD3 input must contain exactly one example")
-    plan = (next(iter(payload.values())).get("extra") or {}).get(
-        "generated_cross_chain_topology_guidance"
-    )
-    if not isinstance(plan, dict) or not plan.get("enabled"):
+    extra = next(iter(payload.values())).get("extra") or {}
+    contract = extra.get("mosaic_scaffold_contract")
+    plan = extra.get("generated_cross_chain_topology_guidance")
+    if contract is None and (not isinstance(plan, dict) or not plan.get("enabled")):
         return {"declared": False, "applicable": False, "passed": True}
     if atom_array is None:
         atom_array = _build_runtime_input(input_path)
@@ -249,7 +235,8 @@ def _audit_final_generated_route_ownership(
     input_fixed = np.asarray(atom_array.is_motif_atom_with_fixed_coord, dtype=bool)[ca]
     input_chains = list(dict.fromkeys(input_chain_ids.tolist()))
     output_ca = [
-        atom for atom in output_atoms
+        atom
+        for atom in output_atoms
         if atom.record_type == "ATOM" and atom.atom_name.upper() == "CA"
     ]
     output_chains = list(dict.fromkeys(atom.chain_id for atom in output_ca))
@@ -268,16 +255,78 @@ def _audit_final_generated_route_ownership(
                 f"chains {input_chain!r}/{output_chain!r}"
             )
         coordinates.extend(atom.coordinate for atom in observed)
-        chains.extend([output_chain] * len(observed))
+        chains.extend(
+            [input_chain if contract is not None else output_chain] * len(observed)
+        )
         residues.extend(observed_residues)
         fixed.extend(input_fixed[selection].tolist())
+    if contract is not None:
+        from rfd3_mosaic.validation.scaffold_contract import audit_scaffold_contract
+
+        transport = extra.get("mosaic_reference_transport")
+        transport_report = None
+        if transport is not None:
+            from rfd3_mosaic.validation.reference_transport import replay_reference_transport
+            diagnostic = (result_metadata or {}).get("scaffold_contract_diagnostics") or {}
+            history = diagnostic.get("reference_transport")
+            if not isinstance(history, dict):
+                raise ValueError("Mobile scaffold output lacks required reference transport history")
+            contract, transforms = replay_reference_transport(contract, transport, history)
+            mapping = dict(zip(input_chains, output_chains, strict=True))
+            output_lookup = {(a.chain_id, a.residue_number, a.atom_name): np.asarray(a.coordinate)
+                             for a in output_atoms if a.record_type == "ATOM"}
+            ordinal = {(r["chain_id"], r["residue_number"]): i for i, r in enumerate(contract["residues"])}
+            fixed_error = 0.0
+            for atom in transport["fixed_atoms"]:
+                transform = transforms[ordinal[(atom["chain_id"], atom["residue_number"])]]
+                expected = transform[:3, :3] @ np.asarray(atom["coordinate"]) + transform[:3, 3]
+                key = (mapping[atom["chain_id"]], atom["residue_number"], atom["atom_name"])
+                if key not in output_lookup:
+                    raise ValueError("Transported fixed atom is missing from final structure")
+                fixed_error = max(fixed_error, float(np.linalg.norm(output_lookup[key]-expected)))
+            if fixed_error > contract["limits"]["fixed_ca_tolerance"]:
+                raise ValueError("Final fixed atoms disagree with replayed seed rigid motions")
+            transport_report = {"replayed": True, "accepted_transition_count": len(history["accepted_transitions"]),
+                                "maximum_fixed_atom_error_angstrom": fixed_error}
+
+        backbone_arguments = {}
+        if contract.get("schema_version") == 2:
+            from rfd3_mosaic.validation.generated_backbone import backbone_from_atoms
+
+            backbone, names = backbone_from_atoms(
+                output_atoms,
+                contract,
+                chain_mapping=dict(zip(input_chains, output_chains, strict=True)),
+            )
+            backbone_arguments = {
+                "backbone_coordinates": backbone,
+                "residue_names": names,
+            }
+        report = audit_scaffold_contract(
+            contract=contract,
+            coordinates=np.asarray(coordinates, dtype=float),
+            chain_ids=chains,
+            residue_numbers=residues,
+            fixed_mask=fixed,
+            align_fixed=transport is None,
+            **backbone_arguments,
+        )
+        report["replaces_straight_chord_ownership"] = True
+        if transport_report is not None:
+            report["reference_transport"] = transport_report
+        report["fixed_mask_source"] = (
+            "reconstructed_frozen_input_protein_ca_annotations"
+        )
+        return report
     report = audit_generated_route_ownership(
         coordinates=np.asarray(coordinates, dtype=float).reshape(-1, 3),
         chain_ids=chains,
         residue_numbers=residues,
         fixed_mask=fixed,
         routing_clearance=float(plan.get("routing_clearance", 3.2)),
-        routing_anchor_taper_residues=float(plan.get("routing_anchor_taper_residues", 2.0)),
+        routing_anchor_taper_residues=float(
+            plan.get("routing_anchor_taper_residues", 2.0)
+        ),
         routing_tolerance=float(plan.get("routing_tolerance", 1e-3)),
     )
     report["declared"] = True
@@ -317,29 +366,22 @@ def main() -> None:
             expected_transforms,
             declared_multiplicity,
             expected_chain_layout,
-        ) = (
-            _load_declared_symmetry_transforms(
-                arguments.rfd3_input.resolve()
-            )
-        )
+        ) = _load_declared_symmetry_transforms(arguments.rfd3_input.resolve())
         if (
             arguments.expected_symmetry_multiplicity is not None
-            and arguments.expected_symmetry_multiplicity
-            != declared_multiplicity
+            and arguments.expected_symmetry_multiplicity != declared_multiplicity
         ):
             raise ValueError(
-                "--expected-symmetry-multiplicity disagrees with "
-                "--rfd3-input"
+                "--expected-symmetry-multiplicity disagrees with --rfd3-input"
             )
         arguments.expected_symmetry_multiplicity = declared_multiplicity
         runtime_input = _build_runtime_input(arguments.rfd3_input.resolve())
         fixed_geometry_chain_rg_floor = _fixed_geometry_chain_rg_floor(
-            arguments.rfd3_input.resolve(), atom_array=runtime_input,
+            arguments.rfd3_input.resolve(),
+            atom_array=runtime_input,
         )
     elif arguments.expected_symmetry_multiplicity is not None:
-        raise ValueError(
-            "--rfd3-input is required for transform-aware symmetry audit"
-        )
+        raise ValueError("--rfd3-input is required for transform-aware symmetry audit")
 
     result_json = arguments.result_json.resolve()
     structure = (
@@ -355,17 +397,11 @@ def main() -> None:
     report = audit_scaffold_geometry(
         output_atoms,
         max_chain_ca_rg=effective_max_chain_ca_rg,
-        expected_symmetry_multiplicity=(
-            arguments.expected_symmetry_multiplicity
-        ),
+        expected_symmetry_multiplicity=(arguments.expected_symmetry_multiplicity),
         expected_symmetry_transforms=expected_transforms,
         expected_symmetry_chain_layout=expected_chain_layout,
-        max_chain_distance_matrix_rmsd=(
-            arguments.max_chain_distance_matrix_rmsd
-        ),
-        max_chain_distance_matrix_error=(
-            arguments.max_chain_distance_matrix_error
-        ),
+        max_chain_distance_matrix_rmsd=(arguments.max_chain_distance_matrix_rmsd),
+        max_chain_distance_matrix_error=(arguments.max_chain_distance_matrix_error),
     )
     shape_contract = _evaluate_assembly_shape_contract(
         report["summary"],
@@ -376,18 +412,21 @@ def main() -> None:
         ),
     )
     report["assembly_shape_contract"] = shape_contract
-    report["summary"]["passed_assembly_shape"] = shape_contract[
-        "passed"
-    ]
+    report["summary"]["passed_assembly_shape"] = shape_contract["passed"]
     report["passed"] = bool(report["passed"] and shape_contract["passed"])
     routing = _audit_final_generated_route_ownership(
         input_path=(arguments.rfd3_input.resolve() if arguments.rfd3_input else None),
         output_atoms=output_atoms,
         atom_array=runtime_input,
+        result_metadata=json.loads(result_json.read_text(encoding="utf-8")),
     )
     report["generated_route_ownership"] = routing
     report["summary"]["passed_generated_route_ownership"] = routing["passed"]
     report["summary"]["generated_route_ownership_applicable"] = routing["applicable"]
+    if routing.get("measurement") == "explicit_full_scaffold_contract":
+        report["scaffold_contract"] = routing
+        report["summary"]["passed_scaffold_contract"] = routing["passed"]
+        report["summary"]["generated_route_contract_kind"] = "explicit_full_scaffold"
     report["passed"] = bool(report["passed"] and routing["passed"])
     report["inputs"] = {
         "result_json": str(result_json),
@@ -404,13 +443,9 @@ def main() -> None:
             if arguments.max_chain_ca_rg is not None
             else "fixed_geometry_lower_bound"
         ),
-        "fixed_geometry_chain_ca_rg_floor": (
-            fixed_geometry_chain_rg_floor
-        ),
+        "fixed_geometry_chain_ca_rg_floor": (fixed_geometry_chain_rg_floor),
         "effective_max_chain_ca_rg": effective_max_chain_ca_rg,
-        "automatic_margin": (
-            None if arguments.max_chain_ca_rg is not None else 2.0
-        ),
+        "automatic_margin": (None if arguments.max_chain_ca_rg is not None else 2.0),
     }
     output = arguments.output.resolve()
     output.write_text(
@@ -426,8 +461,7 @@ def main() -> None:
         f"{summary.get('peptide_geometry_flag_count', 0)} advisory flag(s)"
     )
     print(
-        "maximum chain CA Rg: "
-        f"{summary['maximum_chain_ca_radius_of_gyration']:.3f} A"
+        f"maximum chain CA Rg: {summary['maximum_chain_ca_radius_of_gyration']:.3f} A"
     )
     print(
         "allowed chain CA Rg: "
@@ -451,31 +485,22 @@ def main() -> None:
             f"{summary['maximum_copy_internal_distance_matrix_error']:.6f} A"
         )
         print(
-            "symmetry xyz RMSD:  "
-            f"{summary['maximum_symmetry_coordinate_rmsd']:.6f} A"
+            f"symmetry xyz RMSD:  {summary['maximum_symmetry_coordinate_rmsd']:.6f} A"
         )
         print(
-            "symmetry xyz max:   "
-            f"{summary['maximum_symmetry_coordinate_error']:.6f} A"
+            f"symmetry xyz max:   {summary['maximum_symmetry_coordinate_error']:.6f} A"
         )
         if summary.get("assembly_morphology_available"):
             pore = summary.get("assembly_central_pore_diameter")
             outer = summary.get("assembly_outer_radial_diameter")
-            spherical_outer = summary.get(
-                "assembly_spherical_outer_diameter"
-            )
+            spherical_outer = summary.get("assembly_spherical_outer_diameter")
             if pore is not None and outer is not None:
                 print(f"central CA pore:    {pore:.3f} A diameter")
                 print(f"outer CA radial:   {outer:.3f} A diameter")
             elif spherical_outer is not None:
-                spherical_inner = summary.get(
-                    "assembly_spherical_inner_diameter"
-                )
+                spherical_inner = summary.get("assembly_spherical_inner_diameter")
                 if spherical_inner is not None:
-                    print(
-                        "central CA sphere: "
-                        f"{spherical_inner:.3f} A inner diameter"
-                    )
+                    print(f"central CA sphere: {spherical_inner:.3f} A inner diameter")
                 print(
                     "outer CA sphere:   "
                     f"{spherical_outer:.3f} A diameter "

@@ -125,7 +125,7 @@ class PoseTaskTestCase(unittest.TestCase):
                     self.assertEqual(result["selected_tasks"], 2)
                     for task in result["tasks"]:
                         declared = load_user_design(task["task"])
-                        self.assertEqual(declared.output.root, root / "results")
+                        self.assertEqual(declared.output.root, (root / "results").resolve())
                         self.assertEqual(
                             declared.preferences.component_motion.value, motion
                         )
