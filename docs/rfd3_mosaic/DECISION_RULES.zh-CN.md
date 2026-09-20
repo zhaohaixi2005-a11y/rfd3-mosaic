@@ -602,9 +602,12 @@ L_backbone_continuity = mean_chains(mean_adjacent [abs(d-3.8)-.55]+²)
 `intra=0` 时紧凑化项关闭，但安全/走线项可以独立存在。公共创建界面任务通常解析为 intra=1。
 上述 1.5、2、2.6、.38 都不能直接视为适合全部长度和折叠类型的质量判据。
 
-走线项比较生成 Cα 到自己连接端点弦和其他链端点弦的距离，
-惩罚 `([d_own-d_nearest_other]+/3.8)²`。它鼓励空间归属，
-不要求链笔直，也不是数学上的无穿链/无打结证明。
+旧走线公式 `([d_own-d_nearest_other]+/3.8)²` **已被替换**：
+对称中心处距离相等时，旧公式没有惩罚，也没有逃离中心的梯度。
+当前使用正余量、所有其他链的端点弦，以及生成 Cα 和相邻线段中点；
+`L_routing = mean((v_route/backbone_distance)²)`，默认分母为 3.8 Å。
+完整公式、逐步独立修正与最终空间归属判定见 [第 23 节](#generated-route-ownership)。
+这仍是空间区域约束，不是无穿链/无打结证明。
 
 核心候选做梯度限幅、两遍邻居平滑和三遍相邻步差限制（默认 .08 Å），
 默认 token 上限 .20 Å 乘窗口。五次减半试步要求：
@@ -1703,3 +1706,137 @@ CA 默认阈值 3.2 Å；连续性使用该次 sampler 的实际 target/toleranc
 每组默认预算 8 小时，低于本批 12 小时作业时限。25% 和 3 分钟是调度余量，不是科学参数，
 也不能保证不同 GPU 上不超时。分组不改变每片配置、种子或独立审计。
 明确的 `QOSMaxSubmitJobPerUserLimit` 拒绝可按回执重试后续批次；已经接受或状态不确定的提交禁止盲目重复。
+
+<a id="generated-route-ownership"></a>
+
+## 23. 生成链的空间归属：防止无 clash 的中心穿绕
+
+来源：[`generated_routes.py`](../../models/rfd3/src/rfd3/inference/symmetry/generated_routes.py)、
+[`scaffold_core_guidance.py`](../../models/rfd3/src/rfd3/inference/symmetry/scaffold_core_guidance.py)、
+[`inference_sampler.py`](../../models/rfd3/src/rfd3/model/inference_sampler.py)、
+[`validation/generated_route_ownership.py`](../../src/rfd3_mosaic/validation/generated_route_ownership.py)。
+
+原子没有 clash，不代表生成链分别占据预期区域。这里明确加入“每段生成序列更靠近
+自己的连接路线”的设计要求，不根据投影视图的交叉数，也不根据是否发生原子碰撞来替代判断。
+该规则改善的是指定空间组织，不是分子力场、结理论不变量或 GPU 生成成功率承诺。
+
+### 23.1 路线身份、正余量与检查点
+
+一个 run 必须是同一聚合物链内、编号连续、两端紧邻固定 Cα 的生成残基段。
+残基编号断点不能被拼成一条假路线。设其生成残基数为 n，固定端点为 a、b，
+参考线段 `S_own=[a,b]`。竞争路线是**所有其他链**的双锚 run；同一链的其他 run 不作为竞争者。
+距离为到有限线段的最近距离，不是到无限直线的距离：
+
+```text
+t(x;a,b) = clip(((x-a)·(b-a))/max(||b-a||²,1e-12), 0, 1)
+d(x,[a,b]) = ||x-a-t(x;a,b)*(b-a)||
+```
+
+生成 Cα 的序列位置为 `s=1,...,n`；同时检查包含两端 junction 在内的
+相邻 Cα 线段中点，位置为 `s=0.5,1.5,...,n+0.5`。固定端点本身不计入受罚点。
+每个检查点与每个竞争 run j 都计算：
+
+```text
+m(s) = routing_clearance * min(1, s/taper, (n+1-s)/taper)
+v_route(s,j) = max(0, m(s) + d(x_s,S_own) - d(x_s,S_j))
+E_route = sum_(s,j) v_route(s,j)²
+```
+
+默认 `routing_clearance=3.2 Å`、`taper=routing_anchor_taper_residues=2`。
+离固定端点半个残基位置的中点余量为 0.8 Å，第一个生成 Cα 为 1.6 Å，
+离两端都至少两个残基位置时为 3.2 Å。这样允许在固定 interface 附近接近，
+并要求生成主体具有明确归属；不会把所有残基拉到参考直线上。
+这两个数是公开的设计参数，不是适用于所有蛋白的自然常数。
+
+旧公式在 `d_own=d_other` 时为零；新公式此时有正违反量。
+同时比较所有竞争路线，避免 `min` 在对称等距处只选中某一个竞争者。
+对非退化的 C3 外围路线，这会给中心处的各链产生对应的向外方向。
+参考线段重合等退化情况仍可能没有有效梯度，不能据此声称任何 Cn/Dn 输入都可修复。
+
+距离差 `g(x)=d(x,S_j)-d(x,S_i)` 是 2-Lipschitz。若两个受检点分别满足
+`g(x)>=m_i`、`g(y)<=-m_j`，则 `||x-y||>=(m_i+m_j)/2`。
+等余量 3.2 Å 对应至少 3.2 Å 的点间间隔；数值容差会相应减弱此界限。
+这只是受检点之间的几何性质：Cα 加中点没有穷尽整条连续曲线，更没有检查全原子表面。
+
+### 23.2 每次去噪预测上的独立修正
+
+当 `enable_generated_cross_chain_topology_guidance` 启用，且 routing 权重大于零时，
+Mosaic sampler 在 graph/core 引导之后、Euler 更新之前，对每次 clean prediction
+调用独立路线修正，**包括最后一次预测**。每次调用最多两轮，不是额外调用两次去噪模型；
+若已满足容差、没有方向或没有可接受试步，会提前停止。
+不向 noisy `X_t` 施加上述 clean 几何投影，也不改扩散噪声公式。
+
+对 `E_route` 求梯度并按 token 累加，只平移生成残基。固定 token 位移设为零，
+做两遍相邻残基平滑，每遍之后再次固定。以最大 token 方向范数 G 归一化，
+避免链更长或副本更多时，平均损失造成位移缩小。
+若 G 非有限或不超过 `1e-12`，记录 `no_route_direction` 并停止。
+进度 `p=step_num/max(number_of_noise_levels-2,1)`，默认每轮候选位移上限为：
+
+```text
+M(p) = 0.2 Å + 0.8 Å*(1-p)
+delta_token = M(p) * smoothed_negative_gradient_token / G
+```
+
+一般配置下用 `max(a, a+(1-p)*(1-a))`，其中 a 是 `maximum_token_step`，默认为 0.2 Å。
+随后进行八遍交替相邻边投影，并在必要时整体缩小，令相邻 token 的位移差
+不超过 `maximum_adjacent_token_step_difference`，默认 0.08 Å。
+这限制了肽键向量的扰动，但不是完整的键角/二面角保持算法。
+固定 token 始终不移动；同一 token 的原子共享平移，候选再经过原有精确固定/对称投影。
+
+默认尝试五个比例 `1,1/2,1/4,1/8,1/16`，接受需要同时满足：
+
+1. 原有 Cα 碰撞、跨链线段碰撞和连续性逐对违反量不增加超过 `1e-6 Å`。
+2. `E_route_after < E_route_before - 1e-8 Å²`。
+3. 原本 `v_route<=routing_tolerance` 的点–路线对，候选仍满足该容差。
+4. 全部路线对中的最大违反量不增加超过 `1e-6 Å`。
+5. 精确投影后实际最大原子位移不超过 `M(p)+1e-5 Å`。
+
+已违反的路线对允许在总平方和下降、最大值不恶化的前提下变化；不能以新碰撞换取路线改善。
+所有候选失败时保留原坐标。这些限制可能使实际移动远小于上限，甚至为零。
+`scaffold_core_guidance_diagnostics.route_steps` 记录初末残余、每个试步的条件与投影后实际位移。
+默认 `routing_tolerance=1e-3 Å` 是路线检查容差，不能和几何保护的 `1e-6 Å` 数值回退容差混用。
+
+路线端点始终取当前坐标中的固定锚点。因此 locked 模式的路线不变；允许刚体移动时，
+路线随已经接受的 seed 姿态更新，不拿最初 pose 去约束后续合法位姿。
+这里不会改变 seed 内部固定几何，也不保证两个不同初始 pose 最后仍保持不同。
+
+### 23.3 末端修正、独立审计与未覆盖情况
+
+第 22.3 节的最终修正在 routing 启用时增加 `route_ownership` 违反量类别：
+`F=sum_CA v² + sum_segments v² + sum_bonds v² + sum_routes v²`。
+仍要求每个类别的平方和、最大值不恶化，且已满足的约束不能变坏。
+其通用 `1e-6 Å` 优化容差比最终路线审计的 `1e-3 Å` 更严格。
+末端修正只能减少局部残余，不能保证将已经形成的穿绕解开。
+
+最终审计由独立 NumPy 实现读取**实际输出坐标**，从冻结输入重建固定残基身份，
+重新计算每个生成 Cα 和中点的全部竞争关系；不把 sampler 的 `applied` 或损失下降当作通过。
+它记录违反点所在链、序列位置、最严重的竞争路线、最大违反量、违反比例，以及阈值。
+该审计位于 `scaffold_validity_audit.json.generated_route_ownership`，
+独立汇总标志为 `passed_generated_route_ownership`；原有 clash 检查仍保留。
+
+只有双锚连续生成 run 被覆盖。单锚末端、没有固定锚点的段等列入 `uncovered_runs`，
+没有跨链竞争关系时 `applicable=false`。因此局部 `passed=true` 不能解释成所有生成残基
+都已检查，也不能用于宣称任意链型已经获得防缠绕保证。
+
+审计另检查参考线段的表达是否冲突。对两条线段，计算双向 Hausdorff 距离：
+
+```text
+H(S_i,S_j) = max(max_(endpoint in S_i) d(endpoint,S_j),
+                 max_(endpoint in S_j) d(endpoint,S_i))
+m_max(i) = clearance * min(1, (n_i+1)/(2*taper))
+```
+
+对线段，端点最大值给出这里所需的 Hausdorff 距离；任何点的两路线距离差绝对值不超过 H。
+若 `H < m_max(i)-routing_tolerance`，记录 `reference_margin_conflicts` 并判路线约束失败。
+正余量下参考线段完全重合也单独记录 `ambiguous_reference_pairs`。
+这证明的是**该直线段参考和余量合同无法满足**，不是证明蛋白 pose 在物理上不可实现；
+没有这些冲突也不证明存在满足所有聚合物几何条件的路径。
+
+### 23.4 联合 packing 的同一时刻使用同一目标
+
+`resolve_graph_interface_step_context` 在联合提案开始时一次确定 patch 身份、
+capture/expand/polish 阶段、阶段有效权重、接触先验随时间的缩放以及目标 Cα 距离。
+生成 patch 更新、seed 刚体更新和外层前后比较都使用这一份 context。
+不能让 patch 使用退火后的目标，刚体更新却使用未退火的原始配置；
+也不能在同一次 line search 的不同候选间重新定义评价目标。
+这修复了控制器目标不一致，不能单凭此改动推断 packing 或骨架通过率已经提高。

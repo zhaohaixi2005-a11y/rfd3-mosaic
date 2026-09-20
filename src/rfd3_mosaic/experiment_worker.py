@@ -716,6 +716,11 @@ def execute(
             "++inference_sampler.generated_routing_ownership_weight="
             + str(cross_chain_topology.get("routing_ownership_weight", 1.0))
         )
+        for name, default in (("routing_clearance", 3.2), ("routing_anchor_taper_residues", 2.0), ("routing_tolerance", 1e-3)):
+            inference_command.append(
+                "++inference_sampler.generated_" + name + "="
+                + str(cross_chain_topology.get(name, default))
+            )
     # Resolved preferences also carry the independent intra/inter scaffold
     # field.  Do not couple those overrides to graph-interface activation:
     # supplied-interface jobs may legitimately request a compact monomer core

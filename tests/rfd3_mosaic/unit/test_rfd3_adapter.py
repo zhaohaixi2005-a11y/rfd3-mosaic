@@ -1665,6 +1665,9 @@ class RFD3AdapterTestCase(unittest.TestCase):
                 "scope": "two_fixed_anchor_generated_runs",
                 "routing_ownership_weight": 1.0,
                 "normalization_distance": 3.8,
+                "routing_clearance": 3.2,
+                "routing_anchor_taper_residues": 2.0,
+                "routing_tolerance": 1e-3,
             },
         )
 

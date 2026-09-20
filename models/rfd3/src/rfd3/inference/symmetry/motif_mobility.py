@@ -23,6 +23,7 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     apply_graph_interface_guidance,
     graph_interface_energy,
     graph_interface_proposal_acceptable,
+    resolve_graph_interface_step_context,
 )
 from rfd3.inference.symmetry.scaffold_guidance import (
     BoundaryTopology,
@@ -1724,12 +1725,6 @@ class OrbitRigidMotifController:
             scaffold_coordinates,
             baseline_target,
         )
-        baseline_graph = graph_interface_energy(
-            baseline_coordinates,
-            interface_topology,
-            interface_config,
-            patch_assignments=patch_state.assignments,
-        )
         baseline_rotations = tuple(
             motif.state.rotation[0].clone() for motif in self.motifs
         )
@@ -1758,6 +1753,11 @@ class OrbitRigidMotifController:
         baseline_extra = extra_energy(baseline_coordinates)
 
         try:
+            step_context = resolve_graph_interface_step_context(
+                baseline_coordinates, interface_topology, progress=progress,
+                config=interface_config, patch_state=patch_state,
+            )
+            patch_state.assignments = dict(step_context.patch_assignments)
             packed_coordinates, packing_step = apply_graph_interface_guidance(
                 baseline_coordinates,
                 features,
@@ -1767,18 +1767,29 @@ class OrbitRigidMotifController:
                 projector=projector,
                 patch_state=patch_state,
                 candidate_validator=candidate_validator,
+                step_context=step_context,
             )
         except Exception:
             rollback_mutable_state()
             raise
-        adaptive_phase = str(packing_step.get("adaptive_phase", "polish"))
-        # Before/after must score the SAME discrete patch. An unlocked patch
-        # can be reselected at this step; yesterday's assignment is not a
-        # valid baseline for today's objective.
-        baseline_graph = graph_interface_energy(
-            baseline_coordinates, interface_topology, interface_config,
-            patch_assignments=patch_state.assignments,
-        )
+        adaptive_phase = step_context.adaptive_phase
+
+        def packing_energy(coordinates: torch.Tensor):
+            # Both controllers and their outer acceptance must optimize the
+            # same discrete patch, phase weights, annealed contact prior and
+            # capture radius. Scoring rigid poses with the raw config made
+            # them optimize a different objective from the generated patch.
+            return graph_interface_energy(
+                coordinates, interface_topology, step_context.effective_config,
+                target_ca_distance_override=step_context.target_ca_distance,
+                patch_assignments=step_context.patch_assignments,
+            )
+
+        try:
+            baseline_graph = packing_energy(baseline_coordinates)
+        except Exception:
+            rollback_mutable_state()
+            raise
         if adaptive_phase not in phase_response_scales:
             rollback_mutable_state()
             raise ValueError(f"Unknown joint packing adaptive phase {adaptive_phase!r}")
@@ -1791,12 +1802,9 @@ class OrbitRigidMotifController:
                 packed_coordinates,
                 candidate_target[None, ...],
             )
-            return graph_interface_energy(
-                candidate_coordinates,
-                interface_topology,
-                interface_config,
-                patch_assignments=patch_state.assignments,
-            ).total + extra_energy(candidate_coordinates)
+            return packing_energy(candidate_coordinates).total + extra_energy(
+                candidate_coordinates
+            )
 
         try:
             self.update_orbits_from_scaffold(
@@ -1825,12 +1833,7 @@ class OrbitRigidMotifController:
                 packed_coordinates,
                 candidate_target,
             )
-            candidate_graph = graph_interface_energy(
-                candidate_coordinates,
-                interface_topology,
-                interface_config,
-                patch_assignments=patch_state.assignments,
-            )
+            candidate_graph = packing_energy(candidate_coordinates)
             candidate_rotations = tuple(
                 motif.state.rotation[0] for motif in self.motifs
             )
@@ -1865,7 +1868,7 @@ class OrbitRigidMotifController:
         packing_contract_safe = graph_interface_proposal_acceptable(
             baseline_graph,
             candidate_graph,
-            interface_config,
+            step_context.effective_config,
             decision=packing_decision,
         )
 
@@ -1933,6 +1936,12 @@ class OrbitRigidMotifController:
             "proposal_only": not apply_update,
             "motif_pose_changed": motif_pose_changed,
             "adaptive_phase": adaptive_phase,
+            "packing_objective": {
+                "effective_config": vars(step_context.effective_config),
+                "target_ca_distance": step_context.target_ca_distance,
+                "contact_prior_schedule_scale": step_context.contact_prior_schedule_scale,
+                "physical_quality_target_ca_distance": interface_config.target_ca_distance,
+            },
             "motif_pose_response_scale": proposal_response_scale,
             "generated_patch_changed": bool(
                 packing_step.get("proposal_accepted", False)

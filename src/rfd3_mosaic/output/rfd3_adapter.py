@@ -3103,15 +3103,17 @@ def compile_assembly_rfd3_input(
             "tolerance": 0.5,
             "projection_iterations": 64,
         },
-        # A generated path bounded by two fixed endpoints owns the relative
-        # Voronoi cell of that endpoint corridor.  This prevents chains from
-        # swapping routes through another protomer without prohibiting legal
-        # interface contacts or prescribing inward/outward curvature.
+        # Spatial ownership is distinct from clash detection. All competitor
+        # corridors receive a positive-clearance hinge, tapered near anchors;
+        # final output is independently audited, including bond midpoints.
         "generated_cross_chain_topology_guidance": {
             "enabled": symmetry_multiplicity > 1 and bool(compiled_links),
             "scope": "two_fixed_anchor_generated_runs",
             "routing_ownership_weight": 1.0,
             "normalization_distance": 3.8,
+            "routing_clearance": 3.2,
+            "routing_anchor_taper_residues": 2.0,
+            "routing_tolerance": 1e-3,
         },
         "symmetry_action_kind": (
             "compact_mixed_stabilizer_quotients"

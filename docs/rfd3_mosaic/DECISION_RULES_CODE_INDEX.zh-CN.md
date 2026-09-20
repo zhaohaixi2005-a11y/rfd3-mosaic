@@ -2,9 +2,9 @@
 
 本索引配合 [公式与决策说明](DECISION_RULES.zh-CN.md) 使用。对照基线为本仓库保留的
 `production@551a90103a51d0bff27e269fe454fdba4aefb274`，实现版本为
-`e20a04e0b45fb3224b23248e23e31aa5eb7a815f` 及本次 benchmark 整改。这不是与当前最新上游的比较。
+`e20a04e0b45fb3224b23248e23e31aa5eb7a815f` 及后续 benchmark、生成区域归属整改。这不是与当前最新上游的比较。
 
-逐文件列出差异中的 **124 个生产 Python 文件、22 个维护脚本**。
+逐文件列出差异中的 **126 个生产 Python 文件、22 个维护脚本**。
 每行给出主文档章节和该文件的职责；包导出、工程适配和空文件不算新科学公式。
 同一公式可能跨编译、采样和审计三个入口，因此多个文件引用同一章节不表示重复算法。
 
@@ -73,7 +73,7 @@
 | [rfd3_interface_relation_audit.py](../../src/rfd3_mosaic/rfd3_interface_relation_audit.py) | 9、19.6 | 声明界面的相对变换、接触/覆盖和重原子 packing 代理 |
 | [rfd3_mobility_audit.py](../../src/rfd3_mosaic/rfd3_mobility_audit.py) | 7、15、19.4 | 累计/逐步刚体移动、限制子空间与轨迹证据 |
 | [rfd3_prevalidate.py](../../src/rfd3_mosaic/rfd3_prevalidate.py) | 3、12、13、21.1 | 采样前输入、映射、约束和支持能力检查 |
-| [rfd3_scaffold_audit.py](../../src/rfd3_mosaic/rfd3_scaffold_audit.py) | 17、19.3 | 骨架主链/对称/穿插检查入口 |
+| [rfd3_scaffold_audit.py](../../src/rfd3_mosaic/rfd3_scaffold_audit.py) | 17、19.3、23.3 | 骨架主链/对称/穿插检查，以及最终空间归属独立审计入口 |
 | [rfd3_scaffold_core_audit.py](../../src/rfd3_mosaic/rfd3_scaffold_core_audit.py) | 8、9、19.4 | 核心引导执行与 required/advisory 代理目标检查 |
 | [rfd3_seed_audit.py](../../src/rfd3_mosaic/rfd3_seed_audit.py) | 19.1、19.2 | 链配对、接触保持与 seed 误差；区分拟合和内部距离 |
 | [run_artifacts.py](../../src/rfd3_mosaic/run_artifacts.py) | 21.3 | 运行产物、路径、状态和报告；转述已有指标 |
@@ -111,6 +111,7 @@
 | [topology/symmetry_connectivity.py](../../src/rfd3_mosaic/topology/symmetry_connectivity.py) | 12.2 | 群生成关系闭包与全装配连通性 |
 | [validation/__init__.py](../../src/rfd3_mosaic/validation/__init__.py) | 21.1 | 包初始化/公开导出；公式见所导出的实现模块 |
 | [validation/assembly_morphology.py](../../src/rfd3_mosaic/validation/assembly_morphology.py) | 18.3 | 用户形态目标、轴可辨识性及孔径/外径/高度 |
+| [validation/generated_route_ownership.py](../../src/rfd3_mosaic/validation/generated_route_ownership.py) | 23 | 最终 Cα/中点空间归属独立审计、覆盖范围和参考路线余量冲突 |
 | [validation/scaffold_validity.py](../../src/rfd3_mosaic/validation/scaffold_validity.py) | 17.2、19.3 | 主链完整、键长、碰撞、线段接近及对称误差 |
 | [validation/schema.py](../../src/rfd3_mosaic/validation/schema.py) | — | 空占位文件，无可执行公式或判定 |
 | [validation/seed_integrity.py](../../src/rfd3_mosaic/validation/seed_integrity.py) | 19.1、19.2 | 刚体拟合、内部距离与界面接触保持 |
@@ -129,17 +130,18 @@
 | [rfd3/inference/symmetry/constraint_runtime.py](../../models/rfd3/src/rfd3/inference/symmetry/constraint_runtime.py) | 4、13、15 | 固定目标生命周期、更新及恢复 |
 | [rfd3/inference/symmetry/cylindrical_projector.py](../../models/rfd3/src/rfd3/inference/symmetry/cylindrical_projector.py) | 13.3 | 柱坐标投影、轴退化及容差 |
 | [rfd3/inference/symmetry/frames.py](../../models/rfd3/src/rfd3/inference/symmetry/frames.py) | 11.1、13 | 数值 frame 正交化和合法性 |
-| [rfd3/inference/symmetry/graph_interface_guidance.py](../../models/rfd3/src/rfd3/inference/symmetry/graph_interface_guidance.py) | 5、6、16 | 接触势、全部 graph 损失、选片段、梯度和接受规则 |
-| [rfd3/inference/symmetry/geometry_restoration.py](../../models/rfd3/src/rfd3/inference/symmetry/geometry_restoration.py) | 22 | 最终生成区域的有界可行性修正；记录残留违反，不保证任意固定 pose 可修复 |
+| [rfd3/inference/symmetry/generated_routes.py](../../models/rfd3/src/rfd3/inference/symmetry/generated_routes.py) | 23 | 正余量、全部竞争路线、CA/中点违反量及逐 clean prediction 有界修正 |
+| [rfd3/inference/symmetry/graph_interface_guidance.py](../../models/rfd3/src/rfd3/inference/symmetry/graph_interface_guidance.py) | 5、6、16、23.4 | 接触势、全部 graph 损失、选片段、梯度和接受规则；联合更新共享同一有效目标 |
+| [rfd3/inference/symmetry/geometry_restoration.py](../../models/rfd3/src/rfd3/inference/symmetry/geometry_restoration.py) | 22、23.3 | 最终生成区域的有界可行性修正；记录残留违反，不保证任意固定 pose 可修复 |
 | [rfd3/inference/symmetry/interface_constraint_orbit.py](../../models/rfd3/src/rfd3/inference/symmetry/interface_constraint_orbit.py) | 11、13、21.1 | 界面组约束到轨道及运行原子身份的转换 |
 | [rfd3/inference/symmetry/joint_projector.py](../../models/rfd3/src/rfd3/inference/symmetry/joint_projector.py) | 4、13 | 对称与固定约束联合投影、恢复及验证 |
 | [rfd3/inference/symmetry/local_neighbourhood.py](../../models/rfd3/src/rfd3/inference/symmetry/local_neighbourhood.py) | 20.1 | 局部群索引邻域、特征裁剪和全轨道展开 |
-| [rfd3/inference/symmetry/motif_mobility.py](../../models/rfd3/src/rfd3/inference/symmetry/motif_mobility.py) | 7、15 | 模型/目标刚体提案、自由度、先验和搜索 |
-| [rfd3/inference/symmetry/scaffold_core_guidance.py](../../models/rfd3/src/rfd3/inference/symmetry/scaffold_core_guidance.py) | 8、17 | 核心/路径/排他/碰撞引导及连续性修正 |
+| [rfd3/inference/symmetry/motif_mobility.py](../../models/rfd3/src/rfd3/inference/symmetry/motif_mobility.py) | 7、15、23.4 | 模型/目标刚体提案、自由度、先验和搜索；同一 context 的事务比较 |
+| [rfd3/inference/symmetry/scaffold_core_guidance.py](../../models/rfd3/src/rfd3/inference/symmetry/scaffold_core_guidance.py) | 8、17、23 | 核心/路径/排他/碰撞引导、连续性与路线逐对保护 |
 | [rfd3/inference/symmetry/scaffold_guidance.py](../../models/rfd3/src/rfd3/inference/symmetry/scaffold_guidance.py) | 6–8、15 | 组合各引导、捕获/绑定和联合接受 |
 | [rfd3/inference/symmetry/symmetry_utils.py](../../models/rfd3/src/rfd3/inference/symmetry/symmetry_utils.py) | 4、11、13 | 群作用、轨道投影及耦合随机噪声 |
 | [rfd3/model/RFD3.py](../../models/rfd3/src/rfd3/model/RFD3.py) | 20.1 | 局部输入进入 TokenInitializer 之前的特征裁剪接入 |
-| [rfd3/model/inference_sampler.py](../../models/rfd3/src/rfd3/model/inference_sampler.py) | 4–8、13、15、17、20 | 采样各阶段调用顺序、固定恢复、引导和最终修正 |
+| [rfd3/model/inference_sampler.py](../../models/rfd3/src/rfd3/model/inference_sampler.py) | 4–8、13、15、17、20、23 | 采样各阶段调用顺序、固定恢复、引导和最终修正；逐 clean prediction 路线修正 |
 | [rfd3/model/layers/block_utils.py](../../models/rfd3/src/rfd3/model/layers/block_utils.py) | 20.2 | 逐查询原子合法跨链邻居及小输入配额 |
 | [rfd3/trainer/rfd3.py](../../models/rfd3/src/rfd3/trainer/rfd3.py) | 21.1、21.3 | 训练/推理接口兼容接入；不新增本文意义下的人工能量 |
 | [rfd3/transforms/conditioning_base.py](../../models/rfd3/src/rfd3/transforms/conditioning_base.py) | 13、21.1 | 条件/固定遮罩与对称输入一致性 |

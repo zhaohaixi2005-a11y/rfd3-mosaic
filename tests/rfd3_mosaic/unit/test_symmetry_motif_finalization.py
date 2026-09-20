@@ -201,6 +201,10 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                             f_ref=None,
                         )
                     self.assertEqual(len(predictions), 3)
+                    route_steps = result["scaffold_core_guidance_diagnostics"]["route_steps"]
+                    self.assertEqual(len(route_steps), 3)
+                    self.assertEqual(route_steps[-1]["progress"], 1.0)
+                    self.assertTrue(all(step["coordinate_space"] == "denoised_prediction" for step in route_steps))
                     self.assertFalse(torch.allclose(inputs[0], coordinates))
                     for value in predictions:
                         torch.testing.assert_close(value, coordinates)

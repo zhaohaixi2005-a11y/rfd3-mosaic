@@ -22,6 +22,8 @@ from typing import Any, Callable
 
 import torch
 
+from .generated_routes import route_deficits_from_config
+
 
 @dataclass(frozen=True)
 class ScaffoldCoreChain:
@@ -70,6 +72,9 @@ class ScaffoldCoreGuidanceConfig:
     clash_weight: float = 8.0
     continuity_weight: float = 2.0
     routing_ownership_weight: float = 0.0
+    routing_clearance: float = 3.2
+    routing_anchor_taper_residues: float = 2.0
+    routing_tolerance: float = 1e-3
     contact_distance: float = 8.0
     contact_softness: float = 0.75
     sequence_separation: int = 8
@@ -106,6 +111,9 @@ class ScaffoldCoreGuidanceConfig:
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} cannot be negative")
         for name in (
+            "routing_clearance",
+            "routing_anchor_taper_residues",
+            "routing_tolerance",
             "contact_distance",
             "contact_softness",
             "target_contacts_per_generated_residue",
@@ -525,12 +533,15 @@ def build_scaffold_core_topology(
                 run_start += 1
                 continue
             run_end = run_start
-            while run_end + 1 < len(generated_values) and generated_values[run_end + 1]:
+            while (run_end + 1 < len(generated_values)
+                   and generated_values[run_end + 1] and bool(consecutive[run_end])):
                 run_end += 1
-            left_fixed = run_start > 0 and not generated_values[run_start - 1]
+            left_fixed = (run_start > 0 and not generated_values[run_start - 1]
+                          and bool(consecutive[run_start - 1]))
             right_fixed = (
                 run_end + 1 < len(generated_values)
                 and not generated_values[run_end + 1]
+                and bool(consecutive[run_end])
             )
             if left_fixed:
                 for depth, pair_index in enumerate(range(run_start - 1, run_end)):
@@ -1111,45 +1122,11 @@ def scaffold_core_energy(
                         )
                     )
 
-    # A two-anchored generated run owns the Voronoi cell of its compiler-
-    # declared endpoint chord.  This is a relative routing constraint: it
-    # does not pull a backbone onto the straight chord and it does not prefer
-    # inward over outward curvature.  It only penalizes residues that are
-    # closer to another chain's endpoint corridor than to their own.
-    routing_terms: list[torch.Tensor] = []
-    routing_excesses: list[torch.Tensor] = []
-    for run_index, run in enumerate(topology.generated_runs):
-        competitors = [
-            other
-            for other_index, other in enumerate(topology.generated_runs)
-            if other_index != run_index and other.asym_id != run.asym_id
-        ]
-        if not competitors or not len(run.generated_ca_atom_indices):
-            continue
-        points = coordinates[run.generated_ca_atom_indices]
-        own = _point_to_segment_distances(
-            points,
-            coordinates[run.left_anchor_ca_atom_index][None, :],
-            coordinates[run.right_anchor_ca_atom_index][None, :],
-        )[:, 0]
-        other_start = torch.stack(
-            [coordinates[item.left_anchor_ca_atom_index] for item in competitors]
-        )
-        other_end = torch.stack(
-            [coordinates[item.right_anchor_ca_atom_index] for item in competitors]
-        )
-        other = (
-            _point_to_segment_distances(
-                points,
-                other_start,
-                other_end,
-            )
-            .min(dim=1)
-            .values
-        )
-        excess = torch.relu(own - other) / config.backbone_distance
-        routing_excesses.append(excess)
-        routing_terms.append(torch.mean(torch.square(excess)))
+    # Positive spatial clearance against every other-chain corridor.  The
+    # independent runtime/audit use Angstroms; energy is dimensionless.
+    route_deficits = route_deficits_from_config(coordinates, topology, config)
+    routing_excesses = [route_deficits / config.backbone_distance] if route_deficits.numel() else []
+    routing_terms = [routing_excesses[0].square().mean()] if routing_excesses else []
 
     def mean(items: list[torch.Tensor], default: torch.Tensor = zero):
         return torch.stack(items).mean() if items else default
@@ -1278,7 +1255,7 @@ def scaffold_geometry_deficits(
         value[:, pairs[:, 1]] - value[:, pairs[:, 0]], dim=-1
     )
     empty = value.new_empty(0)
-    return {
+    deficits = {
         "ca_overlap": torch.cat(ca) if ca else empty,
         "cross_chain_segment_overlap": torch.cat(segments) if segments else empty,
         "continuity": torch.relu(
@@ -1286,6 +1263,12 @@ def scaffold_geometry_deficits(
             - config.backbone_tolerance
         ).flatten(),
     }
+    if config.routing_ownership_weight > 0.0:
+        deficits["route_ownership"] = torch.cat([
+            route_deficits_from_config(xyz, topology, config) for xyz in value
+        ])
+    return deficits
+
 
 
 def scaffold_geometry_guard(

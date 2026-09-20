@@ -147,6 +147,26 @@ class AdvisoryScreeningTestCase(unittest.TestCase):
         )
         self.assertIn("backbone-only", result["interpretation"])
 
+    def test_route_region_failure_is_separate_from_clash_and_segment_collision(self) -> None:
+        scaffold = self.report(
+            "scaffold_validity_audit.json",
+            {
+                "passed": False,
+                "summary": {
+                    "passed_clashes": True,
+                    "passed_cross_chain_topology": True,
+                    "passed_generated_route_ownership": False,
+                },
+            },
+        )
+        result = build_advisory_screening((scaffold,))
+        self.assertEqual(result["contract_status"], "flagged")
+        self.assertEqual(
+            [flag["code"] for flag in result["contract_flags"]],
+            ["contract.scaffold.passed_generated_route_ownership"],
+        )
+        self.assertFalse(result["advisory_flags"])
+
     def test_schema_defaults_to_non_destructive_advice(self) -> None:
         design = UserDesignSpec.model_validate(
             {

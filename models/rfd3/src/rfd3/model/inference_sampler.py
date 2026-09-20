@@ -36,6 +36,7 @@ from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
 )
 from rfd3.inference.symmetry.geometry_restoration import restore_generated_geometry
+from rfd3.inference.symmetry.generated_routes import apply_generated_route_guidance
 from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
@@ -245,6 +246,9 @@ class SampleDiffusionConfig:
     # neither creates an interface nor imposes a pore/compactness target.
     enable_generated_cross_chain_topology_guidance: bool = False
     generated_routing_ownership_weight: float = 1.0
+    generated_routing_clearance: float = 3.2
+    generated_routing_anchor_taper_residues: float = 2.0
+    generated_routing_tolerance: float = 1e-3
     graph_interface_guidance_weight: float = 1.0
     graph_interface_guidance_coverage_weight: float = 1.0
     graph_interface_guidance_continuity_weight: float = 1.0
@@ -751,6 +755,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
         if float(self.generated_routing_ownership_weight) < 0.0:
             raise ValueError("generated_routing_ownership_weight cannot be negative")
+        for name in ("generated_routing_clearance", "generated_routing_anchor_taper_residues", "generated_routing_tolerance"):
+            if not float(getattr(self, name)) > 0:
+                raise ValueError(f"{name} must be positive")
         if float(self.generated_polymer_continuity_target_ca_distance) <= 0.0:
             raise ValueError(
                 "generated_polymer_continuity_target_ca_distance must be positive"
@@ -1092,6 +1099,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             inter_chain_excess_penalty=float(
                 self.scaffold_core_inter_chain_excess_penalty
             ),
+            routing_clearance=float(self.generated_routing_clearance),
+            routing_anchor_taper_residues=float(self.generated_routing_anchor_taper_residues),
+            routing_tolerance=float(self.generated_routing_tolerance),
             routing_ownership_weight=(
                 float(self.generated_routing_ownership_weight)
                 if self.enable_generated_cross_chain_topology_guidance
@@ -1831,6 +1841,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         scaffold_core_topology = None
         scaffold_core_guidance_config = None
         scaffold_core_diagnostics: list[dict[str, Any]] = []
+        generated_route_diagnostics: list[dict[str, Any]] = []
         polymer_continuity_diagnostics: list[dict[str, Any]] = []
         scaffold_core_active = (
             float(self.scaffold_core_intra_chain_weight) > 0.0
@@ -2558,6 +2569,21 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )
                 scaffold_core_diagnostics.append(core_step)
 
+            # Route ownership is a separate objective and remains active through
+            # the LAST clean prediction, even after core guidance's time window.
+            # Only the denoised estimate is corrected; the diffusion noise law
+            # and the noisy state are left to the existing sampler.
+            if self.enable_generated_cross_chain_topology_guidance:
+                if scaffold_core_topology is None or scaffold_core_guidance_config is None:
+                    raise RuntimeError("Generated route topology was not initialized")
+                X_denoised_L, route_step = apply_generated_route_guidance(
+                    X_denoised_L, scaffold_core_topology,
+                    progress=step_num / max(len(noise_schedule) - 2, 1),
+                    config=scaffold_core_guidance_config, projector=core_projector,
+                )
+                route_step["step_num"] = step_num
+                generated_route_diagnostics.append(route_step)
+
             # Compute the delta between the noisy and denoised coordinates, scaled by t_hat
             delta_L = (
                 X_noisy_L - X_denoised_L
@@ -3013,6 +3039,16 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     bool(step.get("applied")) for step in scaffold_core_diagnostics
                 ),
                 "final_metrics": final_scaffold_core_energy.detached_dict(),
+                "route_steps": generated_route_diagnostics,
+                "route_contract": {
+                    "scope": "two_fixed_anchor_generated_runs",
+                    "reference": "current_fixed_endpoint_chords",
+                    "samples": "generated_ca_and_adjacent_midpoints",
+                    "clearance_angstrom": scaffold_core_guidance_config.routing_clearance,
+                    "anchor_taper_residues": scaffold_core_guidance_config.routing_anchor_taper_residues,
+                    "tolerance_angstrom": scaffold_core_guidance_config.routing_tolerance,
+                    "continuous_topology_certificate": False,
+                },
             }
         if polymer_continuity_active:
             result["generated_polymer_continuity_diagnostics"] = {

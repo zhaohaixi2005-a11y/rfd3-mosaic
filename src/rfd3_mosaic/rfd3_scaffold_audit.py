@@ -10,6 +10,9 @@ import numpy as np
 
 from rfd3_mosaic.rfd3_seed_audit import _derive_structure_path
 from rfd3_mosaic.structure import read_structure_atoms
+from rfd3_mosaic.validation.generated_route_ownership import (
+    audit_generated_route_ownership,
+)
 from rfd3_mosaic.validation.scaffold_validity import audit_scaffold_geometry
 
 
@@ -161,7 +164,22 @@ def _load_declared_symmetry_transforms(
     return transforms, multiplicity, chain_layout
 
 
-def _fixed_geometry_chain_rg_floor(input_path: Path) -> float:
+def _build_runtime_input(input_path: Path):
+    """Reconstruct annotated, fully expanded input without running inference."""
+
+    from rfd3.inference.input_parsing import (
+        DesignInputSpecification,
+        ensure_input_is_abspath,
+    )
+
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or len(payload) != 1:
+        raise ValueError("RFD3 input must contain exactly one example")
+    raw_spec = ensure_input_is_abspath(dict(next(iter(payload.values()))), input_path)
+    return DesignInputSpecification.safe_init(**raw_spec).build()
+
+
+def _fixed_geometry_chain_rg_floor(input_path: Path, *, atom_array=None) -> float:
     """Return the largest CA Rg already forced by the compiled fixed target.
 
     A universal 25 A chain-Rg gate is invalid when an immutable multi-fragment
@@ -171,20 +189,8 @@ def _fixed_geometry_chain_rg_floor(input_path: Path) -> float:
     """
 
     import numpy as np
-    from rfd3.inference.input_parsing import (
-        DesignInputSpecification,
-        ensure_input_is_abspath,
-    )
-
-    payload = json.loads(input_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or len(payload) != 1:
-        raise ValueError(
-            "RFD3 input must contain exactly one example for compactness "
-            "calibration"
-        )
-    raw_spec = next(iter(payload.values()))
-    raw_spec = ensure_input_is_abspath(dict(raw_spec), input_path)
-    atom_array = DesignInputSpecification.safe_init(**raw_spec).build()
+    if atom_array is None:
+        atom_array = _build_runtime_input(input_path)
     fixed = np.asarray(
         atom_array.is_motif_atom_with_fixed_coord,
         dtype=bool,
@@ -212,6 +218,69 @@ def _fixed_geometry_chain_rg_floor(input_path: Path) -> float:
     return max(radii, default=0.0)
 
 
+def _audit_final_generated_route_ownership(
+    *, input_path: Path | None, output_atoms: tuple, atom_array=None,
+) -> dict:
+    """Measure declared route ownership from final coordinates, not logs."""
+
+    if input_path is None:
+        return {"declared": False, "applicable": False, "passed": True}
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or len(payload) != 1:
+        raise ValueError("RFD3 input must contain exactly one example")
+    plan = (next(iter(payload.values())).get("extra") or {}).get(
+        "generated_cross_chain_topology_guidance"
+    )
+    if not isinstance(plan, dict) or not plan.get("enabled"):
+        return {"declared": False, "applicable": False, "passed": True}
+    if atom_array is None:
+        atom_array = _build_runtime_input(input_path)
+    ca = (np.asarray(atom_array.atom_name) == "CA") & np.asarray(
+        atom_array.is_protein, dtype=bool
+    )
+    input_chain_ids = np.asarray(atom_array.chain_id)[ca]
+    input_residues = np.asarray(atom_array.res_id)[ca]
+    input_fixed = np.asarray(atom_array.is_motif_atom_with_fixed_coord, dtype=bool)[ca]
+    input_chains = list(dict.fromkeys(input_chain_ids.tolist()))
+    output_ca = [
+        atom for atom in output_atoms
+        if atom.record_type == "ATOM" and atom.atom_name.upper() == "CA"
+    ]
+    output_chains = list(dict.fromkeys(atom.chain_id for atom in output_ca))
+    if len(input_chains) != len(output_chains):
+        raise ValueError("Route audit input/output protein chain counts differ")
+    coordinates, chains, residues, fixed = [], [], [], []
+    for input_chain, output_chain in zip(input_chains, output_chains, strict=True):
+        selection = input_chain_ids == input_chain
+        observed = [atom for atom in output_ca if atom.chain_id == output_chain]
+        observed_residues = [atom.residue_number for atom in observed]
+        if observed_residues != input_residues[selection].tolist() or any(
+            atom.insertion_code for atom in observed
+        ):
+            raise ValueError(
+                "Route audit cannot align input/output protein CA identities for "
+                f"chains {input_chain!r}/{output_chain!r}"
+            )
+        coordinates.extend(atom.coordinate for atom in observed)
+        chains.extend([output_chain] * len(observed))
+        residues.extend(observed_residues)
+        fixed.extend(input_fixed[selection].tolist())
+    report = audit_generated_route_ownership(
+        coordinates=np.asarray(coordinates, dtype=float).reshape(-1, 3),
+        chain_ids=chains,
+        residue_numbers=residues,
+        fixed_mask=fixed,
+        routing_clearance=float(plan.get("routing_clearance", 3.2)),
+        routing_anchor_taper_residues=float(plan.get("routing_anchor_taper_residues", 2.0)),
+        routing_tolerance=float(plan.get("routing_tolerance", 1e-3)),
+    )
+    report["declared"] = True
+    report["fixed_mask_source"] = "reconstructed_frozen_input_protein_ca_annotations"
+    report["anchor_coordinate_source"] = "final_output"
+    report["residue_alignment"] = "chain_encounter_order_and_exact_residue_numbers"
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--result-json", required=True, type=Path)
@@ -235,6 +304,7 @@ def main() -> None:
 
     expected_transforms = None
     expected_chain_layout = None
+    runtime_input = None
     fixed_geometry_chain_rg_floor = 0.0
     if arguments.rfd3_input is not None:
         (
@@ -256,8 +326,9 @@ def main() -> None:
                 "--rfd3-input"
             )
         arguments.expected_symmetry_multiplicity = declared_multiplicity
+        runtime_input = _build_runtime_input(arguments.rfd3_input.resolve())
         fixed_geometry_chain_rg_floor = _fixed_geometry_chain_rg_floor(
-            arguments.rfd3_input.resolve()
+            arguments.rfd3_input.resolve(), atom_array=runtime_input,
         )
     elif arguments.expected_symmetry_multiplicity is not None:
         raise ValueError(
@@ -274,8 +345,9 @@ def main() -> None:
         explicit_limit=arguments.max_chain_ca_rg,
         fixed_geometry_floor=fixed_geometry_chain_rg_floor,
     )
+    output_atoms = read_structure_atoms(structure, mmcif_identifier_namespace="label")
     report = audit_scaffold_geometry(
-        read_structure_atoms(structure),
+        output_atoms,
         max_chain_ca_rg=effective_max_chain_ca_rg,
         expected_symmetry_multiplicity=(
             arguments.expected_symmetry_multiplicity
@@ -302,6 +374,15 @@ def main() -> None:
         "passed"
     ]
     report["passed"] = bool(report["passed"] and shape_contract["passed"])
+    routing = _audit_final_generated_route_ownership(
+        input_path=(arguments.rfd3_input.resolve() if arguments.rfd3_input else None),
+        output_atoms=output_atoms,
+        atom_array=runtime_input,
+    )
+    report["generated_route_ownership"] = routing
+    report["summary"]["passed_generated_route_ownership"] = routing["passed"]
+    report["summary"]["generated_route_ownership_applicable"] = routing["applicable"]
+    report["passed"] = bool(report["passed"] and routing["passed"])
     report["inputs"] = {
         "result_json": str(result_json),
         "result_structure": str(structure),
@@ -348,6 +429,12 @@ def main() -> None:
         f"(fixed-target floor {fixed_geometry_chain_rg_floor:.3f} A)"
     )
     print(f"CA clashes:          {summary['ca_clash_count']}")
+    if routing["declared"]:
+        print(
+            "route ownership:    "
+            f"{routing['violated_sample_count']}/{routing['checked_sample_count']} "
+            "CA/midpoint samples outside declared regions"
+        )
     if arguments.expected_symmetry_multiplicity is not None:
         print(
             "symmetry DM RMSD:   "

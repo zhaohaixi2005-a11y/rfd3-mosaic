@@ -20,6 +20,7 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     rf_oligomer_contact_prior,
     scheduled_interface_ca_distance,
     resolve_graph_interface_patch_assignments,
+    resolve_graph_interface_step_context,
 )
 
 
@@ -109,6 +110,40 @@ class GraphInterfaceGuidanceTestCase(unittest.TestCase):
 
         self.assertTrue(torch.isfinite(energy))
         self.assertAlmostEqual(float(energy), -0.5, places=6)
+
+    def test_broad_capture_does_not_report_final_physical_quality(self):
+        topology = self._three_by_three_topology()
+        coordinates = torch.tensor([[
+            [0.0, 0.0, 0.0], [0.0, 3.8, 0.0], [0.0, 7.6, 0.0],
+            [9.0, 0.0, 0.0], [9.0, 3.8, 0.0], [9.0, 7.6, 0.0],
+        ]])
+        features = {
+            "atom_to_token_map": torch.arange(6),
+            "asym_id": torch.tensor([0, 0, 0, 1, 1, 1]),
+            "residue_index": torch.tensor([0, 1, 2, 0, 1, 2]),
+        }
+        config = GraphInterfaceGuidanceConfig(patch_lock_fraction=0.1)
+        state = GraphInterfacePatchState(assignments={})
+        context = resolve_graph_interface_step_context(
+            coordinates, topology, progress=0.25, config=config, patch_state=state,
+        )
+        self.assertEqual(state.assignments, {})  # Resolution is side-effect free.
+        with self.assertRaises(TypeError):
+            context.patch_assignments["packing@0"] = context.patch_assignments["packing@0"]
+        broad_energy = graph_interface_energy(
+            coordinates, topology, context.effective_config,
+            target_ca_distance_override=context.target_ca_distance,
+            patch_assignments=context.patch_assignments,
+        )
+        self.assertTrue(graph_interface_quality_satisfied(broad_energy, config=config))
+        _, diagnostics = apply_graph_interface_guidance(
+            coordinates, features, topology, progress=0.25, config=config,
+            patch_state=state, step_context=context,
+        )
+        self.assertFalse(diagnostics["quality_targets_satisfied_before"])
+        self.assertFalse(diagnostics["quality_targets_satisfied"])
+        self.assertFalse(state.locked)
+        self.assertEqual(diagnostics["physical_quality_target_ca_distance"], 8.0)
 
     def test_rf_contact_prior_prefers_contact_and_decays_early(self) -> None:
         close = rf_oligomer_contact_prior(

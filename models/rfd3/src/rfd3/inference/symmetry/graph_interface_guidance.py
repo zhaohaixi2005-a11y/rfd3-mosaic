@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any, Callable
+from types import MappingProxyType
+from typing import Any, Callable, Mapping
 
 import torch
 import torch.nn.functional as functional
@@ -325,6 +326,26 @@ class GraphInterfacePatchState:
     assignments: dict[str, GraphInterfacePatchAssignment]
     locked: bool = False
     lock_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class GraphInterfaceStepContext:
+    """One objective shared by every proposal in a packing transaction.
+
+    Patch identities and the adaptive phase are resolved from the starting
+    state, not reselected for individual line-search trials or rigid poses.
+    Physical quality checks still use the final radius in ``source_config``;
+    ``target_ca_distance`` is only the current optimization capture radius.
+    """
+
+    progress: float
+    source_config: GraphInterfaceGuidanceConfig
+    effective_config: GraphInterfaceGuidanceConfig
+    patch_assignments: Mapping[str, GraphInterfacePatchAssignment]
+    adaptive_phase: str
+    time_scheduled_target_ca_distance: float
+    target_ca_distance: float
+    contact_prior_schedule_scale: float
 
 
 def _as_bool_feature(
@@ -1795,7 +1816,7 @@ def graph_interface_energy(
     *,
     target_ca_distance_override: float | None = None,
     patch_assignments: (
-        dict[str, GraphInterfacePatchAssignment] | None
+        Mapping[str, GraphInterfacePatchAssignment] | None
     ) = None,
 ) -> GraphInterfaceEnergy:
     """Evaluate local contact attraction plus short-range repulsion."""
@@ -2482,6 +2503,46 @@ def _phase_target_ca_distance(
     return config.target_ca_distance
 
 
+def resolve_graph_interface_step_context(
+    coordinates: torch.Tensor,
+    topology: GraphInterfaceTopology,
+    *,
+    progress: float,
+    config: GraphInterfaceGuidanceConfig,
+    patch_state: GraphInterfacePatchState | None = None,
+) -> GraphInterfaceStepContext:
+    """Resolve the discrete patch and scheduled objective without mutation."""
+
+    scheduled_target = scheduled_interface_ca_distance(progress, config)
+    if patch_state is not None and patch_state.locked and patch_state.assignments:
+        assignments = dict(patch_state.assignments)
+    else:
+        assignments = resolve_graph_interface_patch_assignments(
+            coordinates, topology, config,
+            target_ca_distance_override=scheduled_target,
+        )
+    with torch.no_grad():
+        phase_probe = graph_interface_energy(
+            coordinates, topology, config, patch_assignments=assignments,
+        )
+    phase = adaptive_graph_interface_phase(phase_probe, config)
+    prior_scale = rf_contact_prior_schedule_scale(progress, config)
+    effective_config = replace(
+        _phase_guidance_config(config, phase),
+        contact_prior_weight=config.contact_prior_weight * prior_scale,
+    )
+    return GraphInterfaceStepContext(
+        progress=float(progress),
+        source_config=config,
+        effective_config=effective_config,
+        patch_assignments=MappingProxyType(dict(assignments)),
+        adaptive_phase=phase,
+        time_scheduled_target_ca_distance=scheduled_target,
+        target_ca_distance=_phase_target_ca_distance(phase, scheduled_target, config),
+        contact_prior_schedule_scale=prior_scale,
+    )
+
+
 def graph_interface_quality_satisfied(
     energy: GraphInterfaceEnergy,
     *,
@@ -2837,7 +2898,7 @@ def _selected_patch_token_groups(
     *,
     target_ca_distance_override: float,
     patch_assignments: (
-        dict[str, GraphInterfacePatchAssignment] | None
+        Mapping[str, GraphInterfacePatchAssignment] | None
     ) = None,
 ) -> tuple[torch.Tensor, ...]:
     """Recover the exact reciprocal windows used by the current energy."""
@@ -2889,7 +2950,7 @@ def _patch_rigid_token_displacements(
     gradient_boost: float,
     target_ca_distance_override: float,
     patch_assignments: (
-        dict[str, GraphInterfacePatchAssignment] | None
+        Mapping[str, GraphInterfacePatchAssignment] | None
     ) = None,
 ) -> tuple[dict[int, torch.Tensor], int, float]:
     """Build simultaneous local-rigid proposals for all reciprocal patches."""
@@ -3061,6 +3122,7 @@ def apply_graph_interface_guidance(
     projector: Callable[[torch.Tensor], torch.Tensor] | None = None,
     patch_state: GraphInterfacePatchState | None = None,
     candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
+    step_context: GraphInterfaceStepContext | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Apply one bounded local-rigid step to the true projected state."""
 
@@ -3088,46 +3150,30 @@ def apply_graph_interface_guidance(
             "reason": "inactive_window" if window == 0.0 else "all_weights_zero",
             "line_search_trials": [],
         }
-    scheduled_target = scheduled_interface_ca_distance(progress, config)
-    if (
-        patch_state is not None
-        and patch_state.locked
-        and patch_state.assignments
-    ):
-        patch_assignments = patch_state.assignments
-    else:
-        patch_assignments = resolve_graph_interface_patch_assignments(
-            coordinates,
-            topology,
-            config,
-            target_ca_distance_override=scheduled_target,
-        )
-        if patch_state is not None:
-            patch_state.assignments = patch_assignments
+    context = step_context or resolve_graph_interface_step_context(
+        coordinates, topology, progress=progress, config=config,
+        patch_state=patch_state,
+    )
+    if context.source_config != config or context.progress != float(progress):
+        raise ValueError("Packing step context does not match config/progress")
+    patch_assignments = context.patch_assignments
+    if patch_state is not None:
+        if (
+            patch_state.locked and patch_state.assignments
+            and patch_state.assignments != patch_assignments
+        ):
+            raise ValueError("Packing step context conflicts with locked patch identities")
+        patch_state.assignments = dict(patch_assignments)
+    adaptive_phase = context.adaptive_phase
+    effective_config = context.effective_config
+    contact_prior_schedule_scale = context.contact_prior_schedule_scale
+    scheduled_target = context.target_ca_distance
+    # Physical quality is independent of the broad, scheduled capture basin.
+    # In particular an early broad-radius contact must not count as packed.
     with torch.no_grad():
-        phase_probe = graph_interface_energy(
-            coordinates,
-            topology,
-            config,
-            patch_assignments=patch_assignments,
+        physical_energy_before = graph_interface_energy(
+            coordinates, topology, config, patch_assignments=patch_assignments,
         )
-    adaptive_phase = adaptive_graph_interface_phase(phase_probe, config)
-    effective_config = _phase_guidance_config(config, adaptive_phase)
-    contact_prior_schedule_scale = rf_contact_prior_schedule_scale(
-        progress,
-        config,
-    )
-    effective_config = replace(
-        effective_config,
-        contact_prior_weight=(
-            config.contact_prior_weight * contact_prior_schedule_scale
-        ),
-    )
-    scheduled_target = _phase_target_ca_distance(
-        adaptive_phase,
-        scheduled_target,
-        config,
-    )
     patch_capture_satisfied = False
     with torch.enable_grad():
         proposal = coordinates.detach().clone().requires_grad_(True)
@@ -3147,15 +3193,8 @@ def apply_graph_interface_guidance(
             # wider coarse-capture target that drives this timestep.  A
             # distant early window must not become permanent simply because
             # diffusion passed a time threshold.
-            with torch.no_grad():
-                lock_energy = graph_interface_energy(
-                    proposal.detach(),
-                    topology,
-                    effective_config,
-                    patch_assignments=patch_assignments,
-                )
             patch_capture_satisfied = (
-                graph_interface_patch_capture_satisfied(lock_energy)
+                graph_interface_patch_capture_satisfied(physical_energy_before)
             )
             if patch_capture_satisfied:
                 patch_state.locked = True
@@ -3200,7 +3239,7 @@ def apply_graph_interface_guidance(
         passes=config.token_smoothing_passes,
     )
     quality_targets_satisfied_before = graph_interface_quality_satisfied(
-        energy,
+        physical_energy_before,
         clash_ca_distance=config.clash_ca_distance,
         config=config,
     )
@@ -3321,8 +3360,12 @@ def apply_graph_interface_guidance(
             accepted = candidate.detach()
             break
     maximum_observed_step *= accepted_scale
+    with torch.no_grad():
+        physical_energy_after = graph_interface_energy(
+            accepted, topology, config, patch_assignments=patch_assignments,
+        )
     quality_targets_satisfied = graph_interface_quality_satisfied(
-        accepted_energy,
+        physical_energy_after,
         clash_ca_distance=config.clash_ca_distance,
         config=config,
     )
@@ -3341,9 +3384,10 @@ def apply_graph_interface_guidance(
         ),
         "adaptive_phase": adaptive_phase,
         "time_scheduled_target_ca_distance": (
-            scheduled_interface_ca_distance(progress, config)
+            context.time_scheduled_target_ca_distance
         ),
         "scheduled_target_ca_distance": scheduled_target,
+        "physical_quality_target_ca_distance": config.target_ca_distance,
         "patch_locked": bool(patch_state and patch_state.locked),
         "patch_lock_reason": (
             patch_state.lock_reason if patch_state is not None else None

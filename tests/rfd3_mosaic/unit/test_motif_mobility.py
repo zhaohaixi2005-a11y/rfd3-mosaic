@@ -1,6 +1,7 @@
 import json
 import math
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import torch
@@ -612,6 +613,62 @@ class MotifMobilityTestCase(unittest.TestCase):
         self.assertEqual(diagnostics["packing_step"]["patch_assignments"], {})
         self.assertTrue(diagnostics["packing_step"]["proposal_patch_state"]["patch_assignments"])
 
+    def test_joint_packing_uses_one_scheduled_objective_for_all_proposals(self):
+        for progress in (0.25, 0.9):
+            with self.subTest(progress=progress):
+                (coordinates, _, controller, boundary, axis, scaffold_config,
+                 interfaces, raw_config, features) = self._joint_packing_mobility_case()
+                raw_config = replace(
+                    raw_config, contact_prior_weight=2.0,
+                    coverage_weight=0.7, continuity_weight=0.6,
+                    orientation_weight=0.25, shape_weight=0.5,
+                )
+                with (
+                    patch(
+                        "rfd3.inference.symmetry.motif_mobility.graph_interface_energy",
+                        wraps=graph_interface_energy,
+                    ) as pose_scores,
+                    patch(
+                        "rfd3.inference.symmetry.graph_interface_guidance.graph_interface_energy",
+                        wraps=graph_interface_energy,
+                    ) as patch_scores,
+                ):
+                    _, _, diagnostics = controller.update_orbits_with_interface_packing(
+                        coordinates, features, progress=progress,
+                        topology=boundary, axis=axis, principal_axes=(axis.direction,),
+                        scaffold_config=scaffold_config, interface_topology=interfaces,
+                        interface_config=raw_config,
+                        patch_state=GraphInterfacePatchState(assignments={}),
+                        projector=lambda x: x, apply_update=False,
+                    )
+
+                # These calls include baseline, differentiable rigid-pose
+                # scores and outer acceptance. Historically all used the raw
+                # weights/radius while the patch optimized an annealed loss.
+                self.assertGreaterEqual(len(pose_scores.call_args_list), 3)
+                optimization_calls = list(pose_scores.call_args_list) + [
+                    call for call in patch_scores.call_args_list
+                    if "target_ca_distance_override" in call.kwargs
+                ]
+                scheduled = diagnostics["packing_objective"]
+                expected_prior = 2.0 * 2.0 * (1.0 - progress) ** 2
+                self.assertNotEqual(scheduled["target_ca_distance"], raw_config.target_ca_distance)
+                for call in optimization_calls:
+                    self.assertEqual(vars(call.args[2]), scheduled["effective_config"])
+                    self.assertAlmostEqual(call.args[2].contact_prior_weight, expected_prior)
+                    self.assertEqual(
+                        call.kwargs.get("target_ca_distance_override"),
+                        scheduled["target_ca_distance"],
+                    )
+                    self.assertEqual(
+                        call.kwargs["patch_assignments"],
+                        optimization_calls[0].kwargs["patch_assignments"],
+                    )
+                self.assertAlmostEqual(
+                    diagnostics["baseline_packing"],
+                    diagnostics["packing_step"]["energy_before"],
+                )
+
     def test_joint_packing_rolls_back_a_geometry_guard_rejection(self):
         (coordinates, _, controller, boundary, axis, scaffold_config,
          interfaces, interface_config, features) = self._joint_packing_mobility_case()
@@ -628,6 +685,29 @@ class MotifMobilityTestCase(unittest.TestCase):
         self.assertTrue(torch.equal(result, coordinates))
         self.assertTrue(torch.equal(target, coordinates))
         self.assertEqual(state.assignments, {})
+
+    def test_inactive_joint_packing_rolls_back_tentative_patch_selection(self):
+        for reason in ("inactive_window", "all_weights_zero"):
+            with self.subTest(reason=reason):
+                (coordinates, _, controller, boundary, axis, scaffold_config,
+                 interfaces, config, features) = self._joint_packing_mobility_case()
+                progress = 0.0 if reason == "inactive_window" else 0.5
+                if reason == "all_weights_zero":
+                    config = replace(config, weight=0.0)
+                state = GraphInterfacePatchState(assignments={})
+                target, result, diagnostics = controller.update_orbits_with_interface_packing(
+                    coordinates, features, progress=progress,
+                    topology=boundary, axis=axis, principal_axes=(axis.direction,),
+                    scaffold_config=scaffold_config, interface_topology=interfaces,
+                    interface_config=config, patch_state=state,
+                    projector=lambda x: x, apply_update=True,
+                )
+                self.assertFalse(diagnostics["committed"])
+                self.assertEqual(diagnostics["packing_step"]["reason"], reason)
+                self.assertTrue(torch.equal(result, coordinates))
+                self.assertTrue(torch.equal(target, coordinates))
+                self.assertEqual(state.assignments, {})
+                self.assertFalse(state.locked)
 
     def test_joint_packing_mobility_rolls_back_on_proposal_error(self):
         (
