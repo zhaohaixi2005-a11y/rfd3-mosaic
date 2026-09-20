@@ -27,6 +27,15 @@ def topology(chains, tokens=3, residue_indices=None):
 
 
 class GeneratedRouteTests(unittest.TestCase):
+    def test_invalid_coordinates_and_multi_design_batches_fail_explicitly(self):
+        topo, _ = topology(2)
+        config = ScaffoldCoreGuidanceConfig(routing_ownership_weight=1.)
+        for coordinates in (torch.zeros(2, 6, 3), torch.full((1, 6, 3), float("nan"))):
+            with self.assertRaises(ValueError):
+                apply_generated_route_guidance(
+                    coordinates, topo, progress=.5, config=config, projector=lambda v: v,
+                )
+
     def test_c3_centre_has_outward_gradient_and_rotation_equivariance(self):
         topo, _ = topology(3)
         rotations = []

@@ -77,6 +77,10 @@ def apply_generated_route_guidance(
     """
     from .scaffold_core_guidance import scaffold_geometry_guard
 
+    if coordinates.ndim != 3 or coordinates.shape[0] != 1 or coordinates.shape[-1] != 3:
+        raise ValueError("Generated route guidance requires [1, atoms, 3]")
+    if not torch.isfinite(coordinates).all():
+        raise ValueError("Generated route guidance requires finite coordinates")
     if not 0 <= progress <= 1 or iterations < 0:
         raise ValueError("Invalid generated route guidance schedule")
     if config.routing_ownership_weight <= 0:
@@ -163,6 +167,10 @@ def apply_generated_route_guidance(
             with torch.no_grad():
                 candidate = projector(result + scale * atom_step)
                 geometry = geometry_guard(candidate)
+                if candidate.shape != result.shape or not torch.isfinite(candidate).all():
+                    trials.append({"scale": scale, "accepted": False,
+                                   "geometry_guard": geometry, "reason": "invalid_projected_coordinates"})
+                    continue
                 after = values(candidate)
                 descent = bool(torch.isfinite(after).all() and
                                after.square().sum() < before.square().sum() - 1e-8)
@@ -170,12 +178,16 @@ def apply_generated_route_guidance(
                                   and after.max() <= before.max() + 1e-6)
                 actual_step = torch.linalg.vector_norm(candidate - result, dim=-1).max()
                 bounded = bool(actual_step <= maximum_step + 1e-5)
-                accepted = geometry["accepted"] and descent and route_safe and bounded
+                fixed_preserved = bool(torch.all(
+                    torch.abs(candidate[:, ~topology.generated_atom_mask] - result[:, ~topology.generated_atom_mask]) <= 1e-5
+                ))
+                accepted = geometry["accepted"] and descent and route_safe and bounded and fixed_preserved
                 trials.append({"scale": scale, "accepted": accepted,
                                "geometry_guard": geometry, "route_descent": descent,
                                "route_nonregression": route_safe,
                                "maximum_actual_atom_step": float(actual_step),
-                               "bounded_after_projection": bounded})
+                               "bounded_after_projection": bounded,
+                               "fixed_atoms_preserved": fixed_preserved})
                 if accepted:
                     result = candidate.detach()
                     break
