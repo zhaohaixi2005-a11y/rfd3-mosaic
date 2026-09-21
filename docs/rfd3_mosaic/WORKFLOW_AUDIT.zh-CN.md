@@ -67,3 +67,20 @@ flowchart LR
 浮点元素有约 `5.6e-17` 差异。修复在哈希和矩阵身份检查中统一 12 位小数
 表示，保留文件哈希及其余约束；增加可移植性和真实变更拒绝测试。
 调度成功、首例执行成功与科学指标达标必须分别报告。
+
+后续实际首例 `5800359` 已越过编译校验，但在 `PadTokensWithVirtualAtoms`
+因生成区仅含 N/CA/C/O、缺少 CB 退出。完整 CPU 特征链路进一步发现：
+虚拟原子继承旧 orbit slot 造成重复，以及 dense 侧链改名后 transport 误用
+模型槽名称查找真实固定原子。修复包含：
+
+- 仅对推理时可填充、序列未固定且严格 N/CA/C/O 顺序的主链 token，使用 CA
+  初始化虚拟侧链槽；不是重建物理 CB，已有原子坐标保持不变。
+- 新 orbit key 为 `(原已验证 slot, padding ordinal)`；真实原子 ordinal=0，
+  虚拟原子从 1 编号。每个对称副本必须拥有相同且无重复的 key 集合，
+  再映射成连续 slot。不能仅按数组位置猜测对应关系。
+- 固定原子运输绑定使用 `gt_atom_name` 保存的化学名称，保留身份唯一性、
+  全部固定原子覆盖和坐标检查；不使用 dense 模型内部 V0/V1 名称。
+
+新增完整 `ContigJsonDataset → build_atom14_base_pipeline` CPU 回归测试。
+实际 LHD101 locked/mobile 输入均需通过该完整流程后再提交 GPU；原有
+`prevalidate_rfd3_input` 的 atom-array 预检本身不能替代全特征流程验证。

@@ -162,6 +162,10 @@ class PadTokensWithVirtualAtoms(Transform):
 
     def forward(self, data: dict) -> dict:
         atom_array = data["atom_array"]
+        declared_slots = "mosaic_preexpanded_orbit_slot" in atom_array.get_annotation_categories()
+        if declared_slots:
+            atom_array = atom_array.copy()
+            atom_array.set_annotation("mosaic_padding_index", np.zeros(len(atom_array), dtype=np.int64))
         starts = get_token_starts(atom_array, add_exclusive_stop=True)
         token_starts = starts[:-1]
         token_level_array = atom_array[token_starts]
@@ -200,7 +204,22 @@ class PadTokensWithVirtualAtoms(Transform):
                     mask = get_af3_token_representative_masks(
                         token, central_atom=self.atom_to_pad_from
                     )
-                    assert_single_representative(token)
+                    pad_from = self.atom_to_pad_from
+                    if (
+                        not mask.any()
+                        and data["is_inference"]
+                        and pad_from == "CB"
+                        and list(token.atom_name) == ["N", "CA", "C", "O"]
+                        and bool(np.all(token.is_protein))
+                    ):
+                        # A sequence-unfixed partial-diffusion backbone has no
+                        # sidechain yet. Seed virtual slots at CA, as for Gly;
+                        # retain every supplied backbone coordinate and policy.
+                        pad_from = "CA"
+                        mask = get_af3_token_representative_masks(
+                            token, central_atom=pad_from
+                        )
+                    assert_single_representative(token, central_atom=pad_from)
 
                     # ... Create virtual atoms
                     pad_atoms = token[mask].copy()
@@ -220,6 +239,8 @@ class PadTokensWithVirtualAtoms(Transform):
 
                     # ... Even if the input pad_atoms are all motif, we don't ever want padded atoms to be motif
                     pad_array.is_motif_atom = np.zeros(n_pad, dtype=bool)
+                    if declared_slots:
+                        pad_array.set_annotation("mosaic_padding_index", np.arange(1, n_pad + 1))
 
                     # Handle multidimensional annotations
                     def _fix_multidimensional_annotations_in_pad_array(
@@ -301,5 +322,27 @@ class PadTokensWithVirtualAtoms(Transform):
                 f"{set(atom_array_padded.element[start:end].tolist())}"
             )
 
+        if declared_slots:
+            # Virtual atoms inherit a representative's annotations. Extend
+            # its verified old slot with a unique padding ordinal, then
+            # require identical keys across copies before assigning new slots.
+            old = atom_array_padded.mosaic_preexpanded_orbit_slot
+            padding = atom_array_padded.mosaic_padding_index
+            entities = atom_array_padded.sym_entity_id
+            transforms = atom_array_padded.sym_transform_id
+            slots = np.full(len(atom_array_padded), -1, dtype=np.int64)
+            for entity in np.unique(entities):
+                reference = None
+                for transform in np.unique(transforms[entities == entity]):
+                    indices = np.flatnonzero((entities == entity) & (transforms == transform))
+                    keys = [(int(old[i]), int(padding[i])) for i in indices]
+                    ordered = sorted(keys)
+                    if len(set(keys)) != len(keys) or (reference is not None and ordered != reference):
+                        raise ValueError("Virtual padding changes preexpanded orbit correspondence")
+                    reference = ordered
+                    by_key = {key: slot for slot, key in enumerate(ordered)}
+                    slots[indices] = [by_key[key] for key in keys]
+            atom_array_padded.set_annotation("mosaic_preexpanded_orbit_slot", slots)
+            atom_array_padded.del_annotation("mosaic_padding_index")
         data["atom_array"] = atom_array_padded
         return data

@@ -2616,3 +2616,15 @@ partial 改成 completed；重生成 decision explanation 和哈希。报告优�
 可移动模式的 `mosaic_reference_transport.registry_transforms` 同样使用上述
 规范化表示进行身份比较；seed 所属组、运动边界、逐残基插值权重及所有
 其余 transport 字段保持严格比较。该比较只处理跨平台算子舍入，不改变运输计划。
+
+### 主链 partial-diffusion 的虚拟原子和固定身份
+
+对推理时序列未固定的纯 N/CA/C/O 蛋白质 token，CB 不存在时，新增虚拟槽
+初始化为 `x_virtual = x_CA`，并标记为虚拟元素、非 motif 原子。
+这只是模型输入补齐，不是对 CB 的物理坐标预测；不改变输入 N/CA/C/O 或固定 seed。
+训练输入、序列固定 token、缺损主链不触发此回退。
+
+虚拟原子的对称身份使用 `(old_orbit_slot, padding_ordinal)`，要求所有副本
+key 集合完全一致且唯一，排序映射为连续整数。真实原子 padding_ordinal=0；
+新增槽依次从 1 编号。可移动 seed 的固定原子按 `(chain, residue, gt_atom_name)`
+绑定，并继续检查固定原子全集和坐标不变。

@@ -364,3 +364,33 @@ def test_interrupted_preparation_publication_exposes_no_runnable_task(
         prepare_scaffold_task(config, blueprint, destination)
     assert not destination.exists()
     assert list(tmp_path.glob(".mosaic-prepare-*")) == []
+
+
+def test_mobile_scaffold_passes_complete_native_feature_pipeline(tmp_path):
+    from rfd3.transforms.pipelines import build_atom14_base_pipeline
+    from rfd3.inference.datasets import ContigJsonDataset
+
+    config, blueprint = _fixture(tmp_path)
+    design = yaml.safe_load(config.read_text())
+    design.pop('task')
+    design.pop('fixed_arrangement')
+    for constraint in design['constraints']:
+        constraint['pose'] = {'mode':'bounded_mobile','subspace':'bounded_se3',
+                              'proposal':'denoiser_fit','max_translation':2.0,
+                              'max_rotation_deg':10.0}
+    config.write_text(yaml.safe_dump(design))
+    prepared = tmp_path/'prepared'
+    prepare_scaffold_task(config, blueprint, prepared)
+    outputs = _compile_prepared(prepared/'design.yaml',tmp_path/'compiled')
+    repo = ROOT
+    args = yaml.safe_load((repo/'models/rfd3/configs/datasets/design_base.yaml').read_text())['global_transform_args']
+    net = yaml.safe_load((repo/'models/rfd3/configs/model/components/rfd3_net.yaml').read_text())['token_initializer']
+    args.update(is_inference=True,sigma_data=16.0,diffusion_batch_size=1,
+                atom_1d_features=net['atom_1d_features'],token_1d_features=net['token_1d_features'])
+    data = ContigJsonDataset(data=str(outputs.input_path),cif_parser_args=None,
+                             transform=build_atom14_base_pipeline(**args),
+                             name='scaffold-regression',subset_to_keys=None,eval_every_n=1)[0]
+    feats = data['feats']
+    assert feats['sym_orbit_slot_verified']
+    assert len(feats['mosaic_transport_fixed_atom_indices']) == len(feats['mosaic_reference_transport']['fixed_atoms'])
+    assert tuple(feats['mosaic_scaffold_backbone_atom_indices'].shape)==(44,4)

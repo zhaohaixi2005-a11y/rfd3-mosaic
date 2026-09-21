@@ -318,8 +318,20 @@ class AggregateFeaturesLikeAF3WithoutMSA(Transform):
                     data["feats"]["mosaic_reference_transport"] = copy.deepcopy(
                         transport
                     )
-                    atom_lookup = {(str(c), int(r), str(a)): i for i, (c, r, a) in enumerate(zip(
-                        atom_array.chain_id, atom_array.res_id, atom_array.atom_name, strict=True))}
+                    # Dense Atom14 renames sidechains to model slots (V0,
+                    # V1, ...). Bind physical fixed atoms by the preserved
+                    # chemical name, not by that model-internal slot name.
+                    chemical_names = (
+                        atom_array.gt_atom_name
+                        if "gt_atom_name" in atom_array.get_annotation_categories()
+                        else atom_array.atom_name
+                    )
+                    atom_lookup = {}
+                    for i in np.flatnonzero(np.asarray(atom_array.is_motif_atom_with_fixed_coord, dtype=bool)):
+                        key = (str(atom_array.chain_id[i]), int(atom_array.res_id[i]), str(chemical_names[i]))
+                        if key in atom_lookup:
+                            raise ValueError("Duplicate fixed chemical atom identity after transforms")
+                        atom_lookup[key] = i
                     try:
                         transport_indices = np.asarray([atom_lookup[(r["chain_id"], r["residue_number"], r["atom_name"])]
                                                         for r in transport["fixed_atoms"]], dtype=np.int64)
