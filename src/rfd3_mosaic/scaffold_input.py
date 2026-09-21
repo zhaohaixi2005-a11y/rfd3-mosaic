@@ -97,7 +97,21 @@ def _canonical_bytes(value: Any) -> bytes:
     ).encode()
 
 
-def compiled_scaffold_contract_sha256(payload: dict[str, Any]) -> str:
+def _canonical_symmetry_matrices(value):
+    """Stable operator representation at 12 decimal places; never move atoms."""
+    if isinstance(value, dict):
+        return {key: _canonical_symmetry_matrices(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_symmetry_matrices(item) for item in value]
+    if isinstance(value, float) and math.isfinite(value):
+        rounded = round(value, 12)
+        return 0.0 if rounded == 0 else rounded
+    return value
+
+
+def compiled_scaffold_contract_sha256(
+    payload: dict[str, Any], *, legacy_exact_matrices: bool = False
+) -> str:
     """Fingerprint graph, pose, atom policies and lengths, excluding run paths."""
 
     example = _example(payload)
@@ -116,6 +130,20 @@ def compiled_scaffold_contract_sha256(payload: dict[str, Any]) -> str:
         },
         "extra": {key: extra.get(key) for key in _BINDING_EXTRA_FIELDS},
     }
+    if not legacy_exact_matrices:
+        # libm/NumPy differ in the last bits of e.g. cos(2*pi/3) across
+        # platforms. Only normalize symmetry operators, not coordinates,
+        # distances, atom policies or the hashes of structure files.
+        contract = copy.deepcopy(contract)
+
+        symmetry = contract["native"].get("symmetry")
+        if isinstance(symmetry, dict) and "declared_transform_matrices" in symmetry:
+            symmetry["declared_transform_matrices"] = _canonical_symmetry_matrices(
+                symmetry["declared_transform_matrices"]
+            )
+        contract["extra"]["registry_transform_matrices"] = _canonical_symmetry_matrices(
+            contract["extra"]["registry_transform_matrices"]
+        )
     return hashlib.sha256(_canonical_bytes(contract)).hexdigest()
 
 
@@ -342,7 +370,8 @@ def _validate_symmetry(
         raise ValueError("Scaffold input requires the full Cn/Dn action")
     if (
         symmetry.get("declared_transform_order") != order
-        or symmetry.get("declared_transform_matrices") != matrices
+        or _canonical_symmetry_matrices(symmetry.get("declared_transform_matrices"))
+        != _canonical_symmetry_matrices(matrices)
     ):
         raise ValueError(
             "Scaffold artifact changes the compiler symmetry matrices/order"
@@ -816,10 +845,15 @@ def apply_scaffold_input(
         or artifact["schema_version"] != 1
     ):
         raise ValueError("Unsupported or incomplete scaffold input artifact schema")
-    if artifact["compiled_contract_sha256"] != compiled_scaffold_contract_sha256(
-        payload
-    ):
-        raise ValueError("Scaffold artifact compiler contract SHA256 mismatch")
+    if artifact["compiled_contract_sha256"] not in {
+        compiled_scaffold_contract_sha256(payload),
+        compiled_scaffold_contract_sha256(payload, legacy_exact_matrices=True),
+    }:
+        raise ValueError(
+            "Scaffold artifact compiler contract SHA256 mismatch; legacy artifacts "
+            "may require re-preparation on their authoring platform for portable "
+            "symmetry-matrix hashing"
+        )
     noise = artifact["partial_t"]
     if (
         isinstance(noise, bool)

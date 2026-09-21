@@ -285,6 +285,22 @@ class ScaffoldInputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "compiler contract SHA256"):
             self.apply()
 
+    def test_handoff_accepts_operator_roundoff_but_rejects_real_operator_change(self):
+        self.payload = copy.deepcopy(self.payload)
+        matrices = self.payload["test"]["extra"]["registry_transform_matrices"]
+        transform = next(iter(matrices))
+        matrices[transform][0][0] = float(np.nextafter(matrices[transform][0][0], np.inf))
+        self.apply()
+        matrices[transform][0][0] += 1e-6
+        with self.assertRaisesRegex(ValueError, "compiler contract SHA256"):
+            self.apply()
+
+    def test_legacy_exact_binding_remains_valid_on_authoring_platform(self):
+        self.artifact["compiled_contract_sha256"] = compiled_scaffold_contract_sha256(
+            self.payload, legacy_exact_matrices=True
+        )
+        self.apply()
+
     def test_complete_d2_orbit_is_validated_without_cyclic_special_case(self):
         self.payload, self.artifact, self.coordinates = scaffold_fixture(
             self.directory, "D2"
@@ -531,3 +547,23 @@ class ScaffoldNativeHandoffTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_compiler_binding_is_portable_only_for_symmetry_roundoff():
+    matrices = {'C3:r1': [[-0.49999999999999983, -0.0], [0.0, 1.0]]}
+    payload = {'example': {'symmetry': {'declared_transform_matrices': matrices},
+                           'extra': {'registry_transform_matrices': matrices,
+                                     'materialized_linker_length': 90}}}
+    other = copy.deepcopy(payload)
+    for mapping in (other['example']['symmetry']['declared_transform_matrices'],
+                    other['example']['extra']['registry_transform_matrices']):
+        mapping['C3:r1'][0] = [-0.4999999999999998, 0.0]
+    expected = compiled_scaffold_contract_sha256(payload)
+    assert compiled_scaffold_contract_sha256(other) == expected
+    assert payload['example']['symmetry']['declared_transform_matrices']['C3:r1'][0][0] == -0.49999999999999983
+    assert compiled_scaffold_contract_sha256(payload, legacy_exact_matrices=True) != compiled_scaffold_contract_sha256(other, legacy_exact_matrices=True)
+    other['example']['extra']['registry_transform_matrices']['C3:r1'][0][0] += 1e-6
+    assert compiled_scaffold_contract_sha256(other) != expected
+    changed = copy.deepcopy(payload)
+    changed['example']['extra']['materialized_linker_length'] = 91
+    assert compiled_scaffold_contract_sha256(changed) != expected

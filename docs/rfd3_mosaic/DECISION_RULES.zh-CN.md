@@ -2594,3 +2594,21 @@ partial 改成 completed；重生成 decision explanation 和哈希。报告优�
 空的输出身份匹配按未满足处理，不对空数组作 bool 转换。此项没有改变 25.4 的 alpha 判别，
 也没有替换默认的 hbplus 指标入口。测试工具筛选输入参数改用实际 `DesignInputSpecification.model_fields`，
 清除不存在的 `valid_keys_` 引用。
+
+### Scaffold 跨平台编译身份：对称矩阵的数值规范化
+
+`compiled_scaffold_contract_sha256` 对两处对称算子字段
+`native.symmetry.declared_transform_matrices` 和
+`extra.registry_transform_matrices` 使用
+\(Q(x)=\operatorname{round}(x,12)\)，并把负零统一为正零，然后对排序后的 JSON
+计算 SHA256。矩阵一致性检查使用同一表示。这里的 12 位小数是**序列化精度**，
+不是能量项、质量阈值或 seed 坐标调整；不修改运行时矩阵或任何原子坐标。
+
+原因：相同 C3 算子的 `cos(2π/3)` 在 macOS 与集群上的末位可能分别为
+`-0.49999999999999983` 和 `-0.4999999999999998`，直接对浮点文本哈希会误拒绝。
+只规范化对称矩阵；结构文件 SHA256、contig 长度、连接图、固定原子策略、
+运动参数等仍严格绑定。真实矩阵变化（例如 `1e-6`）仍被拒绝。
+
+旧 artifact 的精确矩阵哈希仍可在原生成平台验证。迁移旧 artifact 必须先在
+原生成平台通过原有编译绑定及完整结构检查，再生成新的规范化绑定；不能在
+服务器看到 mismatch 就替换哈希或关闭检查。
