@@ -997,7 +997,16 @@ def apply_scaffold_input(
     mobile = any(o["mobility_mode"] == "orbit_rigid" for o in original_orbits)
     transport = remapped_extra.get("mosaic_reference_transport")
     if mobile or transport is not None:
-        if transport != scaffold_transport_plan(native, extra, residues):
+        expected_transport = scaffold_transport_plan(native, extra, residues)
+        comparable_transport = copy.deepcopy(transport)
+        if isinstance(comparable_transport, dict):
+            comparable_transport["registry_transforms"] = _canonical_symmetry_matrices(
+                comparable_transport.get("registry_transforms")
+            )
+        expected_transport["registry_transforms"] = _canonical_symmetry_matrices(
+            expected_transport["registry_transforms"]
+        )
+        if comparable_transport != expected_transport:
             raise ValueError("Scaffold mobility transport plan differs from the exact compiler seed ownership")
     ca_residues = list(residues.values())
     contract_audit = audit_scaffold_contract(

@@ -279,6 +279,16 @@ def test_mobile_complete_task_builds_native_input_with_frozen_transport_plan(tmp
     config.write_text(yaml.safe_dump(design))
     prepared = tmp_path / "mobile"
     prepare_scaffold_task(config, blueprint, prepared)
+    # Simulate libm/NumPy operator roundoff after moving an artifact to Linux.
+    artifact_path = prepared / "scaffold_artifact.json"
+    artifact = json.loads(artifact_path.read_text())
+    native = artifact["native_input"]
+    matrices = native["symmetry"]["declared_transform_matrices"]
+    key = next(iter(matrices))
+    matrices[key][0][0] = float(np.nextafter(matrices[key][0][0], np.inf))
+    matrix = native["extra"]["mosaic_reference_transport"]["registry_transforms"][0]
+    matrix[0][0] = float(np.nextafter(matrix[0][0], np.inf))
+    artifact_path.write_text(json.dumps(artifact))
     outputs = _compile_prepared(prepared / "design.yaml", tmp_path / "native")
     payload = json.loads(outputs.input_path.read_text())
     example = next(iter(payload.values()))

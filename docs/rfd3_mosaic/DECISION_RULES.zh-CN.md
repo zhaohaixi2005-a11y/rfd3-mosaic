@@ -2612,3 +2612,7 @@ partial 改成 completed；重生成 decision explanation 和哈希。报告优�
 旧 artifact 的精确矩阵哈希仍可在原生成平台验证。迁移旧 artifact 必须先在
 原生成平台通过原有编译绑定及完整结构检查，再生成新的规范化绑定；不能在
 服务器看到 mismatch 就替换哈希或关闭检查。
+
+可移动模式的 `mosaic_reference_transport.registry_transforms` 同样使用上述
+规范化表示进行身份比较；seed 所属组、运动边界、逐残基插值权重及所有
+其余 transport 字段保持严格比较。该比较只处理跨平台算子舍入，不改变运输计划。
