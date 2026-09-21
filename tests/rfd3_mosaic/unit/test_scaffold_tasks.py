@@ -382,6 +382,17 @@ def test_mobile_scaffold_passes_complete_native_feature_pipeline(tmp_path):
     prepared = tmp_path/'prepared'
     prepare_scaffold_task(config, blueprint, prepared)
     outputs = _compile_prepared(prepared/'design.yaml',tmp_path/'compiled')
+    from rfd3.utils.inference import ensure_inference_sampler_matches_design_spec
+
+    payload = json.loads(outputs.input_path.read_text())
+    sampler = {'kind':'symmetry','symmetry_state_mode':'orbit_average',
+               'symmetry_noise_mode':'coupled','preserve_fixed_motif_during_symmetry':True,
+               'enable_orbit_rigid_motif_mobility':True}
+    ensure_inference_sampler_matches_design_spec(payload, sampler)
+    invalid = copy.deepcopy(payload)
+    next(iter(invalid.values()))['extra']['mosaic_reference_transport']['base_contract_sha256'] = 'invalid'
+    with pytest.raises(ValueError, match='would ignore'):
+        ensure_inference_sampler_matches_design_spec(invalid, sampler)
     repo = ROOT
     args = yaml.safe_load((repo/'models/rfd3/configs/datasets/design_base.yaml').read_text())['global_transform_args']
     net = yaml.safe_load((repo/'models/rfd3/configs/model/components/rfd3_net.yaml').read_text())['token_initializer']

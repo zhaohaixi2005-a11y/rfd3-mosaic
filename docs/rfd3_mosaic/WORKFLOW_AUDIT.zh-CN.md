@@ -84,3 +84,9 @@ flowchart LR
 新增完整 `ContigJsonDataset → build_atom14_base_pipeline` CPU 回归测试。
 实际 LHD101 locked/mobile 输入均需通过该完整流程后再提交 GPU；原有
 `prevalidate_rfd3_input` 的 atom-array 预检本身不能替代全特征流程验证。
+
+LMU `16625599` 进一步发现推理入口仍保留 locked-only 的旧 guard，导致已绑定
+transport 的 mobile scaffold 在采样前被拒绝。入口现允许带 v2 backbone contract、
+匹配 base-contract fingerprint、正确 transport 方法/版本、固定原子与完整逐残基
+运输表的 mobile 输入；缺失/错配 transport 仍拒绝。全特征回归同时调用实际
+`ensure_inference_sampler_matches_design_spec`，覆盖入口、构建和特征处理三层。

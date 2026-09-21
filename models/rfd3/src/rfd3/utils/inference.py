@@ -388,20 +388,36 @@ def ensure_inference_sampler_matches_design_spec(
 
             validate_scaffold_contract(contract)
             sampler = inference_sampler or {}
+            mobility_compatible = not sampler.get("enable_orbit_rigid_motif_mobility", False)
+            if not mobility_compatible:
+                from rfd3_mosaic.validation.reference_transport import METHOD, transport_fingerprint
+
+                plan = (extra or {}).get("mosaic_reference_transport")
+                mobility_compatible = (
+                    contract.get("schema_version") == 2
+                    and isinstance(plan, dict)
+                    and plan.get("schema_version") == 1
+                    and plan.get("method") == METHOD
+                    and plan.get("base_contract_sha256") == transport_fingerprint(contract)
+                    and bool(plan.get("groups"))
+                    and bool(plan.get("fixed_atoms"))
+                    and len(plan.get("residue_transforms", [])) == len(contract["residues"])
+                )
             compatible = (
                 sampler.get("kind", "default") == "symmetry"
                 and sampler.get("symmetry_state_mode") == "orbit_average"
                 and sampler.get("symmetry_noise_mode") == "coupled"
                 and sampler.get("symmetry_execution_backend", "explicit_all_copy") == "explicit_all_copy"
                 and sampler.get("preserve_fixed_motif_during_symmetry", False)
-                and not sampler.get("enable_orbit_rigid_motif_mobility", False)
+                and mobility_compatible
                 and float(sampler.get("interface_seed_compactness_weight", 0.0)) == 0.0
             )
             if not compatible:
                 raise ValueError(
-                    "Explicit scaffold contracts require the locked exact symmetry "
+                    "Explicit scaffold contracts require the exact symmetry "
                     "sampler with coupled noise, explicit_all_copy and preserved "
-                    "fixed motifs; another sampler would ignore the contract"
+                    "fixed motifs, plus a bound transport plan for mobility; "
+                    "another sampler would ignore the contract"
                 )
             partial_t = getattr(item, "partial_t", None) if hasattr(item, "partial_t") else item.get("partial_t")
             if partial_t is None or not np.isfinite(float(partial_t)) or float(partial_t) <= 0:
