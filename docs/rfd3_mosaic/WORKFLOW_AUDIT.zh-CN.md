@@ -1,4 +1,33 @@
-# 完整工作流检查记录（2026-09-21）
+# 完整工作流检查记录
+
+## 2026-09-22：统一公开入口和完整 CPU 预检
+
+默认使用流程为 `init → run → report`。`run` 已负责预检、冻结任务和调用执行器；
+`plan` 与 `validate` 是可选检查，不要求用户重复执行。`plan` 默认说明任务、共享初始
+pose、刚体移动策略及连接长度；`--details` 和 `--format json` 保留完整解析信息。
+`init` 只在选择器明确时推断任务类型，混合、缺失或矛盾的选择器会报错。
+默认帮助和 YAML 减少重复默认值，原有高级命令及显式参数仍可使用。
+
+普通生成的 α／β 结构由 RFD3 决定。下方 2026-09-21 的完整骨架构建、参考地标和
+螺旋支撑流程属于**显式选择参考骨架的模式**，不是普通任务的必需步骤。
+本次不增加二级结构限制、pose 评分或新科学阈值。
+
+原先 `prevalidate_rfd3_input` 主要核对 atom array 和局部对称特征；schema 3 进一步
+执行原生 sampler 兼容性检查及完整 Atom14 推理特征流水线。语义审计和特征审计复用
+同一份已构建结构，避免对范围 contig 二次抽样；预检保存并恢复调用方随机状态。
+报告分别记录输入构建、sampler、运行特征是否通过，失败不能报告为全特征通过。
+
+没有提供已解析训练配置时，报告明确使用 `shipped_source_configuration`；提供配置时
+记录 `provided_training_configuration`，并保存解析后变换及 SHA256。这不加载权重，
+不验证 checkpoint 兼容性或神经网络 forward，也不证明 GPU 内存足够或生成质量达标。
+判定逻辑见 [公式与判定文档第 26 节](DECISION_RULES.zh-CN.md#26-统一入口与预检的判定边界)。
+
+本次 11 个定向测试文件合计 **208 tests、35 subtests 通过**，覆盖入口语义等价、
+旧命令兼容、简短/详细计划、普通及 mobile scaffold 的完整特征处理、错误 sampler 和
+错误特征配置的拒绝、worker 真实参数传递。`git diff --check`、新增模块 Ruff 和相关
+代码关键错误检查通过；本次未新增 GPU 作业，不沿用 CPU 结果声称生成质量已经验证。
+
+## 2026-09-21：显式完整骨架模式
 
 本轮修复覆盖公开任务输入、完整骨架构建、原生 RFD3 生成区交接、采样控制、输出审计和批次状态。
 结论是这些环节已有可执行的检查与拒绝路径；不代表学习模型的稳定生成率已经验证。
@@ -83,7 +112,8 @@ flowchart LR
 
 新增完整 `ContigJsonDataset → build_atom14_base_pipeline` CPU 回归测试。
 实际 LHD101 locked/mobile 输入均需通过该完整流程后再提交 GPU；原有
-`prevalidate_rfd3_input` 的 atom-array 预检本身不能替代全特征流程验证。
+当时 `prevalidate_rfd3_input` 的 atom-array 预检本身不能替代全特征流程验证；
+2026-09-22 的 schema 3 已将完整特征流程接入这个入口，见上文。
 
 LMU `16625599` 进一步发现推理入口仍保留 locked-only 的旧 guard，导致已绑定
 transport 的 mobile scaffold 在采样前被拒绝。入口现允许带 v2 backbone contract、

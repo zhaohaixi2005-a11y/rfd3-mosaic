@@ -272,6 +272,12 @@ def test_execute_audits_all_committed_results_after_inference_process_failure(
 
     def run_command(command):
         if "rfd3_mosaic.rfd3_prevalidate" in command:
+            sampler_path = Path(command[command.index("--sampler-config") + 1])
+            checked_sampler = json.loads(sampler_path.read_text())
+            for name, value in config["sampling"]["sampler"].items():
+                assert checked_sampler[name] == value
+            assert checked_sampler["symmetry_execution_backend"] == "auto"
+            assert checked_sampler["enable_orbit_rigid_motif_mobility"] is False
             Path(command[command.index("--report") + 1]).write_text('{"passed": true}')
             return
         assert "rfd3.run_inference" in command

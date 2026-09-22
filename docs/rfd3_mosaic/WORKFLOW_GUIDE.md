@@ -13,25 +13,40 @@ symmetry matrices, Slurm scripts or one YAML file per generated structure.
 If a task requires the packing pattern of a supplied complete backbone,
 [`prepare-scaffold`](COMPLETE_SCAFFOLD.zh-CN.md) adds a CPU construction and
 validation step before this lifecycle. It writes an ordinary task bound to
-one complete scaffold for partial diffusion. This experimental path currently
-requires locked, full Cn/Dn assemblies and bounded generated runs.
+one complete scaffold for partial diffusion. This optional experimental path
+supports full Cn/Dn assemblies with bounded generated runs, in locked mode or
+with validated coupled seed/reference motion. It is not required for ordinary
+generation: RFD3 generates the new secondary structure without an H/L blueprint.
 
-## The five-command workflow
+## The three-command workflow
 
 After installation and one-time checkpoint/profile setup, an ordinary design
 uses this lifecycle:
 
 ```bash
-rfd3-mosaic init design.yaml [TASK OPTIONS]
-rfd3-mosaic plan design.yaml
-rfd3-mosaic validate design.yaml
-rfd3-mosaic run design.yaml --profile PROFILE.yaml
+rfd3-mosaic init design.yaml \
+  --input interface-seed.cif \
+  --side-a A20-35 --side-b B40-55 \
+  --symmetry C3 --designs 50
+rfd3-mosaic run design.yaml
 rfd3-mosaic report RUN_ID_OR_DIRECTORY
 ```
 
-`init` writes a complete YAML. `plan` is read-only. `validate` compiles and
-preflights the RFD3 input without launching diffusion. `run` performs
-generation and audits. `report` creates HTML and JSON summaries.
+Replace the input and selectors with your own seed. `init` writes an editable
+YAML with the scientific declaration, explicit motion policy and any changed
+high-level preferences. Omitted preferences retain their defaults. `run`
+validates and freezes the task, then performs generation and audits. `report`
+creates HTML and JSON summaries. Select a site profile with
+`run --profile PROFILE.yaml` when needed.
+
+`plan design.yaml` is an optional short summary of the shared input pose,
+motion policy, generated connections and output location. Add `--details`
+for the resolved compiler constraints and guidance. `validate design.yaml`
+is a separate optional CPU preflight of the native input, sampler guard and
+feature pipeline; neither command is required before `run`. The preflight
+records its configuration source and does not load model weights or test a
+model forward pass. `--help` shows common commands/options and `--help-all`
+shows the full reference, including advanced controls.
 
 Run these once after installing or moving to another machine:
 
@@ -48,6 +63,12 @@ rfd3-mosaic capabilities
 | I already have an interface and need to scaffold it | `supplied-interface` | both interface partners as one joint-rigid object | declared linker or terminal scaffold |
 | I have a supplied multi-fragment complex and want to extend or reassemble it | simple `supplied-interface`, or the general assembly graph | every declared rigid or joint-rigid component | user-declared polymer paths and optional additional interfaces |
 
+`init` infers `central-motif` from `--motif-selector`, or `supplied-interface`
+from both `--side-a` and `--side-b`. An explicit `--task` is optional and must
+agree with the selectors. Mixed or incomplete selector declarations fail
+with an error. This infers the task type only; symmetry, connectivity and
+interface identities remain user declarations.
+
 Do not use `central-motif` when the input already contains the biological
 interface that must be preserved. Do not enable `--new-oligomer-interface`
 unless a second, generated interface is scientifically intended.
@@ -60,7 +81,7 @@ without changing the task.
 | Input | Required | Example | Meaning |
 | --- | --- | --- | --- |
 | output YAML | yes | `design.yaml` | one experiment declaration, not one structure |
-| task | yes | `central-motif` | which of the two physical problems to compile |
+| task | inferred; explicit `--task` optional | `central-motif` | inferred only from an unambiguous selector form |
 | input structure | yes | `seed.cif` | PDB or mmCIF containing the supplied geometry |
 | symmetry | yes | `C3` | user-declared target: Cn, Dn, T, O or I where supported |
 | motif selector | central-motif only | `A10-25` | fixed functional geometry |
@@ -87,8 +108,7 @@ geometry, provenance or result auditing.
 | `--designs` | `1` | more independent generated structures are required |
 | `--timesteps` | `200` | a short engineering canary or a full campaign is desired |
 | `--component-motion` | `locked` | the complete rigid seed may move relative to the symmetry frame |
-| pose radius/axial/orientation | no pose resampling | different assembly-level initial poses should be explored |
-| `--replicates-per-pose` | `1` | several diffusion trajectories should share one pose intentionally |
+| pose radius/axial/orientation | no pose resampling | define the starting-pose distribution; one pose is realized per task |
 | packing/cavity/diversity/interface-area preferences | balanced/auto/medium/auto | the user wants a high-level preference rather than expert loss weights |
 | sequence masking or glycine conditioning | fixed sequence | the supplied surface identity should not condition RFD3 directly |
 | motif side-chain redesign | off | backbone stays fixed but RFD3 may redesign motif sequence/side chains |
@@ -97,13 +117,16 @@ geometry, provenance or result auditing.
 | trajectory output | off | denoising debugging is needed and additional storage is acceptable |
 | advisory screening | on, retain all | normally leave enabled; it never deletes structures |
 
+All designs in a task share its initial pose automatically. The old
+`replicates_per_pose` control is deprecated; use `prepare-poses` to create
+separate tasks with different starting poses.
+
 ## Workflow A: fixed motif, generate a new interface
 
 Use this for a motif that is not itself the oligomerization interface.
 
 ```bash
 rfd3-mosaic init fixed-motif-c3.yaml \
-  --task central-motif \
   --input functional-motif.cif \
   --motif-selector A10-25 \
   --symmetry C3 \
@@ -137,7 +160,6 @@ copies.
 
 ```bash
 rfd3-mosaic init supplied-interface-c3.yaml \
-  --task supplied-interface \
   --input interface-seed.cif \
   --side-a A20-35 \
   --side-b B40-55 \
@@ -151,9 +173,13 @@ rfd3-mosaic init supplied-interface-c3.yaml \
 
 The two interface fragments share one joint-rigid coupling group. Mosaic does
 not deform their relative geometry and does not join the same-copy interface
-partners with a peptide bond. For each independently sampled cyclic pose, the
+partners with a peptide bond. For the task's shared initial cyclic pose, the
 compiler compares the `+1` and `-1` neighbours and freezes the nearer valid
 polymer direction. Offset zero is never considered.
+
+This short supplied-interface initializer supports Cn. Dn connections and
+multiple interface seeds require an explicit assembly graph; Mosaic does not
+infer the extra layer or connection pattern from symmetry alone.
 
 Copy the maintained example with:
 
@@ -171,7 +197,6 @@ to that symmetry or to a particular oligomer size.
 
 ```bash
 rfd3-mosaic init supplied-complex.yaml \
-  --task supplied-interface \
   --input supplied-complex.cif \
   --side-a A1-80 \
   --side-b B1-60 \
@@ -315,8 +340,8 @@ conditioning:
 ```
 
 `origin_strategy: hotspots` requires at least one hotspot selection. Atom names
-are checked during `validate`; invalid or ambiguous selectors stop before GPU
-inference.
+are checked during `run` preflight or standalone `validate`; invalid or
+ambiguous selectors stop before GPU inference.
 
 ### Sampling controls passed to RFD3
 
@@ -418,16 +443,17 @@ user decides whether to relax, refold, rank or discard them.
 | one YAML per structure | write one YAML and set `sampling.designs` |
 | supplying both interface sides as one peptide connection | use `terminal-extensions` for a non-covalent dimer |
 | always using cyclic `+1` | use `nearest_adjacent`, which evaluates `+1` and `-1` per pose |
-| expecting `designs` to change pose without `initial_pose` | declare a radius/orientation distribution |
+| expecting `designs` or a new task name to change pose | use `prepare-poses` with an explicit pose distribution to create distinct tasks |
 | using `masked` while side-chain atoms remain fixed | use the initializer or enable motif side-chain redesign as intended |
 | combining glycine and side-chain redesign | use either glycine conditioning or masked redesign |
 | treating a compiled input CIF as a generated design | generated structures end in `*_model_0.cif[.gz]` |
 | treating an advisory flag as deleted/failed output | inspect the retained CIF and audit details |
-| running a large campaign before a canary | validate, then run a small pilot before scaling |
+| running a large campaign before a canary | run a small pilot before scaling; `run` already performs preflight |
 
 ## Recommended campaign progression
 
-1. Run `doctor`, `plan` and `validate`.
+1. Check the installation with `doctor`; use `plan` or `validate` when a
+   separate diagnostic is useful.
 2. Generate 2-10 designs at 50 timesteps as an engineering canary.
 3. Inspect fixed geometry, continuity, clashes, topology and output naming.
 4. Generate 20-50 designs at 200 timesteps for a scientific pilot.
@@ -435,7 +461,8 @@ user decides whether to relax, refold, rank or discard them.
 6. Scale to the required campaign size after the task definition and output
    behavior are frozen.
 
-For exact argument spelling, use `rfd3-mosaic init --help`. For expert graph
+For common arguments, use `rfd3-mosaic init --help`; for all arguments, use
+`rfd3-mosaic init --help-all`. For expert graph
 assembly, quotient or polyhedral declarations, consult the
 [command-line reference](USER_CLI.md) and the current
 [project status](PROJECT_STATUS.md) before allocating a production campaign.

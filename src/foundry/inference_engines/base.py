@@ -30,6 +30,23 @@ def merge(cfg: Any, overrides: dict) -> Any:
     return OmegaConf.merge(cfg, OmegaConf.create(overrides))
 
 
+def resolve_inference_transform_config(
+    cfg: Any, transform_overrides: dict[str, Any] | None = None
+) -> tuple[str, Any]:
+    """Resolve the same validation transform for inference and CPU preflight.
+
+    Keep the training-config parent while merging so interpolations such as
+    ``${model.net.token_initializer.atom_1d_features}`` retain their meaning.
+    This function neither loads model weights nor creates a trainer.
+    """
+
+    if not OmegaConf.is_config(cfg):
+        cfg = OmegaConf.create(cfg)
+    first_key, first_dataset = next(iter(cfg.datasets.val.items()))
+    transform = merge(first_dataset.dataset.transform, transform_overrides or {})
+    return str(first_key), transform
+
+
 class BaseInferenceEngine:
     """
     Base inference engine.
@@ -216,13 +233,12 @@ class BaseInferenceEngine:
         """
         # Construct pipeline
         ranked_logger.info("Building Transform pipeline...")
-        first_val_dataset_key, first_val_dataset = next(iter(cfg.datasets.val.items()))
+        first_val_dataset_key, transform = resolve_inference_transform_config(
+            cfg, self.transform_overrides
+        )
         ranked_logger.info(
             f"Using settings from validation dataset: {first_val_dataset_key}."
         )
-        transform = first_val_dataset.dataset.transform
-        transform = merge(transform, self.transform_overrides)
-
         if self.verbose:
             print_config_tree(
                 transform,

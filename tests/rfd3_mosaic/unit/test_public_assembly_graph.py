@@ -649,7 +649,7 @@ class PublicAssemblyGraphTestCase(unittest.TestCase):
         output = StringIO()
 
         with redirect_stdout(output):
-            main(["plan", str(config)])
+            main(["plan", str(config), "--details"])
 
         text = output.getvalue()
         self.assertEqual(
@@ -696,7 +696,7 @@ class PublicAssemblyGraphTestCase(unittest.TestCase):
         output = StringIO()
 
         with redirect_stdout(output):
-            main(["plan", str(config)])
+            main(["plan", str(config), "--details"])
 
         text = output.getvalue()
         self.assertIn(

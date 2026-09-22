@@ -1,10 +1,17 @@
-"""Construct and audit an RFD3 atom array without loading a checkpoint."""
+"""Audit native RFD3 construction, dispatch and CPU features without a model."""
 
 import argparse
 import json
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from rfd3_mosaic.rfd3_runtime_preflight import (
+    audit_native_feature_pipeline,
+    default_preflight_sampler,
+    isolated_preflight_random_state,
+    resolve_preflight_pipeline,
+)
 
 
 def _to_numpy(value):
@@ -841,13 +848,22 @@ def _validate_report(report: dict[str, Any]) -> list[str]:
     return failures
 
 
+@isolated_preflight_random_state()
 def prevalidate_rfd3_input(
     input_path: str | Path,
     *,
     example_id: str | None = None,
     report_path: str | Path | None = None,
+    inference_sampler: dict[str, Any] | None = None,
+    resolved_training_config: Any = None,
 ) -> dict[str, Any]:
-    """Load one emitted specification and run RFD3's complete input builder."""
+    """Run the native builder, sampler compatibility guard and feature pipeline.
+
+    A supplied training configuration uses the same transform resolution as
+    the inference engine. Without one, shipped source settings are checked and
+    reported explicitly. Neither mode loads checkpoint weights or validates a
+    neural-network forward pass. Preflight does not change the caller's RNG.
+    """
 
     # Imports stay lazy so schema/compiler users do not require an RFD3 runtime.
     import numpy as np
@@ -1039,7 +1055,7 @@ def prevalidate_rfd3_input(
         else 0
     )
     report: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "pending",
         "input_path": str(path),
         "example_id": selected_id,
@@ -1140,6 +1156,62 @@ def prevalidate_rfd3_input(
         "rfd3_metadata": metadata,
     }
     failures = _validate_report(report)
+    report.update(
+        atom_array_validated=not failures,
+        sampler_compatibility_validated=False,
+        runtime_features_validated=False,
+        checkpoint_compatibility_validated=False,
+        model_forward_validated=False,
+        validation_scope=[
+            "native_input_construction", "symmetry_and_conditioning_semantics"
+        ],
+        sampler_configuration_source=(
+            "provided_overrides"
+            if inference_sampler is not None
+            else "public_workflow_defaults"
+        ),
+    )
+    if not failures:
+        from rfd3.utils.inference import ensure_inference_sampler_matches_design_spec
+
+        effective_sampler = (
+            default_preflight_sampler(raw_spec)
+            if inference_sampler is None
+            else dict(inference_sampler)
+        )
+        report["inference_sampler"] = effective_sampler
+        try:
+            ensure_inference_sampler_matches_design_spec(
+                {selected_id: raw_spec}, effective_sampler
+            )
+        except Exception as error:  # noqa: BLE001 -- persist failure, then raise below
+            failures.append(
+                f"Native sampler compatibility: {type(error).__name__}: {error}"
+            )
+        else:
+            report["sampler_compatibility_validated"] = True
+            report["validation_scope"].append("native_sampler_dispatch")
+    if not failures:
+        try:
+            pipeline, configuration_audit = resolve_preflight_pipeline(
+                resolved_training_config
+            )
+            report["runtime_configuration"] = configuration_audit
+            report["runtime_feature_audit"] = audit_native_feature_pipeline(
+                atom_array, metadata, selected_id, pipeline
+            )
+        except Exception as error:  # noqa: BLE001 -- persist failure, then raise below
+            report["runtime_feature_audit"] = {
+                "passed": False,
+                "error_type": type(error).__name__,
+                "error": str(error),
+            }
+            failures.append(
+                f"Native inference features: {type(error).__name__}: {error}"
+            )
+        else:
+            report["runtime_features_validated"] = True
+            report["validation_scope"].append("native_inference_features")
     report["status"] = "passed" if not failures else "failed"
     report["failures"] = failures
 
@@ -1155,7 +1227,7 @@ def prevalidate_rfd3_input(
     report["report_path"] = str(destination.resolve())
     if failures:
         raise ValueError(
-            "RFD3 input construction failed semantic checks: "
+            "RFD3 prevalidation failed: "
             + "; ".join(failures)
         )
     return report
@@ -1164,19 +1236,44 @@ def prevalidate_rfd3_input(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Construct and audit an RFD3 input without loading a checkpoint."
+            "Audit native RFD3 input, sampler compatibility and CPU features "
+            "without loading checkpoint weights."
         )
     )
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--example-id")
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--training-config",
+        type=Path,
+        help=(
+            "Resolved training configuration exported from the intended runtime; "
+            "defaults to shipped source settings."
+        ),
+    )
+    parser.add_argument(
+        "--sampler-config",
+        type=Path,
+        help=(
+            "JSON object of effective inference sampler overrides; "
+            "defaults to the public Mosaic workflow."
+        ),
+    )
     arguments = parser.parse_args()
     report = prevalidate_rfd3_input(
         arguments.input,
         example_id=arguments.example_id,
         report_path=arguments.report,
+        resolved_training_config=arguments.training_config,
+        inference_sampler=(
+            json.loads(arguments.sampler_config.read_text(encoding="utf-8"))
+            if arguments.sampler_config is not None
+            else None
+        ),
     )
-    print("RFD3 input construction: PASSED")
+    print("RFD3 input, sampler dispatch and CPU feature construction: PASSED")
+    print(f"configuration: {report['runtime_configuration']['configuration_source']}")
+    print("checkpoint/model forward: not validated")
     print(f"example:    {report['example_id']}")
     print(f"chains:     {report['chain_count']} {report['chain_ids']}")
     print(f"residues:   {report['residues_per_chain']}")

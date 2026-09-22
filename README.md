@@ -24,8 +24,13 @@
 RFD3-Mosaic is a constraint-compilation and execution framework for symmetric
 protein backbone design with [RFdiffusion3](models/rfd3/README.md). Starting
 from a user-defined assembly specification, it constructs symmetry-aware RFD3
-inputs, samples independent assembly poses, executes constrained backbone
+inputs, freezes one initial pose per task, executes constrained backbone
 generation and records structural audits with full run provenance.
+
+The ordinary workflow is **`init → run → report`**. Supply the seed, its fixed
+residue selectors, target symmetry and generation lengths; RFD3 generates the
+new backbone, including its secondary structure. No secondary-structure
+blueprint is required.
 
 The framework supports fixed-motif scaffolding, supplied-interface
 preservation, multi-component assembly graphs, controlled rigid-body motion
@@ -92,7 +97,6 @@ Create a design with the simple two-sided supplied-interface initializer:
 
 ```bash
 rfd3-mosaic init design.yaml \
-  --task supplied-interface \
   --input interface-seed.pdb \
   --side-a A20-35 \
   --side-b B40-55 \
@@ -106,21 +110,30 @@ graph. One task means one YAML and one input pose, even for `designs: 1000`.
 See [task poses and motion modes](docs/rfd3_mosaic/TASK_POSES.zh-CN.md) for
 creating multiple tasks with distinct poses.
 
-Inspect the resolved plan and validate the compiled input before using GPU
-time, then run it:
+Run the task, then open its report:
+
+```bash
+rfd3-mosaic run design.yaml
+rfd3-mosaic report RUN_ID_OR_DIRECTORY
+```
+
+`run` validates and freezes the input before inference. `--side-a` together
+with `--side-b` selects the supplied-interface task; `--motif-selector`
+selects the central-motif task. `--task` remains available as an explicit
+choice. Mixing the two selector forms is rejected.
+
+For an optional preview or environment diagnosis:
 
 ```bash
 rfd3-mosaic plan design.yaml
 rfd3-mosaic validate design.yaml
-rfd3-mosaic run design.yaml
-```
-
-Inspect the completed run by job ID or directory:
-
-```bash
 rfd3-mosaic status RUN_ID_OR_DIRECTORY
-rfd3-mosaic report RUN_ID_OR_DIRECTORY
 ```
+
+`plan` summarizes the shared initial pose, seed motion, generated connections
+and output location. Add `--details` for compiler and guidance details.
+`validate` additionally runs CPU input, sampler-compatibility and feature
+checks; it does not load model weights or test a model forward pass.
 
 For supplied non-covalent partners that should also form an additional
 symmetry-related interface, start from the maintained compositional example:
@@ -138,6 +151,8 @@ programs.
 
 The [quick-start guide](docs/rfd3_mosaic/QUICKSTART.md) covers portable
 examples, component motion, execution profiles and result inspection.
+Use `rfd3-mosaic --help` or `rfd3-mosaic init --help` for common operations;
+`--help-all` lists the existing advanced commands or options.
 The [complete user workflow guide](docs/rfd3_mosaic/WORKFLOW_GUIDE.md)
 separates required and optional input, provides copy-ready examples for every
 supported ordinary-user task, and documents batch generation plus native RFD3
@@ -163,7 +178,6 @@ rotate relative to the symmetry frame when the design permits motion.
 
 ```bash
 rfd3-mosaic init design.yaml \
-  --task supplied-interface \
   --input interface-seed.pdb \
   --side-a A20-35 \
   --side-b B40-55 \
@@ -177,7 +191,6 @@ surrounding scaffold and symmetry-related interface must be generated.
 
 ```bash
 rfd3-mosaic init design.yaml \
-  --task central-motif \
   --input motif.pdb \
   --motif-selector A12-20 \
   --symmetry C3 \

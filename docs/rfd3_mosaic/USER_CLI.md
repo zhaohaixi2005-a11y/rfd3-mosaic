@@ -34,40 +34,50 @@ Use `--format json` with either command for machine-readable output.
 
 ## Core lifecycle
 
-For reference-conditioned scaffold preparation:
+The ordinary lifecycle is:
+
+```text
+init → run → report
+```
+
+`run` validates and freezes the declaration before inference. `plan` and
+standalone `validate` are optional diagnostics; `resolve` is needed only for
+an intent with unresolved assembly variables. RFD3 generates the secondary
+structure of the new regions; ordinary tasks require no H/L blueprint.
+
+`rfd3-mosaic --help` lists common commands, and `rfd3-mosaic init --help`
+lists common task options. Use `--help-all` at either level for the complete
+reference. Advanced commands and options remain accepted.
+
+For optional reference-conditioned scaffold preparation:
 
 ```bash
 rfd3-mosaic prepare-scaffold design.yaml --blueprint scaffold.yaml --output-dir prepared-task
-rfd3-mosaic validate prepared-task/design.yaml
 rfd3-mosaic run prepared-task/design.yaml
 ```
 
 The first command uses CPU geometry only. Its blueprint, exact scope, output
 files and unresolved-result semantics are documented in the
-[complete-scaffold guide](COMPLETE_SCAFFOLD.zh-CN.md). It is distinct from
-`prepare-poses`, which selects seed poses without constructing a full backbone.
-
-Every design follows the same lifecycle:
-
-```text
-user intent -> plan -> validate -> resolve if needed -> run -> audits -> report
-```
+[complete-scaffold guide](COMPLETE_SCAFFOLD.zh-CN.md). It supports locked seeds
+or validated coupled seed/reference motion in its supported full Cn/Dn scope.
+It is distinct from `prepare-poses`, which selects seed poses without
+constructing a full backbone.
 
 ### `init`
 
 ```bash
 rfd3-mosaic init design.yaml \
-  --task central-motif \
   --input motif.pdb \
   --motif-selector A12-20 \
   --symmetry C3 \
   --designs 100
 ```
 
-Creates a schema-valid ordinary-user YAML and prints the exact `plan`,
-`validate` and `run` commands to use next. Selectors remain explicit because
-they define scientific intent; radius, neighbour transforms and raw packing
-weights are not required.
+Creates a schema-valid ordinary-user YAML with scientific inputs, explicit
+`component_motion` and any changed high-level preferences. Other preferences
+retain their defaults without being expanded into the authoring file.
+Selectors remain explicit because they define scientific intent; radius,
+neighbour transforms and raw packing weights are not required.
 
 The two tasks are:
 
@@ -75,12 +85,19 @@ The two tasks are:
 - `supplied-interface`: preserve both sides of a complete supplied interface
   as one joint rigid geometric seed.
 
+`--task` is optional: `--motif-selector` selects `central-motif`, while both
+`--side-a` and `--side-b` select `supplied-interface`. An explicit task must
+agree with the selectors. Mixed or incomplete selector forms are rejected;
+Mosaic does not infer the scientific architecture from this choice.
+
 For supplied interfaces, `--interface-scaffold` distinguishes covalent
 topology from non-covalent scaffolding. `adjacent-linker` creates one declared
 symmetry-neighbour linker. `terminal-extensions` grows N/C scaffold from both
 partners without connecting the partners to one another. Add
 `--new-oligomer-interface` only when the preserved interface seed should form
 an additional Cn oligomerization interface. The default remains off.
+The short supplied-interface initializer supports Cn. Dn and multi-seed
+connection patterns require an explicit assembly graph.
 
 Native RFD3 sequence and ligand conditioning can be initialized with
 `--sequence-conditioning fixed|masked|glycine` and repeatable
@@ -94,8 +111,8 @@ Add `--redesign-motif-sidechains` when the supplied protein backbone must stay
 fixed but RFD3 should redesign its sequence and side-chain coordinates. This
 can be combined with `--sequence-conditioning masked`.
 
-For `central-motif`, `--component-motion locked|guided|free` selects whether
-the supplied arrangement stays fixed, moves in the calibrated constrained
+For either task, `--component-motion locked|guided|free` selects whether
+the supplied arrangement stays fixed, moves in the declared constrained
 subspace, or uses bounded SE(3). High-level `--packing`, `--interface-area`,
 `--cavity` and `--diversity` preferences are also available. Hard symmetry,
 motif, continuity and clash contracts are never disabled by these options.
@@ -194,7 +211,7 @@ are essential; all conditioning and execution controls are optional.
 | `generation` | terminal extensions or explicit between-linkers and lengths |
 | `constraints` | fixed selectors and joint-rigid `coupling_group` identity |
 | `conditioning` | optional native RFD3 sequence, ligand, RASA, hotspot and H-bond inputs |
-| `sampling` | timesteps, design count, independent pose distribution and RFD3 global conditioning |
+| `sampling` | timesteps, design count, task-level pose distribution and RFD3 global conditioning |
 | `resources` | local or Slurm execution profile |
 | `output` | run root and campaign name |
 
@@ -224,20 +241,29 @@ then invokes RFD3's own parser during prevalidation. Unsupported combinations
 (for example a user-selected origin on a quotient input whose group origin is
 compiler-owned) fail before inference rather than being silently ignored.
 
-RFdiffusion3 partial diffusion is not represented as symmetric motif
-scaffolding: it changes the coordinates supplied as the starting structure and
-conflicts with Mosaic's exact fixed-geometry contract. Users needing an
-unmodified native partial-diffusion experiment should run that native RFD3
-workflow rather than assuming Mosaic applied it.
+Ordinary motif scaffolding does not enable partial diffusion implicitly.
+The optional `prepare-scaffold` workflow constructs and validates a complete
+backbone, binds its fixed-seed masks and reference contract, and then supplies
+it to partial diffusion. Arbitrary native partial-diffusion inputs are not
+automatically compatible with that contract; see the complete-scaffold guide
+for the explicit supported combinations.
 
 ### `plan`
 
 ```bash
 rfd3-mosaic plan design.yaml --profile local
+rfd3-mosaic plan design.yaml --details
+rfd3-mosaic plan design.yaml --format json
 ```
 
-Prints the resolved task, components, constraints, symmetry, interfaces,
-generation regions and execution plan. It does not run inference.
+The default text is a concise task summary: shared initial pose, component
+motion, generated connection lengths and output location. `--details` retains
+the full text explanation of resolved compiler constraints, interfaces,
+guidance and capabilities. `--format json` retains the complete structured
+plan and is unchanged by `--details`.
+
+Planning is an optional declaration/compiler inspection. It does not execute
+the native RFD3 feature preflight or inference.
 
 ### `validate`
 
@@ -245,9 +271,17 @@ generation regions and execution plan. It does not run inference.
 rfd3-mosaic validate design.yaml
 ```
 
-Performs schema validation, assembly lowering, geometry checks and RFD3
-runtime-feature prevalidation. Invalid or unsupported designs fail before GPU
-execution.
+Performs schema validation, assembly lowering, geometry checks and CPU RFD3
+prevalidation: native input construction, the sampler compatibility guard,
+and the complete native Atom14 feature pipeline. `run` already performs its
+required preflight, so this separate command is useful for diagnosis and
+review rather than a mandatory step.
+
+The schema-3 prevalidation report records whether it used shipped source
+defaults or a supplied resolved training configuration. It reports input,
+sampler and runtime-feature checks separately. It does not load checkpoint
+weights, certify checkpoint compatibility or validate a model forward pass;
+those remain outside the CPU preflight's scope.
 
 ### `resolve`
 
@@ -270,8 +304,8 @@ rfd3-mosaic run design.yaml \
   --run-root "$PWD/runs"
 ```
 
-Renders a frozen execution envelope and launches it with the selected
-executor. The `local` profile performs direct synchronous execution on any
+Validates the task, renders a frozen execution envelope and launches it with
+the selected executor. The `local` profile performs direct synchronous execution on any
 compatible machine. A custom Slurm profile submits the same envelope through
 the scheduler.
 
@@ -392,7 +426,6 @@ Create it with:
 
 ```bash
 rfd3-mosaic init design.yaml \
-  --task supplied-interface \
   --input interface-seed.pdb \
   --side-a A20-35 \
   --side-b B40-55 \
@@ -549,12 +582,13 @@ After `end_fraction` the pose is frozen. This schedule never applies to
 joint-rigid seed.
 
 For a movable cross-chain supplied interface under `Cn`, Mosaic additionally
-rejects independently sampled pre-RFD3 poses whose fixed fragments span more
+rejects task-level pre-RFD3 poses whose fixed fragments span more
 than one cyclic wedge, whose interface orientation is incompatible with the
 local tangent, or whose declared scaffold path fails contour/corridor checks.
-It retains every feasible design pose rather than choosing one universal best
-pose. During early diffusion, the complete seed is captured toward the
-midpoint of its neighbouring generated chains; that target transitions from
+The selected initial pose is shared by all designs in that task; separate
+tasks can use different feasible poses. During early diffusion, the complete
+seed is captured toward the midpoint of its neighbouring generated chains;
+that target transitions from
 ordinary chain centers to tertiary-support-weighted core centers as structure
 emerges. Early full-SE(3) proposals use signed radial, tangential and axial
 directions, and a seeded near-optimal pool preserves reproducible diversity.
@@ -583,7 +617,6 @@ Create it with:
 
 ```bash
 rfd3-mosaic init design.yaml \
-  --task central-motif \
   --input motif.pdb \
   --motif-selector A12-20 \
   --symmetry C3
@@ -656,17 +689,17 @@ because a raw CIF exists.
 
 Every run keeps three artifact roles separate:
 
-- `input/presymmetrized_input.cif` is the sole compiled input for one-pose
-  runs; a multi-pose run instead stores `input/pose_XXXXX/` inputs plus one
-  combined `input/rfd3_input.json`; none is a generated design;
+- `input/presymmetrized_input.cif` is a compiled input, not a generated
+  design. Historical multi-pose runs may instead contain
+  `input/pose_XXXXX/` inputs and a combined `input/rfd3_input.json`;
 - each root-level `*_model_0.cif[.gz]` is one raw generated design, including
   outputs retained after a contract or advisory check flags them;
 - a PyMOL `mosaic_aligned*` object is an in-memory visualization copy and is
   not an additional generated structure.
 
-Consequently, `sampling.designs: 2` with a variable initial pose produces two
-raw result CIFs from two independently compiled poses by default. With fixed
-geometry it produces two trajectories from the same exact input. Always use
+Consequently, `sampling.designs: 2` produces two trajectories from the same
+task-level input pose, including when `initial_pose` declares a distribution.
+Use `prepare-poses` for separate tasks with distinct starting poses. Always use
 the per-design contract flags, advisory metrics and downstream refolding to
 decide whether either result is useful for the user's objective.
 
@@ -677,6 +710,7 @@ decide whether either result is useful for the user's objective.
 - `central` and `interface`: compatibility shortcuts for the two primary
   workflows.
 
-Run `rfd3-mosaic COMMAND --help` for the authoritative arguments supported by
-the installed version. Expert schema and implementation details remain under
+Run `rfd3-mosaic COMMAND --help` for common arguments and
+`rfd3-mosaic COMMAND --help-all` for all arguments supported by the installed
+version. Expert schema and implementation details remain under
 active development and should be pinned to a commit for reproducibility.

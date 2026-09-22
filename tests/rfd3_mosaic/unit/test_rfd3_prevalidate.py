@@ -1,4 +1,5 @@
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -160,12 +161,33 @@ class RFD3PrevalidationLogicTestCase(unittest.TestCase):
                 output_directory,
                 base_directory=REPOSITORY_ROOT,
             )
+            import torch
+
+            python_state = random.getstate()
+            numpy_state = np.random.get_state()
+            torch_state = torch.random.get_rng_state()
             report = prevalidate_rfd3_input(outputs.input_path)
+            self.assertEqual(random.getstate(), python_state)
+            np.testing.assert_equal(np.random.get_state(), numpy_state)
+            self.assertTrue(torch.equal(torch.random.get_rng_state(), torch_state))
             emitted = json.loads(
                 outputs.input_path.read_text(encoding="utf-8")
             )[outputs.example_id]
 
         self.assertEqual(report["status"], "passed")
+        self.assertTrue(report["atom_array_validated"])
+        self.assertTrue(report["sampler_compatibility_validated"])
+        self.assertTrue(report["runtime_features_validated"])
+        self.assertFalse(report["checkpoint_compatibility_validated"])
+        self.assertFalse(report["model_forward_validated"])
+        self.assertEqual(
+            report["runtime_configuration"]["configuration_source"],
+            "shipped_source_configuration",
+        )
+        self.assertGreater(
+            report["runtime_feature_audit"]["padded_atom_count"], report["atom_count"]
+        )
+        self.assertIn("ref_pos", report["runtime_feature_audit"]["tensor_shapes"])
         self.assertEqual(set(report["residues_per_chain"].values()), {146})
         sampled_contig = report["rfd3_metadata"]["extra"][
             "sampled_contig"
@@ -175,6 +197,84 @@ class RFD3PrevalidationLogicTestCase(unittest.TestCase):
             emitted["extra"]["materialized_linker_length"],
             85,
         )
+
+    def test_preflight_rejects_incompatible_sampler_and_records_actual_scope(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            outputs = compile_rfd3_input(
+                LHD101_CONFIG, root, base_directory=REPOSITORY_ROOT
+            )
+            report_path = root / "negative.json"
+            with self.assertRaisesRegex(ValueError, "sampler is not set to symmetry"):
+                prevalidate_rfd3_input(
+                    outputs.input_path,
+                    inference_sampler={"kind": "default"},
+                    report_path=report_path,
+                )
+            report = json.loads(report_path.read_text())
+        self.assertTrue(report["atom_array_validated"])
+        self.assertFalse(report["sampler_compatibility_validated"])
+        self.assertFalse(report["runtime_features_validated"])
+        self.assertNotIn("native_inference_features", report["validation_scope"])
+        self.assertEqual(report["status"], "failed")
+
+    def test_preflight_executes_supplied_transform_instead_of_source_defaults(self):
+        from rfd3_mosaic.rfd3_runtime_preflight import source_inference_training_config
+
+        config = source_inference_training_config()
+        # This is valid input geometry but an impossible feature configuration.
+        # It fails inside native padding, beyond the old atom-array-only check.
+        config.datasets.global_transform_args.central_atom = "DOES_NOT_EXIST"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            outputs = compile_rfd3_input(
+                LHD101_CONFIG, root, base_directory=REPOSITORY_ROOT
+            )
+            report_path = root / "negative.json"
+            with self.assertRaisesRegex(ValueError, "Native inference features"):
+                prevalidate_rfd3_input(
+                    outputs.input_path,
+                    resolved_training_config=config,
+                    report_path=report_path,
+                )
+            report = json.loads(report_path.read_text())
+        self.assertTrue(report["atom_array_validated"])
+        self.assertTrue(report["sampler_compatibility_validated"])
+        self.assertFalse(report["runtime_features_validated"])
+        self.assertFalse(report["runtime_feature_audit"]["passed"])
+        self.assertEqual(
+            report["runtime_configuration"]["configuration_source"],
+            "provided_training_configuration",
+        )
+        self.assertEqual(report["status"], "failed")
+
+    def test_shared_inference_transform_resolution_keeps_interpolations_and_overrides(self):
+        from omegaconf import OmegaConf
+
+        from foundry.inference_engines.base import resolve_inference_transform_config
+
+        config = OmegaConf.create({
+            "model": {"sigma": 16},
+            "datasets": {"val": {
+                "first": {"dataset": {"transform": {
+                    "sigma_data": "${model.sigma}",
+                    "diffusion_batch_size": 32,
+                    "nested": {"left": 1, "right": 2},
+                }}},
+                "unused": {"dataset": {"transform": {"sigma_data": 99}}},
+            }},
+        })
+        key, transform = resolve_inference_transform_config(
+            config, {"diffusion_batch_size": 1, "nested": {"right": 3}}
+        )
+        self.assertEqual(key, "first")
+        self.assertEqual(OmegaConf.to_container(transform, resolve=True), {
+            "sigma_data": 16,
+            "diffusion_batch_size": 1,
+            "nested": {"left": 1, "right": 3},
+        })
+        self.assertEqual(config.datasets.val.first.dataset.transform.diffusion_batch_size, 32)
+        self.assertEqual(config.datasets.val.first.dataset.transform.nested.right, 2)
 
     def test_reads_cyclic_multiplicity(self) -> None:
         self.assertEqual(_expected_multiplicity("C3"), 3)

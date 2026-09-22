@@ -482,6 +482,29 @@ def _resolved_guidance_overrides(
     return ResolvedDesignPreferences.model_validate(preferences).hydra_overrides()
 
 
+def _sampler_dispatch_overrides(
+    sampling: dict[str, Any], rfd3_input: Path
+) -> dict[str, Any]:
+    """Pass the worker's dispatch-relevant flags to CPU preflight.
+
+    In particular, the official control must retain legacy/independent flags;
+    the preflight must not silently substitute public exact-Mosaic defaults.
+    Compiler guidance overrides are applied last, as in the inference command.
+    """
+
+    mobility_enabled, proposal = _motif_mobility_runtime(rfd3_input)
+    sampler = {
+        **sampling["sampler"],
+        "symmetry_execution_backend": sampling["execution_backend"],
+        "enable_orbit_rigid_motif_mobility": mobility_enabled,
+        "motif_mobility_proposal_source": proposal,
+    }
+    for argument in _resolved_guidance_overrides(rfd3_input):
+        name, value = argument.removeprefix("++inference_sampler.").split("=", 1)
+        sampler[name] = yaml.safe_load(value)
+    return sampler
+
+
 def _requires_assembly_pose_feasibility(rfd3_input: Path) -> bool:
     """Return whether compiler-resolved semantics require the finite-group gate."""
 
@@ -765,6 +788,11 @@ def execute(
                     pose_directory / "manifest.json",
                 )
                 prevalidation_report = pose_directory / "rfd3_prevalidation.json"
+                sampler_config = pose_directory / "prevalidation_sampler.json"
+                _atomic_json(
+                    sampler_config,
+                    _sampler_dispatch_overrides(sampling, assembly.input_path),
+                )
                 _run(
                     [
                         sys.executable,
@@ -774,6 +802,8 @@ def execute(
                         str(assembly.input_path),
                         "--report",
                         str(prevalidation_report),
+                        "--sampler-config",
+                        str(sampler_config),
                     ]
                 )
             except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError):

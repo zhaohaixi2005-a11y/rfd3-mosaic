@@ -758,7 +758,7 @@ constraints:
             output = StringIO()
 
             with redirect_stdout(output):
-                main(["plan", str(config)])
+                main(["plan", str(config), "--details"])
 
         text = output.getvalue()
         self.assertIn("RFD3-Mosaic public design plan", text)
@@ -797,7 +797,7 @@ constraints:
             output = StringIO()
 
             with redirect_stdout(output):
-                main(["plan", str(config)])
+                main(["plan", str(config), "--details"])
 
         text = output.getvalue()
         self.assertIn("task:       create symmetric interface", text)
@@ -837,7 +837,7 @@ constraints:
             output = StringIO()
 
             with redirect_stdout(output):
-                main(["plan", str(config)])
+                main(["plan", str(config), "--details"])
 
         text = output.getvalue()
         self.assertIn("fixed arrangement=locked", text)
@@ -875,7 +875,7 @@ constraints:
             output = StringIO()
 
             with redirect_stdout(output):
-                main(["plan", str(config)])
+                main(["plan", str(config), "--details"])
 
         text = output.getvalue()
         self.assertIn("complete_interface_seed", text)
@@ -885,6 +885,100 @@ constraints:
         )
         self.assertIn("x 3 symmetry copies", text)
         self.assertIn("selectors: A1, A2", text)
+
+    def test_default_plan_summarizes_shared_pose_and_rigid_mobility_without_writes(
+        self,
+    ) -> None:
+        for motion in ("locked", "free"):
+            with (
+                self.subTest(motion=motion),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                structure = root / "interface.pdb"
+                structure.write_text(
+                    "ATOM      1   CA ALA A   1      10.000   0.000   0.000"
+                    "  1.00 20.00           C\n"
+                    "ATOM      2   CA ALA B   1      13.800   0.000   0.000"
+                    "  1.00 20.00           C\nEND\n",
+                    encoding="utf-8",
+                )
+                config = root / "design.yaml"
+                config.write_text(
+                    yaml.safe_dump(
+                        {
+                            "name": "shared-pose",
+                            "input": str(structure),
+                            "symmetry": "C3",
+                            "task": "preserve_supplied_geometry",
+                            "preferences": {"component_motion": motion},
+                            "generation": [
+                                {
+                                    "kind": "between",
+                                    "from_selector": "B1",
+                                    "to_selector": "A1",
+                                    "orbit_offset": "nearest_adjacent",
+                                    "length": {"minimum": 70, "maximum": 100},
+                                }
+                            ],
+                            "constraints": [
+                                {
+                                    "kind": "fixed_xyz",
+                                    "selector": selector,
+                                    "coupling_group": "complete_interface_seed",
+                                }
+                                for selector in ("A1", "B1")
+                            ],
+                            "sampling": {
+                                "designs": 1000,
+                                "initial_pose": {
+                                    "radius": {"minimum": 18.0, "maximum": 24.0},
+                                    "seed": 17,
+                                },
+                            },
+                            "output": {"root": str(root / "runs")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                original_files = {
+                    path: path.read_bytes() for path in (structure, config)
+                }
+                original_entries = set(root.rglob("*"))
+                output = StringIO()
+                with (
+                    redirect_stdout(output),
+                    patch(
+                        "rfd3_mosaic.cli._preflight_public_design_geometry"
+                    ) as preflight,
+                ):
+                    main(["plan", str(config), "--profile", "my-cluster.yaml"])
+                preflight.assert_not_called()
+                self.assertEqual(set(root.rglob("*")), original_entries)
+                for path, contents in original_files.items():
+                    self.assertEqual(path.read_bytes(), contents)
+                text = output.getvalue()
+                self.assertIn("1000", text)
+                self.assertIn("one shared initial pose", text)
+                self.assertIn("execution profile: my-cluster.yaml", text)
+                self.assertIn("realized once and shared by all designs", text)
+                seed_lines = [
+                    line for line in text.splitlines() if line.startswith("seed ")
+                ]
+                self.assertEqual(len(seed_lines), 1)
+                for value in ("complete_interface_seed", "A1", "B1", "3 copies"):
+                    self.assertIn(value, seed_lines[0])
+                if motion == "locked":
+                    self.assertIn("locked", seed_lines[0])
+                else:
+                    self.assertIn("whole component", seed_lines[0])
+                    self.assertIn("final pose may differ per design", seed_lines[0])
+                connection_lines = [
+                    line for line in text.splitlines() if "B1 -> A1" in line
+                ]
+                self.assertEqual(len(connection_lines), 1)
+                self.assertIn("nearest_adjacent", connection_lines[0])
+                self.assertIn("70-100 residues", connection_lines[0])
 
     def test_plan_reports_physical_quotient_copy_count(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -921,7 +1015,7 @@ constraints:
             output = StringIO()
 
             with redirect_stdout(output):
-                main(["plan", str(config)])
+                main(["plan", str(config), "--details"])
 
         text = output.getvalue()
         self.assertIn("x 2 symmetry copies", text)
@@ -1092,7 +1186,7 @@ constraints:
 
         complete_preflight.assert_not_called()
         self.assertEqual(payload["topology"]["kind"], "user_design")
-        self.assertEqual(payload["topology"]["config"], str(source))
+        self.assertEqual(payload["topology"]["config"], str(source.resolve()))
         self.assertEqual(payload["sampling"]["timesteps"], 50)
         self.assertNotIn("initial_pose", payload["sampling"])
         self.assertNotIn("scaffold_core_quality", payload["sampling"])

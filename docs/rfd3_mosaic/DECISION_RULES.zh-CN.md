@@ -19,6 +19,7 @@
 - “怎样选起点、保留不同 pose？”：第 3 节及 [任务与 pose](TASK_POSES.zh-CN.md)。
 - “contig 长度怎样影响距离、角度与螺旋 packing？”：第 24 节；注意其中的实现状态。
 - “生成了文件为什么仍判失败？”：第 9 节。
+- “简化入口省略了什么？预检通过到底证明什么？”：第 26 节。
 
 每个决策应能追溯到：**作用对象 → 实际参数 → 公式 → 触发条件 → 判定 → 证据**。
 表中的默认值不是本次运行值；未记录的决策不能靠默认值补成“已证明通过”。
@@ -43,6 +44,7 @@
 | 局部邻域、attention 和精度 | 第 20 节 | `local_neighbourhood.py`、`model/layers/block_utils.py`、`alignment.py` |
 | 最终审计、统计和证据 | 第 9、19、21 节 | `rfd3_*_audit.py`、`validation/`、运行及报告模块 |
 | contig 长度—端口联合评分、目标螺旋 packing | 第 24 节 | 离线诊断/待实现；无生产评分入口及已校准系数 |
+| 统一入口、原生输入和完整 CPU 特征预检 | 第 26 节 | `onboarding.py`、`cli.py`、`rfd3_prevalidate.py`、`rfd3_runtime_preflight.py` |
 
 部分算法属于独立工具或研究路径，是否参与某次任务应由编译配置和运行记录确认。
 本文的覆盖不表示所有模式均已通过 GPU 验证，也不表示每次生成都会同时运行所有算法。
@@ -2628,3 +2630,48 @@ partial 改成 completed；重生成 decision explanation 和哈希。报告优�
 key 集合完全一致且唯一，排序映射为连续整数。真实原子 padding_ordinal=0；
 新增槽依次从 1 编号。可移动 seed 的固定原子按 `(chain, residue, gt_atom_name)`
 绑定，并继续检查固定原子全集和坐标不变。
+
+## 26. 统一入口与预检的判定边界
+
+默认用户流程为 `init → run → report`，任务由一个 design YAML 表达。
+`run` 自动进行预检、冻结和执行；显式延迟预检时在 worker 中执行完整检查。
+`plan` 仅解释声明和编译计划，`plan --details` 展示详细信息，JSON 接口不变；
+不能将 plan 的 `assembly lowering: ready` 解读为 RFD3 特征或生成已通过。
+
+`init` 的任务推断是输入语义判定，不是结构预测：
+
+```text
+只提供 motif_selector                   → central-motif
+只提供完整 side_a 和 side_b             → supplied-interface
+两类混合、选择器缺失、与显式 task 矛盾  → 拒绝
+```
+
+只从 YAML 隐去与 schema 相同的默认配置；保留 design 数量和明确的刚体移动模式。
+同任务共享初始 pose 的既有规则不变，locked/mobile 决定后续是否允许各 design 的
+seed 刚体调整。普通生成区的 α／β 结构交给 RFD3，本次没有增加二级结构比例或
+螺旋布局控制，也没有接入第 24 节尚未校准的 pose 评分。
+
+预检报告 schema 3 的通过条件为：
+
+```text
+A = 原生结构构建与输入语义审计通过
+S = ensure_inference_sampler_matches_design_spec 接受被记录的 sampler 配置
+F = 同一结构经过原生后处理及完整 Atom14 推理变换，
+    必需输出存在且 feats、coord_atom_lvl_to_be_noised、noise、t 数值有限
+prevalidation_passed = A ∧ S ∧ F
+```
+
+检查按 A→S→F 顺序执行；前一阶段失败，后续未执行的阶段不能算通过。
+预检使用已构建结构，不重新抽样范围 contig；隔离随机状态，诊断不能改变随后任务的
+随机序列。它运行真实特征代码，不调用去噪模型。配置解析与推理引擎共享同一个
+transform resolver，固定预检 `diffusion_batch_size=1`。
+
+未提供运行配置时，配置来源标记为 `shipped_source_configuration`；提供已解析训练
+配置时标记 `provided_training_configuration`，记录变换内容和 SHA256。
+sampler 同样记录实际传入值或明确标记使用公开流程默认值。源码默认配置不能冒充
+已经读取某个 checkpoint 的真实配置。`checkpoint_compatibility_validated` 和
+`model_forward_validated` 均为 false。
+
+因此预检通过只证明上述构建与软件兼容性检查通过，不证明 GPU 内存、扩散成功率、
+无中心缠绕、单体 packing、序列可设计性或实验稳定性。这次是工程入口与检查覆盖的
+修复，没有新增能量公式、优化器或科学质量阈值。

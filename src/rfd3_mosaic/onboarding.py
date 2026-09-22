@@ -12,7 +12,11 @@ from rfd3_mosaic.installation import (
     bundled_resource_path,
     source_repository_root,
 )
-from rfd3_mosaic.schema import UserDesignSpec
+from rfd3_mosaic.schema import (
+    UserDesignPreferences,
+    UserDesignSpec,
+    UserSamplingSpec,
+)
 
 EXAMPLES = {
     "central-motif": Path("examples/rfd3_mosaic/simple_central_motif.yaml"),
@@ -59,7 +63,7 @@ def _write_yaml(
 def initialize_design(
     output: Path,
     *,
-    task: str,
+    task: str | None = None,
     input_path: Path,
     symmetry: str,
     name: str | None,
@@ -100,6 +104,53 @@ def initialize_design(
     source = input_path.expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Input structure does not exist: {source}")
+    if task not in {None, "central-motif", "supplied-interface"}:
+        raise ValueError(f"Unknown initialization task: {task!r}")
+    has_interface_selector = bool(side_a or side_b)
+    if motif_selector and has_interface_selector:
+        raise ValueError(
+            "Use either --motif-selector or both --side-a and --side-b; "
+            "mixing motif and supplied-interface selectors is ambiguous"
+        )
+    if task is None:
+        if motif_selector:
+            task = "central-motif"
+        elif has_interface_selector:
+            task = "supplied-interface"
+        else:
+            raise ValueError(
+                "Provide --motif-selector or both --side-a and --side-b "
+                "to define the geometry to preserve"
+            )
+    if task == "central-motif":
+        if has_interface_selector:
+            raise ValueError(
+                "--task central-motif conflicts with --side-a/--side-b; "
+                "use --motif-selector or omit --task for an interface"
+            )
+        if not motif_selector:
+            raise ValueError("central-motif requires --motif-selector")
+        interface_only_options = {
+            "--interface-scaffold": interface_scaffold != "adjacent-linker",
+            "--new-oligomer-interface": new_oligomer_interface,
+            "--sequence-conditioning": sequence_conditioning != "fixed",
+            "--redesign-motif-sidechains": redesign_motif_sidechains,
+            "--ligand-selector": bool(ligand_selectors),
+        }
+        ignored = [flag for flag, active in interface_only_options.items() if active]
+        if ignored:
+            raise ValueError(
+                "These initializer options require a supplied interface: "
+                + ", ".join(ignored)
+            )
+    else:
+        if motif_selector:
+            raise ValueError(
+                "--task supplied-interface conflicts with --motif-selector; "
+                "use --side-a and --side-b or omit --task for a central motif"
+            )
+        if not side_a or not side_b:
+            raise ValueError("supplied-interface requires both --side-a and --side-b")
     if timesteps < 2 or timesteps > 200:
         raise ValueError("timesteps must be between 2 and 200")
     if designs < 1 or designs > 10000:
@@ -117,9 +168,7 @@ def initialize_design(
     if any(value is not None for value in pose_radius_values) and not all(
         value is not None for value in pose_radius_values
     ):
-        raise ValueError(
-            "pose radius requires both minimum and maximum"
-        )
+        raise ValueError("pose radius requires both minimum and maximum")
     if pose_radius_minimum is None and (
         pose_axial_minimum != 0.0
         or pose_axial_maximum != 0.0
@@ -136,8 +185,7 @@ def initialize_design(
         "principal_axis_cone",
     }:
         raise ValueError(
-            "pose_orientation must be fixed, uniform_so3 or "
-            "principal_axis_cone"
+            "pose_orientation must be fixed, uniform_so3 or principal_axis_cone"
         )
 
     design_name = _safe_name(name or output.stem)
@@ -155,8 +203,6 @@ def initialize_design(
         },
     }
     if task == "central-motif":
-        if not motif_selector:
-            raise ValueError("central-motif requires --motif-selector")
         common.update(
             {
                 "task": "create_symmetric_interface",
@@ -178,8 +224,6 @@ def initialize_design(
             }
         )
     elif task == "supplied-interface":
-        if not side_a or not side_b:
-            raise ValueError("supplied-interface requires both --side-a and --side-b")
         if not symmetry.startswith("C") or not symmetry[1:].isdigit():
             raise ValueError(
                 "The short supplied-interface initializer supports cyclic Cn "
@@ -212,8 +256,7 @@ def initialize_design(
             ]
         else:
             raise ValueError(
-                "interface_scaffold must be adjacent-linker or "
-                "terminal-extensions"
+                "interface_scaffold must be adjacent-linker or terminal-extensions"
             )
         conditioning: dict[str, Any] = {}
         if sequence_conditioning != "fixed":
@@ -257,18 +300,11 @@ def initialize_design(
                 **({"conditioning": conditioning} if conditioning else {}),
             }
         )
-    else:
-        raise ValueError(f"Unknown initialization task: {task!r}")
-
     sampling: dict[str, Any] = {
         "timesteps": timesteps,
         "designs": designs,
         "seed": seed,
-        **(
-            sampling_overrides
-            if task == "supplied-interface"
-            else {}
-        ),
+        **(sampling_overrides if task == "supplied-interface" else {}),
     }
     if pose_radius_minimum is not None:
         orientation: dict[str, Any] = {"method": pose_orientation}
@@ -298,6 +334,18 @@ def initialize_design(
         }
     )
     UserDesignSpec.model_validate(common)
+    # Defaults stay in the schema. Keep the actual task size and rigid-motion
+    # choice visible without asking users to manage duplicate preset values.
+    preference_defaults = UserDesignPreferences().model_dump(mode="json")
+    common["preferences"] = {
+        key: value
+        for key, value in common["preferences"].items()
+        if key == "component_motion" or value != preference_defaults[key]
+    }
+    sampling_defaults = UserSamplingSpec()
+    for key in ("timesteps", "seed"):
+        if sampling[key] == getattr(sampling_defaults, key):
+            sampling.pop(key)
     return _write_yaml(output, common, overwrite=overwrite)
 
 

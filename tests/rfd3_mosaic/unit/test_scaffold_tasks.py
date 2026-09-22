@@ -297,8 +297,16 @@ def test_mobile_complete_task_builds_native_input_with_frozen_transport_plan(tmp
     assert len(plan["residue_transforms"]) == 44
     report = prevalidate_rfd3_input(outputs.input_path)
     assert report["status"] == "passed"
+    assert report["sampler_compatibility_validated"]
+    assert report["runtime_features_validated"]
+    assert report["runtime_feature_audit"]["tensor_shapes"][
+        "mosaic_scaffold_backbone_atom_indices"
+    ] == [44, 4]
+    assert report["runtime_feature_audit"]["tensor_shapes"][
+        "mosaic_transport_fixed_atom_indices"
+    ] == [len(plan["fixed_atoms"])]
     # Exercise the final feature aggregation binding against native-built
-    # atom identities as well; prevalidation alone runs the symmetry builder.
+    # atom identities separately as well as the complete preflight above.
     import torch
     from rfd3.inference.input_parsing import (
         DesignInputSpecification,

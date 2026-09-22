@@ -10,11 +10,38 @@ from rfd3_mosaic.experiment_worker import (
     _generated_cross_chain_topology_runtime,
     _merged_rfd3_input,
     _require_compiled_pose_feasibility,
+    _sampler_dispatch_overrides,
 )
 from rfd3_mosaic.sampling_plan import DesignSamplingAssignment
 
 
 class ExperimentWorkerMultiInputTestCase(unittest.TestCase):
+    def test_dispatch_preflight_preserves_control_mode_and_compiler_mobility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "input.json"
+            path.write_text(json.dumps({"design": {"extra": {
+                "motif_constraint_orbits": [{
+                    "mobility_mode": "orbit_rigid",
+                    "mobility_proposal": "denoiser_fit",
+                }],
+            }}}))
+            sampling = {
+                "execution_backend": "local_neighbourhood",
+                "sampler": {
+                    "kind": "symmetry",
+                    "symmetry_state_mode": "legacy_asu",
+                    "symmetry_noise_mode": "independent",
+                    "preserve_fixed_motif_during_symmetry": False,
+                },
+            }
+            result = _sampler_dispatch_overrides(sampling, path)
+        self.assertEqual(result["symmetry_state_mode"], "legacy_asu")
+        self.assertEqual(result["symmetry_noise_mode"], "independent")
+        self.assertEqual(result["symmetry_execution_backend"], "local_neighbourhood")
+        self.assertFalse(result["preserve_fixed_motif_during_symmetry"])
+        self.assertTrue(result["enable_orbit_rigid_motif_mobility"])
+        self.assertEqual(result["motif_mobility_proposal_source"], "denoiser")
+
     def _write_capture_input(
         self,
         root: Path,

@@ -1,228 +1,116 @@
 # RFD3-Mosaic quick start
 
-This guide covers the supported public workflow. It does not assume access to
-any particular institution, server, scheduler or GPU model.
+The ordinary workflow is **`init → run → report`**. One task is one editable
+YAML and one starting pose; `sampling.designs` controls how many diffusion
+trajectories start from that pose. RFD3 generates the new backbone and its
+secondary structure. A secondary-structure blueprint is not required.
 
-For a field-by-field required/optional matrix, supplied-interface and
-multi-component examples, all public native RFD3 conditioning channels,
-batch semantics and common mistakes, continue with the
-[complete user workflow guide](WORKFLOW_GUIDE.md).
+This guide assumes the [installation and checkpoint setup](INSTALLATION.md)
+are complete. It does not depend on a particular institution or GPU model.
 
-## 1. Check the installation
+## Check the installation once
 
 ```bash
 rfd3-mosaic doctor --profile local
-rfd3-mosaic capabilities
 ```
 
-`doctor` checks the Python environment, RFD3 imports, packaged resources,
-selected executor and checkpoint without running inference.
+`doctor` checks the Python environment, RFD3 imports, execution profile and
+checkpoint without running inference. `local` means direct execution on the
+current compatible machine or allocated compute node.
 
-## 2. Choose a design task
+## 1. Create a task
 
-The user writes **one YAML file per scientific design request**, not one YAML
-per generated structure. `sampling.designs: N` means that one request produces
-up to N independently named outputs in the run directory.
-
-### Preserve a supplied interface
-
-Use this workflow when the input already contains the interface geometry that
-must remain unchanged:
+For a supplied interface whose internal geometry must remain fixed:
 
 ```bash
 rfd3-mosaic init my-design.yaml \
-  --task supplied-interface \
   --input interface-seed.pdb \
   --side-a A20-35 \
   --side-b B40-55 \
-  --symmetry C3
-```
-
-Mosaic treats the complete supplied interface as one geometric object. It
-does not independently rearrange the two sides of that interface.
-Use `--component-motion free` when that complete object may translate and
-rotate relative to the symmetry axis while its internal interface remains
-exact.
-
-There are two distinct ways to scaffold a supplied interface:
-
-- `adjacent-linker` creates a declared covalent polymer connection between
-  symmetry-neighbour motifs;
-- `terminal-extensions` grows each non-covalent partner independently and
-  never joins the supplied interface sides with a peptide bond.
-
-For supplied non-covalent partners that should also form an additional
-generated interface, request that second relation explicitly:
-
-```bash
-rfd3-mosaic init supplied-complex.yaml \
-  --task supplied-interface \
-  --input supplied-complex.cif \
-  --side-a A1-80 \
-  --side-b B1-60 \
-  --symmetry C4 \
-  --interface-scaffold terminal-extensions \
-  --new-oligomer-interface \
-  --sequence-conditioning masked \
-  --redesign-motif-sidechains \
-  --component-motion guided \
-  --pose-radius-minimum 20 \
-  --pose-radius-maximum 32 \
-  --pose-axial-minimum -4 \
-  --pose-axial-maximum 4 \
-  --pose-orientation uniform_so3 \
-  --pose-seed 4200 \
+  --symmetry C3 \
   --designs 50
 ```
 
-The supplied interface and ligand remain one rigid seed. The explicit
-`--new-oligomer-interface` switch asks only the generated residues to form an
-additional symmetry-related interface. Omitting it preserves the supplied
-interface without inventing a second one.
+Replace the input path and residue selectors with your own seed. Review the
+generation lengths in `my-design.yaml`: they specify how many residues RFD3
+will generate between the declared endpoints. Both interface sides form one
+joint-rigid seed. The default adjacent-copy connection joins opposite sides
+of neighbouring seeds, preserving the supplied interface itself.
 
-The declared pose distribution is sampled once for this task. All 50 designs
-share that input pose and use different diffusion seeds. Runtime motion remains
-controlled by `--component-motion`: `guided` may change each design's final
-pose while keeping seed internal geometry fixed; `locked` preserves the chosen
-pose throughout generation. Use `prepare-poses` to create separate tasks with
-different frozen starting poses; see [task pose rules](TASK_POSES.zh-CN.md).
+`init` infers the supplied-interface task from both side selectors. For a
+single motif that needs a new interface, use `--motif-selector A12-20` instead
+of the two side selectors. An explicit `--task` remains optional; conflicting
+selector forms are rejected.
 
-The short initializer covers the common two-sided declaration. It does not
-limit Mosaic to dimers: general YAML may declare any number of rigid or
-joint-rigid `components`, multiple geometric `interfaces`, and explicit
-generated-chain `connections`. See the complete workflow guide for a
-three-component interface-seed example.
+The generated YAML keeps the scientific declaration, the explicit motion
+policy and changed high-level preferences. Omitted preferences use their
+normal defaults. It is the file to edit for subsequent runs.
 
-### Create a new interface around a motif
+The short supplied-interface initializer supports Cn. Dn and multiple seed
+connection patterns require an explicit assembly graph; see the
+[user workflow guide](WORKFLOW_GUIDE.md). Mosaic does not infer an assembly
+architecture from the structure alone.
 
-Use this workflow when the input provides a motif but the surrounding
-interface should be generated:
-
-```bash
-rfd3-mosaic init my-design.yaml \
-  --task central-motif \
-  --input motif.pdb \
-  --motif-selector A12-20 \
-  --symmetry C3
-```
-
-The motif remains fixed internally. Depending on the selected component
-motion policy, its assembly pose can remain locked or undergo bounded
-translation and rotation while generated regions are guided toward packing.
-
-Use `--component-motion guided` for constrained packing-aware translation and
-rotation, or `--component-motion free` for bounded SE(3) motion. The default
-is `locked`, which keeps the complete supplied arrangement fixed while
-guidance acts only on generated atoms.
-
-To browse rather than initialize from arguments:
-
-```bash
-rfd3-mosaic examples
-rfd3-mosaic examples --copy central-motif --output my-design.yaml
-```
-
-The copied YAML contains a resolved input path and a local run directory, so
-it remains valid outside a source checkout.
-
-## 3. Edit the user configuration
-
-`init` already writes safe defaults. At minimum, check:
-
-- `name`;
-- input structure path;
-- chain/residue selectors;
-- target symmetry;
-- generation lengths;
-- output directory;
-- whether supplied geometry must be preserved or a new interface created.
-
-Optional native RFdiffusion3 conditioning is placed under `conditioning`:
-
-```yaml
-conditioning:
-  sequence:
-    - {selector: A20-35, mode: masked}  # or glycine
-  ligands:
-    - {selector: L1, coupling_group: supplied_interface}
-  buried:
-    - {selector: L1, atoms: ALL}
-  hotspots:
-    - {selector: A42-45, atoms: TIP}
-  hbond_acceptors:
-    - {selector: L1, atoms: O1,O2}
-  redesign_motif_sidechains: false
-  origin_strategy: hotspots
-
-sampling:
-  is_non_loopy: true
-  plddt_enhanced: true
-```
-
-`buried`, `partially_buried`, `exposed`, `hotspots`, `hbond_acceptors` and
-`hbond_donors` use RFdiffusion3's documented atom-selection vocabulary.
-Mosaic remaps the selected source fragments after symmetry compilation and
-RFD3 validates atom names during `validate`. These fields are optional; their
-omission retains the standard RFD3 defaults.
-
-Ordinary users should not need to select group-transform identifiers or tune
-individual low-level packing losses. Expert declarations remain available for
-explicit component, port, connection and mobility control.
-
-If the structure's interface selectors are not known, inspect it first:
-
-```bash
-rfd3-mosaic inspect assembly.cif --output-dir inspection
-```
-
-## 4. Plan and validate
-
-```bash
-rfd3-mosaic plan my-design.yaml
-rfd3-mosaic validate my-design.yaml
-```
-
-`plan` explains the resolved components, symmetry, interfaces, constraints
-and execution mode. `validate` compiles the design and performs finite runtime
-feature prevalidation before GPU time is used.
-
-## 5. Run
-
-Run directly on any compatible machine or allocated compute node:
+## 2. Run
 
 ```bash
 rfd3-mosaic run my-design.yaml
 ```
 
-The `local` profile name means direct synchronous execution; it does not mean
-that the machine must be a personal computer. For Slurm, copy and edit the
-generic profile described in [INSTALLATION.md](INSTALLATION.md), then pass its
-path through `--profile`.
+`run` validates the declaration and freezes its compiled input before
+inference. Standalone `plan my-design.yaml` and `validate my-design.yaml` are
+available for inspection and diagnosis; they are optional steps.
+`plan` gives a short task summary; `plan my-design.yaml --details` adds
+compiler and guidance details. The CPU `validate` checks include the native
+sampler guard and feature pipeline, without loading model weights or running
+the model.
 
-List the profiles visible to the installed copy or create a scheduler file:
+For a Slurm site, create and edit a profile once, then pass it to `run`:
 
 ```bash
-rfd3-mosaic profiles
 rfd3-mosaic profiles --copy-slurm my-cluster.yaml
-rfd3-mosaic doctor --profile my-cluster.yaml
+rfd3-mosaic run my-design.yaml --profile my-cluster.yaml
 ```
 
-## 6. Inspect the result
+Follow the [profile setup instructions](INSTALLATION.md) to set the account,
+partition, environment and checkpoint before submitting.
+
+## 3. Read the report and structures
 
 ```bash
-rfd3-mosaic status RUN_ID_OR_DIRECTORY
 rfd3-mosaic report RUN_ID_OR_DIRECTORY
 ```
 
-A completed inference and its structural checks are reported separately.
-`GENERATED` means that a coordinate output exists; contract checks report
-whether declared geometry, symmetry and continuity invariants were met; and
-advisory measurements support subsequent ranking without deleting outputs or
-claiming experimental success.
+Use the run ID or directory printed by `run`. `status RUN_ID_OR_DIRECTORY`
+shows progress. Completed structures appear incrementally as plain CIFs in
+`generated_structures_cif/`; the finished run also provides a structure-only
+ZIP. The report separates generated outputs, geometry-contract checks and
+advisory measurements. A generated structure is not yet proof of folding or
+experimental success; flagged outputs remain available for inspection.
 
-## Supported scope
+## Choose motion and diversity when needed
 
-The current public release target is Cn/Dn fixed-motif, supplied-interface,
-generated-interface packing and bounded-mobility design. Polyhedral and more
-general automatic cage-solving paths are research features and should be
-evaluated explicitly rather than assumed stable.
+- `--component-motion locked` is the default: the chosen seed pose stays fixed.
+- `--component-motion guided` allows bounded, guided motion of the whole seed.
+- `--component-motion free` allows bounded SE(3) motion of the whole seed.
+
+These choices preserve the complete seed's internal geometry. All 50 designs
+in the example share their initial pose; mobile designs may end in different
+poses. To explore different starting poses, declare a pose distribution and
+use `prepare-poses` to create separate tasks. Renaming a task does not change
+its pose. `replicates_per_pose` is deprecated; sharing is automatic. See
+[task pose rules](TASK_POSES.zh-CN.md).
+
+## Further options
+
+Use `rfd3-mosaic --help` and `rfd3-mosaic init --help` for common commands and
+options; `--help-all` shows the complete reference. Advanced commands remain
+available.
+
+The [user workflow guide](WORKFLOW_GUIDE.md) covers generation lengths,
+terminal extensions, multiple components, sequence/ligand conditioning and
+motion controls. The [CLI reference](USER_CLI.md) retains the full advanced
+workflow. For an explicitly supplied complete backbone, experimental
+[`prepare-scaffold`](COMPLETE_SCAFFOLD.zh-CN.md) provides reference-conditioned
+partial diffusion with locked or coupled mobile seeds; this is an optional
+workflow with its own supported scope.

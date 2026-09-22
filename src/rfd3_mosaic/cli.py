@@ -19,6 +19,11 @@ from rfd3_mosaic.capabilities import (
     capability_manifest,
     required_capabilities_for_design,
 )
+from rfd3_mosaic.cli_help import (
+    WorkflowArgumentParser,
+    primary_commands,
+    primary_options,
+)
 from rfd3_mosaic.constraint_plan import compile_constraint_plan
 from rfd3_mosaic.design_compiler import (
     bind_constraint_plan,
@@ -105,8 +110,16 @@ def _add_quick_runtime_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rfd3-mosaic")
-    commands = parser.add_subparsers(dest="command", required=True)
+    parser = WorkflowArgumentParser(
+        prog="rfd3-mosaic",
+        description="One task file: init -> run -> report. Each task shares one initial pose.",
+        epilog=(
+            "run validates and freezes the task automatically. plan/validate are optional "
+            "inspections. Use --help-all for pose preparation, reference scaffolds, "
+            "assembly search and compatibility commands."
+        ),
+    )
+    commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     capabilities = commands.add_parser(
         "capabilities",
@@ -133,12 +146,17 @@ def _parser() -> argparse.ArgumentParser:
     initialize = commands.add_parser(
         "init",
         help="Create a short user design YAML from a structure and selectors.",
+        description=(
+            "Declare a motif, or both sides of an interface. The task type is inferred "
+            "from these selectors; lengths and connectivity remain explicit."
+        ),
+        epilog="Then run: rfd3-mosaic run DESIGN.yaml. Advanced options: init --help-all.",
     )
     initialize.add_argument("output", type=Path, help="YAML file to create.")
     initialize.add_argument(
         "--task",
-        required=True,
         choices=("central-motif", "supplied-interface"),
+        help="Optional explicit task; otherwise inferred from the supplied selectors.",
     )
     initialize.add_argument("--input", required=True, type=Path)
     initialize.add_argument("--symmetry", default="C3")
@@ -256,6 +274,11 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     initialize.add_argument("--force", action="store_true")
+    primary_options(initialize, {
+        "input", "symmetry", "profile", "motif_selector", "side_a", "side_b",
+        "interface_scaffold", "n_length", "c_length", "linker_minimum",
+        "linker_maximum", "designs", "component_motion", "force",
+    })
 
     prepare = commands.add_parser(
         "prepare-poses",
@@ -437,6 +460,10 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("config", type=Path)
     plan.add_argument("--profile")
     plan.add_argument(
+        "--details", action="store_true",
+        help="Include compiler constraints, resolved guidance and capability details.",
+    )
+    plan.add_argument(
         "--format",
         choices=("text", "json"),
         default="text",
@@ -586,6 +613,7 @@ def _parser() -> argparse.ArgumentParser:
             action="store_true",
             help="Render but do not call sbatch.",
         )
+        primary_options(submit, {"profile", "run_root", "campaign", "dry_run"})
 
     status = commands.add_parser(
         "status",
@@ -718,6 +746,10 @@ def _parser() -> argparse.ArgumentParser:
     interface.add_argument("--length", type=int)
     interface.add_argument("--campaign", default="interface-seed")
     _add_quick_runtime_arguments(interface)
+    primary_commands(commands, {
+        "init", "run", "status", "report", "plan", "validate", "doctor",
+        "examples", "profiles",
+    })
     return parser
 
 
@@ -862,6 +894,8 @@ class _PublicGeometryPreflight:
     protein_chain_count: int
     nonprotein_chain_count: int
     runtime_features_validated: bool
+    sampler_compatibility_validated: bool
+    runtime_configuration_source: str
 
 
 def _preflight_public_design_geometry(
@@ -914,7 +948,13 @@ def _preflight_public_design_geometry(
             chain_count=int(report["chain_count"]),
             protein_chain_count=int(report.get("protein_chain_count", 0)),
             nonprotein_chain_count=int(report.get("nonprotein_chain_count", 0)),
-            runtime_features_validated=True,
+            runtime_features_validated=bool(report["runtime_features_validated"]),
+            sampler_compatibility_validated=bool(
+                report["sampler_compatibility_validated"]
+            ),
+            runtime_configuration_source=report["runtime_configuration"][
+                "configuration_source"
+            ],
         )
 
 
@@ -1468,10 +1508,71 @@ def _public_rigid_component_plan(
     return result
 
 
+def _print_public_design_summary(
+    payload: dict, design: UserDesignSpec, *, profile: str | None = None
+) -> None:
+    """Describe the scientific task without requiring users to read compiler internals."""
+    print("RFD3-Mosaic public design plan")
+    print(f"name:       {design.name}")
+    print(f"input:      {design.input}")
+    print(f"symmetry:   {payload['symmetry']}")
+    task = {
+        "preserve_supplied_geometry": "preserve supplied interface geometry",
+        "create_symmetric_interface": "create a symmetric interface around a motif",
+    }.get(payload["task"], "explicit user constraints and connections")
+    print(f"task:       {task}")
+    print(f"designs:    {design.sampling.designs} (one shared initial pose)")
+    if "complete_scaffold" in payload:
+        print(f"initial pose: declared reference scaffold ({design.sampling.scaffold_artifact})")
+    elif design.sampling.initial_pose is not None or design.sampling.initial_poses:
+        print("initial pose: declared placement, realized once and shared by all designs")
+    elif payload["automatic_initializations"]:
+        print("initial pose: planned from the supplied geometry, shared by all designs")
+    else:
+        print("initial pose: supplied coordinates, shared by all designs")
+    for component in payload["rigid_components"]:
+        pose = component["pose"]
+        mobility = (
+            "locked" if pose["mode"] == "fixed"
+            else "bounded movement of the whole component; final pose may differ per design"
+        )
+        print(
+            f"seed {component['component_id']}: "
+            f"{', '.join(component['selectors'])}; "
+            f"{component['symmetry_copy_count']} copies; {mobility}"
+        )
+    print("generated connections:")
+    for region in design.generation:
+        length = region.length
+        length_text = str(length) if isinstance(length, int) else f"{length.minimum}-{length.maximum}"
+        if region.kind == "between":
+            print(
+                f"  {region.from_selector} -> {region.to_selector}; "
+                f"copy relation={region.orbit_offset}; {length_text} residues"
+            )
+        else:
+            print(f"  {region.anchor} {region.terminus} terminus; {length_text} residues")
+    for connection in payload["connections"]:
+        print("  " + json.dumps(connection, sort_keys=True, separators=(",", ":")))
+    if not design.generation and not design.connections:
+        print("  none declared")
+    if design.interfaces:
+        print(f"declared interfaces: {len(design.interfaces)} (see --details for relations)")
+    print(f"execution profile: {profile or design.resources.profile}")
+    print(f"output:     {design.output.root if design.output else 'not configured; supply --run-root'}")
+    print(f"assembly lowering: {payload['assembly_lowering']['status']}")
+    if payload["assembly_lowering"]["status"] == "blocked":
+        print(f"  reason: {payload['assembly_lowering']['reason']}")
+    print("run performs preflight and freezes the task before inference; plan does not run preflight.")
+    print("details: plan --details or --format json; decision rules: docs/rfd3_mosaic/DECISION_RULES.zh-CN.md")
+
+
 def _print_public_design_plan(
     design: UserDesignSpec,
     *,
     output_format: str,
+    details: bool = False,
+    profile: str | None = None,
 ) -> None:
     from rfd3_mosaic.decision_explanation import DECISION_POLICY
 
@@ -1598,6 +1699,9 @@ def _print_public_design_plan(
         }
     if output_format == "json":
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if not details:
+        _print_public_design_summary(payload, design, profile=profile)
         return
     print("RFD3-Mosaic public design plan")
     print("decision rules: docs/rfd3_mosaic/DECISION_RULES.zh-CN.md")
@@ -1960,7 +2064,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 overwrite=arguments.force,
             )
             # Validate the generated public declaration immediately. Full
-            # geometry preflight remains the job of `validate`.
+            # geometry preflight runs automatically in `run` or explicitly in `validate`.
             load_user_design(path)
         except (
             FileExistsError,
@@ -1972,9 +2076,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             parser.error(str(error))
         print("RFD3-Mosaic design created")
         print(f"config:   {path}")
-        print(f"next:     rfd3-mosaic plan {path}")
-        print(f"validate: rfd3-mosaic validate {path}")
-        print(f"run:      rfd3-mosaic run {path}")
+        print(f"next:     rfd3-mosaic run {path}")
+        print("run automatically validates, freezes the task and uses the configured executor.")
+        print(f"optional plan:     rfd3-mosaic plan {path}")
+        print(f"optional validate: rfd3-mosaic validate {path}")
         return
     if arguments.command == "examples":
         try:
@@ -2004,7 +2109,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             print(json.dumps(payload, indent=2, sort_keys=True))
         elif arguments.copy is not None:
             print(f"Copied {arguments.copy} example to {path}")
-            print(f"next: rfd3-mosaic plan {path}")
+            print(f"next: rfd3-mosaic run {path}")
         else:
             print("RFD3-Mosaic examples")
             for item in payload:
@@ -2560,13 +2665,20 @@ def main(argv: Sequence[str] | None = None) -> None:
                 )
                 + ")"
             )
-            print("RFD3 input:  PASSED (runtime features are finite)")
+            print(
+                "RFD3 input:  PASSED "
+                "(native sampler compatibility and complete CPU feature pipeline)"
+            )
+            print(f"configuration: {preflight.runtime_configuration_source}")
+            print("checkpoint/model forward: not validated")
             return
         if arguments.command == "plan":
             try:
                 _print_public_design_plan(
                     public_design,
                     output_format=arguments.format,
+                    details=arguments.details,
+                    profile=arguments.profile,
                 )
             except (TypeError, ValueError) as error:
                 parser.error(str(error))
