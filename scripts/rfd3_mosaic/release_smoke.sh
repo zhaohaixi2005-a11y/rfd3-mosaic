@@ -13,8 +13,16 @@ if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
     exit 1
 fi
 
-WHEEL=$(find "$REPOSITORY/dist" -maxdepth 1 -name 'rfd3_mosaic-*.whl' \
-    -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d ' ' -f 2-)
+WHEEL=$("$PYTHON_BIN" - "$REPOSITORY/dist" <<'PY'
+from pathlib import Path
+import sys
+
+wheels = (path for path in Path(sys.argv[1]).glob("rfd3_mosaic-*.whl") if path.is_file())
+newest = max(wheels, key=lambda path: (path.stat().st_mtime_ns, path.name), default=None)
+if newest is not None:
+    print(newest)
+PY
+)
 if [[ -z "$WHEEL" ]]; then
     echo "No RFD3-Mosaic wheel found below $REPOSITORY/dist" >&2
     exit 1

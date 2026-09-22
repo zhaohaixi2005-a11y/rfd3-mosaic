@@ -90,17 +90,17 @@ flowchart LR
 
 ### 2026-09-21 GPU 启动故障定位
 
-`d95bf6c` 的 LRZ locked 首例 `5799813` 和 LMU mobile 首例
-`16613664_0` 均在 `apply_scaffold_input` 的 compiler contract SHA256
+`d95bf6c` 在两个执行环境中的 locked 和 mobile 首例
+均在 `apply_scaffold_input` 的 compiler contract SHA256
 校验退出，尚未执行扩散。CPU 跨平台逐字段比对发现仅 C3 旋转矩阵四个
-浮点元素有约 `5.6e-17` 差异。修复在哈希和矩阵身份检查中统一 12 位小数
+浮点元素有约 `5.6e-17` 差异。`faa2912` 和 `e38ac32` 在哈希和矩阵身份检查中统一 12 位小数
 表示，保留文件哈希及其余约束；增加可移植性和真实变更拒绝测试。
 调度成功、首例执行成功与科学指标达标必须分别报告。
 
-后续实际首例 `5800359` 已越过编译校验，但在 `PadTokensWithVirtualAtoms`
+后续实际 GPU 首例已越过编译校验，但在 `PadTokensWithVirtualAtoms`
 因生成区仅含 N/CA/C/O、缺少 CB 退出。完整 CPU 特征链路进一步发现：
 虚拟原子继承旧 orbit slot 造成重复，以及 dense 侧链改名后 transport 误用
-模型槽名称查找真实固定原子。修复包含：
+模型槽名称查找真实固定原子。`1ae0898` 修复包含：
 
 - 仅对推理时可填充、序列未固定且严格 N/CA/C/O 顺序的主链 token，使用 CA
   初始化虚拟侧链槽；不是重建物理 CB，已有原子坐标保持不变。
@@ -115,8 +115,8 @@ flowchart LR
 当时 `prevalidate_rfd3_input` 的 atom-array 预检本身不能替代全特征流程验证；
 2026-09-22 的 schema 3 已将完整特征流程接入这个入口，见上文。
 
-LMU `16625599` 进一步发现推理入口仍保留 locked-only 的旧 guard，导致已绑定
-transport 的 mobile scaffold 在采样前被拒绝。入口现允许带 v2 backbone contract、
+`1ae0898` 的 mobile 首例进一步发现推理入口仍保留 locked-only 的旧 guard，导致已绑定
+transport 的 mobile scaffold 在采样前被拒绝。`7d46735` 入口修复允许带 v2 backbone contract、
 匹配 base-contract fingerprint、正确 transport 方法/版本、固定原子与完整逐残基
 运输表的 mobile 输入；缺失/错配 transport 仍拒绝。全特征回归同时调用实际
 `ensure_inference_sampler_matches_design_spec`，覆盖入口、构建和特征处理三层。
