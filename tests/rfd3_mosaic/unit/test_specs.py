@@ -22,6 +22,12 @@ from rfd3_mosaic.schema import (
 
 
 class SpecsTestCase(unittest.TestCase):
+    def test_nonfinite_physical_bounds_are_rejected(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    MotionBounds(max_translation=value)
+
     def test_interface_mobility_names_are_compatibility_aliases(self) -> None:
         self.assertIs(InterfaceMobilitySpec, OrbitMobilitySpec)
         self.assertIs(InterfaceMobilityMode, OrbitMobilityMode)

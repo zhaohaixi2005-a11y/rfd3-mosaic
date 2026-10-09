@@ -22,6 +22,19 @@ def get_clash_metrics(
     ligand_clash_threshold=1.5,
     chainbreak_threshold=0.75,
 ):
+    """Return the native coarse geometry metrics with legacy-compatible keys.
+
+    ``max_ca_deviation`` measures adjacent CA spacing error from 3.8 A, not
+    motif or reference RMSD. Expected physical-chain boundaries are excluded.
+
+    The interresidue clash cutoff defaults to 1.5 A. Intra-residue and
+    adjacent-residue pairs are excluded only within the same physical chain.
+    ``...clashes_w_backbone`` historically selects N/CA/C, excluding O;
+    ``...clashes_w_sidechain`` selects all protein atoms, including O, rather
+    than sidechain atoms alone. Each counts upper-triangle row atoms with at
+    least one close partner, not all pairs or a MolProbity clashscore. These
+    legacy keys and atom subsets are retained for result compatibility.
+    """
     # HACK: For now, ligands are treated as any atomized residues
     is_ligand = np.logical_and(
         atom_array.is_ligand, ~atom_array.is_motif_atom_unindexed
@@ -50,9 +63,13 @@ def get_clash_metrics(
         xyz = protein_array.coord
         dists = np.linalg.norm(xyz[:, None] - xyz[None], axis=-1)  # N_atoms x N_atoms
 
-        # Block out intra-residue distances
+        # Exclude local covalent neighbours only within the same physical
+        # chain. Residue numbers may restart independently in every copy.
         mask = np.triu(np.ones_like(dists), k=1).astype(bool)
-        block_mask = np.abs(resid[:, None] - resid[None, :]) <= 1
+        same_chain = (
+            protein_array.chain_iid[:, None] == protein_array.chain_iid[None, :]
+        )
+        block_mask = same_chain & (np.abs(resid[:, None] - resid[None, :]) <= 1)
         mask[block_mask] = False
         dists[~mask] = 999
 

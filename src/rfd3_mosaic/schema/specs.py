@@ -28,6 +28,9 @@ class StrictModel(BaseModel):
         extra="forbid",
         frozen=True,
         validate_assignment=True,
+        # NaN can bypass comparison validators, and unbounded infinities
+        # would otherwise leak into symmetry frames, pose ranges or losses.
+        allow_inf_nan=False,
     )
 
 
