@@ -23,22 +23,30 @@ def backbone():
 
 
 def test_backbone_only_inference_pads_virtual_slots_without_moving_atoms():
-    atoms=backbone(); before=atoms.coord.copy()
-    result=PadTokensWithVirtualAtoms(14,'CB','dense').forward({'atom_array':atoms,'is_inference':True})['atom_array']
-    np.testing.assert_array_equal(result.coord[:4],before)
-    np.testing.assert_array_equal(result.coord[4:],np.repeat(before[1:2],10,axis=0))
-    assert list(result.atom_name[:5])==['N','CA','C','O','CB']
+    atoms = backbone()
+    before = atoms.coord.copy()
+    result = PadTokensWithVirtualAtoms(14, "CB", "dense").forward(
+        {"atom_array": atoms, "is_inference": True}
+    )["atom_array"]
+    np.testing.assert_array_equal(result.coord[:4], before)
+    np.testing.assert_array_equal(result.coord[4:], np.repeat(before[1:2], 10, axis=0))
+    assert list(result.atom_name[:5]) == ["N", "CA", "C", "O", "CB"]
     assert not result.is_motif_atom[4:].any()
-    assert len(result)==14
+    assert len(result) == 14
 
 
 def test_missing_backbone_is_not_silently_repaired():
-    atoms=backbone()[:3]
+    atoms = backbone()[:3]
     with pytest.raises(AssertionError):
-        PadTokensWithVirtualAtoms(14,'CB','dense').forward({'atom_array':atoms,'is_inference':True})
+        PadTokensWithVirtualAtoms(14, "CB", "dense").forward(
+            {"atom_array": atoms, "is_inference": True}
+        )
 
 
 def test_sequence_fixed_backbone_is_not_padded():
-    atoms=backbone();atoms.is_motif_atom_with_fixed_seq[:]=True
-    result=PadTokensWithVirtualAtoms(14,'CB','dense').forward({'atom_array':atoms,'is_inference':True})['atom_array']
+    atoms = backbone()
+    atoms.is_motif_atom_with_fixed_seq[:] = True
+    result = PadTokensWithVirtualAtoms(14, "CB", "dense").forward(
+        {"atom_array": atoms, "is_inference": True}
+    )["atom_array"]
     assert len(result)==4

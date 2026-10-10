@@ -1,7 +1,6 @@
 import importlib.util
-from pathlib import Path
 import unittest
-
+from pathlib import Path
 
 path = Path(__file__).resolve().parents[3] / "scripts/rfd3_mosaic/replay_benchmark.py"
 spec = importlib.util.spec_from_file_location("benchmark_replay", path)

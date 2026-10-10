@@ -8,11 +8,14 @@ copies never receive independent rigid motions.
 
 from __future__ import annotations
 
+import hashlib
 import math
+from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import torch
+from rfd3.inference.symmetry.atom_array import FIXED_TRANSFORM_ID
 from rfd3.inference.symmetry.constraint_orbit import (
     ConstraintOrbitLayout,
 )
@@ -34,6 +37,7 @@ from rfd3.inference.symmetry.scaffold_guidance import (
     propose_bounded_se3_step,
     scaffold_orbit_energy,
 )
+from rfd3.inference.symmetry.symmetry_utils import normalize_symmetry_transforms
 
 
 def mobility_window_weight(
@@ -44,6 +48,8 @@ def mobility_window_weight(
 ) -> float:
     """Smoothly ramp motion in/out and freeze the final denoising steps."""
 
+    if not math.isfinite(progress):
+        raise ValueError("mobility progress must be finite")
     if not 0.0 <= start_fraction < end_fraction <= 1.0:
         raise ValueError(
             "mobility fractions must satisfy " "0 <= start_fraction < end_fraction <= 1"
@@ -83,6 +89,8 @@ def rigid_mobility_phase(
     in every phase.
     """
 
+    if not math.isfinite(progress):
+        raise ValueError("mobility progress must be finite")
     if not 0.0 <= start_fraction < end_fraction <= 1.0:
         raise ValueError(
             "mobility fractions must satisfy 0 <= start_fraction < " "end_fraction <= 1"
@@ -208,7 +216,16 @@ def _axis_angle(rotation):
         -1.0,
         1.0,
     )
-    angle = torch.acos(cosine)
+    # acos(trace) invents ~0.028 degree motion for some float32 R @ R.T
+    # matrices. The antisymmetric part remains zero for that no-op.
+    antisymmetric = torch.stack(
+        (
+            rotation[2, 1] - rotation[1, 2],
+            rotation[0, 2] - rotation[2, 0],
+            rotation[1, 0] - rotation[0, 1],
+        )
+    )
+    angle = torch.atan2(0.5 * torch.linalg.vector_norm(antisymmetric), cosine)
     angle_value = float(angle.item())
     if angle_value < 1e-7:
         return torch.tensor(
@@ -342,10 +359,13 @@ class OrbitRigidMotifController:
     ):
         if not 0.0 < response <= 1.0:
             raise ValueError("motif mobility response must be in (0, 1]")
-        if per_step_translation <= 0.0:
-            raise ValueError("per-step translation bound must be positive")
-        if per_step_rotation_degrees <= 0.0:
-            raise ValueError("per-step rotation bound must be positive")
+        if not math.isfinite(per_step_translation) or per_step_translation <= 0.0:
+            raise ValueError("per-step translation bound must be finite and positive")
+        if (
+            not math.isfinite(per_step_rotation_degrees)
+            or per_step_rotation_degrees <= 0.0
+        ):
+            raise ValueError("per-step rotation bound must be finite and positive")
         mobility_window_weight(
             0.5,
             start_fraction=start_fraction,
@@ -434,6 +454,8 @@ class OrbitRigidMotifController:
         cls,
         f: dict[str, Any],
         fixed_target: torch.Tensor,
+        *,
+        normalized_symmetry_transforms=None,
         **kwargs,
     ) -> "OrbitRigidMotifController | None":
         layout = ConstraintOrbitLayout.from_features(
@@ -443,21 +465,22 @@ class OrbitRigidMotifController:
         )
         if layout is None or not layout.mobile_orbits:
             return None
-        sym_transforms = {
-            int(transform_id): (
-                torch.as_tensor(
-                    transform[0],
-                    dtype=fixed_target.dtype,
-                    device=fixed_target.device,
-                ),
-                torch.as_tensor(
-                    transform[1],
-                    dtype=fixed_target.dtype,
-                    device=fixed_target.device,
-                ),
-            )
-            for transform_id, transform in f["sym_transform"].items()
-        }
+        sym_transforms = normalize_symmetry_transforms(
+            f["sym_transform"]
+            if normalized_symmetry_transforms is None
+            else normalized_symmetry_transforms,
+            like=fixed_target,
+            already_normalized=normalized_symmetry_transforms is not None,
+        )
+        if normalized_symmetry_transforms is not None:
+            # The supplied registry is the existing exact-projector result,
+            # not an independently fitted or re-enumerated group action.
+            raw_ids = [int(key) for key in f["sym_transform"] if int(key) != FIXED_TRANSFORM_ID]
+            expected = set(raw_ids)
+            if len(expected) != len(raw_ids):
+                raise ValueError("Duplicate runtime symmetry transform IDs")
+            if set(sym_transforms) != expected:
+                raise ValueError("Normalized mobility frames do not match runtime transform IDs")
 
         motifs = []
         default_schedule = (
@@ -703,6 +726,9 @@ class OrbitRigidMotifController:
         window = max(windows, default=0.0)
         if window > 0.0:
             self.active_window_calls += 1
+            # Fit every orbit before publishing any pose. A later fitting
+            # error must not leave an earlier orbit tentatively committed.
+            pending_states = []
             for motif, motif_window, phase in zip(self.motifs, windows, phases):
                 if motif_window <= 0.0:
                     continue
@@ -731,6 +757,14 @@ class OrbitRigidMotifController:
                 updated_translations = []
                 for batch_index in range(raw_coordinates.shape[0]):
                     current_rotation = motif.state.rotation[batch_index]
+                    current_translation = motif.state.translation[batch_index]
+                    if (
+                        float(current_translation.norm())
+                        > motif.maximum_translation + 1e-6
+                        or math.degrees(float(_axis_angle(current_rotation)[1]))
+                        > motif.maximum_rotation_degrees + 1e-5
+                    ):
+                        raise ValueError("current pose is outside its declared cumulative bound")
                     relative_rotation = (
                         desired_rotation[batch_index] @ current_rotation.T
                     )
@@ -739,12 +773,25 @@ class OrbitRigidMotifController:
                         math.radians(motif.per_step_rotation_degrees * motif_window),
                         effective_response,
                     )
-                    rotation = increment @ current_rotation
-                    rotation = _scaled_rotation(
-                        rotation,
-                        math.radians(motif.maximum_rotation_degrees),
-                        1.0,
-                    )
+                    rotation = current_rotation
+                    for scale in (2.0**-i for i in range(9)):
+                        candidate_rotation = _scaled_rotation(
+                            _scaled_rotation(increment, math.pi, scale)
+                            @ current_rotation,
+                            math.radians(motif.maximum_rotation_degrees),
+                            1.0,
+                        )
+                        actual_angle = math.degrees(
+                            float(
+                                _axis_angle(candidate_rotation @ current_rotation.T)[1]
+                            )
+                        )
+                        if (
+                            actual_angle
+                            <= motif.per_step_rotation_degrees * motif_window + 1e-5
+                        ):
+                            rotation = candidate_rotation
+                            break
                     delta_translation = (
                         desired_translation[batch_index]
                         - motif.state.translation[batch_index]
@@ -762,12 +809,38 @@ class OrbitRigidMotifController:
                     )
                     updated_rotations.append(rotation)
                     updated_translations.append(translation)
-                motif.state = OrbitRigidPoseState(
+                pending_state = OrbitRigidPoseState(
                     rotation=torch.stack(updated_rotations),
                     translation=torch.stack(updated_translations),
                     last_proposal_rmsd=proposal_rmsd,
                 )
-                self.last_update_applied = True
+                # An exact input pose may acquire roundoff from Kabsch and
+                # inverse orbit averaging; it is not an applied motion.
+                tolerance = max(1e-10, 8.0 * torch.finfo(raw_coordinates.dtype).eps)
+                changed = not (
+                    torch.allclose(
+                        pending_state.rotation,
+                        motif.state.rotation,
+                        atol=tolerance,
+                        rtol=0.0,
+                    )
+                    and torch.allclose(
+                        pending_state.translation,
+                        motif.state.translation,
+                        atol=tolerance,
+                        rtol=0.0,
+                    )
+                )
+                if not changed:
+                    pending_state = replace(
+                        pending_state,
+                        rotation=motif.state.rotation,
+                        translation=motif.state.translation,
+                    )
+                pending_states.append((motif, pending_state, changed))
+            for motif, pending_state, changed in pending_states:
+                motif.state = pending_state
+                self.last_update_applied |= changed
         target = self.materialize_target()
         self._diagnostic_trajectory.append(
             self._diagnostic_snapshot(
@@ -841,6 +914,8 @@ class OrbitRigidMotifController:
         rotations: tuple[torch.Tensor, ...],
         translations: tuple[torch.Tensor, ...],
         config: ScaffoldGuidanceConfig,
+        candidate_state_resolver: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+        | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         """Evaluate assembly geometry once and one pose prior per orbit."""
 
@@ -853,6 +928,8 @@ class OrbitRigidMotifController:
             raise ValueError(
                 "Joint scaffold energy inputs must match the mobile orbit " "count"
             )
+        if candidate_state_resolver is not None:
+            scaffold = candidate_state_resolver(target, scaffold)
         geometry_config = replace(
             config,
             tilt_weight=0.0,
@@ -949,10 +1026,9 @@ class OrbitRigidMotifController:
 
         The ordinary scaffold objective compares fixed motif atoms with the
         generated scaffold.  With several independently mobile orbits that is
-        insufficient: two individually acceptable proposals can collide only
-        after their poses are materialized together.  This term is evaluated
-        only by the joint objective, so it preserves Jacobi proposal semantics
-        while allowing the atomic acceptance decision to reject that conflict.
+        insufficient. The same penalty participates in local proposals and
+        the final joint decision. Local gradients see the immutable other
+        orbit poses; the joint decision re-evaluates all moved orbits together.
         """
 
         if target.ndim != 2 or target.shape[-1] != 3:
@@ -1031,6 +1107,8 @@ class OrbitRigidMotifController:
         proposal_response_scale: float | None = None,
         proposal_selection_seed: int | None = None,
         candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
+        candidate_state_resolver: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+        | None = None,
     ) -> torch.Tensor:
         """Jointly propose and atomically apply scaffold-driven orbit poses.
 
@@ -1367,13 +1445,30 @@ class OrbitRigidMotifController:
                     )
                     energy = scaffold_orbit_energy(
                         candidate_target,
-                        scaffold[0],
+                        scaffold[0] if candidate_state_resolver is None else
+                        candidate_state_resolver(candidate_target, scaffold[0]),
                         topology,
                         axis,
                         principal_axis=active_principal_axis,
                         pose_rotation=rotation,
                         pose_translation=translation,
                         config=active_config,
+                    )
+                    inter_orbit_clash, _ = self._inter_orbit_clash_energy(
+                        candidate_target,
+                        topology=topology,
+                        clash_distance=active_config.clash_distance,
+                    )
+                    weighted_inter_orbit = (
+                        active_config.clash_weight * inter_orbit_clash
+                    )
+                    energy = replace(
+                        energy,
+                        total=energy.total + weighted_inter_orbit,
+                        weighted_terms={
+                            **energy.weighted_terms,
+                            "inter_orbit_clash": weighted_inter_orbit,
+                        },
                     )
                     if pose_energy is not None:
                         packing = pose_energy(candidate_target)
@@ -1389,6 +1484,10 @@ class OrbitRigidMotifController:
                         energy = replace(
                             energy,
                             total=energy.total + packing,
+                            weighted_terms={
+                                **energy.weighted_terms,
+                                "additional_pose": packing,
+                            },
                         )
                     return energy
 
@@ -1408,7 +1507,9 @@ class OrbitRigidMotifController:
                     current_rotation,
                     current_translation,
                     energy_function,
-                    candidate_validator=(validate_pose if candidate_validator is not None else None),
+                    candidate_validator=(
+                        validate_pose if candidate_validator is not None else None
+                    ),
                     maximum_step_translation=(
                         maximum_step_translation
                         if motif.mobility_subspace == "tilt_only"
@@ -1435,7 +1536,12 @@ class OrbitRigidMotifController:
                     selection_seed=(
                         int(proposal_selection_seed)
                         + self.update_calls * 1_000_003
-                        + orbit_index * 10_007
+                        + int.from_bytes(
+                            hashlib.sha256(
+                                motif.constraint_orbit_id.encode("utf-8")
+                            ).digest()[:8],
+                            "big",
+                        )
                         if temporal_phase.name == "capture"
                         and proposal_selection_seed is not None
                         else None
@@ -1495,6 +1601,7 @@ class OrbitRigidMotifController:
                         "objective": {
                             "initial": local_initial,
                             "proposed": local_proposed,
+                            "weighted_term_gradients": proposal.objective_gradients,
                             "delta": {
                                 term: local_proposed[term] - local_initial[term]
                                 for term in tracked_terms
@@ -1521,24 +1628,18 @@ class OrbitRigidMotifController:
                     }
                 )
 
-            candidate_target = baseline_target.clone()
-            for motif, rotation, translation in zip(
-                self.motifs,
-                proposed_rotations,
-                proposed_translations,
-            ):
-                master = self._master_coordinates_for_pose(
-                    motif,
-                    rotation,
-                    translation,
+            # A Jacobi proposal can overshoot only when combined. Backtrack
+            # the whole transaction, using one scale for every orbit, rather
+            # than discarding useful motion or committing an ordered subset.
+            def additional_energy(target):
+                value = (
+                    target.sum() * 0.0 if pose_energy is None else pose_energy(target)
                 )
-                candidate_target = insert_master_orbit(
-                    candidate_target,
-                    master,
-                    motif.group_atom_indices,
-                    motif.group_transform_ids,
-                    self.sym_transforms,
-                )
+                if value.ndim != 0 or not torch.isfinite(value):
+                    raise ValueError(
+                        "Additional joint motif pose energy must be one finite scalar"
+                    )
+                return value
 
             with torch.no_grad():
                 initial_total, initial_terms = self._joint_scaffold_energy(
@@ -1550,71 +1651,147 @@ class OrbitRigidMotifController:
                     rotations=current_rotations,
                     translations=current_translations,
                     config=config,
+                    candidate_state_resolver=candidate_state_resolver,
                 )
-                proposed_total, proposed_terms = self._joint_scaffold_energy(
-                    candidate_target,
-                    scaffold[0],
-                    topology=topology,
-                    axis=axis,
-                    principal_axes=principal_axes,
-                    rotations=tuple(proposed_rotations),
-                    translations=tuple(proposed_translations),
-                    config=config,
+                initial_pose_energy = additional_energy(baseline_target)
+                initial_total = initial_total + initial_pose_energy
+            any_candidate = any(p is not None and p.accepted for p in proposals)
+            full_rotations = tuple(proposed_rotations)
+            full_translations = tuple(proposed_translations)
+            joint_accepted = False
+            joint_trials = []
+            joint_scale = 0.0
+            proposed_total, proposed_terms = initial_total, initial_terms
+            proposed_pose_energy = initial_pose_energy
+            geometry = {"accepted": False, "reason": "no_evaluated_candidate"}
+            # No-op proposals still receive diagnostics, but need no retries.
+            scales = tuple(2.0**-i for i in range(9)) if any_candidate else (1.0,)
+            for scale in scales:
+                rotations = tuple(
+                    full
+                    if scale == 1.0
+                    else _scaled_rotation(full @ old.T, math.pi, scale) @ old
+                    for old, full in zip(current_rotations, full_rotations)
                 )
-                initial_pose_energy = torch.zeros_like(initial_total)
-                proposed_pose_energy = torch.zeros_like(proposed_total)
-                if pose_energy is not None:
-                    initial_pose_energy = pose_energy(baseline_target)
-                    proposed_pose_energy = pose_energy(candidate_target)
-                    for name, value in (
-                        ("initial", initial_pose_energy),
-                        ("proposed", proposed_pose_energy),
-                    ):
-                        if value.ndim != 0 or not torch.isfinite(value):
-                            raise ValueError(
-                                "Additional joint motif pose energy must "
-                                f"be one finite scalar ({name})"
-                            )
-                    # The local SE(3) gradient above already contains this
-                    # packing term.  The atomic multi-orbit acceptance must
-                    # compare that same objective; otherwise a
-                    # packing-improving pose is silently rejected whenever
-                    # the scaffold-only term rises by any amount.
-                    initial_total = initial_total + initial_pose_energy
+                translations = tuple(
+                    old + scale * (full - old)
+                    for old, full in zip(current_translations, full_translations)
+                )
+                bounds_ok = all(
+                    float(t.norm()) <= m.maximum_translation + 1e-6
+                    and float((t - old_t).norm()) <= m.per_step_translation + 1e-6
+                    and math.degrees(float(_axis_angle(r)[1]))
+                    <= m.maximum_rotation_degrees + 1e-5
+                    and math.degrees(float(_axis_angle(r @ old_r.T)[1]))
+                    <= m.per_step_rotation_degrees + 1e-5
+                    for m, r, t, old_r, old_t in zip(
+                        self.motifs,
+                        rotations,
+                        translations,
+                        current_rotations,
+                        current_translations,
+                    )
+                )
+                if not bounds_ok:
+                    joint_trials.append(
+                        {
+                            "scale": scale,
+                            "accepted": False,
+                            "first_rejection_reason": "motion_bounds",
+                        }
+                    )
+                    continue
+                candidate_target = baseline_target.clone()
+                for motif, rotation, translation in zip(
+                    self.motifs, rotations, translations
+                ):
+                    candidate_target = insert_master_orbit(
+                        candidate_target,
+                        self._master_coordinates_for_pose(motif, rotation, translation),
+                        motif.group_atom_indices,
+                        motif.group_transform_ids,
+                        self.sym_transforms,
+                    )
+                geometry = (
+                    candidate_validator(
+                        self._insert_mobile_target(
+                            scaffold, candidate_target[None, ...]
+                        )
+                    )
+                    if candidate_validator is not None
+                    else {"accepted": True}
+                )
+                if not geometry["accepted"]:
+                    joint_trials.append({
+                        "scale": scale, "accepted": False,
+                        "first_rejection_reason": "geometry_guard", "geometry_guard": geometry,
+                        "energy_evaluated": False, "total": None, "objective_terms": {},
+                        "additional_pose_energy": None,
+                    })
+                    continue
+                with torch.no_grad():
+                    proposed_total, proposed_terms = self._joint_scaffold_energy(
+                        candidate_target,
+                        scaffold[0],
+                        topology=topology,
+                        axis=axis,
+                        principal_axes=principal_axes,
+                        rotations=rotations,
+                        translations=translations,
+                        config=config,
+                        candidate_state_resolver=candidate_state_resolver,
+                    )
+                    proposed_pose_energy = additional_energy(candidate_target)
                     proposed_total = proposed_total + proposed_pose_energy
-            any_candidate = any(
-                proposal is not None and proposal.accepted for proposal in proposals
-            )
-            joint_accepted = bool(
-                any_candidate
-                and float(proposed_total.item()) < float(initial_total.item()) - 1e-12
-            )
-            if candidate_validator is not None:
-                geometry = candidate_validator(self._insert_mobile_target(
-                    scaffold, candidate_target[None, ...]
-                ))
-                extra["geometry_guard"] = geometry
-                joint_accepted = joint_accepted and bool(geometry["accepted"])
+                finite = bool(torch.isfinite(proposed_total))
+                improves = (
+                    finite and float(proposed_total) < float(initial_total) - 1e-12
+                )
+                joint_accepted = bool(
+                    any_candidate and improves and geometry["accepted"]
+                )
+                reason = (
+                    "no_local_candidate"
+                    if not any_candidate
+                    else "nonfinite_energy"
+                    if not finite
+                    else "geometry_guard"
+                    if not geometry["accepted"]
+                    else "no_energy_decrease"
+                    if not improves
+                    else None
+                )
+                joint_trials.append(
+                    {
+                        "scale": scale,
+                        "accepted": joint_accepted,
+                        "first_rejection_reason": reason,
+                        "geometry_guard": geometry,
+                        "total": float(proposed_total),
+                        "objective_terms": proposed_terms,
+                        "additional_pose_energy": float(proposed_pose_energy),
+                    }
+                )
+                if joint_accepted:
+                    proposed_rotations = list(rotations)
+                    proposed_translations = list(translations)
+                    joint_scale = scale
+                    break
             extra.update(
                 {
                     "accepted": joint_accepted,
-                    "joint_decision": ("accepted" if joint_accepted else "rejected"),
+                    "joint_decision": "accepted" if joint_accepted else "rejected",
+                    "joint_line_search_scale": joint_scale,
+                    "joint_line_search_trials": joint_trials,
                     "initial_energy": initial_terms,
                     "proposed_energy": proposed_terms,
+                    "geometry_guard": geometry,
                     "additional_pose_energy": {
-                        "initial": float(initial_pose_energy.detach().cpu().item()),
-                        "proposed": float(proposed_pose_energy.detach().cpu().item()),
-                        "delta": float(
-                            (proposed_pose_energy - initial_pose_energy)
-                            .detach()
-                            .cpu()
-                            .item()
-                        ),
+                        "initial": float(initial_pose_energy),
+                        "proposed": float(proposed_pose_energy),
+                        "delta": float(proposed_pose_energy - initial_pose_energy),
                     },
-                    "joint_energy_delta": (
-                        float(proposed_total.detach().cpu().item())
-                        - float(initial_total.detach().cpu().item())
-                    ),
+                    "joint_energy_delta": float(proposed_total) - float(initial_total),
                 }
             )
             for record, proposal in zip(
@@ -1626,6 +1803,21 @@ class OrbitRigidMotifController:
                     and joint_accepted
                     and proposal is not None
                     and proposal.accepted
+                )
+            for record, old_r, old_t, new_r, new_t in zip(
+                extra["orbit_proposals"],
+                current_rotations,
+                current_translations,
+                proposed_rotations,
+                proposed_translations,
+            ):
+                record["committed_translation_step_angstrom"] = (
+                    float((new_t - old_t).norm()) if record["committed"] else 0.0
+                )
+                record["committed_rotation_step_degrees"] = (
+                    math.degrees(float(_axis_angle(new_r @ old_r.T)[1]))
+                    if record["committed"]
+                    else 0.0
                 )
             if apply_update and joint_accepted:
                 for motif, rotation, translation in zip(
@@ -1674,6 +1866,8 @@ class OrbitRigidMotifController:
         additional_state_energy: Callable[[torch.Tensor], torch.Tensor] | None = None,
         proposal_selection_seed: int | None = None,
         candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
+        candidate_state_resolver: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+        | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         """Propose motif poses and generated packing as one transaction.
 
@@ -1740,12 +1934,18 @@ class OrbitRigidMotifController:
             rotations=baseline_rotations,
             translations=baseline_translations,
             config=scaffold_config,
+            candidate_state_resolver=candidate_state_resolver,
         )
+
+        def resolve_state(coordinates: torch.Tensor) -> torch.Tensor:
+            if candidate_state_resolver is None:
+                return coordinates
+            return candidate_state_resolver(coordinates[0], coordinates[0])[None]
 
         def extra_energy(coordinates: torch.Tensor) -> torch.Tensor:
             if additional_state_energy is None:
                 return coordinates.new_zeros(())
-            value = additional_state_energy(coordinates[0])
+            value = additional_state_energy(resolve_state(coordinates)[0])
             if value.ndim != 0 or not torch.isfinite(value):
                 raise ValueError("Additional joint state energy must be one finite scalar")
             return value
@@ -1780,7 +1980,7 @@ class OrbitRigidMotifController:
             # capture radius. Scoring rigid poses with the raw config made
             # them optimize a different objective from the generated patch.
             return graph_interface_energy(
-                coordinates, interface_topology, step_context.effective_config,
+                resolve_state(coordinates), interface_topology, step_context.effective_config,
                 target_ca_distance_override=step_context.target_ca_distance,
                 patch_assignments=step_context.patch_assignments,
             )
@@ -1822,6 +2022,7 @@ class OrbitRigidMotifController:
                 proposal_response_scale=proposal_response_scale,
                 proposal_selection_seed=proposal_selection_seed,
                 candidate_validator=candidate_validator,
+                candidate_state_resolver=candidate_state_resolver,
             )
         except Exception:
             rollback_mutable_state()
@@ -1833,26 +2034,36 @@ class OrbitRigidMotifController:
                 packed_coordinates,
                 candidate_target,
             )
-            candidate_graph = packing_energy(candidate_coordinates)
-            candidate_rotations = tuple(
-                motif.state.rotation[0] for motif in self.motifs
+            geometry = (
+                candidate_validator(candidate_coordinates)
+                if candidate_validator is not None else {"accepted": True}
             )
-            candidate_translations = tuple(
-                motif.state.translation[0] for motif in self.motifs
-            )
-            candidate_scaffold_total, candidate_scaffold_terms = (
-                self._joint_scaffold_energy(
-                    candidate_target[0],
-                    candidate_coordinates[0],
-                    topology=topology,
-                    axis=axis,
-                    principal_axes=principal_axes,
-                    rotations=candidate_rotations,
-                    translations=candidate_translations,
-                    config=scaffold_config,
+            if geometry["accepted"]:
+                candidate_graph = packing_energy(candidate_coordinates)
+                candidate_rotations = tuple(
+                    motif.state.rotation[0] for motif in self.motifs
                 )
-            )
-            candidate_extra = extra_energy(candidate_coordinates)
+                candidate_translations = tuple(
+                    motif.state.translation[0] for motif in self.motifs
+                )
+                candidate_scaffold_total, candidate_scaffold_terms = (
+                    self._joint_scaffold_energy(
+                        candidate_target[0],
+                        candidate_coordinates[0],
+                        topology=topology,
+                        axis=axis,
+                        principal_axes=principal_axes,
+                        rotations=candidate_rotations,
+                        translations=candidate_translations,
+                        config=scaffold_config,
+                        candidate_state_resolver=candidate_state_resolver,
+                    )
+                )
+                candidate_extra = extra_energy(candidate_coordinates)
+            else:
+                candidate_graph = baseline_graph
+                candidate_scaffold_total, candidate_scaffold_terms = baseline_scaffold_total, baseline_scaffold_terms
+                candidate_extra = baseline_extra
         except Exception:
             rollback_mutable_state()
             raise
@@ -1918,19 +2129,12 @@ class OrbitRigidMotifController:
             and global_safe
             and junction_safe
         )
-        try:
-            geometry = (
-                candidate_validator(candidate_coordinates)
-                if candidate_validator is not None else {"accepted": True}
-            )
-        except Exception:
-            rollback_mutable_state()
-            raise
         accepted = accepted and bool(geometry["accepted"])
         committed = bool(accepted and apply_update)
 
         diagnostics = {
             "joint_packing_transaction": True,
+            "candidate_energy_evaluated": bool(geometry["accepted"]),
             "accepted": accepted,
             "committed": committed,
             "proposal_only": not apply_update,
@@ -2006,7 +2210,22 @@ class OrbitRigidMotifController:
         packing_step["applied"] = bool(committed and packing_step.get("applied"))
 
         if self._diagnostic_trajectory:
-            self._diagnostic_trajectory[-1].update(
+            trajectory = self._diagnostic_trajectory[-1]
+            # The inner pose transaction was provisional. Its old snapshot
+            # must not report committed movement after outer rollback.
+            trajectory["pose_proposal_accepted"] = trajectory.get("accepted", False)
+            trajectory["accepted"] = bool(accepted and motif_pose_changed)
+            trajectory["applied"] = bool(committed and motif_pose_changed)
+            trajectory["orbits"] = [
+                {"orbit_index": i, **self._pose_diagnostics(motif)}
+                for i, motif in enumerate(self.motifs)
+            ]
+            for record in trajectory.get("orbit_proposals", []):
+                record["committed"] = bool(committed and record.get("committed"))
+                if not record["committed"]:
+                    record["committed_translation_step_angstrom"] = 0.0
+                    record["committed_rotation_step_degrees"] = 0.0
+            trajectory.update(
                 {
                     "joint_packing_transaction": True,
                     "joint_packing_accepted": accepted,
@@ -2107,6 +2326,23 @@ class OrbitRigidMotifController:
     def diagnostics(self) -> dict[str, Any]:
         """Return JSON-serializable pose and proposal diagnostics."""
 
+        proposals = [
+            p
+            for step in self._diagnostic_trajectory
+            for p in step.get("orbit_proposals", [])
+        ]
+        trials = [trial for p in proposals for trial in p.get("line_search_trials", [])]
+        rejection_counts = Counter(
+            trial["first_rejection_reason"]
+            for trial in trials
+            if trial.get("first_rejection_reason")
+        )
+        geometry_counts = Counter(
+            check["rule"]
+            for trial in trials
+            for check in trial.get("geometry_guard", {}).get("checks", [])
+            if not check["passed"]
+        )
         return {
             "update_calls": self.update_calls,
             "active_window_calls": self.active_window_calls,
@@ -2118,4 +2354,22 @@ class OrbitRigidMotifController:
                 for orbit_index, motif in enumerate(self.motifs)
             ],
             "trajectory": list(self._diagnostic_trajectory),
+            "scaffold_pose_search_summary": {
+                "local_trial_count": len(trials),
+                "local_feasible_improving_trials": sum(
+                    bool(t.get("accepted")) for t in trials
+                ),
+                "first_rejection_counts": dict(rejection_counts),
+                "geometry_failed_checks_nonexclusive": dict(geometry_counts),
+                "committed_orbit_updates": sum(
+                    bool(p.get("committed")) for p in proposals
+                ),
+                "translation_path_length_angstrom": sum(
+                    p.get("committed_translation_step_angstrom", 0.0) for p in proposals
+                ),
+                "rotation_path_length_degrees": sum(
+                    p.get("committed_rotation_step_degrees", 0.0) for p in proposals
+                ),
+                "path_length_definition": "sum of committed increments across orbits; not final net displacement",
+            },
         }

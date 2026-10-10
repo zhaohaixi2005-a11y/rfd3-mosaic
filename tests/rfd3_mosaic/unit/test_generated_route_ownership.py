@@ -8,7 +8,9 @@ from biotite.structure import AtomArray
 
 from rfd3_mosaic.rfd3_scaffold_audit import _audit_final_generated_route_ownership
 from rfd3_mosaic.structure import AtomRecord
-from rfd3_mosaic.validation.generated_route_ownership import audit_generated_route_ownership
+from rfd3_mosaic.validation.generated_route_ownership import (
+    audit_generated_route_ownership,
+)
 from rfd3_mosaic.validation.scaffold_validity import audit_scaffold_geometry
 
 
@@ -161,7 +163,13 @@ class GeneratedRouteOwnershipTestCase(unittest.TestCase):
             report = _audit_final_generated_route_ownership(input_path=path, output_atoms=atoms, atom_array=runtime)
             self.assertTrue(report["declared"])
             self.assertFalse(report["passed"])
+            self.assertTrue(report["required"])
             self.assertEqual(report["anchor_coordinate_source"], "final_output")
+            path.write_text(json.dumps({"test": {"extra": {"generated_cross_chain_topology_guidance": {"enabled": False, "policy": "advisory"}}}}))
+            advisory = _audit_final_generated_route_ownership(input_path=path, output_atoms=atoms, atom_array=runtime)
+            self.assertFalse(advisory["passed"])
+            self.assertFalse(advisory["required"])
+            self.assertEqual(advisory["policy"], "advisory")
             with self.assertRaisesRegex(ValueError, "align"):
                 _audit_final_generated_route_ownership(input_path=path, output_atoms=atoms[:-1], atom_array=runtime)
 

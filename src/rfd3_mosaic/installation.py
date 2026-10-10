@@ -10,7 +10,9 @@ def source_repository_root(start: Path | None = None) -> Path | None:
     """Return the source checkout root, or ``None`` for a wheel install."""
 
     origins = [start.resolve()] if start is not None else []
-    origins.extend((Path.cwd().resolve(), Path(__file__).resolve()))
+    # The import location identifies the running installation. An unrelated
+    # checkout in cwd must not replace a wheel's code/resource provenance.
+    origins.append(Path(__file__).resolve())
     visited: set[Path] = set()
     for origin in origins:
         candidates = (origin, *origin.parents)

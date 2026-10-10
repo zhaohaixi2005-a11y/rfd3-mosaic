@@ -70,6 +70,7 @@ def build_advisory_screening(
     *,
     mode: str = "advisory",
     protocol: str = "auto",
+    result_json: str | Path | None = None,
 ) -> dict[str, Any]:
     """Return a recommendation without deleting or rejecting an output.
 
@@ -196,13 +197,26 @@ def build_advisory_screening(
                         "passed_continuity",
                         "passed_symmetry",
                         "passed_cross_chain_topology",
-                        "passed_generated_route_ownership",
                         "passed_scaffold_contract",
                     ),
                     report=path,
                     prefix="contract.scaffold",
                 )
             )
+            route_flags = _false_summary_flags(
+                summary,
+                ("passed_generated_route_ownership",),
+                report=path,
+                prefix=(
+                    "contract.scaffold"
+                    if summary.get("generated_route_ownership_required", True)
+                    else "advisory.scaffold"
+                ),
+            )
+            if summary.get("generated_route_ownership_required", True):
+                contract_flags.extend(route_flags)
+            else:
+                advisory_flags.extend(route_flags)
             advisory_flags.extend(
                 _false_summary_flags(
                     summary,
@@ -308,6 +322,18 @@ def build_advisory_screening(
                 )
             )
 
+    chemical = {"status": "not_evaluated", "passed": None}
+    if result_json is not None:
+        from rfd3_mosaic.output_chemical_status import read_final_chemical_status
+        chemical = read_final_chemical_status(result_json)
+        if chemical["status"] != "passed":
+            advisory_flags.append(_flag(
+                code="advisory.output_chemistry." + chemical["status"],
+                report=Path(result_json),
+                message="Final chemical geometry failed or was not fully evaluated.",
+                observed=chemical,
+            ))
+
     contract_status = (
         "flagged" if contract_flags else "met" if paths else "not_evaluated"
     )
@@ -316,6 +342,8 @@ def build_advisory_screening(
         advisory_flags = []
     elif contract_flags:
         recommendation = "review_contract"
+    elif result_json is not None and chemical["status"] != "passed":
+        recommendation = "review_chemical_geometry"
     elif advisory_flags:
         recommendation = "review_advisory_metrics"
     else:
@@ -326,6 +354,8 @@ def build_advisory_screening(
         "protocol": protocol,
         "generated_output_retained": True,
         "contract_status": contract_status,
+        "chemical_status": chemical["status"],
+        "chemical_geometry": chemical,
         "recommendation": recommendation,
         "contract_flags": contract_flags,
         "advisory_flags": advisory_flags,
@@ -352,11 +382,13 @@ def write_advisory_screening(
     *,
     mode: str = "advisory",
     protocol: str = "auto",
+    result_json: str | Path | None = None,
 ) -> dict[str, Any]:
     payload = build_advisory_screening(
         reports,
         mode=mode,
         protocol=protocol,
+        result_json=result_json,
     )
     path = Path(output)
     path.write_text(

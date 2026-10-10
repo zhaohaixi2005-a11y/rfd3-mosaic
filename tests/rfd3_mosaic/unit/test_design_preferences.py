@@ -7,7 +7,10 @@ from pydantic import ValidationError
 
 from rfd3_mosaic.constraint_plan import compile_constraint_plan
 from rfd3_mosaic.design_preferences import compile_design_preferences
-from rfd3_mosaic.experiment_worker import _resolved_guidance_overrides
+from rfd3_mosaic.experiment_worker import (
+    _resolved_guidance_overrides,
+    _sampler_dispatch_overrides,
+)
 from rfd3_mosaic.schema import UserDesignSpec
 
 
@@ -79,6 +82,101 @@ def create_expert_design(**updates: object) -> UserDesignSpec:
 
 
 class DesignPreferencesTestCase(unittest.TestCase):
+    def test_explicit_mobile_proposal_and_automatic_capture_are_compatible(self):
+        from rfd3.model.inference_sampler import SampleDiffusionWithSymmetry
+
+        for graph in (False, True):
+            for proposal in ("denoiser_fit", "scaffold_objectives"):
+                with self.subTest(graph=graph, proposal=proposal):
+                    pose = {
+                        "mode": "bounded_mobile",
+                        "subspace": "bounded_se3",
+                        "proposal": proposal,
+                        "max_translation": 2.0,
+                        "max_rotation_deg": 10.0,
+                    }
+                    if graph:
+                        design = create_expert_design(
+                            components={
+                                "seed": {
+                                    "selectors": ["A1", "A2"],
+                                    "geometry": "joint_rigid",
+                                    "pose": pose,
+                                }
+                            }
+                        )
+                    else:
+                        design = create_interface_design(
+                            task=None,
+                            constraints=[
+                                {
+                                    "kind": "fixed_xyz",
+                                    "selector": "A1-2",
+                                    "pose": pose,
+                                }
+                            ],
+                        )
+                    preferences = compile_design_preferences(design)
+                    self.assertEqual(preferences.component_motion.value, "free")
+                    self.assertEqual(
+                        preferences.sampler_overrides.get(
+                            "enable_assembly_robust_capture", False
+                        ),
+                        proposal == "scaffold_objectives",
+                    )
+                    plan = compile_constraint_plan(design)
+                    actual = plan.operators[0].parameters["pose"]
+                    self.assertEqual(actual["proposal"], proposal)
+                    # Reproduce the public -> frozen input -> worker dispatch
+                    # -> actual sampler-constructor path that the GPU exposed.
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = Path(directory) / "rfd3_input.json"
+                        path.write_text(
+                            json.dumps(
+                                {
+                                    "design": {
+                                        "extra": {
+                                            "motif_constraint_orbits": [
+                                                {
+                                                    "mobility_mode": "orbit_rigid",
+                                                    "mobility_proposal": actual[
+                                                        "proposal"
+                                                    ],
+                                                }
+                                            ],
+                                            "resolved_design_preferences": preferences.model_dump(
+                                                mode="json"
+                                            ),
+                                        }
+                                    }
+                                }
+                            )
+                        )
+                        dispatch = _sampler_dispatch_overrides(
+                            {
+                                "execution_backend": "explicit_all_copy",
+                                "sampler": {
+                                    "gamma_0": 0.6,
+                                    "symmetry_state_mode": "orbit_average",
+                                    "symmetry_noise_mode": "coupled",
+                                    "preserve_fixed_motif_during_symmetry": True,
+                                },
+                            },
+                            path,
+                        )
+                    if proposal == "denoiser_fit":
+                        # Preserve the explicitly requested declaration, but
+                        # reject it at the native boundary: fixed EDM atoms
+                        # provide no learned pose signal.
+                        with self.assertRaisesRegex(ValueError, "no learned pose signal"):
+                            SampleDiffusionWithSymmetry(**dispatch)
+                        continue
+                    sampler = SampleDiffusionWithSymmetry(**dispatch)
+                    self.assertEqual(
+                        sampler.motif_mobility_proposal_source,
+                        "scaffold_boundary",
+                    )
+
     def test_mobile_finite_group_scaffolds_enable_generic_capture(self) -> None:
         supplied = UserDesignSpec.model_validate(
             {
@@ -192,9 +290,7 @@ class DesignPreferencesTestCase(unittest.TestCase):
                     symmetry=symmetry_id,
                     preferences={"component_motion": "guided"},
                 )
-                pose = compile_constraint_plan(design).operators[0].parameters[
-                    "pose"
-                ]
+                pose = compile_constraint_plan(design).operators[0].parameters["pose"]
                 self.assertEqual(pose["subspace"], "bounded_se3")
                 self.assertEqual(pose["max_translation"], 60.0)
                 self.assertEqual(pose["max_rotation_deg"], 90.0)

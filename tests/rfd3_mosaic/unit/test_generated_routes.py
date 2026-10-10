@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import patch
 
 import torch
-
 from rfd3.inference.symmetry.generated_routes import (
     apply_generated_route_guidance,
     generated_route_deficits,

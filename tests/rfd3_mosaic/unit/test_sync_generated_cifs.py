@@ -1,18 +1,17 @@
 """Local protocol tests; never connect to SSH or import the inference stack."""
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
 import gzip
 import importlib.util
 import io
 import json
-from pathlib import Path
 import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
-
 
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts/rfd3_mosaic/sync_generated_cifs.py"
 SPEC = importlib.util.spec_from_file_location("sync_generated_cifs", SCRIPT)

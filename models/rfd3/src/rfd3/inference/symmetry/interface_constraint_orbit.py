@@ -241,6 +241,20 @@ class ConstraintOrbitLayout:
             raise ValueError(
                 "Constraint orbits require runtime sym_transform entries"
             )
+        for transform_id, transform in features["sym_transform"].items():
+            if not isinstance(transform, (tuple, list)) or len(transform) != 2:
+                raise ValueError(f"Constraint symmetry transform {transform_id} must contain rotation and translation")
+            rotation, translation = (torch.as_tensor(value, device=device) for value in transform)
+            if rotation.shape != (3, 3) or translation.shape != (3,):
+                raise ValueError(f"Constraint symmetry transform {transform_id} has invalid shape")
+            if not torch.isfinite(rotation).all() or not torch.isfinite(translation).all():
+                raise ValueError(f"Constraint symmetry transform {transform_id} must be finite")
+            # Use the same bounded SO(3) serialization tolerance as the exact
+            # orbit runtime; reject reflections and materially nonrigid input.
+            from .symmetry_utils import _nearest_proper_rotation
+
+            with torch.autocast(device_type=rotation.device.type, enabled=False):
+                _nearest_proper_rotation(rotation.to(torch.float32), transform_id=int(transform_id))
 
         membership_value = features.get(
             "motif_constraint_group_membership"
@@ -329,6 +343,8 @@ class ConstraintOrbitLayout:
             raise ValueError(
                 "motif_constraint_orbit_schedule must have shape [O, 5]"
             )
+        if schedule is not None and not torch.isfinite(schedule).all():
+            raise ValueError("Constraint-orbit mobility schedule must be finite")
         objective_values = features.get(
             "motif_constraint_orbit_objective_ids",
             tuple(() for _ in range(orbit_count)),

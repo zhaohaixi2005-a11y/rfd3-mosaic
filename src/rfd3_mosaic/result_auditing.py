@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,10 +21,33 @@ from rfd3_mosaic.assembly_compiler import (
     compile_audit_requirements,
 )
 from rfd3_mosaic.assembly_frontends import AuditRequirement
+from rfd3_mosaic.audit_evidence import BINDING_NAME, audit_evidence
 from rfd3_mosaic.rfd3_audit_gate import failed_audit_paths
 from rfd3_mosaic.rfd3_mobility_audit import write_mobility_trajectory
 
 CommandRunner = Callable[[list[str]], None]
+
+
+def validate_result_artifacts(result_json: Path, *, allow_pdb: bool = True) -> Path:
+    """Require one readable, nonempty final structure beside result metadata."""
+    if not isinstance(json.loads(result_json.read_text(encoding="utf-8")), dict):
+        raise ValueError("Result metadata must be a JSON object")
+    suffixes = (".cif.gz", ".cif", ".pdb") if allow_pdb else (".cif.gz", ".cif")
+    structures = [
+        path for suffix in suffixes
+        if (path := result_json.with_suffix(suffix)).is_file()
+    ]
+    if len(structures) != 1:
+        raise ValueError("A generated design requires exactly one final structure")
+    structure = structures[0]
+    opener = gzip.open if structure.suffix == ".gz" else open
+    total = 0
+    with opener(structure, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            total += len(block)
+    if not total:
+        raise ValueError("Generated structure is empty")
+    return structure
 
 
 @dataclass(frozen=True)
@@ -171,12 +196,8 @@ def generation_completeness(
     artifact_errors = {}
     for result in result_jsons:
         try:
-            if not isinstance(json.loads(result.read_text()), dict):
-                raise ValueError("Result metadata must be a JSON object")
-            structures = [p for p in (result.with_suffix(".cif.gz"), result.with_suffix(".cif"), result.with_suffix(".pdb")) if p.is_file()]
-            if not structures or any(p.stat().st_size == 0 for p in structures):
-                raise ValueError("Result structure is missing or empty")
-        except (OSError, ValueError) as error:
+            validate_result_artifacts(result)
+        except (OSError, EOFError, ValueError) as error:
             artifact_errors[result.name] = str(error)
     return {
         "complete": len(result_jsons) == requested
@@ -255,6 +276,57 @@ def run_result_audits(
             f"{report_root}"
         )
     report_root.mkdir(parents=True, exist_ok=True)
+    before = audit_evidence(
+        compiled_input=input_path, result_json=result_path, reports=(),
+        semantic_audits=semantic_audits,
+    )
+    # Stage the entire pass in a fresh directory.  Report existence then
+    # proves this invocation wrote it, and an interrupted re-audit preserves
+    # the previous complete report set instead of mixing two generations.
+    with tempfile.TemporaryDirectory(prefix=".audit-pass-", dir=report_root) as temporary:
+        staged = _run_result_audits_staged(
+            root=root,
+            input_path=input_path,
+            result_path=result_path,
+            semantic_audits=semantic_audits,
+            report_root=Path(temporary),
+            python=python,
+            command_runner=command_runner,
+        )
+        for report in staged.reports:
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or type(payload.get("passed")) is not bool:
+                raise ValueError(f"Audit report lacks a boolean passed verdict: {report.name}")
+        evidence = audit_evidence(
+            compiled_input=input_path, result_json=result_path,
+            reports=staged.reports,
+            semantic_audits=semantic_audits,
+        )
+        if {**evidence, "reports": {}} != before:
+            raise RuntimeError("Audit input or result changed while the audits were running")
+        binding = Path(temporary) / BINDING_NAME
+        binding.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+        for path in staged.reports:
+            path.replace(report_root / path.name)
+        trajectory = report_root / "mobility_trajectory.json"
+        if staged.mobility_trajectory is not None:
+            staged.mobility_trajectory.replace(trajectory)
+        else:
+            trajectory.unlink(missing_ok=True)
+        # Publish the binding last: any interrupted publication is detected
+        # by the next reuse attempt, even if its individual reports exist.
+        binding.replace(report_root / BINDING_NAME)
+        return ResultAuditOutcome(
+            reports=tuple(report_root / path.name for path in staged.reports),
+            mobility_trajectory=trajectory if staged.mobility_trajectory else None,
+        )
+
+
+def _run_result_audits_staged(
+    *, root: Path, input_path: Path, result_path: Path,
+    semantic_audits: tuple[CompiledAudit, ...], report_root: Path,
+    python: str, command_runner: CommandRunner,
+) -> ResultAuditOutcome:
     trajectory = report_root / "mobility_trajectory.json"
     has_trajectory = write_mobility_trajectory(
         result_json=result_path,

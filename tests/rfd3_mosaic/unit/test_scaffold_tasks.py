@@ -272,7 +272,7 @@ def test_mobile_complete_task_builds_native_input_with_frozen_transport_plan(tmp
         constraint["pose"] = {
             "mode": "bounded_mobile",
             "subspace": "bounded_se3",
-            "proposal": "denoiser_fit",
+            "proposal": "scaffold_objectives",
             "max_translation": 2.0,
             "max_rotation_deg": 10.0,
         }
@@ -375,8 +375,8 @@ def test_interrupted_preparation_publication_exposes_no_runnable_task(
 
 
 def test_mobile_scaffold_passes_complete_native_feature_pipeline(tmp_path):
-    from rfd3.transforms.pipelines import build_atom14_base_pipeline
     from rfd3.inference.datasets import ContigJsonDataset
+    from rfd3.transforms.pipelines import build_atom14_base_pipeline
 
     config, blueprint = _fixture(tmp_path)
     design = yaml.safe_load(config.read_text())

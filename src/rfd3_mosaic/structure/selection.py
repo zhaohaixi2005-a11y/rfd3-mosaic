@@ -64,7 +64,7 @@ def select_atoms(
     atoms: tuple[AtomRecord, ...],
     selection: AtomSelection | str,
 ) -> tuple[AtomRecord, ...]:
-    """Resolve a parsed selection and fail explicitly when it is empty."""
+    """Resolve a selection without silently bridging missing source residues."""
 
     resolved = (
         parse_atom_selection(selection)
@@ -89,6 +89,16 @@ def select_atoms(
             f"chain={resolved.chain_id!r}, "
             f"residues={resolved.residue_start}-{resolved.residue_end}"
         )
+    observed_residues = {atom.residue_number for atom in matches}
+    missing = sorted(
+        set(range(resolved.residue_start, resolved.residue_end + 1))
+        - observed_residues
+    )
+    if missing:
+        raise ValueError(
+            f"Selection on chain {resolved.chain_id!r} contains missing "
+            f"residues for the requested atom selection: {missing}"
+        )
     return matches
 
 
@@ -106,8 +116,9 @@ def select_atom_subset(
             atom
             for atom in atoms
             if not (
-                atom.element.upper().startswith("H")
-                or atom.atom_name.lstrip("0123456789").upper().startswith("H")
+                atom.element.strip().upper() in {"H", "D", "T"}
+                if atom.element.strip()
+                else atom.atom_name.lstrip("0123456789").upper().startswith("H")
             )
         )
     elif normalized == "backbone":

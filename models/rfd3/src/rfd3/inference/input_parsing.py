@@ -456,9 +456,13 @@ class DesignInputSpecification(BaseModel):
                             "Complete scaffold input requires partial diffusion, "
                             "declared preexpanded frames and a scaffold contract"
                         )
-                # Preserve historical centering for ordinary symmetric input.
+                cylindrical = bool((data.get("extra") or {}).get("cylindrical_constraints"))
+                if cylindrical and (data.get("symmetry") or {}).get("use_declared_frames") is not True:
+                    raise ValueError("Cylindrical source reference requires declared symmetry frames")
+                # Source cylindrical targets and affine transforms share the
+                # compiler frame; legacy ASU recentering would invalidate it.
                 if exists(data.get("symmetry")) and data["symmetry"].get("id"):
-                    if not complete_scaffold:
+                    if not complete_scaffold and not cylindrical:
                         atom_array = center_symmetric_src_atom_array(atom_array)
 
                 if "atom_id" in atom_array.get_annotation_categories():
@@ -927,17 +931,31 @@ class DesignInputSpecification(BaseModel):
             # coordinates.  Mosaic's explicit symmetric assemblies opt into a
             # local-anchor initialization so every physical copy starts in its
             # own conditioning frame instead of at one shared global origin.
-            atom_array = set_com(
-                atom_array,
-                ori_token=self.ori_token,
-                infer_ori_strategy=self.infer_ori_strategy,
-            )
+            cylindrical = bool((self.extra or {}).get("cylindrical_constraints"))
+            if cylindrical:
+                if exists(self.ori_token) or exists(self.infer_ori_strategy):
+                    raise ValueError("Cylindrical source reference cannot be recentered without transporting its declared frames")
+            else:
+                atom_array = set_com(
+                    atom_array,
+                    ori_token=self.ori_token,
+                    infer_ori_strategy=self.infer_ori_strategy,
+                )
             initialization_mode = str(
                 (self.extra or {}).get(
                     "generated_coordinate_initialization",
                     "global_origin",
                 )
             )
+            # Hard cylindrical targets belong to the source geometry in the
+            # final runtime frame, not to the zero-information initializer.
+            # Carry atom-keyed annotations through native atom expansion.
+            if (self.extra or {}).get("cylindrical_constraints"):
+                for column, axis_name in enumerate(("x", "y", "z")):
+                    atom_array.set_annotation(
+                        f"cylindrical_reference_{axis_name}",
+                        atom_array.coord[:, column].copy(),
+                    )
             local_chains, local_residues = _initialize_generated_coordinates(
                 atom_array,
                 mode=initialization_mode,

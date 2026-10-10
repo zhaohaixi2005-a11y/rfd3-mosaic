@@ -1,5 +1,16 @@
 # RFD3-Mosaic project status
 
+## 2026-10-10 source checkpoint
+
+This checkpoint synchronizes constraint compilation, atomic runtime transactions,
+physical-atom auditing and CPU-tested code. Experimental geometry repair and
+partial cylindrical network conditioning remain opt-in research paths. Their
+presence in the source is not evidence of validated generated structures;
+failed noisy-conditioning experiments are not a recommended production fix.
+GPU inference quality and foldability require separate validation. Private
+structure fixtures, native captures and experiment outputs are not included
+in this checkpoint.
+
 > Sampling semantics updated on 2026-09-16: one task shares one input pose
 > across all `designs`; different starting poses are separate `prepare-poses`
 > tasks. Runtime mobility remains independent. Earlier dated results below

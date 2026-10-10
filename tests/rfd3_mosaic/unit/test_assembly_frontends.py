@@ -816,6 +816,7 @@ interfaces:
   - id: alpha_beta
     between: [alpha, beta]
     relation: {mode: preserve_input}
+    required: false
 connections:
   - id: alpha_to_beta
     from: alpha.C

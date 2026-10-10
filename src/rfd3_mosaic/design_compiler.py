@@ -1088,8 +1088,8 @@ def lower_user_design(
     sampling_plan = compile_sampling_plan(design)
     plan.require_backend_support({"fixed_xyz", "cylindrical"})
     for operator in plan.operators:
-        if operator.operator == "fixed_xyz" and operator.atoms != AtomScope.ALL:
-            raise ValueError("The first fixed_xyz backend requires atoms=all")
+        if operator.operator == "fixed_xyz" and operator.atoms not in {AtomScope.ALL, AtomScope.BACKBONE}:
+            raise ValueError("The fixed_xyz backend supports atoms=all or atoms=backbone")
     bound = bind_constraint_plan(design, plan)
 
     symmetry_id = (
@@ -1315,6 +1315,21 @@ def lower_user_design(
         )
         for segment in ordered_segments
     }
+    # Every materialized range becomes a separate physical fragment/contig.
+    # A generation anchor that only partially matches a broader constraint
+    # must not duplicate the shared residues as a second fixed motif. The
+    # intended chain boundary is ambiguous, so require explicit disjoint
+    # fragments rather than silently inventing that topology.
+    for index, left in enumerate(ordered_segments):
+        for right in ordered_segments[index + 1 :]:
+            if generation_atom_ids[left].intersection(generation_atom_ids[right]):
+                raise ValueError(
+                    "Materialized motif selectors overlap: "
+                    f"{left.public_expression!r} and {right.public_expression!r}. "
+                    "Use the same complete selector for a motif and its "
+                    "generation anchor, or split the declarations into "
+                    "disjoint residue ranges at the intended chain boundaries."
+                )
     operator_by_segment: dict[
         SelectorSegment,
         BoundConstraintOperator,
@@ -1324,7 +1339,15 @@ def lower_user_design(
             operator
             for operator in structural_operators
             if (
-                generation_atom_ids[segment].issubset(operator.atom_ids)
+                all(
+                    _atom_identity(atom) in operator.atom_ids
+                    for atom in source_atoms
+                    if _atom_identity(atom) in generation_atom_ids[segment]
+                    and (
+                        operator.plan.atoms == AtomScope.ALL
+                        or atom.atom_name.upper() in {"N", "CA", "C", "O"}
+                    )
+                )
                 if operator.plan.operator == "fixed_xyz"
                 else any(
                     _segment_contains(declared_segment, segment)
@@ -1370,10 +1393,10 @@ def lower_user_design(
             # Cartesian fixed mask; cylindrical reference coordinates travel
             # through a separate runtime feature contract below.
             "fixed_atoms": (
-                "backbone"
-                if segment in sequence_conditioning_by_segment
-                else "all"
+                operator_by_segment[segment].plan.atoms.value
                 if operator_by_segment[segment].plan.operator == "fixed_xyz"
+                else "backbone"
+                if segment in sequence_conditioning_by_segment
                 else "none"
             ),
             "sequence_conditioning": sequence_conditioning_by_segment.get(

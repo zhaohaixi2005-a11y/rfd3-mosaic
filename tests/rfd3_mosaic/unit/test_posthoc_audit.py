@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import json
 import tempfile
@@ -8,6 +9,7 @@ from unittest.mock import patch
 import yaml
 
 from rfd3_mosaic.assembly_compiler import CompiledAudit
+from rfd3_mosaic.audit_evidence import BINDING_NAME, audit_evidence
 from rfd3_mosaic.cli import _parser
 from rfd3_mosaic.posthoc_audit import (
     _materialize_result_compiled_input,
@@ -54,6 +56,21 @@ class PosthocAuditTestCase(unittest.TestCase):
             json.dumps({"example": {"extra": extra}}) + "\n",
             encoding="utf-8",
         )
+
+    def _bind_cached_reports(self) -> None:
+        reports = tuple(self.run / name for name in (
+            "constraint_orbit_audit.json", "scaffold_validity_audit.json",
+        ))
+        evidence = audit_evidence(
+            compiled_input=self.input,
+            result_json=find_result_json(self.run),
+            reports=reports,
+            semantic_audits=infer_existing_run_audits(
+                run_directory=self.run, rfd3_input=self.input,
+                resolved_config={"topology": {"kind": "user_design"}},
+            ),
+        )
+        (self.run / BINDING_NAME).write_text(json.dumps(evidence))
 
     def test_infers_complete_user_design_audit_set_from_frozen_input(self) -> None:
         self._write_compiled_input(
@@ -286,12 +303,25 @@ class PosthocAuditTestCase(unittest.TestCase):
         self.assertFalse(summary["posthoc_audit"]["inference_rerun"])
         self.assertEqual(summary["contract_met_designs"], 1)
         self.assertEqual(summary["contract_flagged_designs"], 0)
-        self.assertEqual(summary["recommended_designs"], 1)
-        self.assertEqual(summary["review_designs"], 0)
+        self.assertEqual(summary["recommended_designs"], 0)
+        self.assertEqual(summary["review_designs"], 1)
         self.assertTrue(summary["design_results"][0]["contract_met"])
+        self.assertEqual(summary["design_results"][0]["chemical_status"], "not_evaluated")
+        self.assertEqual(
+            summary["design_results"][0]["task_and_chemical_status"],
+            "not_evaluated",
+        )
+        self.assertIsNone(
+            summary["design_results"][0]["task_and_chemical_passed"]
+        )
+        self.assertEqual(summary["independent_chemical_pass_designs"], 0)
+        self.assertEqual(summary["joint_task_and_chemical_pass_designs"], 0)
+        self.assertEqual(
+            summary["joint_task_and_chemical_not_evaluated_designs"], 1
+        )
         self.assertEqual(
             summary["design_results"][0]["recommendation"],
-            "recommended_for_next_stage",
+            "review_chemical_geometry",
         )
         self.assertEqual(
             summary["posthoc_audit"]["previous_error"],
@@ -370,6 +400,7 @@ class PosthocAuditTestCase(unittest.TestCase):
         )
         for report in reports:
             report.write_text('{"passed": true}\n', encoding="utf-8")
+        self._bind_cached_reports()
 
         with (
             patch("rfd3_mosaic.posthoc_audit.run_result_audits") as runner,
@@ -518,6 +549,7 @@ class PosthocAuditTestCase(unittest.TestCase):
         )
         for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
             (self.run / name).write_text('{"passed": true}\n')
+        self._bind_cached_reports()
         with patch("rfd3_mosaic.posthoc_audit._update_index"):
             result = audit_existing_run(self.run, reuse_reports=True)
         summary = json.loads((self.run / "experiment_summary.json").read_text())
@@ -562,6 +594,7 @@ class PosthocAuditTestCase(unittest.TestCase):
         )
         for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
             (self.run / name).write_text('{"passed": true}\n')
+        self._bind_cached_reports()
         with patch("rfd3_mosaic.posthoc_audit._update_index"):
             result = audit_existing_run(self.run, reuse_reports=True)
         summary = json.loads((self.run / "experiment_summary.json").read_text())
@@ -583,6 +616,7 @@ class PosthocAuditTestCase(unittest.TestCase):
         (self.run / "experiment_summary.json").write_text('{"status":"completed"}')
         for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
             (self.run / name).write_text('{"passed": true}')
+        self._bind_cached_reports()
         with patch("rfd3_mosaic.posthoc_audit._update_index"):
             outcome = audit_existing_run(self.run, reuse_reports=True)
         summary = json.loads((self.run / "experiment_summary.json").read_text())
@@ -625,11 +659,13 @@ class PosthocAuditTestCase(unittest.TestCase):
         ]
         for report in reports:
             report.write_text('{"passed": true}\n')
+        self._bind_cached_reports()
         with patch("rfd3_mosaic.posthoc_audit._update_index"):
             audit_existing_run(self.run, reuse_reports=True)
             reports[1].write_text(
                 '{"passed": false, "summary": {"passed_continuity": false}}\n'
             )
+            self._bind_cached_reports()  # Represents a newly completed audit pass.
             audit_existing_run(self.run, reuse_reports=True)
         explanation = json.loads((self.run / "decision_explanation.json").read_text())
         self.assertEqual(explanation["screening"]["contract_status"], "flagged")
@@ -641,6 +677,99 @@ class PosthocAuditTestCase(unittest.TestCase):
         )
         self.assertFalse(snapshot["payload"]["summary"]["passed_continuity"])
         self.assertIn("`flagged`", (self.run / "decision_explanation.md").read_text())
+
+    def test_noop_audit_cannot_reuse_old_passing_report(self) -> None:
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        report = self.run / "scaffold_validity_audit.json"
+        original = '{"passed": true, "previous": true}\n'
+        report.write_text(original)
+        with self.assertRaisesRegex(RuntimeError, "did not write"):
+            run_result_audits(
+                run_directory=self.run, rfd3_input=self.input,
+                result_json=self.result, semantic_audits=(),
+                command_runner=lambda command: None,
+            )
+        self.assertEqual(report.read_text(), original)
+
+    def test_failed_later_audit_preserves_entire_previous_report_set(self) -> None:
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        audit = CompiledAudit(
+            module="rfd3_mosaic.rfd3_constraint_orbit_audit",
+            report_name="constraint_orbit_audit.json", input_arguments=(),
+        )
+        previous = self.run / audit.report_name
+        previous.write_text('{"passed": true, "previous": true}')
+        def run(command):
+            if "rfd3_mosaic.rfd3_scaffold_audit" in command:
+                raise RuntimeError("second audit interrupted")
+            Path(command[command.index("--output") + 1]).write_text('{"passed": false}')
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            run_result_audits(
+                run_directory=self.run, rfd3_input=self.input,
+                result_json=self.result, semantic_audits=(audit,), command_runner=run,
+            )
+        self.assertTrue(json.loads(previous.read_text())["passed"])
+
+    def test_reuse_rejects_modified_structure_even_with_unchanged_metadata(self):
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
+            (self.run / name).write_text('{"passed": true}')
+        self._bind_cached_reports()
+        self.result.with_suffix(".cif").write_text("data_changed\n")
+        with patch("rfd3_mosaic.posthoc_audit._update_index"):
+            outcome = audit_existing_run(self.run, reuse_reports=True)
+        self.assertFalse(outcome.passed)
+        self.assertIn("evidence changed", outcome.error)
+
+    def test_legacy_unbound_reports_require_a_real_reaudit(self):
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        for name in ("constraint_orbit_audit.json", "scaffold_validity_audit.json"):
+            (self.run / name).write_text('{"passed": true}')
+        with patch("rfd3_mosaic.posthoc_audit._update_index"):
+            outcome = audit_existing_run(self.run, reuse_reports=True)
+        self.assertFalse(outcome.passed)
+        self.assertIn("without --reuse-reports", outcome.error)
+
+    def test_corrupt_or_empty_gzip_cannot_count_as_complete_generation(self):
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        self.result.with_suffix(".cif").unlink()
+        for content in (b"not gzip", gzip.compress(b""), gzip.compress(b"data_test\n")[:-5]):
+            with self.subTest(content=content):
+                self.result.with_suffix(".cif.gz").write_bytes(content)
+                result = generation_completeness(
+                    self.run, (self.result,), resolved_config={}, previous_summary={},
+                )
+                self.assertFalse(result["complete"])
+                self.assertIn(self.result.name, result["artifact_errors"])
+
+    def test_failed_audit_of_incomplete_run_without_summary_is_not_completed(self):
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        config_path = self.run / "resolved_config.yaml"
+        config = yaml.safe_load(config_path.read_text())
+        config["sampling"] = {"designs": 2}
+        config_path.write_text(yaml.safe_dump(config))
+        with (
+            patch("rfd3_mosaic.posthoc_audit.run_result_audits", side_effect=RuntimeError("audit interrupted")),
+            patch("rfd3_mosaic.posthoc_audit._update_index"),
+        ):
+            outcome = audit_existing_run(self.run)
+        summary = json.loads((self.run / "experiment_summary.json").read_text())
+        self.assertFalse(outcome.passed)
+        self.assertEqual(summary["status"], "partial")
+        self.assertFalse(summary["execution_completed"])
+
+    def test_inputs_changed_during_audit_cannot_be_certified(self):
+        self._write_compiled_input({"symmetry_multiplicity": 3})
+        def changing_audit(command):
+            Path(command[command.index("--output") + 1]).write_text('{"passed": true}')
+            self.result.with_suffix(".cif").write_text("data_new\n")
+        with self.assertRaisesRegex(RuntimeError, "changed while"):
+            run_result_audits(
+                run_directory=self.run, rfd3_input=self.input,
+                result_json=self.result, semantic_audits=(),
+                command_runner=changing_audit,
+            )
+        self.assertFalse((self.run / BINDING_NAME).exists())
 
 
 if __name__ == "__main__":

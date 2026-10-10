@@ -132,6 +132,12 @@ class RFD3(nn.Module):
                     "network_f": network_f,
                     "local_symmetry_context": local_symmetry_context,
                 }
+            if getattr(
+                self.inference_sampler.sampler,
+                "enable_partial_cylindrical_network_conditioning",
+                False,
+            ):
+                local_kwargs["feature_initializer"] = self.token_initializer
             return self.inference_sampler.sample_diffusion_like_af3(
                 f=full_f,
                 f_ref=f_ref,  # for cfg

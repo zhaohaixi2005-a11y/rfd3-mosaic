@@ -72,6 +72,7 @@ interface_seed:
       # intentionally too small to rescue a badly oriented starting pose.
       mobility:
         mode: orbit_rigid
+        proposal: scaffold_objectives
         bounds:
           max_translation: 1.0
           max_rotation_deg: 5.0

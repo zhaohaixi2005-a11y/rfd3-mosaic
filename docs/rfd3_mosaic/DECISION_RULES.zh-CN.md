@@ -7,6 +7,12 @@
 **必须同时看本次实例化参数：显式设置、预设和编译器会覆盖默认值。**
 本文没有把 RFD3 学习到的去噪预测解释成一组人工规则，也没有声称覆盖仓库全部实验分支。
 
+**2026-10-03 行为修订：** 新编译的普通任务将直线走廊归属设为 advisory，既不推动
+采样，也不单独否决最终结果；旧输入中显式 enabled:true 仍按 required 执行。
+完整骨架的参考合同保持 required。旧缓存审计需要重新执行审计建立内容绑定；不用
+重新生成结构。解析器现在拒绝缺失残基、重复原子、重叠物化片段及非有限数值。
+这些变化需要重新编译任务，不能将旧输入、旧轨迹当作本轮修复后的结果。
+
 **本文中的 energy/“能量”指 Mosaic 人为定义的几何引导损失。** 它由坐标、拓扑和
 配置计算，不是结合自由能、分子力场能量、RFD3 置信度或实验成功概率。分数降低只表示
 当前几何偏好得到改善；line search 保证按指定规则选步，不能证明评分规则本身正确。
@@ -541,6 +547,12 @@ E_prior = ||t/translation_scale||²
 配置类基础权重 junction=1、clash=1、tilt=.25、prior=.05，基础 clash 距离3 Å、
 最大倾角20°；以运行的 `scaffold_guidance_config` 为准。
 先验限制偏离初始姿态，倾角项表达轴向偏好；两者都不是普适生物学要求。
+这些系数是启发式默认值，没有经过匹配生成实验证明为最优。junction/clash 含距离平方单位，
+tilt/prior 无量纲；不能仅凭系数大小比较作用强弱。`objective.weighted_term_gradients`
+记录加权项值、允许自由度内的平移/旋转梯度，以及该步幅下的一阶敏感度。
+大常数项可以没有移动梯度，禁止方向上的梯度也不能推动实际 pose。
+梯度向量也被记录：两个项可以各有很大梯度，却方向相反、相互抵消。
+因此不能只看梯度模长，也不能按接受率最高或移动最多选择系数。
 
 可选 denoiser proposal 通过逆变换并平均对称副本、拟合刚体变化来获得更新；
 scaffold-objective proposal 则从上述能量的受限 SE(3) 梯度提出更新。
@@ -577,11 +589,20 @@ E_joint = E_graph + E_scaffold + E_extra
 不启用的附加目标不贡献分数；capture 只在其窗口内加入。几何项在联合 scaffold 中
 计算一次，各轨道姿态项逐个相加。graph 的 junction 和 scaffold 的 junction 使用
 不同损失形式与作用集合，可能对同一连接提供重复约束；相加不表示它们是独立的物理能量。
+组件间碰撞项同时进入局部 pose 梯度与最终联合评分，避免优化方向忽略最终拒绝条件。
+
+局部搜索先保留 1、1/2、1/4 三个尺度；全部失败后才继续减半至 1/256，
+显式传入尺度时按指定序列执行。多轨道合并失败后，也对全部增量使用同一个减半比例重试，
+每次重查能量、几何、单步和累计运动边界；不按轨道顺序部分提交。
+有限搜索失败只表示没有找到通过的候选，不证明不存在可行移动。
 
 刚体与界面联合事务同时比较 graph、scaffold 和启用的 core/capture 总能量。
 必须真的有变化、界面改善、联合总能量改善、界面接受条件及安全条件都满足，才提交。
 失败则回退坐标、刚体姿态和片段状态；proposal-only 模式即使候选通过也不提交。
 因此 `E_joint` 降低但 `E_graph` 没降低时，也不能通过联合接受规则。
+外层回滚后，轨迹的 `applied`、逐轨道 `committed`、实际提交增量和姿态快照都反映回滚后状态；
+暂时接受结果另记为 `pose_proposal_accepted`。`scaffold_pose_search_summary` 汇总拒绝原因与
+实际移动路程，后者不是最终净位移，各几何拒绝计数也可能重叠。
 
 ## 8. 核心、走线和最终链连续性
 
@@ -650,7 +671,8 @@ L_backbone_continuity = mean_chains(mean_adjacent [abs(d-3.8)-.55]+²)
 | 控制器执行、配置/标识/最终指标一致性 | 不满足记 contract flag；不是生物学结论 |
 | 自动界面覆盖/方向/形状代理未达标 | 默认 advisory flag |
 | 粗粒度碰撞、紧凑度、肽键几何提示 | 默认 advisory flag；生成文件保留 |
-| scaffold 审计的跨链拓扑/穿插检查失败 | contract flag；不能仅因为存在生成文件就判通过 |
+| scaffold 审计的物理跨链段接近检查失败 | contract flag；不能仅因为存在生成文件就判通过 |
+| 普通直线走廊归属不满足 | 默认 advisory；显式启用 required 或完整骨架参考合同才影响合同通过 |
 | 显式 required 的核心代理目标 | 用户要求未满足记 contract flag；仍只是代理目标 |
 | 无审计文件 | not_evaluated，不能称合同通过 |
 
@@ -1750,16 +1772,18 @@ CA 默认阈值 3.2 Å；连续性使用该次 sampler 的实际 target/toleranc
 
 <a id="generated-route-ownership"></a>
 
-## 23. 生成链的空间归属：防止无 clash 的中心穿绕
+## 23. 生成链的空间归属：可选的直线走廊先验
 
 来源：[`generated_routes.py`](../../models/rfd3/src/rfd3/inference/symmetry/generated_routes.py)、
 [`scaffold_core_guidance.py`](../../models/rfd3/src/rfd3/inference/symmetry/scaffold_core_guidance.py)、
 [`inference_sampler.py`](../../models/rfd3/src/rfd3/model/inference_sampler.py)、
 [`validation/generated_route_ownership.py`](../../src/rfd3_mosaic/validation/generated_route_ownership.py)。
 
-原子没有 clash，不代表生成链分别占据预期区域。这里明确加入“每段生成序列更靠近
-自己的连接路线”的设计要求，不根据投影视图的交叉数，也不根据是否发生原子碰撞来替代判断。
-该规则改善的是指定空间组织，不是分子力场、结理论不变量或 GPU 生成成功率承诺。
+原子没有 clash，不代表生成链分别占据预期区域。以下描述一个可选要求：
+“每段生成序列更靠近自己的连接路线”。回折参考骨架可能合理地违反此要求，
+所以新编译的普通任务默认 enabled:false, policy:advisory。以下引导、末端修正
+及 required 判定只适用于显式启用的输入；测量仍可记录。完整骨架使用其独立参考合同。
+它不是分子力场、结理论不变量或 GPU 生成成功率承诺。
 
 ### 23.1 路线身份、正余量与检查点
 

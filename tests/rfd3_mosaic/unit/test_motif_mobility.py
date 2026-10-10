@@ -14,6 +14,7 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
 )
 from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
+    _axis_angle,
     fit_centered_rigid_pose,
     mobility_window_weight,
     rigid_mobility_phase,
@@ -23,6 +24,7 @@ from rfd3.inference.symmetry.scaffold_guidance import (
     BoundaryTopology,
     CyclicAxis,
     ScaffoldGuidanceConfig,
+    _rotation_from_vector,
 )
 
 
@@ -43,6 +45,97 @@ def _apply(points, rotation, translation):
 
 
 class MotifMobilityTestCase(unittest.TestCase):
+    def test_denoiser_total_rotation_projection_preserves_step_bound(self):
+        template, _, transforms, controller = self._controller_case()
+        motif = controller.motifs[0]
+        motif.maximum_rotation_degrees = 170.0
+        motif.per_step_rotation_degrees = 15.0
+        motif.state.rotation[0] = _z_rotation(170.0)
+        center = template.mean(dim=1, keepdim=True)
+        master = (template - center) @ _z_rotation(190.0).T + center
+        raw = torch.cat(
+            [
+                _apply(master, rotation, translation)
+                for rotation, translation in transforms.values()
+            ],
+            dim=1,
+        )
+        previous = motif.state.rotation.clone()
+        controller.update(raw, progress=0.2)
+        angle = math.degrees(
+            float(_axis_angle(motif.state.rotation[0] @ previous[0].T)[1])
+        )
+        self.assertLessEqual(angle, 15.0 + 1e-5)
+
+    def test_nonfinite_native_mobility_settings_fail_early(self):
+        _, target, _, controller = self._controller_case()
+        for invalid in (float("nan"), float("inf"), -float("inf")):
+            for schedule in (mobility_window_weight, rigid_mobility_phase):
+                with self.subTest(schedule=schedule.__name__, progress=invalid):
+                    with self.assertRaisesRegex(ValueError, "finite"):
+                        schedule(invalid, start_fraction=0.0, end_fraction=1.0)
+            for setting in ("per_step_translation", "per_step_rotation_degrees"):
+                with self.subTest(setting=setting, value=invalid):
+                    with self.assertRaisesRegex(ValueError, "finite"):
+                        OrbitRigidMotifController(
+                            motifs=controller.motifs,
+                            sym_transforms=controller.sym_transforms,
+                            base_target=target,
+                            **{setting: invalid},
+                        )
+
+    def test_seeded_capture_is_independent_of_orbit_declaration_order(self):
+        _, scaffold, topology, axis, config, first = (
+            self._two_orbit_scaffold_guidance_case()
+        )
+        _, _, _, _, _, second = self._two_orbit_scaffold_guidance_case()
+        second.motifs.reverse()
+        kwargs = dict(
+            progress=0.2,
+            topology=topology,
+            axis=axis,
+            principal_axes=(axis.direction, axis.direction),
+            config=config,
+            apply_update=True,
+            proposal_selection_seed=3,
+        )
+        left = first.update_orbits_from_scaffold(scaffold, **kwargs)
+        right = second.update_orbits_from_scaffold(scaffold, **kwargs)
+        self.assertTrue(first.last_update_applied)
+        self.assertTrue(second.last_update_applied)
+        self.assertTrue(torch.allclose(left, right, atol=1e-10, rtol=0.0))
+
+    def test_denoiser_noop_is_not_reported_as_applied_motion(self):
+        _, target, _, controller = self._controller_case()
+        observed = controller.update(target, progress=0.5)
+        self.assertFalse(controller.last_update_applied)
+        self.assertFalse(controller.diagnostics()["trajectory"][-1]["applied"])
+        self.assertTrue(torch.equal(observed, target))
+
+    def test_denoiser_fit_failure_does_not_partially_commit_orbits(self):
+        _, scaffold, _, _, _, controller = self._two_orbit_scaffold_guidance_case()
+        before = controller.materialize_target().clone()
+        first_pose = (
+            torch.eye(3, dtype=scaffold.dtype)[None],
+            torch.ones((1, 3), dtype=scaffold.dtype),
+            torch.zeros(1, dtype=scaffold.dtype),
+        )
+        with patch(
+            "rfd3.inference.symmetry.motif_mobility.fit_centered_rigid_pose",
+            side_effect=[first_pose, ValueError("second orbit fit failed")],
+        ):
+            with self.assertRaisesRegex(ValueError, "second orbit"):
+                controller.update(scaffold, progress=0.5)
+        self.assertTrue(torch.equal(controller.materialize_target(), before))
+        self.assertFalse(controller.last_update_applied)
+
+    def test_float32_unchanged_pose_does_not_report_a_rotation_step(self):
+        rotation = _rotation_from_vector(
+            torch.tensor([0.05, 0.025, 0.05 / 3], dtype=torch.float32)
+        )
+        _, angle = _axis_angle(rotation @ rotation.T)
+        self.assertLess(math.degrees(float(angle)), 1e-6)
+
     def test_schedule_freezes_before_and_after_window(self) -> None:
         self.assertEqual(
             mobility_window_weight(
@@ -608,6 +701,16 @@ class MotifMobilityTestCase(unittest.TestCase):
         )
         self.assertEqual(patch_state.assignments, {})
         self.assertFalse(controller.last_joint_transaction_applied)
+        trajectory = controller.diagnostics()["trajectory"][-1]
+        self.assertFalse(trajectory["applied"])
+        self.assertTrue(all(not p["committed"] for p in trajectory["orbit_proposals"]))
+        self.assertTrue(
+            all(
+                p["committed_translation_step_angstrom"] == 0.0
+                for p in trajectory["orbit_proposals"]
+            )
+        )
+        self.assertEqual(trajectory["orbits"], controller.diagnostics()["orbits"])
         self.assertFalse(diagnostics["packing_step"]["applied"])
         self.assertFalse(diagnostics["packing_step"]["patch_locked"])
         self.assertEqual(diagnostics["packing_step"]["patch_assignments"], {})
@@ -1670,6 +1773,85 @@ class MotifMobilityTestCase(unittest.TestCase):
         self.assertGreater(terms["inter_orbit_clash"], 0.0)
         self.assertLess(terms["minimum_inter_orbit_distance"], 5.0)
 
+    def test_joint_pose_backtracking_recovers_coupled_descent(self):
+        outputs = []
+        for reverse in (False, True):
+            target, scaffold, topology, axis, config, controller = (
+                self._two_orbit_scaffold_guidance_case()
+            )
+            master_indices = [int(m.master_atom_indices[0]) for m in controller.motifs]
+            baseline_x = target[0, master_indices, 0].sum()
+            for motif in controller.motifs:
+                motif.mobility_subspace = "bounded_se3"
+                motif.per_step_rotation_degrees = 0.0
+            if reverse:
+                controller.motifs.reverse()
+            config = replace(config, junction_weight=0.0)
+
+            def coupled_energy(
+                candidate, master_indices=master_indices, baseline_x=baseline_x
+            ):
+                displacement = candidate[master_indices, 0].sum() - baseline_x
+                return (displacement - 0.1).square()
+
+            def guard(candidate, master_indices=master_indices, baseline_x=baseline_x):
+                displacement = candidate[0, master_indices, 0].sum() - baseline_x
+                return {"accepted": float(displacement) <= 0.18}
+
+            observed = controller.update_orbits_from_scaffold(
+                scaffold,
+                progress=0.5,
+                topology=topology,
+                axis=axis,
+                principal_axes=(None, None),
+                config=config,
+                apply_update=True,
+                pose_energy=coupled_energy,
+                candidate_validator=guard,
+            )
+            self.assertTrue(controller.last_update_applied)
+            self.assertLess(float(coupled_energy(observed[0])), 0.01)
+            self.assertTrue(guard(observed)["accepted"])
+            self.assertTrue(
+                all(float(m.state.translation.norm()) > 0 for m in controller.motifs)
+            )
+            outputs.append(observed)
+        self.assertTrue(torch.allclose(outputs[0], outputs[1], atol=1e-8))
+
+    def test_pose_gradient_includes_inter_orbit_clash_penalty(self):
+        target, scaffold, topology, axis, config, controller = (
+            self._two_orbit_scaffold_guidance_case()
+        )
+        scaffold[0, topology.generated_ca_atom_indices] = 100.0
+        for motif in controller.motifs:
+            motif.mobility_subspace = "bounded_se3"
+            motif.per_step_rotation_degrees = 0.0
+        config = replace(
+            config, junction_weight=0.0, clash_weight=1.0, clash_distance=5.0
+        )
+        before, _ = controller._inter_orbit_clash_energy(
+            target[0],
+            topology=topology,
+            clash_distance=5.0,
+        )
+        self.assertGreater(float(before), 0.0)
+        observed = controller.update_orbits_from_scaffold(
+            scaffold,
+            progress=0.5,
+            topology=topology,
+            axis=axis,
+            principal_axes=(None, None),
+            config=config,
+            apply_update=True,
+        )
+        after, _ = controller._inter_orbit_clash_energy(
+            observed[0],
+            topology=topology,
+            clash_distance=5.0,
+        )
+        self.assertTrue(controller.last_update_applied)
+        self.assertLess(float(after), float(before))
+
     def test_multiple_scaffold_orbits_update_atomically_and_order_independently(
         self,
     ) -> None:
@@ -1790,7 +1972,9 @@ class MotifMobilityTestCase(unittest.TestCase):
         with patch.object(
             controller,
             "_joint_scaffold_energy",
-            side_effect=(joint_result(1.0), joint_result(2.0)),
+            side_effect=lambda candidate, *_args, **_kwargs: joint_result(
+                1.0 if torch.equal(candidate, target[0]) else 2.0
+            ),
         ):
             observed = controller.update_orbits_from_scaffold(
                 scaffold,

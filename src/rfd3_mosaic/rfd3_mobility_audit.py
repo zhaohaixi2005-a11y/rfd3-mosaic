@@ -223,7 +223,8 @@ def write_mobility_trajectory(
 
     result_path = Path(result_json).resolve()
     output_path = Path(output).resolve()
-    diagnostics = _load(result_path).get("motif_mobility_diagnostics")
+    result = _load(result_path)
+    diagnostics = result.get("motif_mobility_diagnostics")
     if diagnostics is None:
         return False
     if not isinstance(diagnostics, dict):
@@ -231,6 +232,12 @@ def write_mobility_trajectory(
     trajectory = diagnostics.get("trajectory")
     if not isinstance(trajectory, list):
         raise ValueError("Result mobility trajectory must be a list")
+    transport = (result.get("scaffold_contract_diagnostics") or {}).get(
+        "reference_transport"
+    )
+    attempts = (
+        transport.get("proposal_attempts", []) if isinstance(transport, dict) else []
+    )
     payload = _strict_json_value(
         {
             "artifact": "rfd3_mosaic.mobility_trajectory",
@@ -243,6 +250,24 @@ def write_mobility_trajectory(
             "scaffold_guidance_config": diagnostics.get("scaffold_guidance_config"),
             "final_orbits": diagnostics.get("orbits", []),
             "trajectory": trajectory,
+            "trajectory_scope": (
+                "controller_history_retained_after_transport_commit"
+                if isinstance(transport, dict)
+                else "controller_history"
+            ),
+            "transport_proposal_attempts": [
+                {
+                    key: attempt.get(key)
+                    for key in (
+                        "progress",
+                        "proposed",
+                        "committed",
+                        "reason",
+                        "controller_update_calls",
+                    )
+                }
+                for attempt in attempts
+            ],
         }
     )
     output_path.write_text(
@@ -252,12 +277,163 @@ def write_mobility_trajectory(
     return True
 
 
+def _zero_commit_pose_is_identity(orbits: Any, *, tolerance: float) -> bool:
+    """The concrete input pose is already baked in; relative states start at I."""
+    if not isinstance(orbits, list) or not orbits:
+        return False
+    for orbit in orbits:
+        if not isinstance(orbit, dict):
+            return False
+        norms = orbit.get("translation_norms")
+        rotations = orbit.get("rotation_degrees")
+        vectors = orbit.get("translation_vectors")
+        if (
+            not all(
+                isinstance(values, list) and values
+                for values in (norms, rotations, vectors)
+            )
+            or not len(norms) == len(rotations) == len(vectors)
+            or not all(
+                _finite_number(value) and 0.0 <= value <= tolerance
+                for value in norms + rotations
+            )
+        ):
+            return False
+        for reported_norm, raw_vector in zip(norms, vectors, strict=True):
+            vector = _vector3(raw_vector)
+            if vector is None:
+                return False
+            actual_norm = _norm(vector)
+            if actual_norm > tolerance or abs(actual_norm - reported_norm) > tolerance:
+                return False
+    return True
+
+
+def _transport_attempt_history(example, result, diagnostics, *, tolerance):
+    """Reconcile tentative attempts with the controller retained after commit.
+
+    Complete-scaffold transport rolls the entire tentative controller back on
+    rejection. Its update_calls therefore counts retained calls, whereas the
+    constraint runtime counts every proposal. The independent attempt ledger
+    must explain that difference; missing or inconsistent evidence fails closed.
+    """
+    plan = (example.get("extra") or {}).get("mosaic_reference_transport")
+    retained = diagnostics.get("trajectory", [])
+    summary = {
+        "required": plan is not None,
+        "valid": plan is None,
+        "attempted_update_calls": int(diagnostics.get("update_calls", 0)),
+        "attempted_active_window_calls": int(diagnostics.get("active_window_calls", 0)),
+        "committed_attempt_count": None,
+        "rejected_attempt_count": None,
+        "zero_commit_pose_identity_required": False,
+        "zero_commit_pose_identity_valid": None,
+        "final_pose_validation_scope": (
+            "Zero commits require identity relative pose. For nonzero commits, "
+            "scalar deltas do not determine final SE(3); independent geometry "
+            "audits remain required."
+        ),
+    }
+    if plan is None:
+        return retained, summary
+    from rfd3_mosaic.validation.reference_transport import transport_fingerprint
+
+    try:
+        transport = result["scaffold_contract_diagnostics"]["reference_transport"]
+        attempts = transport["proposal_attempts"]
+        transitions = transport["accepted_transitions"]
+        if (
+            not isinstance(attempts, list)
+            or not attempts
+            or not isinstance(transitions, list)
+            or transport.get("plan_sha256") != transport_fingerprint(plan)
+        ):
+            raise ValueError("Missing or unbound transport attempt ledger")
+        attempted, committed, committed_progress = [], [], []
+        previous_progress = -1.0
+        for attempt in attempts:
+            progress = attempt["progress"]
+            steps = attempt["attempted_controller_trajectory"]
+            if (
+                not _finite_number(progress)
+                or not 0.0 <= progress <= 1.0
+                or not previous_progress < progress
+                or type(attempt.get("proposed")) is not bool
+                or type(attempt.get("committed")) is not bool
+                or type(attempt.get("controller_update_calls")) is not int
+                or attempt["controller_update_calls"] != 1
+                or not isinstance(steps, list)
+                or len(steps) != 1
+            ):
+                raise ValueError("Invalid transport attempt or controller count")
+            previous_progress = progress
+            step = steps[0]
+            if (
+                not isinstance(step, dict)
+                or step.get("progress") != progress
+                or step.get("proposal_source") != diagnostics.get("proposal_source")
+                or not _finite_number(step.get("window_weight"))
+                or not 0.0 <= step["window_weight"] <= 1.0
+                or type(step.get("applied")) is not bool
+                or attempt["proposed"] != (step.get("applied") is True)
+            ):
+                raise ValueError("Attempt does not match its tentative controller step")
+            if attempt["committed"]:
+                if not attempt["proposed"] or attempt.get("reason") is not None:
+                    raise ValueError("Invalid outer transport commit")
+                committed.extend(steps)
+                committed_progress.append(progress)
+            elif not isinstance(attempt.get("reason"), str) or not attempt["reason"]:
+                raise ValueError("Rejected transport attempt lacks a reason")
+            # Validate inner atomic acceptance before interpreting outer rollback.
+            attempted.extend(steps)
+        if (
+            committed != retained
+            or len(committed) != int(diagnostics.get("update_calls", -1))
+            or sum(s["window_weight"] > 0 for s in committed)
+            != int(diagnostics.get("active_window_calls", -1))
+            or [t.get("progress") for t in transitions] != committed_progress
+            or int(diagnostics.get("conditioning_refresh_count", -1))
+            != 1 + len(committed)
+            or result.get("constraint_runtime_diagnostics")
+            != diagnostics.get("constraint_runtime")
+        ):
+            raise ValueError("Retained controller/transition/runtime history disagrees")
+        if not committed:
+            identity_valid = _zero_commit_pose_is_identity(
+                diagnostics.get("orbits"), tolerance=tolerance
+            )
+            summary.update(
+                zero_commit_pose_identity_required=True,
+                zero_commit_pose_identity_valid=identity_valid,
+            )
+            if not identity_valid:
+                raise ValueError(
+                    "Final relative pose is nonidentity or malformed despite zero committed attempts"
+                )
+        summary.update(
+            valid=True,
+            attempted_update_calls=len(attempts),
+            attempted_active_window_calls=sum(
+                s["window_weight"] > 0 for s in attempted
+            ),
+            committed_attempt_count=len(committed),
+            rejected_attempt_count=len(attempts) - len(committed),
+        )
+        return attempted, summary
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        summary.update(valid=False, error=str(error))
+        return retained, summary
+
+
 def audit_component_mobility(
     *,
     compiled_input: str | Path,
     result_json: str | Path,
     tolerance: float = 1e-5,
 ) -> dict[str, Any]:
+    if not _finite_number(tolerance) or tolerance < 0:
+        raise ValueError("Mobility audit tolerance must be finite and nonnegative")
     input_path = Path(compiled_input).resolve()
     result_path = Path(result_json).resolve()
     example = _single_example(input_path)
@@ -268,7 +444,8 @@ def audit_component_mobility(
     ]
     if not declared:
         raise ValueError("Compiled input declares no bounded mobile component")
-    diagnostics = _load(result_path).get("motif_mobility_diagnostics")
+    result = _load(result_path)
+    diagnostics = result.get("motif_mobility_diagnostics")
     if not isinstance(diagnostics, dict):
         raise ValueError("Result metadata lacks motif mobility diagnostics")
     observed = diagnostics.get("orbits")
@@ -277,6 +454,9 @@ def audit_component_mobility(
     trajectory = diagnostics.get("trajectory", [])
     if not isinstance(trajectory, list):
         raise ValueError("Motif mobility diagnostics trajectory must be a list")
+    attempted_trajectory, attempt_evidence = _transport_attempt_history(
+        example, result, diagnostics, tolerance=tolerance
+    )
     constraint_runtime = diagnostics.get("constraint_runtime")
     runtime_counts = (
         constraint_runtime.get("phase_counts")
@@ -284,9 +464,10 @@ def audit_component_mobility(
         else None
     )
     expected_refreshes = int(diagnostics.get("conditioning_refresh_count", 0))
-    expected_proposals = int(diagnostics.get("update_calls", 0))
+    expected_proposals = attempt_evidence["attempted_update_calls"]
     constraint_runtime_valid = bool(
         isinstance(constraint_runtime, dict)
+        and attempt_evidence["valid"]
         and isinstance(runtime_counts, dict)
         and constraint_runtime.get("state") == "finalized"
         and int(runtime_counts.get("initialize", -1)) == 1
@@ -418,15 +599,11 @@ def audit_component_mobility(
         ):
             translation_budget = min(
                 maximum_translation,
-                scheduled_active_count
-                * float(response)
-                * float(step_translation),
+                scheduled_active_count * float(response) * float(step_translation),
             )
             rotation_budget = min(
                 maximum_rotation,
-                scheduled_active_count
-                * float(response)
-                * float(step_rotation),
+                scheduled_active_count * float(response) * float(step_rotation),
             )
         prior = record.get("effective_pose_prior")
         if not isinstance(prior, dict):
@@ -466,8 +643,7 @@ def audit_component_mobility(
                 ),
                 "rotation_search_fraction_of_bound": (
                     rotation_budget / maximum_rotation
-                    if rotation_budget is not None
-                    and maximum_rotation > tolerance
+                    if rotation_budget is not None and maximum_rotation > tolerance
                     else None
                 ),
                 "effective_pose_prior": prior,
@@ -478,7 +654,7 @@ def audit_component_mobility(
 
     scaffold_steps = [
         step
-        for step in trajectory
+        for step in attempted_trajectory
         if isinstance(step, dict) and step.get("proposal_source") == "scaffold_boundary"
     ]
     active_scaffold_steps = [
@@ -489,6 +665,8 @@ def audit_component_mobility(
         proposals = step.get("orbit_proposals")
         if (
             step.get("atomic_joint_acceptance") is not True
+            or type(step.get("applied")) is not bool
+            or type(step.get("accepted")) is not bool
             or not isinstance(proposals, list)
             or len(proposals) != len(declared)
         ):
@@ -517,7 +695,10 @@ def audit_component_mobility(
             ):
                 return False
         for proposal in proposals:
-            if not isinstance(proposal, dict):
+            if not isinstance(proposal, dict) or any(
+                type(proposal.get(key)) is not bool
+                for key in ("active", "accepted", "committed")
+            ):
                 return False
             local_accepted = bool(proposal.get("accepted"))
             expected_commit = applied and local_accepted
@@ -544,9 +725,17 @@ def audit_component_mobility(
             identifier_contract_valid
             and active_scaffold_steps
             and len(valid_joint_steps) == len(active_scaffold_steps)
-            and any(bool(step.get("applied")) for step in active_scaffold_steps)
         )
     )
+    if (
+        attempt_evidence["required"]
+        and diagnostics.get("proposal_source") == "scaffold_boundary"
+    ):
+        atomic_joint_runtime = bool(
+            atomic_joint_runtime
+            and active_scaffold_steps
+            and len(valid_joint_steps) == len(active_scaffold_steps)
+        )
     runtime_group_action_count = int(diagnostics.get("runtime_group_action_count", 0))
     declared_action_counts = {
         len(declaration.get("group_transform_ids", []))
@@ -565,8 +754,8 @@ def audit_component_mobility(
     )
     runtime_active = bool(
         diagnostics.get("apply_updates")
-        and int(diagnostics.get("update_calls", 0)) > 0
-        and int(diagnostics.get("active_window_calls", 0)) > 0
+        and expected_proposals > 0
+        and attempt_evidence["attempted_active_window_calls"] > 0
         and int(diagnostics.get("conditioning_refresh_count", 0)) > 0
         and int(diagnostics.get("mobile_orbit_count", -1)) == len(declared)
         and len(observed) == len(declared)
@@ -620,6 +809,7 @@ def audit_component_mobility(
             "valid_joint_trajectory_steps": len(valid_joint_steps),
             "identifier_contract_valid": identifier_contract_valid,
             "constraint_runtime_valid": constraint_runtime_valid,
+            "transport_attempt_evidence": attempt_evidence,
             "components": component_reports,
         },
     }

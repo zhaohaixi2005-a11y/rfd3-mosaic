@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import json
 import os
@@ -23,6 +22,7 @@ from rfd3_mosaic.advisory_screening import write_advisory_screening
 from rfd3_mosaic.assembly_compiler import compile_experiment_assembly
 from rfd3_mosaic.decision_explanation import write_decision_explanation
 from rfd3_mosaic.design_preferences import ResolvedDesignPreferences
+from rfd3_mosaic.output_chemical_status import joint_task_and_chemical_status
 from rfd3_mosaic.provenance.software import (
     collect_runtime_provenance,
     verify_file_identities,
@@ -34,6 +34,7 @@ from rfd3_mosaic.provenance.source_snapshot import (
 from rfd3_mosaic.result_auditing import (
     gate_result_audits,
     run_result_audits,
+    validate_result_artifacts,
 )
 from rfd3_mosaic.run_index import update_run_state
 from rfd3_mosaic.sampling_plan import (
@@ -180,23 +181,7 @@ def _reconcile_design_outcomes(
             if len(paths) != 1:
                 raise ValueError("Multiple output files claim the same design identity")
             path = paths[0]
-            if not isinstance(json.loads(path.read_text()), dict):
-                raise ValueError("Result metadata must be a JSON object")
-            structures = [
-                candidate
-                for candidate in (path.with_suffix(".cif.gz"), path.with_suffix(".cif"))
-                if candidate.is_file()
-            ]
-            if len(structures) != 1:
-                raise ValueError("A generated design requires exactly one final CIF")
-            structure = structures[0]
-            opener = gzip.open if structure.suffix == ".gz" else open
-            total = 0
-            with opener(structure, "rb") as handle:
-                for block in iter(lambda: handle.read(1024 * 1024), b""):
-                    total += len(block)
-            if total == 0:
-                raise ValueError("Generated CIF is empty")
+            validate_result_artifacts(path, allow_pdb=False)
             valid[key] = path
             row["output_present"] = True
             # An explicit native failure stays visible, even if a partial
@@ -247,6 +232,10 @@ def _audit_generated_design(
         "generated": True,
         "contract_met": False,
         "contract_status": "not_evaluated",
+        "chemical_status": "not_evaluated",
+        "chemical_geometry": {"status": "not_evaluated", "passed": None},
+        "task_and_chemical_status": "not_evaluated",
+        "task_and_chemical_passed": None,
         "recommendation": "review_required",
         "accepted": False,
         "reports": [],
@@ -281,6 +270,7 @@ def _audit_generated_design(
             audit_outcome.reports,
             mode=str(screening_config.get("mode", "advisory")),
             protocol=str(screening_config.get("protocol", "auto")),
+            result_json=result_json,
         )
         decision_path = write_decision_explanation(
             audit_directory / "decision_explanation.json",
@@ -289,9 +279,20 @@ def _audit_generated_design(
             reports=audit_outcome.reports,
             screening=screening,
         )
+        contract_status = screening["contract_status"]
+        chemical_geometry = screening.get(
+            "chemical_geometry", {"status": "not_evaluated", "passed": None}
+        )
+        joint_status = joint_task_and_chemical_status(
+            contract_status, chemical_geometry
+        )
         record.update(
-            contract_met=screening["contract_status"] == "met",
-            contract_status=screening["contract_status"],
+            contract_met=contract_status == "met",
+            contract_status=contract_status,
+            chemical_status=screening.get("chemical_status", "not_evaluated"),
+            chemical_geometry=chemical_geometry,
+            task_and_chemical_status=joint_status["status"],
+            task_and_chemical_passed=joint_status["passed"],
             recommendation=screening["recommendation"],
             screening_advice=str(screening_path),
             decision_explanation=str(decision_path),
@@ -399,11 +400,17 @@ def _merged_rfd3_input(
     return destination, by_example
 
 
-def _motif_mobility_runtime(rfd3_input: Path) -> tuple[bool, str]:
+def _sampler_example(rfd3_input: Path | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(rfd3_input, dict):
+        return rfd3_input
+    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
+    return next(iter(payload.values()))
+
+
+def _motif_mobility_runtime(rfd3_input: Path | dict[str, Any]) -> tuple[bool, str]:
     """Resolve sampler switches from compiler-emitted orbit mobility."""
 
-    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
-    example = next(iter(payload.values()))
+    example = _sampler_example(rfd3_input)
     orbits = (example.get("extra") or {}).get("motif_constraint_orbits", [])
     mobile = [orbit for orbit in orbits if orbit.get("mobility_mode") == "orbit_rigid"]
     if not mobile:
@@ -419,11 +426,10 @@ def _motif_mobility_runtime(rfd3_input: Path) -> tuple[bool, str]:
     )
 
 
-def _graph_interface_guidance_runtime(rfd3_input: Path) -> bool:
+def _graph_interface_guidance_runtime(rfd3_input: Path | dict[str, Any]) -> bool:
     """Enable the shared sampler field for output-stage contact edges."""
 
-    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
-    example = next(iter(payload.values()))
+    example = _sampler_example(rfd3_input)
     relations = (example.get("extra") or {}).get("assembly_interface_relations", [])
     return any(
         bool(relation.get("required", True))
@@ -434,22 +440,20 @@ def _graph_interface_guidance_runtime(rfd3_input: Path) -> bool:
     )
 
 
-def _symmetric_scaffold_packing_runtime(rfd3_input: Path) -> bool:
+def _symmetric_scaffold_packing_runtime(rfd3_input: Path | dict[str, Any]) -> bool:
     """Enable explicit generated-scaffold packing for cyclic seed designs."""
 
-    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
-    example = next(iter(payload.values()))
+    example = _sampler_example(rfd3_input)
     plan = (example.get("extra") or {}).get("automatic_symmetric_scaffold_packing")
     return isinstance(plan, dict) and plan.get("mode") == "symmetric_generated"
 
 
 def _generated_polymer_continuity_runtime(
-    rfd3_input: Path,
+    rfd3_input: Path | dict[str, Any],
 ) -> dict[str, Any] | None:
     """Resolve compiler-owned generated-chain geometry protection."""
 
-    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
-    example = next(iter(payload.values()))
+    example = _sampler_example(rfd3_input)
     plan = (example.get("extra") or {}).get("generated_polymer_continuity_guidance")
     if not isinstance(plan, dict) or not bool(plan.get("enabled")):
         return None
@@ -457,12 +461,11 @@ def _generated_polymer_continuity_runtime(
 
 
 def _generated_cross_chain_topology_runtime(
-    rfd3_input: Path,
+    rfd3_input: Path | dict[str, Any],
 ) -> dict[str, Any] | None:
     """Resolve compiler-owned generated-run routing protection."""
 
-    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
-    example = next(iter(payload.values()))
+    example = _sampler_example(rfd3_input)
     plan = (example.get("extra") or {}).get("generated_cross_chain_topology_guidance")
     if not isinstance(plan, dict) or not bool(plan.get("enabled")):
         return None
@@ -470,12 +473,11 @@ def _generated_cross_chain_topology_runtime(
 
 
 def _resolved_guidance_overrides(
-    rfd3_input: Path,
+    rfd3_input: Path | dict[str, Any],
 ) -> tuple[str, ...]:
     """Read all compiler-resolved guidance values from the frozen input."""
 
-    payload = json.loads(rfd3_input.read_text(encoding="utf-8"))
-    example = next(iter(payload.values()))
+    example = _sampler_example(rfd3_input)
     preferences = (example.get("extra") or {}).get("resolved_design_preferences")
     if not preferences:
         return ()
@@ -483,26 +485,63 @@ def _resolved_guidance_overrides(
 
 
 def _sampler_dispatch_overrides(
-    sampling: dict[str, Any], rfd3_input: Path
+    sampling: dict[str, Any], rfd3_input: Path | dict[str, Any]
 ) -> dict[str, Any]:
-    """Pass the worker's dispatch-relevant flags to CPU preflight.
+    """Resolve the same sampler overrides for CPU preflight and inference.
 
     In particular, the official control must retain legacy/independent flags;
     the preflight must not silently substitute public exact-Mosaic defaults.
     Compiler guidance overrides are applied last, as in the inference command.
     """
 
+    rfd3_input = _sampler_example(rfd3_input)
     mobility_enabled, proposal = _motif_mobility_runtime(rfd3_input)
     sampler = {
         **sampling["sampler"],
+        **({"num_timesteps": sampling["timesteps"]} if "timesteps" in sampling else {}),
         "symmetry_execution_backend": sampling["execution_backend"],
+        **({"symmetry_neighbour_radius": sampling["neighbour_radius"]} if "neighbour_radius" in sampling else {}),
         "enable_orbit_rigid_motif_mobility": mobility_enabled,
         "motif_mobility_proposal_source": proposal,
+        "motif_mobility_apply_updates": True,
+        "enable_graph_interface_guidance": _graph_interface_guidance_runtime(rfd3_input),
+        "enable_symmetric_scaffold_packing": _symmetric_scaffold_packing_runtime(rfd3_input),
     }
+    exact = (
+        sampler["symmetry_state_mode"] == "orbit_average"
+        and sampler["symmetry_noise_mode"] == "coupled"
+    )
+    # The official legacy control must not inherit optional exact-Mosaic
+    # geometry safeguards from compiler metadata.
+    continuity = _generated_polymer_continuity_runtime(rfd3_input) if exact else None
+    topology = _generated_cross_chain_topology_runtime(rfd3_input) if exact else None
+    sampler["enable_generated_polymer_continuity_guidance"] = continuity is not None
+    sampler["enable_generated_cross_chain_topology_guidance"] = topology is not None
+    if continuity is not None:
+        sampler.update({
+            "generated_polymer_continuity_target_ca_distance": continuity.get("target_ca_distance", 3.8),
+            "generated_polymer_continuity_tolerance": continuity.get("tolerance", 0.5),
+            "generated_polymer_continuity_iterations": continuity.get("projection_iterations", 64),
+        })
+    if topology is not None:
+        sampler["generated_routing_ownership_weight"] = topology.get("routing_ownership_weight", 1.0)
+        for name, default in (("routing_clearance", 3.2), ("routing_anchor_taper_residues", 2.0),
+                              ("routing_tolerance", 1e-3)):
+            sampler["generated_" + name] = topology.get(name, default)
     for argument in _resolved_guidance_overrides(rfd3_input):
         name, value = argument.removeprefix("++inference_sampler.").split("=", 1)
         sampler[name] = yaml.safe_load(value)
     return sampler
+
+
+def _sampler_inference_arguments(sampling: dict[str, Any], rfd3_input: Path) -> list[str]:
+    """Serialize the already-prevalidated mapping using native Hydra syntax."""
+    existing = {"kind", "num_timesteps", "allow_realignment"}
+    return [
+        ("" if name in existing else "++") + "inference_sampler." + name + "="
+        + ("null" if value is None else str(value))
+        for name, value in _sampler_dispatch_overrides(sampling, rfd3_input).items()
+    ]
 
 
 def _requires_assembly_pose_feasibility(rfd3_input: Path) -> bool:
@@ -908,116 +947,23 @@ def execute(
             encoding="utf-8",
         )
 
-    sampler = sampling["sampler"]
-    mobility_enabled, mobility_proposal_source = _motif_mobility_runtime(
-        assemblies[0].input_path
-    )
-    interface_guidance_enabled = _graph_interface_guidance_runtime(
-        assemblies[0].input_path
-    )
-    scaffold_packing_enabled = _symmetric_scaffold_packing_runtime(
-        assemblies[0].input_path
-    )
-    polymer_continuity = _generated_polymer_continuity_runtime(assemblies[0].input_path)
-    cross_chain_topology = _generated_cross_chain_topology_runtime(
-        assemblies[0].input_path
-    )
-    # The legacy official control deliberately uses legacy_asu/independent
-    # sampling. Compiler metadata describes optional exact-Mosaic safeguards;
-    # those automatic safeguards must not change the control's sampler mode
-    # or cause its initialization to fail. Explicit mobility/packing requests
-    # still undergo the sampler's normal compatibility validation.
-    exact_sampler = (
-        sampler["symmetry_state_mode"] == "orbit_average"
-        and sampler["symmetry_noise_mode"] == "coupled"
-    )
-    if not exact_sampler:
-        polymer_continuity = None
-        cross_chain_topology = None
-    if interface_guidance_enabled and scaffold_packing_enabled:
-        raise ValueError(
-            "Compiled input cannot enable graph interfaces and automatic "
-            "symmetric scaffold packing simultaneously"
-        )
     requested_designs = int(sampling.get("designs", 1))
     inference_command = [
         sys.executable,
         "-m",
         "rfd3.run_inference",
-        f"inference_sampler.kind={sampler['kind']}",
+        *_sampler_inference_arguments(sampling, assemblies[0].input_path),
         f"out_dir={run_dir}",
         f"inputs={rfd3_input}",
         f"ckpt_path={resources['checkpoint']}",
         f"seed={sampling['seed']}",
         "diffusion_batch_size=1",
         "n_batches=1",
-        f"inference_sampler.num_timesteps={sampling['timesteps']}",
-        "inference_sampler.allow_realignment=" + str(sampler["allow_realignment"]),
-        "++inference_sampler.fixed_motif_finalization_mode="
-        + str(sampler["fixed_motif_finalization_mode"]),
-        "++inference_sampler.preserve_fixed_motif_during_symmetry="
-        + str(sampler["preserve_fixed_motif_during_symmetry"]),
-        "++inference_sampler.require_motif_constraint_groups="
-        + str(sampler["require_motif_constraint_groups"]),
-        "++inference_sampler.symmetry_state_mode="
-        + str(sampler["symmetry_state_mode"]),
-        "++inference_sampler.symmetry_noise_mode="
-        + str(sampler["symmetry_noise_mode"]),
-        "++inference_sampler.symmetry_execution_backend="
-        + str(sampling["execution_backend"]),
-        "++inference_sampler.symmetry_neighbour_radius="
-        + str(sampling["neighbour_radius"]),
-        "++inference_sampler.enable_orbit_rigid_motif_mobility="
-        + str(mobility_enabled),
-        "++inference_sampler.motif_mobility_proposal_source="
-        + mobility_proposal_source,
-        "++inference_sampler.motif_mobility_apply_updates=True",
-        "++inference_sampler.enable_graph_interface_guidance="
-        + str(interface_guidance_enabled),
-        "++inference_sampler.enable_symmetric_scaffold_packing="
-        + str(scaffold_packing_enabled),
-        "++inference_sampler.enable_generated_polymer_continuity_guidance="
-        + str(polymer_continuity is not None),
-        "++inference_sampler.enable_generated_cross_chain_topology_guidance="
-        + str(cross_chain_topology is not None),
         f"low_memory_mode={sampling['low_memory_mode']}",
         "skip_existing=False",
         f"dump_trajectories={sampling['dump_trajectories']}",
         "prevalidate_inputs=True",
     ]
-    if polymer_continuity is not None:
-        inference_command.extend(
-            (
-                "++inference_sampler."
-                "generated_polymer_continuity_target_ca_distance="
-                + str(polymer_continuity.get("target_ca_distance", 3.8)),
-                "++inference_sampler.generated_polymer_continuity_tolerance="
-                + str(polymer_continuity.get("tolerance", 0.5)),
-                "++inference_sampler.generated_polymer_continuity_iterations="
-                + str(polymer_continuity.get("projection_iterations", 64)),
-            )
-        )
-    if cross_chain_topology is not None:
-        inference_command.append(
-            "++inference_sampler.generated_routing_ownership_weight="
-            + str(cross_chain_topology.get("routing_ownership_weight", 1.0))
-        )
-        for name, default in (
-            ("routing_clearance", 3.2),
-            ("routing_anchor_taper_residues", 2.0),
-            ("routing_tolerance", 1e-3),
-        ):
-            inference_command.append(
-                "++inference_sampler.generated_"
-                + name
-                + "="
-                + str(cross_chain_topology.get(name, default))
-            )
-    # Resolved preferences also carry the independent intra/inter scaffold
-    # field.  Do not couple those overrides to graph-interface activation:
-    # supplied-interface jobs may legitimately request a compact monomer core
-    # while explicitly declining creation of a second generated interface.
-    inference_command.extend(_resolved_guidance_overrides(assemblies[0].input_path))
     plain_cif_directory = run_dir / "generated_structures_cif"
     inference_error = None
     try:
@@ -1059,6 +1005,10 @@ def execute(
         ledger["designs"][example_id].update(
             audit_status=record["audit_status"],
             contract_status=record["contract_status"],
+            chemical_status=record["chemical_status"],
+            chemical_geometry=record["chemical_geometry"],
+            task_and_chemical_status=record["task_and_chemical_status"],
+            task_and_chemical_passed=record["task_and_chemical_passed"],
         )
         if record.get("audit_error"):
             ledger["designs"][example_id]["audit_error"] = record["audit_error"]
@@ -1077,6 +1027,16 @@ def execute(
     recommended_count = sum(
         record["recommendation"] == "recommended_for_next_stage"
         for record in design_results
+    )
+    chemical_pass_count = sum(
+        record["chemical_geometry"].get("passed") is True
+        for record in design_results
+    )
+    joint_pass_count = sum(
+        record["task_and_chemical_passed"] is True for record in design_results
+    )
+    joint_failed_count = sum(
+        record["task_and_chemical_passed"] is False for record in design_results
     )
     archive_error = None
     try:
@@ -1124,6 +1084,15 @@ def execute(
         "contract_met_designs": contract_met_count,
         "contract_flagged_designs": contract_flagged_count,
         "contract_not_evaluated_designs": contract_unevaluated_count,
+        "independent_chemical_pass_designs": chemical_pass_count,
+        "independent_chemical_not_passed_designs": (
+            len(design_results) - chemical_pass_count
+        ),
+        "joint_task_and_chemical_pass_designs": joint_pass_count,
+        "joint_task_and_chemical_failed_designs": joint_failed_count,
+        "joint_task_and_chemical_not_evaluated_designs": (
+            len(design_results) - joint_pass_count - joint_failed_count
+        ),
         "recommended_designs": recommended_count,
         "review_designs": len(design_results) - recommended_count,
         "screening": {

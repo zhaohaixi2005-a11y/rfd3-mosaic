@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 
-
 LIMITS = {
     "maximum_ca_deviation",
     "contact_distance",

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import biotite.structure as struc
@@ -875,6 +875,8 @@ def _runtime_symmetry_features(X_L, sym_feats):
         transform_id = int(raw_transform_id)
         if transform_id == FIXED_TRANSFORM_ID:
             continue
+        if transform_id in sym_transforms:
+            raise ValueError(f"Duplicate symmetry transform ID {transform_id}")
         if len(raw_transform) != 2:
             raise ValueError(
                 f"Symmetry transform {transform_id} must contain (R, T)"
@@ -1092,6 +1094,67 @@ def _nearest_proper_rotation(
     return normalized
 
 
+def normalize_symmetry_transforms(
+    transforms,
+    *,
+    like: torch.Tensor,
+    already_normalized: bool = False,
+) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    """Bind one proper frame registry without requiring atom-orbit metadata.
+
+    The exact projector and mobile controller must use the same rotations.
+    A cached projector registry is checked but never fitted again; standalone
+    callers use the same bounded polar correction as the exact projector.
+    Translations and transform IDs are preserved, including sparse IDs.
+    """
+    dtype = _symmetry_work_dtype(like)
+    identity = torch.eye(3, dtype=dtype, device=like.device)
+    normalized = {}
+    with torch.autocast(device_type=like.device.type, enabled=False):
+        for raw_id, transform in transforms.items():
+            transform_id = int(raw_id)
+            if transform_id == FIXED_TRANSFORM_ID:
+                continue
+            if transform_id in normalized:
+                raise ValueError(f"Duplicate symmetry transform ID {transform_id}")
+            if not isinstance(transform, (tuple, list)) or len(transform) != 2:
+                raise ValueError(
+                    f"Symmetry transform {transform_id} must contain (R, T)"
+                )
+            rotation, translation = (
+                torch.as_tensor(value, dtype=dtype, device=like.device)
+                for value in transform
+            )
+            if rotation.shape != (3, 3) or translation.shape != (3,):
+                raise ValueError(
+                    f"Symmetry transform {transform_id} must have shapes "
+                    "(3, 3) and (3,)"
+                )
+            if not (torch.isfinite(rotation).all() and torch.isfinite(translation).all()):
+                raise ValueError(f"Symmetry transform {transform_id} contains NaN or Inf")
+            # Do not perturb a matrix that is already proper to working
+            # roundoff. Re-SVD of exact input frames otherwise changes even
+            # no-op controller targets and defeats atomic rollback equality.
+            orthogonality = torch.max(torch.abs(rotation @ rotation.T - identity))
+            determinant = torch.abs(torch.linalg.det(rotation) - 1.0)
+            roundoff = 8.0 * torch.finfo(dtype).eps
+            proper_to_roundoff = (
+                float(orthogonality.item()) <= roundoff
+                and float(determinant.item()) <= roundoff
+            )
+            if not already_normalized and not proper_to_roundoff:
+                rotation = _nearest_proper_rotation(rotation, transform_id=transform_id)
+            orthogonality = torch.max(torch.abs(rotation @ rotation.T - identity))
+            determinant = torch.abs(torch.linalg.det(rotation) - 1.0)
+            if float(orthogonality.item()) > 1e-5 or float(determinant.item()) > 1e-5:
+                raise ValueError(
+                    f"Symmetry transform {transform_id} could not be "
+                    "normalized to a proper rotation"
+                )
+            normalized[transform_id] = rotation, translation
+    return normalized
+
+
 def build_symmetry_orbit_layout(
     sym_feats,
     *,
@@ -1126,62 +1189,9 @@ def build_symmetry_orbit_layout(
             "Exact symmetry-orbit operations require atom-key-verified "
             "sym_orbit_slot correspondence"
         )
-    identity = torch.eye(
-        3,
-        dtype=work_like.dtype,
-        device=work_like.device,
-    )
-    # RFD3 calls the sampler from an outer bfloat16 autocast context.  The
-    # C3 sine/cosine entries lose enough precision in bfloat16 to look
-    # non-orthogonal at the strict runtime tolerance, so both validation and
-    # projection must explicitly stay in float32/float64.
-    with torch.autocast(
-        device_type=work_like.device.type,
-        enabled=False,
-    ):
-        normalized_transforms = {}
-        for transform_id, (rotation, translation) in sym_transforms.items():
-            if not (
-                torch.isfinite(rotation).all()
-                and torch.isfinite(translation).all()
-            ):
-                raise ValueError(
-                    f"Symmetry transform {transform_id} contains NaN or Inf"
-                )
-            # Lightning may recursively cast feature tensors, including
-            # ``sym_transform``, to bfloat16 before sampler entry.  A C3
-            # rotation rounded that way has ~2e-3 orthogonality/determinant
-            # error even though its nearest SO(3) correction is below 1e-3.
-            # Prevalidation audits the original runtime frames strictly.
-            # Here, use the bounded polar-correction test below as the single
-            # acceptance gate instead of rejecting the lossy transport
-            # representation before it can be normalized.
-            normalized_rotation = _nearest_proper_rotation(
-                rotation,
-                transform_id=transform_id,
-            )
-            normalized_orthogonality_error = torch.max(
-                torch.abs(
-                    normalized_rotation @ normalized_rotation.T
-                    - identity
-                )
-            )
-            normalized_determinant_error = torch.abs(
-                torch.linalg.det(normalized_rotation) - 1.0
-            )
-            if (
-                float(normalized_orthogonality_error.item()) > 1e-5
-                or float(normalized_determinant_error.item()) > 1e-5
-            ):
-                raise ValueError(
-                    f"Symmetry transform {transform_id} could not be "
-                    "normalized to a proper rotation"
-                )
-            normalized_transforms[transform_id] = (
-                normalized_rotation,
-                translation,
-            )
-    sym_transforms = normalized_transforms
+    # Lightning may cast incoming frames to bfloat16. One bounded SO(3)
+    # correction supplies the exact projector and every mobility expansion.
+    sym_transforms = normalize_symmetry_transforms(sym_transforms, like=work_like)
     entity_orbits = tuple(
         (
             entity_id,
@@ -1218,6 +1228,18 @@ def _resolve_symmetry_orbit_layout(sym_feats, like, layout):
         raise ValueError(
             "Cached symmetry orbit layout is on a different device"
         )
+    if any(
+        rotation.dtype != like.dtype or translation.dtype != like.dtype
+        for rotation, translation in layout.sym_transforms.values()
+    ):
+        # Mobility proposes in float32 even if a replay/reference state was
+        # built in float64. Reuse atom identities, but match frame arithmetic
+        # to the active geometry precision instead of promoting only one side
+        # of an indexed assignment or mixing matmul dtypes.
+        return replace(layout, sym_transforms={
+            key: (rotation.to(dtype=like.dtype), translation.to(dtype=like.dtype))
+            for key, (rotation, translation) in layout.sym_transforms.items()
+        })
     return layout
 
 

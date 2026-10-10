@@ -156,7 +156,7 @@ assert TEST_JSON_DATA, "No test json data loaded!"
 
 
 def filter_inference_args(args):
-    return {k: v for k, v in args.items() if k in valid_keys_}
+    return {k: v for k, v in args.items() if k in DesignInputSpecification.model_fields}
 
 
 def instantiate_example(args, is_inference=True):

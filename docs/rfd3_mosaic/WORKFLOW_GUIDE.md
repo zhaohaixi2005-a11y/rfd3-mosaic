@@ -121,6 +121,15 @@ All designs in a task share its initial pose automatically. The old
 `replicates_per_pose` control is deprecated; use `prepare-poses` to create
 separate tasks with different starting poses.
 
+For expert `bounded_mobile` components, the native RFD3 proposal is
+`pose.proposal: scaffold_objectives`; omitting `proposal` selects it.
+Older tasks that explicitly select `denoiser_fit` must be recompiled with
+`scaffold_objectives`. Native RFD3 copies fixed-atom coordinates through its
+denoiser, so fitting those atoms provides no learned motion signal; preflight
+now rejects that combination before GPU work. Rebuild any bound complete
+scaffold with `prepare-scaffold` after changing the task, so its provenance
+continues to match. A fixed component does not need this migration.
+
 ## Workflow A: fixed motif, generate a new interface
 
 Use this for a motif that is not itself the oligomerization interface.

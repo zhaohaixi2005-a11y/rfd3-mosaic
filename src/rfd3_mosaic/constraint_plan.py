@@ -5,6 +5,7 @@ from enum import Enum
 from pydantic import Field
 
 from rfd3_mosaic.design_preferences import compile_design_preferences
+from rfd3_mosaic.fixed_atom_contract import resolve_fixed_atom_scope
 from rfd3_mosaic.schema.design import (
     AtomScope,
     BoundedMobileConstraint,
@@ -205,6 +206,11 @@ def _validate_exact_selector_conflicts(
 def compile_constraint_plan(design: UserDesignSpec) -> ConstraintPlan:
     """Compile constraints deterministically without choosing a backend."""
 
+    if design.components and design.conditioning.redesign_motif_sidechains:
+        raise ValueError(
+            "Graph components with sidechain redesign are not supported: "
+            "their fixed ALL geometry cannot be lowered to BKBN implicitly"
+        )
     resolved_preferences = compile_design_preferences(design)
 
     legacy_operators = tuple(
@@ -217,7 +223,15 @@ def compile_constraint_plan(design: UserDesignSpec) -> ConstraintPlan:
                 else ConstraintStage.HARD_PROJECTOR
             ),
             selector=constraint.selector,
-            atoms=constraint.atoms,
+            atoms=(AtomScope(resolve_fixed_atom_scope(
+                constraint.atoms,
+                explicit="atoms" in constraint.model_fields_set,
+                sequence_conditioned=any(
+                    clause.selector == constraint.selector
+                    for clause in design.conditioning.sequence
+                ),
+                redesign=design.conditioning.redesign_motif_sidechains,
+            )) if isinstance(constraint, FixedXYZConstraint) else constraint.atoms),
             orbit_scope=constraint.orbit_scope,
             reference_frame=(
                 "symmetry_axis"

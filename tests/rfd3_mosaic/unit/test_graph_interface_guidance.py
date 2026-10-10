@@ -16,11 +16,11 @@ from rfd3.inference.symmetry.graph_interface_guidance import (
     graph_interface_proposal_acceptable,
     graph_interface_quality_satisfied,
     guidance_window_weight,
+    resolve_graph_interface_patch_assignments,
+    resolve_graph_interface_step_context,
     rf_contact_prior_schedule_scale,
     rf_oligomer_contact_prior,
     scheduled_interface_ca_distance,
-    resolve_graph_interface_patch_assignments,
-    resolve_graph_interface_step_context,
 )
 
 

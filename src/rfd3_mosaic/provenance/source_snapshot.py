@@ -31,6 +31,7 @@ def _git_files(repository: Path, roots: tuple[str, ...]) -> list[str] | None:
         "-C",
         str(repository),
         "ls-files",
+        "-z",
         "--cached",
         "--others",
         "--exclude-standard",
@@ -47,7 +48,7 @@ def _git_files(repository: Path, roots: tuple[str, ...]) -> list[str] | None:
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return None
-    return sorted(set(completed.stdout.splitlines()))
+    return sorted(set(name for name in completed.stdout.split("\0") if name))
 
 
 def _filesystem_files(
@@ -208,6 +209,23 @@ def verify_source_snapshot_tree(
             raise RuntimeError(
                 f"Snapshot source file SHA256 changed: {relative}"
             )
+    roots = manifest.get("source_roots")
+    if not isinstance(roots, list) or not roots:
+        raise RuntimeError("Source snapshot manifest contains no source roots")
+    for source in roots:
+        path = Path(str(source))
+        if path.is_absolute() or ".." in path.parts:
+            raise RuntimeError(f"Unsafe source snapshot root: {source}")
+    observed = {
+        relative for relative in _filesystem_files(root, tuple(roots))
+        if not relative.endswith((".pyc", ".pyo"))
+    }
+    declared = {str(record["path"]) for record in records}
+    if observed != declared:
+        raise RuntimeError(
+            "Source snapshot file inventory changed: "
+            f"unexpected={sorted(observed - declared)}, missing={sorted(declared - observed)}"
+        )
     return manifest
 
 

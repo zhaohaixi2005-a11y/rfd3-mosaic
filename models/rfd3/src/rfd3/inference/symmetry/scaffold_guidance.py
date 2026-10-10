@@ -10,7 +10,7 @@ subgroup of Cn or Dn; orbit materialization itself is group-agnostic.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import torch
@@ -63,8 +63,8 @@ class ScaffoldGuidanceConfig:
             "tilt_weight",
             "prior_weight",
         ):
-            if getattr(self, name) < 0.0:
-                raise ValueError(f"{name} cannot be negative")
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative")
         for name in (
             "junction_target_distance",
             "junction_huber_delta",
@@ -72,8 +72,8 @@ class ScaffoldGuidanceConfig:
             "translation_prior_scale",
             "rotation_prior_scale_degrees",
         ):
-            if getattr(self, name) <= 0.0:
-                raise ValueError(f"{name} must be positive")
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
         if not 0.0 <= self.maximum_tilt_degrees < 90.0:
             raise ValueError("maximum_tilt_degrees must be in [0, 90)")
 
@@ -92,6 +92,7 @@ class ScaffoldGuidanceEnergy:
     tilt_degrees: torch.Tensor
     junction_distances: torch.Tensor
     minimum_clash_distances: torch.Tensor
+    weighted_terms: dict[str, torch.Tensor] = field(default_factory=dict)
 
     def detached_dict(self) -> dict[str, float]:
         return {
@@ -107,6 +108,10 @@ class ScaffoldGuidanceEnergy:
                 self.minimum_clash_distance.detach().cpu().item()
             ),
             "tilt_degrees": float(self.tilt_degrees.detach().cpu().item()),
+            **{
+                "weighted_" + name: float(value.detach().cpu().item())
+                for name, value in self.weighted_terms.items()
+            },
         }
 
 
@@ -126,7 +131,8 @@ class SE3Proposal:
     translation_gradient_norm: float
     projected_rotation_gradient_norm: float
     projected_translation_gradient_norm: float
-    line_search_trials: tuple[dict[str, float | bool | None], ...]
+    line_search_trials: tuple[dict[str, Any], ...]
+    objective_gradients: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _as_tensor(
@@ -456,8 +462,8 @@ def extract_cyclic_axis(
 ) -> CyclicAxis:
     """Recover the common cyclic fixed line from proper rigid transforms."""
 
-    if tolerance <= 0.0:
-        raise ValueError("axis tolerance must be positive")
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("axis tolerance must be finite and positive")
     transforms = _normalized_transforms(sym_transforms)
     ordered = sorted(transforms)
     reference_rotation = None
@@ -548,12 +554,15 @@ def extract_symmetry_primary_axis(
 ) -> CyclicAxis:
     """Resolve the primary Cn axis without assuming all group axes coincide.
 
-    Cn consists entirely of one cyclic subgroup, so this is identical to
-    :func:`extract_cyclic_axis`.  A proper Dn registry is ordered as
-    ``e, r1, ..., r(n-1), s0, ..., s(n-1)`` by Mosaic's transform registry.
-    Only the first ``n`` rotations share the principal axis; the secondary
-    two-fold coset must remain in the full registry but must not be passed to
-    the common-axis solver.
+    Cn consists entirely of one cyclic subgroup. For Dn with n > 2, the
+    rotations through 2*pi/n identify its primary axis independently of
+    registry ordering (native RFD3 interleaves the two cosets). Select the
+    subgroup by its action on that axis, never by proximity of integer IDs.
+
+    D2 has three equivalent two-fold axes and no geometrically distinguished
+    primary axis. Retain the declared-registry convention in that case:
+    choose the lowest-ID nonidentity rotation. Reordering a D2 registry can
+    therefore change its chosen primary axis.
     """
 
     normalized_id = str(symmetry_id or "").upper()
@@ -569,6 +578,8 @@ def extract_symmetry_primary_axis(
             "Axis-dependent scaffold guidance currently supports Cn and Dn"
         )
 
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("axis tolerance must be finite and positive")
     transforms = _normalized_transforms(sym_transforms)
     ordered_ids = tuple(sorted(transforms))
     expected_count = order if family == "C" else 2 * order
@@ -580,7 +591,30 @@ def extract_symmetry_primary_axis(
     if family == "C":
         subgroup_ids = ordered_ids
     else:
-        subgroup_ids = ordered_ids[:order]
+        expected_angle = 2.0 * math.pi / order
+        generators = [
+            transform_id
+            for transform_id in ordered_ids
+            if abs(
+                float(_rotation_axis_angle(transforms[transform_id][0])[1])
+                - expected_angle
+            ) <= tolerance
+        ]
+        if not generators:
+            raise ValueError("Dn transforms lack a primary cyclic generator")
+        generator, _ = transforms[generators[0]]
+        identity = torch.eye(3, dtype=generator.dtype, device=generator.device)
+        _, _, vh = torch.linalg.svd(generator - identity)
+        direction = _normalize_direction(vh[-1], label="primary cyclic axis")
+        subgroup_ids = tuple(
+            transform_id
+            for transform_id in ordered_ids
+            if float(torch.linalg.vector_norm(
+                transforms[transform_id][0] @ direction - direction
+            )) <= tolerance
+        )
+        if len(subgroup_ids) != order:
+            raise ValueError("Dn primary cyclic subgroup has the wrong size")
 
     axis = extract_cyclic_axis(
         {transform_id: transforms[transform_id] for transform_id in subgroup_ids},
@@ -794,6 +828,12 @@ def scaffold_orbit_energy(
         tilt_degrees=tilt_degrees,
         junction_distances=junction_distances,
         minimum_clash_distances=nonbonded_distances,
+        weighted_terms={
+            "junction": config.junction_weight * junction_term,
+            "clash": config.clash_weight * clash_term,
+            "tilt": config.tilt_weight * tilt_term,
+            "prior": config.prior_weight * prior_term,
+        },
     )
 
 
@@ -840,13 +880,6 @@ def _rotation_axis_angle(
         -1.0,
         1.0,
     )
-    angle = torch.acos(cosine)
-    if float(angle.detach().item()) < 1e-7:
-        return torch.tensor(
-            [1.0, 0.0, 0.0],
-            dtype=rotation.dtype,
-            device=rotation.device,
-        ), angle
     vector = torch.stack(
         (
             rotation[2, 1] - rotation[1, 2],
@@ -854,6 +887,13 @@ def _rotation_axis_angle(
             rotation[1, 0] - rotation[0, 1],
         )
     )
+    angle = torch.atan2(0.5 * torch.linalg.vector_norm(vector), cosine)
+    if float(angle.detach().item()) < 1e-7:
+        return torch.tensor(
+            [1.0, 0.0, 0.0],
+            dtype=rotation.dtype,
+            device=rotation.device,
+        ), angle
     if float(torch.linalg.vector_norm(vector).detach().item()) < 1e-7:
         _, _, vh = torch.linalg.svd(
             rotation
@@ -946,11 +986,12 @@ def propose_bounded_se3_step(
     rotation_step_size_degrees: float | None = None,
     translation_basis: torch.Tensor | None = None,
     rotation_basis: torch.Tensor | None = None,
-    line_search_scales: tuple[float, ...] = (1.0, 0.5, 0.25),
+    line_search_scales: tuple[float, ...] | None = None,
     deterministic_multistart: bool = False,
     selection_seed: int | None = None,
     minimum_best_gain_fraction: float = 0.75,
-    candidate_validator: Callable[[torch.Tensor, torch.Tensor], dict[str, Any]] | None = None,
+    candidate_validator: Callable[[torch.Tensor, torch.Tensor], dict[str, Any]]
+    | None = None,
 ) -> SE3Proposal:
     """Take one bounded SE(3) proposal with a deterministic line search.
 
@@ -963,6 +1004,11 @@ def propose_bounded_se3_step(
     energy gain is at least ``minimum_best_gain_fraction`` of the best gain.
     This dimensionless near-optimal set preserves pose diversity without ever
     accepting a non-improving candidate.
+
+    The default search preserves the original three coarse scales. Only if
+    none succeeds does it try six additional halvings, down to 1/256. An
+    explicit scale sequence is honored exactly. This changes search
+    resolution, never the energy or geometry acceptance requirements.
     """
 
     rotation = _as_tensor(current_rotation)
@@ -977,6 +1023,14 @@ def propose_bounded_se3_step(
         raise ValueError(
             "current_rotation/current_translation must have shapes [3,3]/[3]"
         )
+    if not (torch.isfinite(rotation).all() and torch.isfinite(translation).all()):
+        raise ValueError("current pose must contain only finite values")
+    identity = torch.eye(3, dtype=rotation.dtype, device=rotation.device)
+    if not (
+        torch.allclose(rotation @ rotation.T, identity, atol=1e-4, rtol=0.0)
+        and abs(float(torch.linalg.det(rotation)) - 1.0) < 1e-4
+    ):
+        raise ValueError("current_rotation must be a proper rotation")
     for name, value in (
         ("maximum_step_translation", maximum_step_translation),
         (
@@ -989,16 +1043,30 @@ def propose_bounded_se3_step(
             maximum_total_rotation_degrees,
         ),
     ):
-        if value < 0.0:
-            raise ValueError(f"{name} cannot be negative")
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"{name} must be finite and nonnegative")
+    if (
+        float(translation.norm()) > maximum_total_translation + 1e-6
+        or math.degrees(float(_rotation_axis_angle(rotation)[1]))
+        > maximum_total_rotation_degrees + 1e-5
+    ):
+        raise ValueError("current pose is outside its declared cumulative bound")
     if translation_step_size is None:
         translation_step_size = maximum_step_translation
     if rotation_step_size_degrees is None:
         rotation_step_size_degrees = maximum_step_rotation_degrees
-    if translation_step_size < 0.0 or rotation_step_size_degrees < 0.0:
-        raise ValueError("proposal step sizes cannot be negative")
-    if not line_search_scales or any(scale <= 0.0 for scale in line_search_scales):
-        raise ValueError("line_search_scales must be positive")
+    if any(
+        not math.isfinite(v) or v < 0.0
+        for v in (translation_step_size, rotation_step_size_degrees)
+    ):
+        raise ValueError("proposal step sizes must be finite and nonnegative")
+    search_rounds = ((1.0, 0.5, 0.25), tuple(2.0**-i for i in range(3, 9)))
+    if line_search_scales is not None:
+        if not line_search_scales or any(
+            not math.isfinite(s) or not 0.0 < s <= 1.0 for s in line_search_scales
+        ):
+            raise ValueError("line_search_scales must be finite and in (0, 1]")
+        search_rounds = (line_search_scales,)
     if not 0.0 < minimum_best_gain_fraction <= 1.0:
         raise ValueError("minimum_best_gain_fraction must be in (0, 1]")
     if selection_seed is not None and selection_seed < 0:
@@ -1019,15 +1087,69 @@ def propose_bounded_se3_step(
         )
         trial_rotation = _rotation_from_vector(rotation_vector) @ rotation
         trial_translation = translation + translation_delta
-        initial_energy = _energy_scalar(
-            energy_function(trial_rotation, trial_translation)
-        )
+        initial_objective = energy_function(trial_rotation, trial_translation)
+        initial_energy = _energy_scalar(initial_objective)
         if not torch.isfinite(initial_energy):
             raise ValueError("energy_function returned NaN or Inf at the current pose")
-        rotation_gradient, translation_gradient = torch.autograd.grad(
-            initial_energy,
-            (rotation_vector, translation_delta),
-            allow_unused=True,
+        # Energy magnitude alone does not reveal which coefficient drives a
+        # move: a large constant contributes no gradient. Record derivatives
+        # of the weighted terms in the *allowed* pose degrees of freedom.
+        objective_gradients = {}
+        for name, term in getattr(initial_objective, "weighted_terms", {}).items():
+            grads = (
+                torch.autograd.grad(
+                    term,
+                    (rotation_vector, translation_delta),
+                    retain_graph=True,
+                    allow_unused=True,
+                )
+                if term.requires_grad
+                else (None, None)
+            )
+            rg = (
+                torch.zeros_like(rotation_vector)
+                if grads[0] is None
+                else grads[0].detach()
+            )
+            tg = (
+                torch.zeros_like(translation_delta)
+                if grads[1] is None
+                else grads[1].detach()
+            )
+            allowed_rg = _project_onto_basis(rg, rotation_basis, label="rotation")
+            allowed_tg = _project_onto_basis(tg, translation_basis, label="translation")
+            if not (
+                torch.isfinite(term).all()
+                and torch.isfinite(allowed_rg).all()
+                and torch.isfinite(allowed_tg).all()
+            ):
+                raise ValueError(f"Weighted objective term {name!r} is not finite")
+            rn = float(allowed_rg.norm())
+            tn = float(allowed_tg.norm())
+            objective_gradients[name] = {
+                "weighted_energy": float(term.detach()),
+                "allowed_rotation_gradient_per_radian": rn,
+                "allowed_translation_gradient_per_angstrom": tn,
+                # Norms alone cannot distinguish cooperating terms from
+                # opposing terms whose sum leaves a stalled pose.
+                "allowed_rotation_gradient_vector": allowed_rg.cpu().tolist(),
+                "allowed_translation_gradient_vector": allowed_tg.cpu().tolist(),
+                "linear_step_sensitivity": (
+                    rn
+                    * math.radians(
+                        min(rotation_step_size_degrees, maximum_step_rotation_degrees)
+                    )
+                    + tn * min(translation_step_size, maximum_step_translation)
+                ),
+            }
+        rotation_gradient, translation_gradient = (
+            torch.autograd.grad(
+                initial_energy,
+                (rotation_vector, translation_delta),
+                allow_unused=True,
+            )
+            if initial_energy.requires_grad
+            else (None, None)
         )
     if rotation_gradient is None:
         rotation_gradient = torch.zeros_like(rotation_vector)
@@ -1161,7 +1283,7 @@ def propose_bounded_se3_step(
         dtype=rotation.dtype,
         device=rotation.device,
     )
-    line_search_trials: list[dict[str, float | bool | None]] = []
+    line_search_trials: list[dict[str, Any]] = []
     improving_candidates: list[
         tuple[
             torch.Tensor,
@@ -1174,75 +1296,120 @@ def propose_bounded_se3_step(
         ]
     ] = []
     best = None
-    for direction_index, (
-        candidate_rotation_vector,
-        candidate_translation_vector,
-        is_gradient,
-    ) in enumerate(directions):
-        for scale in line_search_scales:
-            delta_rotation = _rotation_from_vector(candidate_rotation_vector * scale)
-            delta_translation = candidate_translation_vector * scale
-            candidate_rotation = delta_rotation @ rotation
-            candidate_translation = translation + delta_translation
-            candidate_rotation = _clamp_rotation(
-                candidate_rotation.detach(),
-                maximum_total_rotation_degrees,
-            )
-            candidate_translation = _clamp_vector(
-                candidate_translation.detach(),
-                maximum_total_translation,
-            )
-            actual_delta_rotation = candidate_rotation @ rotation.T
-            actual_delta_translation = candidate_translation - translation
-            with torch.no_grad():
-                candidate_energy = _energy_scalar(
-                    energy_function(
-                        candidate_rotation,
-                        candidate_translation,
-                    )
-                ).detach()
-            finite = bool(torch.isfinite(candidate_energy).item())
-            candidate_value = float(candidate_energy.item()) if finite else None
-            improves = bool(
-                finite
-                and candidate_value is not None
-                and candidate_value < float(initial_detached.item())
-            )
-            geometry = (
-                candidate_validator(candidate_rotation, candidate_translation)
-                if finite and candidate_validator is not None
-                else {"accepted": finite}
-            )
-            trial_index = len(line_search_trials)
-            line_search_trials.append(
-                {
-                    "direction_index": float(direction_index),
-                    "gradient_direction": is_gradient,
-                    "scale": float(scale),
-                    "energy": candidate_value,
-                    "finite": finite,
-                    "improves": improves,
-                    "selected": False,
-                    "geometry_guard": geometry,
-                }
-            )
-            if not finite or not geometry["accepted"]:
-                continue
-            if improves:
-                candidate = (
-                    candidate_rotation.detach(),
-                    candidate_translation.detach(),
-                    actual_delta_rotation.detach(),
-                    actual_delta_translation.detach(),
-                    candidate_energy,
-                    float(scale),
-                    trial_index,
+    for search_scales in search_rounds:
+        for direction_index, (
+            candidate_rotation_vector,
+            candidate_translation_vector,
+            is_gradient,
+        ) in enumerate(directions):
+            for scale in search_scales:
+                delta_rotation = _rotation_from_vector(
+                    candidate_rotation_vector * scale
                 )
-                if not deterministic_multistart:
-                    best = candidate
-                    break
-                improving_candidates.append(candidate)
-        if best is not None and not deterministic_multistart:
+                delta_translation = candidate_translation_vector * scale
+                candidate_rotation = delta_rotation @ rotation
+                candidate_translation = translation + delta_translation
+                candidate_rotation = _clamp_rotation(
+                    candidate_rotation.detach(),
+                    maximum_total_rotation_degrees,
+                )
+                candidate_translation = _clamp_vector(
+                    candidate_translation.detach(),
+                    maximum_total_translation,
+                )
+                actual_delta_rotation = candidate_rotation @ rotation.T
+                actual_delta_translation = candidate_translation - translation
+                actual_translation_step = float(actual_delta_translation.norm())
+                actual_rotation_step = math.degrees(
+                    float(_rotation_axis_angle(actual_delta_rotation)[1])
+                )
+                # Projection onto the total-angle ball is not globally
+                # non-expansive on SO(3), especially across the pi branch.
+                # Validate the increment after projection, not its input.
+                bounds_ok = (
+                    actual_translation_step <= maximum_step_translation + 1e-6
+                    and actual_rotation_step <= maximum_step_rotation_degrees + 1e-5
+                )
+                geometry = (
+                    candidate_validator(candidate_rotation, candidate_translation)
+                    if bounds_ok and candidate_validator is not None
+                    else {"accepted": bounds_ok}
+                )
+                if not geometry["accepted"]:
+                    line_search_trials.append({
+                        "direction_index": float(direction_index), "gradient_direction": is_gradient,
+                        "scale": float(scale), "energy": None, "finite": False,
+                        "energy_evaluated": False, "improves": False, "selected": False,
+                        "geometry_guard": geometry, "objective_terms": {}, "accepted": False,
+                        "first_rejection_reason": "motion_bounds" if not bounds_ok else "geometry_guard",
+                        "translation_step_angstrom": actual_translation_step,
+                        "rotation_step_degrees": actual_rotation_step,
+                    })
+                    continue
+                with torch.no_grad():
+                    candidate_objective = energy_function(
+                        candidate_rotation, candidate_translation
+                    )
+                    candidate_energy = _energy_scalar(candidate_objective).detach()
+                finite = bool(torch.isfinite(candidate_energy).item())
+                candidate_value = float(candidate_energy.item()) if finite else None
+                improves = bool(
+                    finite
+                    and candidate_value is not None
+                    and candidate_value < float(initial_detached.item())
+                )
+                trial_index = len(line_search_trials)
+                line_search_trials.append(
+                    {
+                        "direction_index": float(direction_index),
+                        "gradient_direction": is_gradient,
+                        "scale": float(scale),
+                        "energy": candidate_value,
+                        "finite": finite,
+                        "improves": improves,
+                        "selected": False,
+                        "geometry_guard": geometry,
+                        "objective_terms": (
+                            candidate_objective.detached_dict()
+                            if hasattr(candidate_objective, "detached_dict")
+                            else {}
+                        ),
+                        "accepted": bool(finite and improves and geometry["accepted"]),
+                        "first_rejection_reason": (
+                            "nonfinite_energy"
+                            if not finite
+                            else "motion_bounds"
+                            if not bounds_ok
+                            else "geometry_guard"
+                            if not geometry["accepted"]
+                            else "no_energy_decrease"
+                            if not improves
+                            else None
+                        ),
+                        "translation_step_angstrom": actual_translation_step,
+                        "rotation_step_degrees": actual_rotation_step,
+                    }
+                )
+                if not finite or not geometry["accepted"]:
+                    continue
+                if improves:
+                    candidate = (
+                        candidate_rotation.detach(),
+                        candidate_translation.detach(),
+                        actual_delta_rotation.detach(),
+                        actual_delta_translation.detach(),
+                        candidate_energy,
+                        float(scale),
+                        trial_index,
+                    )
+                    if not deterministic_multistart:
+                        best = candidate
+                        break
+                    improving_candidates.append(candidate)
+            if best is not None and not deterministic_multistart:
+                break
+
+        if best is not None or improving_candidates:
             break
 
     if deterministic_multistart and improving_candidates:
@@ -1261,7 +1428,10 @@ def propose_bounded_se3_step(
             best = min(eligible, key=lambda candidate: float(candidate[4]))
         else:
             generator = torch.Generator(device="cpu")
-            generator.manual_seed(int(selection_seed))
+            # Mixing a full-width diffusion seed with orbit/step offsets can
+            # exceed PyTorch's unsigned 64-bit range. Keep the deterministic
+            # substream inside the generator's actual seed domain.
+            generator.manual_seed(int(selection_seed) % (1 << 64))
             selected_index = int(
                 torch.randint(
                     len(eligible),
@@ -1297,6 +1467,7 @@ def propose_bounded_se3_step(
             projected_rotation_gradient_norm=(projected_rotation_gradient_norm),
             projected_translation_gradient_norm=(projected_translation_gradient_norm),
             line_search_trials=tuple(line_search_trials),
+            objective_gradients=objective_gradients,
         )
 
     return SE3Proposal(
@@ -1313,6 +1484,7 @@ def propose_bounded_se3_step(
         projected_rotation_gradient_norm=projected_rotation_gradient_norm,
         projected_translation_gradient_norm=(projected_translation_gradient_norm),
         line_search_trials=tuple(line_search_trials),
+        objective_gradients=objective_gradients,
     )
 
 

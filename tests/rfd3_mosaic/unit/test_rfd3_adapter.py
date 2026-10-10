@@ -1661,7 +1661,8 @@ class RFD3AdapterTestCase(unittest.TestCase):
         self.assertEqual(
             extra["generated_cross_chain_topology_guidance"],
             {
-                "enabled": True,
+                "enabled": False,
+                "policy": "advisory",
                 "scope": "two_fixed_anchor_generated_runs",
                 "routing_ownership_weight": 1.0,
                 "normalization_distance": 3.8,

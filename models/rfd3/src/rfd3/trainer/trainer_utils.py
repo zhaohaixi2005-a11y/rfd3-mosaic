@@ -124,6 +124,25 @@ def _build_atom_array_stack(
     return atom_array_stack
 
 
+def _residue_slices(atom_array):
+    """Contiguous residues are identified by chain, number and insertion code.
+
+    Token IDs are not a residue identity for atomized inputs. Residue numbers
+    alone are not an identity across chains or insertion variants either.
+    """
+    count = len(atom_array)
+    if not count:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    chain = atom_array.chain_id
+    number = atom_array.res_id
+    insertion = np.char.strip(atom_array.ins_code.astype(str))
+    changed = ((chain[1:] != chain[:-1]) | (number[1:] != number[:-1])
+               | (insertion[1:] != insertion[:-1]))
+    starts = np.flatnonzero(np.concatenate([[True], changed]))
+    ends = np.concatenate([starts[1:], [count]])
+    return starts, ends
+
+
 def _cleanup_virtual_atoms_and_assign_atom_name_elements(
     atom_array, association_scheme: str = "atom14"
 ):
@@ -135,12 +154,8 @@ def _cleanup_virtual_atoms_and_assign_atom_name_elements(
     invalid_mask = []
 
     # ... Iterate through each residue.
-    # Here we iterate through res_id instead of token_id to avoid some atomization cases or something else.
-    res_ids = atom_array.res_id
-    res_start_indices = np.concatenate(
-        [[0], np.where(res_ids[1:] != res_ids[:-1])[0] + 1]
-    )
-    res_end_indices = np.concatenate([res_start_indices[1:], [len(res_ids)]])
+    # Use full residue identity rather than token IDs for atomized inputs.
+    res_start_indices, res_end_indices = _residue_slices(atom_array)
     warning_issued = False
     for start, end in zip(res_start_indices, res_end_indices):
         res_array = atom_array[start:end]
@@ -198,11 +213,7 @@ def _readout_seq_from_struc(
     cur_atom_array_list = []
 
     # Iterate through each residue
-    res_ids = atom_array.res_id
-    res_start_indices = np.concatenate(
-        [[0], np.where(res_ids[1:] != res_ids[:-1])[0] + 1]
-    )
-    res_end_indices = np.concatenate([res_start_indices[1:], [len(res_ids)]])
+    res_start_indices, res_end_indices = _residue_slices(atom_array)
 
     for start, end in zip(res_start_indices, res_end_indices):
         # ... Check if the current residue is after padding (seq unknown):

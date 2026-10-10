@@ -453,11 +453,11 @@ class ScaffoldNativeHandoffTests(unittest.TestCase):
         self.assertTrue(np.all(atoms.src_component == ""))
 
     def test_native_parser_retains_complete_coordinates_and_group_identity(self):
+        import torch
         from atomworks.ml.transforms.atom_array import CopyAnnotation
         from rfd3.inference.input_parsing import DesignInputSpecification
         from rfd3.transforms.symmetry import AddSymmetryFeats
         from rfd3.transforms.util_transforms import AggregateFeaturesLikeAF3WithoutMSA
-        import torch
 
         native = self.apply()["test"]
         native["input"] = str(self.directory / native["input"])
@@ -523,8 +523,8 @@ class ScaffoldNativeHandoffTests(unittest.TestCase):
         # The public native prevalidator must distinguish unfixed generated
         # sequence from sequence redesign of the immutable seed.
         from rfd3_mosaic.rfd3_prevalidate import (
-            prevalidate_rfd3_input,
             _validate_report,
+            prevalidate_rfd3_input,
         )
 
         path = self.directory / "native_input.json"

@@ -217,8 +217,8 @@ def _audit_final_generated_route_ownership(
     extra = next(iter(payload.values())).get("extra") or {}
     contract = extra.get("mosaic_scaffold_contract")
     plan = extra.get("generated_cross_chain_topology_guidance")
-    if contract is None and (not isinstance(plan, dict) or not plan.get("enabled")):
-        return {"declared": False, "applicable": False, "passed": True}
+    if contract is None and not isinstance(plan, dict):
+        return {"declared": False, "applicable": False, "required": False, "passed": True}
     if atom_array is None:
         atom_array = _build_runtime_input(input_path)
     protein = getattr(atom_array, "is_protein", None)
@@ -266,7 +266,9 @@ def _audit_final_generated_route_ownership(
         transport = extra.get("mosaic_reference_transport")
         transport_report = None
         if transport is not None:
-            from rfd3_mosaic.validation.reference_transport import replay_reference_transport
+            from rfd3_mosaic.validation.reference_transport import (
+                replay_reference_transport,
+            )
             diagnostic = (result_metadata or {}).get("scaffold_contract_diagnostics") or {}
             history = diagnostic.get("reference_transport")
             if not isinstance(history, dict):
@@ -312,6 +314,7 @@ def _audit_final_generated_route_ownership(
             **backbone_arguments,
         )
         report["replaces_straight_chord_ownership"] = True
+        report["required"] = True
         if transport_report is not None:
             report["reference_transport"] = transport_report
         report["fixed_mask_source"] = (
@@ -330,6 +333,12 @@ def _audit_final_generated_route_ownership(
         routing_tolerance=float(plan.get("routing_tolerance", 1e-3)),
     )
     report["declared"] = True
+    report["required"] = plan.get("enabled") is True
+    report["policy"] = "required" if report["required"] else "advisory"
+    report["interpretation"] = (
+        "Endpoint-chord route ownership is a spatial prior, not a physical "
+        "chain-crossing test; curved valid backbones can violate it."
+    )
     report["fixed_mask_source"] = "reconstructed_frozen_input_protein_ca_annotations"
     report["anchor_coordinate_source"] = "final_output"
     report["residue_alignment"] = "chain_encounter_order_and_exact_residue_numbers"
@@ -423,11 +432,14 @@ def main() -> None:
     report["generated_route_ownership"] = routing
     report["summary"]["passed_generated_route_ownership"] = routing["passed"]
     report["summary"]["generated_route_ownership_applicable"] = routing["applicable"]
+    report["summary"]["generated_route_ownership_required"] = routing.get("required", False)
     if routing.get("measurement") == "explicit_full_scaffold_contract":
         report["scaffold_contract"] = routing
         report["summary"]["passed_scaffold_contract"] = routing["passed"]
         report["summary"]["generated_route_contract_kind"] = "explicit_full_scaffold"
-    report["passed"] = bool(report["passed"] and routing["passed"])
+    report["passed"] = bool(
+        report["passed"] and (not routing.get("required", False) or routing["passed"])
+    )
     report["inputs"] = {
         "result_json": str(result_json),
         "result_structure": str(structure),
@@ -469,7 +481,12 @@ def main() -> None:
         f"(fixed-target floor {fixed_geometry_chain_rg_floor:.3f} A)"
     )
     print(f"CA clashes:          {summary['ca_clash_count']}")
-    if routing["declared"]:
+    if routing.get("measurement") == "explicit_full_scaffold_contract":
+        print(
+            "scaffold contract:  "
+            f"{'PASSED' if routing['passed'] else 'FAILED'} (explicit reference geometry)"
+        )
+    elif routing["declared"]:
         print(
             "route ownership:    "
             f"{routing['violated_sample_count']}/{routing['checked_sample_count']} "

@@ -11,19 +11,25 @@ from typing import Any
 import numpy as np
 
 from rfd3_mosaic.structure import read_structure_atoms
+from rfd3_mosaic.fixed_atom_contract import source_atom_is_fixed
 
-_SELECTOR = re.compile(r"^([^0-9,+-]+)([0-9]+)-([0-9]+)$")
+_SELECTOR = re.compile(r"^([^0-9,+-]+)([0-9]+)(?:-([0-9]+))?$")
+
+# The source may be PDB/mmCIF rounded to 0.001 A. These audit tolerances
+# accommodate coordinate serialization; they do not change runtime bounds.
+_MOBILE_TRANSLATION_SERIALIZATION_TOLERANCE = 0.002
+_MOBILE_ROTATION_SERIALIZATION_TOLERANCE_DEG = 0.02
 
 
 def _parse_selector(selector: str) -> tuple[str, int, int]:
     match = _SELECTOR.fullmatch(selector)
     if match is None:
         raise ValueError(
-            "fixed selector must be one contiguous range such as B1-31"
+            "fixed selector component must be a residue or range such as B1 or B1-31"
         )
     chain, start_text, end_text = match.groups()
     start = int(start_text)
-    end = int(end_text)
+    end = int(end_text) if end_text is not None else start
     if end < start:
         raise ValueError("fixed selector range is reversed")
     return chain, start, end
@@ -122,6 +128,142 @@ def _rmsd(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.sum((left - right) ** 2, axis=-1))))
 
 
+def _audit_mobile_pose_bounds(
+    *,
+    example: dict[str, Any],
+    constraint_orbit_id: str | None,
+    expected_copies: list[np.ndarray],
+    observed_copies: list[np.ndarray],
+) -> dict[str, Any]:
+    """Measure cumulative pose from final coordinates, independently of logs.
+
+    The runtime rotates each complete physical joint group about its own
+    template centroid. Therefore translation is the centroid displacement,
+    not the origin-based Kabsch translation. Conjugating a copy's rigid motion
+    by its symmetry frame preserves this norm and the proper rotation angle.
+    Directional subspace membership and trajectory history remain separate
+    runtime-evidence checks; this check certifies only final pose magnitudes.
+    """
+
+    from rfd3_mosaic.schema.specs import OrbitMobilitySpec
+
+    report: dict[str, Any] = {
+        "required": True,
+        "passed": False,
+        "status": "not_certified",
+        "measurement": "final_coordinates_relative_to_compiled_joint_groups",
+        "scope": "translation_norm_and_proper_rotation_angle",
+        "directional_subspace_measured": False,
+        "translation_tolerance_angstrom": (
+            _MOBILE_TRANSLATION_SERIALIZATION_TOLERANCE
+        ),
+        "rotation_tolerance_degrees": (
+            _MOBILE_ROTATION_SERIALIZATION_TOLERANCE_DEG
+        ),
+        "copies": [],
+    }
+    declarations = [
+        orbit
+        for orbit in (example.get("extra") or {}).get("motif_constraint_orbits", [])
+        if isinstance(orbit, dict)
+        and orbit.get("constraint_orbit_id") == constraint_orbit_id
+    ]
+    if len(declarations) != 1:
+        report["failure"] = "missing or ambiguous mobile orbit declaration"
+        return report
+    declaration = declarations[0]
+    bound_keys = ("max_translation", "max_rotation_deg")
+    if any(key not in declaration for key in bound_keys):
+        report["failure"] = "missing mobile pose bounds"
+        return report
+    bounds = {key: declaration[key] for key in bound_keys}
+    if any(
+        value is not None
+        and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not np.isfinite(value)
+        )
+        for value in bounds.values()
+    ):
+        report["failure"] = "non-finite or non-numeric mobile pose bounds"
+        return report
+    try:
+        policy = OrbitMobilitySpec(
+            mode="orbit_rigid",
+            bounds=bounds,
+            subspace=declaration.get("mobility_subspace"),
+        )
+    except ValueError:
+        report["failure"] = "invalid mobile pose bounds or subspace declaration"
+        return report
+    # An explicit null bound freezes that degree of freedom, as in the
+    # compiler/runtime contract (e.g. radial motion with no rotation).
+    maximum_translation = float(policy.bounds.max_translation or 0.0)
+    maximum_rotation = float(policy.bounds.max_rotation_deg or 0.0)
+    report.update(
+        max_translation_angstrom=maximum_translation,
+        max_rotation_degrees=maximum_rotation,
+        mobility_subspace=policy.effective_subspace.value,
+    )
+    if not expected_copies or len(expected_copies) != len(observed_copies):
+        report["failure"] = "incomplete physical joint groups"
+        return report
+    groups = _declared_constraint_groups(example, constraint_orbit_id)
+    for index, (expected, observed) in enumerate(
+        zip(expected_copies, observed_copies, strict=True)
+    ):
+        copy: dict[str, Any] = {"copy_index": index, "passed": False}
+        if index < len(groups):
+            copy["group_id"] = groups[index].get("group_id")
+        report["copies"].append(copy)
+        if (
+            expected.shape != observed.shape
+            or expected.ndim != 2
+            or expected.shape[1] != 3
+            or len(expected) < 3
+            or not np.isfinite(expected).all()
+            or not np.isfinite(observed).all()
+        ):
+            copy["failure"] = "incomplete or non-finite coordinates for rigid fit"
+            continue
+        expected_center = expected.mean(axis=0)
+        observed_center = observed.mean(axis=0)
+        expected_zero = expected - expected_center
+        observed_zero = observed - observed_center
+        # Three noncollinear corresponding points determine a proper rotation;
+        # one point or a collinear motif leaves a rotation unobservable.
+        if min(
+            np.linalg.matrix_rank(expected_zero, tol=1e-8),
+            np.linalg.matrix_rank(observed_zero, tol=1e-8),
+        ) < 2:
+            copy["failure"] = "rotation is underdetermined by collinear coordinates"
+            continue
+        left, _, right_t = np.linalg.svd(expected_zero.T @ observed_zero)
+        correction = np.eye(3)
+        correction[-1, -1] = -1.0 if np.linalg.det(left @ right_t) < 0 else 1.0
+        row_rotation = left @ correction @ right_t
+        translation = float(np.linalg.norm(observed_center - expected_center))
+        rotation = float(np.degrees(np.arccos(np.clip(
+            (np.trace(row_rotation) - 1.0) / 2.0, -1.0, 1.0
+        ))))
+        copy.update(
+            translation_norm_angstrom=translation,
+            rotation_degrees=rotation,
+            proper_fit_rmsd=_rmsd(expected_zero @ row_rotation, observed_zero),
+            passed=bool(
+                translation <= maximum_translation
+                + _MOBILE_TRANSLATION_SERIALIZATION_TOLERANCE
+                and rotation <= maximum_rotation
+                + _MOBILE_ROTATION_SERIALIZATION_TOLERANCE_DEG
+            ),
+        )
+    report["passed"] = all(copy["passed"] for copy in report["copies"])
+    if not any("failure" in copy for copy in report["copies"]):
+        report["status"] = "passed" if report["passed"] else "failed"
+    return report
+
+
 def _pairwise_distance_matrix_rmsd(
     expected: np.ndarray,
     observed: np.ndarray,
@@ -200,7 +342,21 @@ def _constraint_components(
 
     extra = example.get("extra") or {}
     preexpanded_layout = extra.get("preexpanded_chain_layout")
-    if isinstance(preexpanded_layout, list):
+    orbits = extra.get("motif_constraint_orbits")
+    declared_orbits = "motif_constraint_orbits" in extra
+    if declared_orbits and (
+        not isinstance(orbits, list)
+        or not orbits
+        or any(
+            not isinstance(orbit, dict)
+            or not isinstance(orbit.get("source_components"), list)
+            or not orbit["source_components"]
+            for orbit in orbits
+        )
+    ):
+        raise ValueError("Explicit constraint orbit metadata is malformed")
+    preexpanded = isinstance(preexpanded_layout, list)
+    if preexpanded and not orbits:
         source_chains = list(
             dict.fromkeys(key[0] for key in source_lookup)
         )
@@ -229,31 +385,39 @@ def _constraint_components(
             for orbit_id, chain_ids in sorted(chains_by_orbit.items())
         ]
 
-    orbits = extra.get(
-        "motif_constraint_orbits"
-    )
     if not isinstance(orbits, list) or not orbits:
         return [
             ("fixed_component_001", sorted(source_lookup), "fixed", None)
         ]
-    if any(
-        not isinstance(orbit, dict)
-        or not isinstance(orbit.get("source_components"), list)
-        for orbit in orbits
-    ):
-        return [
-            ("fixed_component_001", sorted(source_lookup), "fixed", None)
-        ]
-
     components: list[
         tuple[str, list[tuple[str, int, str]], str, str | None]
     ] = []
     assigned: set[tuple[str, int, str]] = set()
     for index, orbit in enumerate(orbits, start=1):
+        source_components = orbit["source_components"]
+        if preexpanded:
+            # Native partial inputs already contain every physical copy.
+            # The orbit source list names the ASU, while members name the
+            # materialized fragments, including interfaces crossing chains.
+            groups = _declared_constraint_groups(
+                example, str(orbit.get("constraint_orbit_id", ""))
+            )
+            if not groups:
+                raise ValueError("Preexpanded constraint orbit lacks physical groups")
+            source_components = [
+                value for group in groups for member in group.get("members", [])
+                for value in member.get("src_components", [])
+            ]
         residue_ids = {
             _component(str(value))
-            for value in orbit["source_components"]
+            for value in source_components
         }
+        missing_residues = residue_ids - {key[:2] for key in source_lookup}
+        if missing_residues:
+            raise ValueError(
+                "Fixed constraint component references absent or unselected "
+                f"source residues: {sorted(missing_residues)}"
+            )
         atom_keys = sorted(
             key
             for key in source_lookup
@@ -417,27 +581,40 @@ def _component_runtime_copies(
     component_key_set = set(atom_keys)
 
     if preexpanded:
-        expected = []
-        observed = []
-        for key in atom_keys:
-            expected.append(source_lookup[key])
-            coordinate = _mapped_output_coordinate(
-                source_key=key,
-                action_index=0,
-                index_map=index_map,
-                output_lookup=output_lookup,
-                ordered_output_chains=ordered_output_chains,
-                asu_chain_count=asu_chain_count,
-                preexpanded=True,
-            )
-            if coordinate is not None:
-                observed.append(coordinate)
-        return (
-            [np.asarray(expected, dtype=float)],
-            [np.asarray(observed, dtype=float)],
-            [len(observed)],
-            [len(expected)],
-        )
+        key_groups = [atom_keys]
+        if declared_groups:
+            key_groups = []
+            covered = set()
+            for group in declared_groups:
+                residues = {
+                    _component(str(value))
+                    for member in group.get("members", [])
+                    for value in member.get("src_components", [])
+                }
+                keys = [key for key in atom_keys if key[:2] in residues]
+                if not keys or covered.intersection(keys):
+                    raise ValueError("Preexpanded physical groups are empty or overlap")
+                covered.update(keys)
+                key_groups.append(keys)
+            if covered != component_key_set:
+                raise ValueError("Preexpanded physical groups leave fixed atoms uncovered")
+        for keys in key_groups:
+            expected = [source_lookup[key] for key in keys]
+            observed = []
+            for key in keys:
+                coordinate = _mapped_output_coordinate(
+                    source_key=key, action_index=0, index_map=index_map,
+                    output_lookup=output_lookup,
+                    ordered_output_chains=ordered_output_chains,
+                    asu_chain_count=asu_chain_count, preexpanded=True,
+                )
+                if coordinate is not None:
+                    observed.append(coordinate)
+            expected_copies.append(np.asarray(expected, dtype=float))
+            observed_copies.append(np.asarray(observed, dtype=float))
+            matched_per_copy.append(len(observed))
+            expected_per_copy.append(len(expected))
+        return expected_copies, observed_copies, matched_per_copy, expected_per_copy
 
     if not declared_groups:
         declared_groups = [
@@ -583,21 +760,81 @@ def audit_constraint_orbit(
         raise ValueError("fixed constraint selectors must be a list")
     if not selectors:
         raise ValueError("Compiled input declares no fixed selectors")
-    parsed_selectors = [_parse_selector(selector) for selector in selectors]
+    # Complete-scaffold inputs enumerate fixed residues with commas instead
+    # of ranges. Preserve gaps: A1,A3 must never also select generated A2.
+    parsed_selectors = [
+        _parse_selector(component.strip())
+        for selector in selectors
+        for component in selector.split(",")
+    ]
     source_structure = Path(str(example["input"]))
     if not source_structure.is_absolute():
         source_structure = input_path.parent / source_structure
 
-    source_lookup = {}
-    for atom in read_structure_atoms(
+    source_atoms = read_structure_atoms(
         source_structure,
         mmcif_identifier_namespace="label",
-    ):
+    )
+    has_mobile = any(
+        orbit.get("mobility_mode") == "orbit_rigid"
+        for orbit in extra.get("motif_constraint_orbits", [])
+        if isinstance(orbit, dict)
+    )
+    native_symmetric = bool((example.get("symmetry") or {}).get("id"))
+    complete_scaffold = extra.get("generated_coordinate_initialization") == (
+        "complete_scaffold_partial_diffusion"
+    )
+    source_center = np.zeros(3)
+    frame_failure = None
+    frame_report: dict[str, Any] = {
+        "measurement": "compiled_source_frame",
+        "source_protein_center_subtracted": source_center.tolist(),
+        "expanded_origin_subtracted": [0.0, 0.0, 0.0],
+    }
+    subset_selection = has_mobile and isinstance(example.get("select_fixed_atoms"), dict) and any(
+        str(selection).upper() != "ALL"
+        for selection in (example.get("select_fixed_atoms") or {}).values()
+    )
+    if has_mobile and subset_selection:
+        # Native virtual slots contribute to the runtime rotation center;
+        # a source-only physical subset cannot certify that exact reference.
+        raise ValueError(
+            "BKBN mobile audit requires exact native reference coordinates and "
+            "physical/virtual atom membership; source-only reconstruction unavailable"
+        )
+    if has_mobile and native_symmetric and not complete_scaffold:
+        # Mirror native input_parsing.load_input / symmetry_utils centering.
+        # The compiler emits ordinary protein source atoms in these paths.
+        # Do not infer an unknown polymer's chain_type from its ATOM label.
+        protein_names = set(
+            "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO "
+            "SER THR TRP TYR VAL".split()
+        )
+        heavy_source = [atom for atom in source_atoms if _is_heavy(atom)]
+        if any(atom.residue_name not in protein_names for atom in heavy_source):
+            frame_failure = "independent centering requires a standard protein source"
+        else:
+            source_center = np.mean(
+                [atom.coordinate for atom in heavy_source], axis=0
+            )
+            frame_report.update(
+                measurement="native_symmetric_protein_source_centering",
+                source_protein_center_subtracted=source_center.tolist(),
+            )
+    elif has_mobile and native_symmetric and complete_scaffold:
+        frame_report["measurement"] = "complete_scaffold_declared_frame_unmodified"
+
+    source_lookup = {}
+    for atom in source_atoms:
         if atom.record_type != "ATOM" or not _is_heavy(atom):
             continue
         if not any(
             atom.chain_id == chain and start <= atom.residue_number <= end
             for chain, start, end in parsed_selectors
+        ):
+            continue
+        if not source_atom_is_fixed(
+            example, atom.chain_id, atom.residue_number, atom.atom_name
         ):
             continue
         key = (
@@ -607,9 +844,19 @@ def audit_constraint_orbit(
         )
         if key in source_lookup:
             raise ValueError(f"Duplicate source motif atom {key}")
-        source_lookup[key] = np.asarray(atom.coordinate, dtype=float)
+        source_lookup[key] = np.asarray(atom.coordinate, dtype=float) - source_center
     if not source_lookup:
         raise ValueError(f"Selectors {selectors!r} matched no source atoms")
+    selected_residues = {
+        (chain, residue)
+        for chain, start, end in parsed_selectors
+        for residue in range(start, end + 1)
+    }
+    missing_residues = selected_residues - {key[:2] for key in source_lookup}
+    if missing_residues:
+        raise ValueError(
+            f"Declared fixed residues are missing from source: {sorted(missing_residues)}"
+        )
 
     index_map = result.get("diffused_index_map", {})
     residue_map: dict[tuple[str, int], tuple[str, int]] = {}
@@ -678,25 +925,10 @@ def audit_constraint_orbit(
         )
     asu_chain_count = len(ordered_output_chains) // multiplicity
 
-    component_reports = []
-    for (
-        component_id,
-        atom_keys,
-        mobility_mode,
-        constraint_orbit_id,
-    ) in _constraint_components(
-        example, source_lookup
-    ):
-        if mobility_mode not in {"fixed", "orbit_rigid"}:
-            raise ValueError(
-                f"Unsupported fixed-component mobility mode {mobility_mode!r}"
-            )
-        (
-            expected_copies,
-            observed_copies,
-            matched_per_copy,
-            expected_per_copy,
-        ) = _component_runtime_copies(
+    component_inputs = []
+    for component in _constraint_components(example, source_lookup):
+        _, atom_keys, _, constraint_orbit_id = component
+        copies = _component_runtime_copies(
             example=example,
             constraint_orbit_id=constraint_orbit_id,
             atom_keys=atom_keys,
@@ -709,6 +941,57 @@ def audit_constraint_orbit(
             registry_matrices=matrices,
             preexpanded=preexpanded,
         )
+        component_inputs.append((component, copies))
+    if has_mobile and native_symmetric and example.get("partial_t") is None:
+        # Native _set_origin runs after symmetry expansion for full noise.
+        # All declared physical groups are needed: centering one group alone
+        # would erase the very translation this audit must measure.
+        if example.get("ori_token") is not None:
+            origin = np.asarray(example["ori_token"], dtype=float)
+            if origin.shape != (3,) or not np.isfinite(origin).all():
+                frame_failure = "invalid declared native origin"
+                origin = np.zeros(3)
+        elif example.get("infer_ori_strategy") is not None:
+            frame_failure = "independent origin-strategy reconstruction is unavailable"
+            origin = np.zeros(3)
+        else:
+            origin = np.concatenate([
+                coordinates
+                for _, copies in component_inputs
+                for coordinates in copies[0]
+            ]).mean(axis=0)
+        frame_report["expanded_origin_subtracted"] = origin.tolist()
+        for _, copies in component_inputs:
+            for coordinates in copies[0]:
+                coordinates -= origin
+    if has_mobile and any(
+        str(selection).upper() != "ALL"
+        for selection in (example.get("select_fixed_atoms") or {}).values()
+    ):
+        # A subset can have a different rotation center. Until its exact
+        # native atom membership is reconstructed, never certify its bounds
+        # using an all-heavy centroid by accident.
+        frame_failure = "independent pose bounds require all-heavy fixed selections"
+    if frame_failure:
+        frame_report["failure"] = frame_failure
+
+    component_reports = []
+    for ((
+        component_id,
+        atom_keys,
+        mobility_mode,
+        constraint_orbit_id,
+    ), copies) in component_inputs:
+        if mobility_mode not in {"fixed", "orbit_rigid"}:
+            raise ValueError(
+                f"Unsupported fixed-component mobility mode {mobility_mode!r}"
+            )
+        (
+            expected_copies,
+            observed_copies,
+            matched_per_copy,
+            expected_per_copy,
+        ) = copies
 
         matched = sum(matched_per_copy)
         expected_count = sum(expected_per_copy)
@@ -778,6 +1061,22 @@ def audit_constraint_orbit(
             if mobility_mode == "fixed"
             else max(per_copy_rmsd)
         )
+        mobile_pose_bounds = (
+            _audit_mobile_pose_bounds(
+                example=example,
+                constraint_orbit_id=constraint_orbit_id,
+                expected_copies=expected_copies,
+                observed_copies=observed_copies,
+            )
+            if mobility_mode == "orbit_rigid"
+            else {"required": False, "passed": True}
+        )
+        if mobility_mode == "orbit_rigid":
+            mobile_pose_bounds["reference_frame"] = frame_report
+            if frame_failure:
+                mobile_pose_bounds.update(
+                    passed=False, status="not_certified", failure=frame_failure
+                )
         component_reports.append(
             {
                 "component_id": component_id,
@@ -786,7 +1085,9 @@ def audit_constraint_orbit(
                 "passed": bool(
                     completeness >= min_atom_completeness
                     and acceptance_rmsd <= max_joint_rmsd
+                    and mobile_pose_bounds["passed"]
                 ),
+                "independent_mobile_pose_bounds": mobile_pose_bounds,
                 "expected_heavy_atoms": expected_count,
                 "matched_heavy_atoms": matched,
                 "atom_completeness": completeness,
@@ -832,7 +1133,7 @@ def audit_constraint_orbit(
     ]
     return {
         "audit": "rfd3_mosaic.fixed_constraint_orbit",
-        "schema_version": 2,
+        "schema_version": 3,
         "passed": passed,
         "inputs": {
             "compiled_input": str(input_path),
@@ -849,6 +1150,12 @@ def audit_constraint_orbit(
         "thresholds": {
             "max_joint_orbit_rmsd": max_joint_rmsd,
             "min_atom_completeness": min_atom_completeness,
+            "mobile_translation_serialization_tolerance_angstrom": (
+                _MOBILE_TRANSLATION_SERIALIZATION_TOLERANCE
+            ),
+            "mobile_rotation_serialization_tolerance_degrees": (
+                _MOBILE_ROTATION_SERIALIZATION_TOLERANCE_DEG
+            ),
         },
         "summary": {
             "symmetry_multiplicity": multiplicity,

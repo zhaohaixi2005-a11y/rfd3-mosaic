@@ -179,6 +179,21 @@ class AdvisoryScreeningTestCase(unittest.TestCase):
         self.assertEqual(design.sampling.screening.mode, "advisory")
         self.assertTrue(design.sampling.screening.retain_all_outputs)
 
+    def test_unrequested_straight_route_prior_is_advice_not_contract_failure(self):
+        scaffold = self.report("scaffold_validity_audit.json", {
+            "passed": True,
+            "summary": {
+                "passed_generated_route_ownership": False,
+                "generated_route_ownership_required": False,
+                "passed_cross_chain_topology": True,
+            },
+        })
+        result = build_advisory_screening((scaffold,))
+        self.assertEqual(result["contract_status"], "met")
+        self.assertEqual(result["recommendation"], "review_advisory_metrics")
+        self.assertEqual(result["advisory_flags"][0]["code"],
+                         "advisory.scaffold.passed_generated_route_ownership")
+
     def test_schema_rejects_destructive_screening(self) -> None:
         with self.assertRaises(ValidationError):
             UserDesignSpec.model_validate(

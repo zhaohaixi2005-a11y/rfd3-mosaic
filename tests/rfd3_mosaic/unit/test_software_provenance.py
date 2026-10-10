@@ -123,6 +123,37 @@ class SoftwareProvenanceTestCase(unittest.TestCase):
         ):
             verify_repository_identity(expected, self.root)
 
+    def test_untracked_non_ascii_and_newline_names_are_content_bound(self) -> None:
+        self._git("init")
+        self._git("config", "user.email", "test@example.invalid")
+        self._git("config", "user.name", "Mosaic Test")
+        (self.root / "tracked.txt").write_text("tracked\n")
+        self._git("add", "tracked.txt")
+        self._git("commit", "-m", "initial")
+        for name in ("研究代码.py", "module\nname.py"):
+            with self.subTest(name=name):
+                source = self.root / name
+                source.write_text("value = 1\n")
+                expected = collect_repository_provenance(self.root)
+                self.assertIn(name, expected["untracked_files"])
+                source.write_text("value = 2\n")
+                with self.assertRaisesRegex(RuntimeError, "untracked_content_sha256"):
+                    verify_repository_identity(expected, self.root)
+
+    def test_installed_non_git_source_cannot_change_after_render(self):
+        package = self.root / "rfd3_mosaic"
+        native = self.root / "rfd3"
+        package.mkdir()
+        native.mkdir()
+        (package / "__init__.py").write_text("value = 1\n")
+        source = native / "sampler.py"
+        source.write_text("value = 1\n")
+        expected = collect_repository_provenance(package)
+        self.assertIsNone(expected["commit"])
+        source.write_text("value = 2\n")
+        with self.assertRaisesRegex(RuntimeError, "installed_source_sha256"):
+            verify_repository_identity(expected, package)
+
 
 if __name__ == "__main__":
     unittest.main()

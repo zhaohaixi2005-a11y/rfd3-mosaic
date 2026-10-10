@@ -270,7 +270,17 @@ class AddSymmetryFeats(Transform):
                 keep_mask[atom_mask, column] = True
 
         assert resolved_axis is not None
+        reference_names = [f"cylindrical_reference_{name}" for name in ("x", "y", "z")]
+        if any(name not in categories for name in reference_names):
+            raise ValueError("Cylindrical constraints require preserved source reference coordinates")
+        source_reference = np.stack([atom_array.get_annotation(name) for name in reference_names], axis=-1)
+        active = keep_mask.any(axis=1)
+        if not np.isfinite(source_reference[active]).all():
+            raise ValueError("Cylindrical source reference contains NaN or Inf")
+        # Unselected coordinates carry no reference conditioning information.
+        reference = np.where(active[:, None], source_reference, 0.0)
         return {
+            "cylindrical_reference": torch.tensor(reference, dtype=torch.float32),
             "cylindrical_keep_mask": torch.from_numpy(keep_mask),
             "cylindrical_axis": torch.tensor(
                 resolved_axis,

@@ -51,6 +51,7 @@ class _AsymmetricFakeDiffusion(torch.nn.Module):
 class _RecordingScaffoldController:
     def __init__(self, fixed_target: torch.Tensor) -> None:
         self.fixed_target = fixed_target.clone()
+        self.sym_transforms = {}
         self.calls = []
         self.last_update_applied = False
         self.motifs = [
@@ -60,6 +61,10 @@ class _RecordingScaffoldController:
                 mobility_subspace="bounded_se3",
             )
         ]
+
+    def bind_runtime_frames(self, _features, _target, **kwargs):
+        self.sym_transforms = kwargs["normalized_symmetry_transforms"]
+        return self
 
     def update_orbits_from_scaffold(
         self,
@@ -294,7 +299,7 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
     def test_graph_packing_and_mobility_require_unified_proposal_path(
         self,
     ) -> None:
-        with self.assertRaisesRegex(ValueError, "unified scaffold_boundary"):
+        with self.assertRaisesRegex(ValueError, "no learned pose signal"):
             SampleDiffusionWithSymmetry(
                 gamma_0=0.6,
                 preserve_fixed_motif_during_symmetry=True,
@@ -558,6 +563,7 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
         return SampleDiffusionWithSymmetry(
             gamma_0=0.6,
             enable_orbit_rigid_motif_mobility=True,
+            motif_mobility_proposal_source="scaffold_boundary",
             preserve_fixed_motif_during_symmetry=True,
             symmetry_state_mode="orbit_average",
             symmetry_noise_mode="coupled",
@@ -811,7 +817,7 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                 with (
                     mock.patch(
                         "rfd3.model.inference_sampler.OrbitRigidMotifController.from_features",
-                        return_value=controller,
+                        side_effect=controller.bind_runtime_frames,
                     ),
                     mock.patch(
                         "rfd3.model.inference_sampler.build_boundary_topology",
@@ -1199,11 +1205,19 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
                     motif_mobility_target_update_count=0,
                 )
 
+                def make_controller(_features, _target, **kwargs):
+                    controller.sym_transforms = kwargs["normalized_symmetry_transforms"]
+                    self.assertIs(
+                        controller.sym_transforms,
+                        sampler._exact_symmetry_orbit_layout.sym_transforms,
+                    )
+                    return controller
+
                 with (
                     mock.patch(
                         "rfd3.model.inference_sampler."
                         "OrbitRigidMotifController.from_features",
-                        return_value=controller,
+                        side_effect=make_controller,
                     ),
                     mock.patch(
                         "rfd3.model.inference_sampler."
@@ -1327,7 +1341,7 @@ class SymmetryMotifFinalizationTestCase(unittest.TestCase):
             mock.patch(
                 "rfd3.model.inference_sampler."
                 "OrbitRigidMotifController.from_features",
-                return_value=controller,
+                side_effect=controller.bind_runtime_frames,
             ),
             mock.patch(
                 "rfd3.model.inference_sampler.build_boundary_topology",

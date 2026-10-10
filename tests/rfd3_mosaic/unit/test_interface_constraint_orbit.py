@@ -48,6 +48,26 @@ def _features():
 
 
 class InterfaceConstraintOrbitLayoutTestCase(unittest.TestCase):
+    def test_native_schedule_cannot_hide_infinite_translation_step(self):
+        for value in (float("inf"), float("nan")):
+            features = _features()
+            features["motif_constraint_orbit_schedule"][0, 3] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "schedule must be finite"):
+                InterfaceConstraintOrbitLayout.from_features(features, atom_count=6)
+
+    def test_native_constraint_frames_reject_nonfinite_nonrigid_or_invalid_shape(self):
+        invalid = (
+            (torch.eye(3), torch.full((3,), float("inf"))),
+            (torch.diag(torch.tensor([-1.0, 1.0, 1.0])), torch.zeros(3)),
+            (torch.eye(3) * 2, torch.zeros(3)),
+            (torch.eye(2), torch.zeros(3)),
+        )
+        for index, transform in enumerate(invalid):
+            features = _features()
+            features["sym_transform"][1] = transform
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                InterfaceConstraintOrbitLayout.from_features(features, atom_count=6)
+
     def test_neutral_api_and_legacy_name_resolve_same_layout(self) -> None:
         self.assertIs(ConstraintOrbitLayout, InterfaceConstraintOrbitLayout)
 

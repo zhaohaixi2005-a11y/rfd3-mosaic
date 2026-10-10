@@ -139,6 +139,44 @@ class DesignCompilerTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing residues"):
             bind_constraint_plan(declared)
 
+    def test_generation_anchor_cannot_duplicate_part_of_a_fixed_fragment(self) -> None:
+        declared = self._design(
+            task="preserve_supplied_geometry",
+            generation=[{
+                "kind": "terminal", "anchor": "A1-2", "terminus": "c",
+                "length": 5,
+            }],
+            constraints=[{"kind": "fixed_xyz", "selector": "A1-4"}],
+        )
+        with self.assertRaisesRegex(ValueError, "Materialized motif selectors overlap"):
+            lower_user_design(declared)
+
+    def test_partial_overlap_inside_one_constraint_cannot_duplicate_residues(self) -> None:
+        declared = self._design(
+            task="preserve_supplied_geometry",
+            generation=[{
+                "kind": "terminal", "anchor": "A1-3", "terminus": "n",
+                "length": 5,
+            }],
+            constraints=[{"kind": "fixed_xyz", "selector": "A1-3,A3-4"}],
+        )
+        with self.assertRaisesRegex(ValueError, "Materialized motif selectors overlap"):
+            lower_user_design(declared)
+
+    def test_split_nonoverlapping_constraint_fragments_remain_supported(self) -> None:
+        lowered = lower_user_design(self._design(
+            task="preserve_supplied_geometry",
+            generation=[{
+                "kind": "terminal", "anchor": "A1-2", "terminus": "c",
+                "length": 5,
+            }],
+            constraints=[{"kind": "fixed_xyz", "selector": "A1-2,A3-4"}],
+        ))
+        self.assertEqual(
+            [fragment.selection for fragment in lowered.specification.fragments.values()],
+            ["A/1-2/*", "A/3-4/*"],
+        )
+
     def test_lowers_bidirectional_terminal_generation(self) -> None:
         lowered = lower_user_design(
             self._design(
@@ -191,11 +229,13 @@ class DesignCompilerTestCase(unittest.TestCase):
                 constraints=[
                     {
                         "kind": "fixed_xyz",
+                        "atoms": "backbone",
                         "selector": "A1-2",
                         "coupling_group": "interface_seed",
                     },
                     {
                         "kind": "fixed_xyz",
+                        "atoms": "backbone",
                         "selector": "B1-2",
                         "coupling_group": "interface_seed",
                     },

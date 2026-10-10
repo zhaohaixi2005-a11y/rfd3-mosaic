@@ -13,7 +13,9 @@ from typing import Any
 import yaml
 
 from rfd3_mosaic.advisory_screening import write_advisory_screening
+from rfd3_mosaic.audit_evidence import verify_audit_evidence
 from rfd3_mosaic.decision_explanation import write_decision_explanation
+from rfd3_mosaic.output_chemical_status import joint_task_and_chemical_status
 from rfd3_mosaic.result_auditing import (
     find_compiled_input,
     find_result_jsons,
@@ -256,6 +258,13 @@ def audit_existing_run(
                         "Cannot reuse missing result audit reports: "
                         + ", ".join(str(path) for path in missing)
                     )
+                verify_audit_evidence(
+                    directory=output_directory,
+                    compiled_input=input_path,
+                    result_json=result_json,
+                    reports=outcome_reports,
+                    semantic_audits=audits,
+                )
                 trajectory = output_directory / "mobility_trajectory.json"
                 outcome_mobility = trajectory if trajectory.is_file() else None
             else:
@@ -290,6 +299,7 @@ def audit_existing_run(
                 outcome_reports,
                 mode=str(screening.get("mode", "advisory")),
                 protocol=str(screening.get("protocol", "auto")),
+                result_json=result_json,
             )
             screening_paths.append(screening_path)
             decision_path = write_decision_explanation(
@@ -315,9 +325,20 @@ def audit_existing_run(
                 }
             )
             if example_id is not None:
+                chemical_geometry = screening_payload.get(
+                    "chemical_geometry",
+                    {"status": "not_evaluated", "passed": None},
+                )
+                joint_status = joint_task_and_chemical_status(
+                    screening_payload["contract_status"], chemical_geometry
+                )
                 ledger_updates[example_id] = {
                     "audit_status": "completed",
                     "contract_status": screening_payload["contract_status"],
+                    "chemical_status": screening_payload.get("chemical_status", "not_evaluated"),
+                    "chemical_geometry": chemical_geometry,
+                    "task_and_chemical_status": joint_status["status"],
+                    "task_and_chemical_passed": joint_status["passed"],
                     "reports": [str(path) for path in outcome_reports],
                     "decision_explanation": str(decision_path),
                 }
@@ -388,6 +409,12 @@ def audit_existing_run(
             record = previous_design_for(result_json, design_index)
             screening_payload = audited["screening"]
             contract_met = screening_payload["contract_status"] == "met"
+            chemical_geometry = screening_payload.get(
+                "chemical_geometry", {"status": "not_evaluated", "passed": None}
+            )
+            joint_status = joint_task_and_chemical_status(
+                screening_payload["contract_status"], chemical_geometry
+            )
             record.update(
                 {
                     "result_json": result_json,
@@ -396,6 +423,10 @@ def audit_existing_run(
                     "audit_status": "completed",
                     "contract_met": contract_met,
                     "contract_status": screening_payload["contract_status"],
+                    "chemical_status": screening_payload.get("chemical_status", "not_evaluated"),
+                    "chemical_geometry": chemical_geometry,
+                    "task_and_chemical_status": joint_status["status"],
+                    "task_and_chemical_passed": joint_status["passed"],
                     "recommendation": screening_payload["recommendation"],
                     "screening_advice": audited["screening_advice"],
                     "decision_explanation": audited["decision_explanation"],
@@ -414,6 +445,18 @@ def audit_existing_run(
             record["contract_status"] == "flagged" for record in refreshed_designs
         )
         accepted_count = sum(bool(record["accepted"]) for record in refreshed_designs)
+        chemical_pass_count = sum(
+            record["chemical_geometry"].get("passed") is True
+            for record in refreshed_designs
+        )
+        joint_pass_count = sum(
+            record["task_and_chemical_passed"] is True
+            for record in refreshed_designs
+        )
+        joint_failed_count = sum(
+            record["task_and_chemical_passed"] is False
+            for record in refreshed_designs
+        )
         recommended_count = sum(
             record["recommendation"] == "recommended_for_next_stage"
             for record in refreshed_designs
@@ -426,6 +469,15 @@ def audit_existing_run(
                 "contract_flagged_designs": contract_flagged_count,
                 "contract_not_evaluated_designs": (
                     len(refreshed_designs) - contract_met_count - contract_flagged_count
+                ),
+                "independent_chemical_pass_designs": chemical_pass_count,
+                "independent_chemical_not_passed_designs": (
+                    len(refreshed_designs) - chemical_pass_count
+                ),
+                "joint_task_and_chemical_pass_designs": joint_pass_count,
+                "joint_task_and_chemical_failed_designs": joint_failed_count,
+                "joint_task_and_chemical_not_evaluated_designs": (
+                    len(refreshed_designs) - joint_pass_count - joint_failed_count
                 ),
                 "recommended_designs": recommended_count,
                 "review_designs": len(refreshed_designs) - recommended_count,
@@ -509,7 +561,13 @@ def audit_existing_run(
         # report set and design counters.
         summary.update(
             {
-                "status": prior_execution_status or "completed",
+                "status": (
+                    prior_execution_status
+                    if prior_execution_status in {"running", "partial", "failed"}
+                    else "completed" if completeness["complete"] else "partial"
+                ),
+                "execution_completed": bool(completeness["complete"]),
+                "generation_completeness": completeness,
                 "experiment": config.get("name") or previous.get("experiment"),
                 "topology": (config.get("topology") or {}).get("kind"),
                 "posthoc_audit": posthoc_record,

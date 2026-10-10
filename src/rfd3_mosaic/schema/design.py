@@ -263,6 +263,21 @@ class FixedComponentPoseSpec(StrictModel):
         Field(gt=0.0, le=180.0),
     ] = 1.0
 
+    @model_validator(mode="before")
+    @classmethod
+    def default_mobile_proposal(cls, value):
+        # Native RFD3 EDM copies fixed atoms exactly, so fitting its fixed
+        # coordinates cannot provide a learned rigid-pose proposal. Preserve
+        # explicit legacy declarations for an actionable native preflight
+        # rejection, but give new mobile declarations the working backend.
+        if (
+            isinstance(value, dict)
+            and value.get("mode") == "bounded_mobile"
+            and "proposal" not in value
+        ):
+            return {**value, "proposal": "scaffold_objectives"}
+        return value
+
     @model_validator(mode="after")
     def validate_pose_mode(self) -> "FixedComponentPoseSpec":
         if self.start_fraction >= self.end_fraction:
@@ -481,17 +496,20 @@ class UserSymmetrySpec(StrictModel):
 
     @model_validator(mode="after")
     def validate_axes(self) -> "UserSymmetrySpec":
-        if sum(value * value for value in self.axis) <= 1e-12:
+        axis_squared_norm = sum(value * value for value in self.axis)
+        if axis_squared_norm <= 1e-12:
             raise ValueError("symmetry axis cannot be zero")
         if self.id.startswith("C") and self.secondary_axis is not None:
             raise ValueError("secondary_axis is not valid for Cn symmetry")
         if self.secondary_axis is not None:
-            if sum(value * value for value in self.secondary_axis) <= 1e-12:
+            secondary_squared_norm = sum(value * value for value in self.secondary_axis)
+            if secondary_squared_norm <= 1e-12:
                 raise ValueError("secondary symmetry axis cannot be zero")
             dot = sum(
                 left * right for left, right in zip(self.axis, self.secondary_axis)
             )
-            if abs(dot) > 1e-6:
+            normalized_dot = abs(dot) / (axis_squared_norm * secondary_squared_norm) ** 0.5
+            if normalized_dot > 1e-6:
                 raise ValueError("secondary symmetry axis must be perpendicular")
         return self
 
@@ -1108,6 +1126,33 @@ class UserDesignSpec(StrictModel):
                     f"Interface {interface.id!r} references unknown "
                     f"{interface_node_kind}: {unknown}"
                 )
+
+        # Ordinary graphs lower to independent component motion groups.
+        # Required supplied geometry spanning those groups has no joint
+        # runtime projector, even when no named task preset was requested.
+        # Finite-action graphs use a separate interface-edge compiler path.
+        if self.task is None and not any(
+            component.finite_orbit_action is not None
+            for component in self.components.values()
+        ):
+            for interface in self.interfaces:
+                if not interface.required or interface.relation.mode != "preserve_input":
+                    continue
+                participants = {
+                    self.ports[node].component if self.ports else node
+                    for node in interface.between
+                }
+                if len(participants) > 1 and any(
+                    self.components[node].pose.mode == "bounded_mobile"
+                    for node in participants
+                ):
+                    raise ValueError(
+                        f"Required supplied interface {interface.id!r} cannot "
+                        "preserve its relative pose across independently mobile "
+                        "components; keep them fixed or combine its participants "
+                        "in one joint-rigid component with separate ports. "
+                        "Declare additional generated interfaces as contact relations."
+                    )
 
         connection_ids: set[str] = set()
         for connection in self.connections:

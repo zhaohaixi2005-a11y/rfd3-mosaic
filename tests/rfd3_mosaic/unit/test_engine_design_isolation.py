@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-
 from rfd3.engine import RFD3InferenceEngine
 
 

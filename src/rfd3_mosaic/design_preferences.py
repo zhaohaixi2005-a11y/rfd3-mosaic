@@ -335,14 +335,15 @@ def compile_design_preferences(
                 inter_chain_excess_penalty
             )
     # Layered rigid capture is a finite-group assembly operation, not a Cn or
-    # LHD101 special case.  It is meaningful whenever a design declares a
-    # movable rigid orbit and generated scaffold coordinates.  Cn/Dn use a
+    # LHD101 special case. It applies to scaffold-objective rigid motion with
+    # generated coordinates, not explicitly requested denoiser fitting. Cn/Dn use a
     # symmetry-aligned local basis; T/O/I use a Cartesian basis spanning the
     # same full SE(3).  Locked arrangements remain excluded by construction.
     if (
         motion != ComponentMotionPreference.LOCKED
         and _uses_supported_finite_symmetry(design)
         and _declares_generated_scaffold(design)
+        and _uses_scaffold_driven_mobility(design)
     ):
         overrides["enable_assembly_robust_capture"] = True
         overrides["assembly_capture_weight"] = 1.0
@@ -357,6 +358,37 @@ def compile_design_preferences(
         diversity_plan=_DIVERSITY[preferences.diversity],
         sampler_overrides=overrides,
     )
+
+
+def _uses_scaffold_driven_mobility(design: UserDesignSpec) -> bool:
+    """Enable capture only for the proposal algorithm that consumes it.
+
+    Ordinary optimize-components designs lower fixed_xyz clauses to the
+    scaffold-objective policy. Explicit component/legacy pose declarations
+    retain their requested proposal source, including denoiser fitting.
+    Mixing sources is rejected later by the existing one-sampler contract.
+    """
+    proposals = {
+        component.pose.proposal
+        for component in design.components.values()
+        if component.pose.mode == "bounded_mobile"
+    }
+    ordinary_capture = (
+        design.fixed_arrangement == FixedArrangementPolicy.OPTIMIZE_COMPONENTS
+        and design.task
+        in {
+            UserDesignTask.CREATE_SYMMETRIC_INTERFACE,
+            UserDesignTask.PRESERVE_SUPPLIED_GEOMETRY,
+        }
+    )
+    for constraint in design.constraints:
+        if getattr(constraint, "kind", None) != "fixed_xyz":
+            continue
+        if ordinary_capture:
+            proposals.add("scaffold_objectives")
+        elif constraint.pose.mode == "bounded_mobile":
+            proposals.add(constraint.pose.proposal)
+    return proposals == {"scaffold_objectives"}
 
 
 def resolved_preferences_payload(design: UserDesignSpec) -> dict[str, Any]:

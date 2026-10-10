@@ -19,7 +19,6 @@ from typing import Any
 
 import numpy as np
 
-
 _CN, _NCA, _CAC, _CO = 1.329, 1.458, 1.525, 1.229
 _CACN, _CNCA, _NCAC, _CACO = np.deg2rad((116.2, 121.7, 111.2, 120.8))
 _ATOM_NAMES = ("N", "CA", "C", "O")

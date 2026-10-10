@@ -1,12 +1,42 @@
+import contextlib
+import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from rfd3_mosaic.rfd3_scaffold_audit import (
     _effective_chain_rg_limit,
     _evaluate_assembly_shape_contract,
+    main,
 )
 
 
 class ScaffoldAuditPolicyTestCase(unittest.TestCase):
+    def test_report_only_cli_retains_full_scaffold_failure_without_route_counts(self):
+        from test_central_motif_audit import MMCIF_HEADER
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            result.write_text("{}")
+            result.with_suffix(".cif").write_text(MMCIF_HEADER +
+                "ATOM C CA ALA A 1 1 A 0.0 0.0 0.0 1\n"
+                "ATOM C CA ALA A 2 2 A 3.8 0.0 0.0 1\n#\n")
+            output = root / "audit.json"
+            contract = {"declared": True, "applicable": True, "required": True,
+                        "passed": False, "measurement": "explicit_full_scaffold_contract"}
+            with patch("sys.argv", ["audit", "--result-json", str(result), "--output", str(output), "--report-only"]), patch(
+                "rfd3_mosaic.rfd3_scaffold_audit._audit_final_generated_route_ownership",
+                return_value=contract,
+            ), contextlib.redirect_stdout(io.StringIO()) as stdout:
+                main()
+            report = json.loads(output.read_text())
+            self.assertFalse(report["passed"])
+            self.assertFalse(report["summary"]["passed_scaffold_contract"])
+            self.assertIn("explicit reference geometry", stdout.getvalue())
+
     def test_default_limit_is_preserved_for_compact_fixed_geometry(self) -> None:
         self.assertEqual(
             _effective_chain_rg_limit(

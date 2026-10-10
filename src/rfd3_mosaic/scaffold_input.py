@@ -20,7 +20,6 @@ import numpy as np
 
 from rfd3_mosaic.structure import read_structure_atoms
 
-
 _NATIVE_FIELDS = {
     "contig",
     "select_fixed_atoms",
@@ -69,7 +68,9 @@ _AMINO_ACIDS = set(
 
 
 def scaffold_transport_plan(native, registry_extra, residues):
-    from rfd3_mosaic.validation.reference_transport import build_reference_transport_plan
+    from rfd3_mosaic.validation.reference_transport import (
+        build_reference_transport_plan,
+    )
 
     fixed = _fixed_selection(native["select_fixed_atoms"], residues)
     records = [{"chain_id": residue["chain"], "residue_number": residue["number"],

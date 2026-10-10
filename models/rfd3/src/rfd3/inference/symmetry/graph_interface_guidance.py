@@ -11,7 +11,7 @@ unrelated protomers through an all-to-all compactness force.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
@@ -53,6 +53,7 @@ class GraphInterfaceGuidanceConfig:
     maximum_token_step: float = 0.25
     unsatisfied_step_fraction: float = 0.50
     final_polish_steps: int = 12
+    terminal_kinematic_proposals: bool = False
     token_smoothing_weight: float = 0.5
     token_smoothing_passes: int = 1
     continuity_softness: float = 0.75
@@ -87,6 +88,16 @@ class GraphInterfaceGuidanceConfig:
     maximum_source_regression_absolute: float = 2.0e-3
 
     def __post_init__(self) -> None:
+        for parameter in fields(self):
+            if not math.isfinite(float(getattr(self, parameter.name))):
+                raise ValueError(f"{parameter.name} must be finite")
+        for name in (
+            "pairs_per_edge", "final_polish_steps", "token_smoothing_passes",
+            "patch_blend_radius", "line_search_steps",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{name} must be an integer")
         if (
             self.weight < 0.0
             or self.coverage_weight < 0.0
@@ -1593,7 +1604,10 @@ def resolve_graph_interface_patch_assignments(
         right_points = xyz[edge.right_generated_ca_mask]
         resolved = _resolve_edge_patch(
             edge,
-            torch.cdist(left_points, right_points),
+            torch.cdist(
+                left_points, right_points,
+                compute_mode="donot_use_mm_for_euclid_dist",
+            ),
             config,
             target_ca_distance_override=target_ca_distance_override,
         )
@@ -1853,6 +1867,10 @@ def graph_interface_energy(
         distance_matrix = torch.cdist(
             left_points,
             right_points,
+            # The same distances enter both differentiable objectives and
+            # 1e-6 Angstrom hard nonregression checks. Squared-norm MM can
+            # falsely shorten an invariant contact under a rigid translation.
+            compute_mode="donot_use_mm_for_euclid_dist",
         )
         distances = distance_matrix.flatten()
         if not distances.numel():
@@ -2181,6 +2199,7 @@ def graph_interface_energy(
         safety_distances = torch.cdist(
             xyz[topology.guided_ca_mask],
             xyz[topology.safety_ca_mask],
+            compute_mode="donot_use_mm_for_euclid_dist",
         )
         exclusions = topology.safety_exclusions.to(
             dtype=torch.bool,
@@ -2642,6 +2661,7 @@ def graph_interface_proposal_acceptable(
     config: GraphInterfaceGuidanceConfig,
     *,
     decision: dict[str, Any] | None = None,
+    evaluate_all: bool = False,
 ) -> bool:
     """Hard acceptance contract for a timestep packing proposal.
 
@@ -2651,21 +2671,26 @@ def graph_interface_proposal_acceptable(
     distance and aggregate global clash energy.
     """
 
+    accepted = True
+
     def check(name: str, passed: bool, **values: Any) -> bool:
+        nonlocal accepted
         outcome = bool(passed)
+        accepted = accepted and outcome
         if decision is not None:
             decision.setdefault("checks", []).append(
                 {"rule": name, "passed": outcome, **values}
             )
-            decision["accepted"] = outcome
-            if not outcome:
+            decision["accepted"] = accepted
+            if not outcome and decision.get("first_rejection_reason") is None:
                 decision["first_rejection_reason"] = name
         return outcome
 
     if decision is not None:
         decision.update(
             checks=[], accepted=False, first_rejection_reason=None,
-            evaluation="short_circuit; later checks omitted after rejection",
+            evaluation=("all shape-compatible checks; acceptance unchanged" if evaluate_all
+                        else "short_circuit; later checks omitted after rejection"),
         )
     if not check(
         "finite_strict_energy_descent",
@@ -2676,7 +2701,7 @@ def graph_interface_proposal_acceptable(
         ),
         before=float(before.total.detach().cpu().item()),
         after=float(after.total.detach().cpu().item()), minimum_decrease=1e-10,
-    ):
+    ) and not evaluate_all:
         return False
 
     def minimum_not_worse(
@@ -2701,18 +2726,23 @@ def graph_interface_proposal_acceptable(
         before.minimum_distances,
         after.minimum_distances,
         "interface_minimum_distance",
-    ):
+    ) and not evaluate_all:
         return False
     if not minimum_not_worse(
         before.minimum_global_safety_distance.reshape(1),
         after.minimum_global_safety_distance.reshape(1),
         "global_minimum_distance",
-    ):
+    ) and not evaluate_all:
         return False
     if not check(
         "source_identity_shape",
         before.per_source_total.shape == after.per_source_total.shape,
     ):
+        if decision is not None and evaluate_all:
+            decision["not_executed"] = ["worst_source_regression", "each_source_regression",
+                                        "junction_regression", "patch_exclusivity_regression",
+                                        "global_clash_regression"]
+            decision["evaluation"] = "source shape incompatible; remaining checks not executed"
         return False
     before_sources = before.per_source_total.detach()
     after_sources = after.per_source_total.detach()
@@ -2727,14 +2757,14 @@ def graph_interface_proposal_acceptable(
         not (worst_after > worst_before + config.maximum_source_regression_absolute),
         before=worst_before, after=worst_after,
         maximum_allowed=worst_before + config.maximum_source_regression_absolute,
-    ):
+    ) and not evaluate_all:
         return False
     if not check(
         "each_source_regression",
         not bool(torch.any(after_sources - before_sources > allowed_regression)),
         before=before_sources.cpu().tolist(), after=after_sources.cpu().tolist(),
         maximum_increase=allowed_regression,
-    ):
+    ) and not evaluate_all:
         return False
     before_junction = float(before.junction.detach().cpu().item())
     after_junction = float(after.junction.detach().cpu().item())
@@ -2747,7 +2777,7 @@ def graph_interface_proposal_acceptable(
         "junction_regression", not (after_junction > junction_limit + 1e-8),
         before=before_junction, after=after_junction,
         maximum_allowed=junction_limit, tolerance=1e-8,
-    ):
+    ) and not evaluate_all:
         return False
     before_exclusivity = float(
         before.patch_exclusivity.detach().cpu().item()
@@ -2765,14 +2795,15 @@ def graph_interface_proposal_acceptable(
         not (after_exclusivity > exclusivity_limit + 1e-8),
         before=before_exclusivity, after=after_exclusivity,
         maximum_allowed=exclusivity_limit, tolerance=1e-8,
-    ):
+    ) and not evaluate_all:
         return False
-    return check(
+    check(
         "global_clash_regression",
         bool(after.global_safety_clash <= before.global_safety_clash + 1e-8),
         before=float(before.global_safety_clash.detach().cpu().item()),
         after=float(after.global_safety_clash.detach().cpu().item()), tolerance=1e-8,
     )
+    return accepted
 
 
 def graph_interface_energy_diagnostics(
@@ -2917,7 +2948,10 @@ def _selected_patch_token_groups(
         right_points = xyz[edge.right_generated_ca_mask]
         resolved = _resolve_edge_patch(
             edge,
-            torch.cdist(left_points, right_points),
+            torch.cdist(
+                left_points, right_points,
+                compute_mode="donot_use_mm_for_euclid_dist",
+            ),
             config,
             target_ca_distance_override=target_ca_distance_override,
             assignment=(
@@ -3123,6 +3157,7 @@ def apply_graph_interface_guidance(
     patch_state: GraphInterfacePatchState | None = None,
     candidate_validator: Callable[[torch.Tensor], dict[str, Any]] | None = None,
     step_context: GraphInterfaceStepContext | None = None,
+    observer: Callable | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Apply one bounded local-rigid step to the true projected state."""
 
@@ -3203,6 +3238,11 @@ def apply_graph_interface_guidance(
     if not torch.isfinite(gradient).all():
         raise ValueError("Interface guidance produced a non-finite gradient")
 
+    if observer is not None:
+        observer("graph_input", coordinates, gradient=gradient,
+                 progress=float(progress), effective_config=vars(effective_config),
+                 scheduled_target_ca_distance=scheduled_target,
+                 patch_assignments={key: {"left_token_ids": list(value.left_token_ids), "right_token_ids": list(value.right_token_ids)} for key, value in patch_assignments.items()})
     atom_to_token = torch.as_tensor(
         features["atom_to_token_map"],
         dtype=torch.long,
@@ -3323,13 +3363,32 @@ def apply_graph_interface_guidance(
     # descent step.  Accept the whole multi-interface proposal atomically or
     # backtrack it; never let one edge improve by damaging another unnoticed.
     displacement = guided - coordinates
+    from .interface_backbone_guard import interface_backbone_geometry_guard
+    backbone_guard = interface_backbone_geometry_guard(coordinates, features)
     accepted_scale = 0.0
     accepted_energy = energy
     accepted = coordinates
     line_search_trials: list[dict[str, Any]] = []
+    kinematic_detail = None
+    use_kinematics = False
+    if effective_config.terminal_kinematic_proposals and backbone_guard is not None:
+        from .terminal_kinematics import terminal_kinematic_candidate
+        initial_kinematic, kinematic_detail = terminal_kinematic_candidate(
+            coordinates, gradient, features, topology, effective_config)
+        use_kinematics = initial_kinematic is not None
     for line_search_index in range(effective_config.line_search_steps):
         scale = effective_config.line_search_contraction**line_search_index
-        candidate = coordinates + scale * displacement
+        if use_kinematics:
+            candidate, kinematic_detail = terminal_kinematic_candidate(
+                coordinates, gradient, features, topology, effective_config,
+                line_search_scale=scale)
+            if candidate is None:
+                line_search_trials.append({'scale': float(scale), 'accepted': False,
+                    'first_rejection_reason': 'terminal_kinematic_trust_region',
+                    'terminal_kinematics': kinematic_detail})
+                continue
+        else:
+            candidate = coordinates + scale * displacement
         if projector is not None:
             candidate = projector(candidate)
         candidate_energy = graph_interface_energy(
@@ -3339,7 +3398,9 @@ def apply_graph_interface_guidance(
             target_ca_distance_override=scheduled_target,
             patch_assignments=patch_assignments,
         )
-        trial_decision: dict[str, Any] = {"scale": float(scale)}
+        trial_decision: dict[str, Any] = {"scale": float(scale),
+            "proposal_kind": "terminal_kinematic" if use_kinematics else "token_patch",
+            **({"terminal_kinematics": kinematic_detail} if use_kinematics else {})}
         line_search_trials.append(trial_decision)
         if candidate_validator is not None:
             safety = candidate_validator(candidate)
@@ -3348,18 +3409,31 @@ def apply_graph_interface_guidance(
                 trial_decision.update(
                     accepted=False, first_rejection_reason="geometry_regression"
                 )
+                if observer is not None:
+                    observer("graph_trial", candidate, progress=float(progress), decision=trial_decision)
                 continue
-        if graph_interface_proposal_acceptable(
+        if backbone_guard is not None:
+            physical_check = backbone_guard(candidate)
+            trial_decision["interface_backbone_guard"] = physical_check
+            if not physical_check["passed"]:
+                trial_decision.update(accepted=False, first_rejection_reason="backbone_geometry_regression")
+                if observer is not None:
+                    observer("graph_trial", candidate, progress=float(progress), decision=trial_decision)
+                continue
+        acceptable = graph_interface_proposal_acceptable(
             energy,
             candidate_energy,
             effective_config,
             decision=trial_decision,
-        ):
+        )
+        if observer is not None:
+            observer("graph_trial", candidate, progress=float(progress), decision=trial_decision)
+        if acceptable:
             accepted_scale = scale
             accepted_energy = candidate_energy
             accepted = candidate.detach()
             break
-    maximum_observed_step *= accepted_scale
+    maximum_observed_step = float(torch.linalg.vector_norm(accepted - coordinates, dim=-1).max().detach().cpu().item())
     with torch.no_grad():
         physical_energy_after = graph_interface_energy(
             accepted, topology, config, patch_assignments=patch_assignments,
@@ -3370,6 +3444,8 @@ def apply_graph_interface_guidance(
         config=config,
     )
     return accepted, {
+        "proposal_kind": "terminal_kinematic" if use_kinematics else "token_patch",
+        "terminal_kinematics": kinematic_detail,
         "applied": accepted_scale > 0.0,
         "proposal_accepted": accepted_scale > 0.0,
         "reason": "accepted" if accepted_scale > 0.0 else "no_acceptable_trial",

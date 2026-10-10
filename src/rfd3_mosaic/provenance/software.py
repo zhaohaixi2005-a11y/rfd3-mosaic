@@ -78,6 +78,7 @@ def verify_repository_identity(
         "untracked_files",
         "untracked_content_sha256",
         "working_tree_diff_sha256",
+        "installed_source_sha256",
     )
     mismatches = [
         field
@@ -99,6 +100,22 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
+    return digest.hexdigest()
+
+
+def source_tree_sha256(roots: dict[str, Path]) -> str:
+    """Fingerprint source/config content including additions and removals."""
+    digest = hashlib.sha256()
+    for label, root in sorted(roots.items()):
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            if path.suffix not in {".py", ".yaml", ".yml", ".json", ".toml"}:
+                continue
+            name = f"{label}/{path.relative_to(root).as_posix()}".encode("utf-8")
+            digest.update(len(name).to_bytes(8, "big"))
+            digest.update(name)
+            digest.update(bytes.fromhex(sha256_file(path)))
     return digest.hexdigest()
 
 
@@ -135,8 +152,15 @@ def collect_repository_provenance(repository: Path) -> dict[str, Any]:
         "--porcelain=v1",
         "--untracked-files=no",
     )
-    untracked = _git(root, "ls-files", "--others", "--exclude-standard")
-    untracked_files = untracked.splitlines() if untracked else []
+    # Git quotes non-ASCII names and names containing control characters in
+    # line-oriented output.  NUL records preserve the actual filesystem name,
+    # otherwise those files are silently skipped when their content is hashed.
+    untracked = _git(root, "ls-files", "-z", "--others", "--exclude-standard", binary=True)
+    untracked_files = (
+        [os.fsdecode(name) for name in untracked.split(b"\0") if name]
+        if isinstance(untracked, bytes)
+        else []
+    )
     untracked_digest = hashlib.sha256()
     for relative in untracked_files:
         candidate = root / relative
@@ -152,6 +176,14 @@ def collect_repository_provenance(repository: Path) -> dict[str, Any]:
         if isinstance(diff, bytes) and diff
         else None
     )
+    installed_source_sha256 = None
+    if commit is None:
+        roots = {"root": root}
+        if root.name == "rfd3_mosaic":
+            for name in ("rfd3", "foundry", "foundry_cli"):
+                if (root.parent / name).is_dir():
+                    roots[name] = root.parent / name
+        installed_source_sha256 = source_tree_sha256(roots)
     return {
         "repository_root": str(root),
         "origin": origin,
@@ -164,6 +196,7 @@ def collect_repository_provenance(repository: Path) -> dict[str, Any]:
             untracked_digest.hexdigest() if untracked_files else None
         ),
         "working_tree_diff_sha256": diff_sha256,
+        "installed_source_sha256": installed_source_sha256,
     }
 
 

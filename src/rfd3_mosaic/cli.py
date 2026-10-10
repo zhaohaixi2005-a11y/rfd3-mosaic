@@ -1958,7 +1958,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = _parser()
     arguments = parser.parse_args(argv)
     if arguments.command == "prepare-scaffold":
-        from rfd3_mosaic.scaffold_tasks import ScaffoldConstructionUnresolved, prepare_scaffold_task
+        from rfd3_mosaic.scaffold_tasks import (
+            ScaffoldConstructionUnresolved,
+            prepare_scaffold_task,
+        )
 
         try:
             result = prepare_scaffold_task(

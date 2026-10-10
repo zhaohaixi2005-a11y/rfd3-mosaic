@@ -14,6 +14,7 @@ from rfd3_mosaic.constraint_plan import (
     compile_constraint_plan,
 )
 from rfd3_mosaic.schema import UserDesignSpec, load_user_design
+from rfd3_mosaic.schema.design import FixedComponentPoseSpec
 
 
 def design(**updates: object) -> UserDesignSpec:
@@ -27,6 +28,46 @@ def design(**updates: object) -> UserDesignSpec:
 
 
 class UserDesignConstraintTestCase(unittest.TestCase):
+    def test_new_mobile_default_uses_effective_native_proposal_without_mutating_input(self):
+        payload = {"mode": "bounded_mobile", "max_translation": 2.0,
+                   "max_rotation_deg": 10.0}
+        pose = FixedComponentPoseSpec.model_validate(payload)
+        self.assertEqual(pose.proposal, "scaffold_objectives")
+        self.assertNotIn("proposal", payload)
+        self.assertEqual(FixedComponentPoseSpec().mode, "fixed")
+        self.assertEqual(FixedComponentPoseSpec().proposal, "denoiser_fit")
+        # A legacy request remains explicit; native sampler preflight rejects
+        # it rather than silently substituting a different optimization.
+        explicit = FixedComponentPoseSpec.model_validate({**payload, "proposal": "denoiser_fit"})
+        self.assertEqual(explicit.proposal, "denoiser_fit")
+
+    def test_nonfinite_symmetry_and_pose_parameters_are_rejected(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            for updates in (
+                {"symmetry": {"id": "C3", "axis": [value, 0, 1]}},
+                {"symmetry": {"id": "C3", "center": [0, value, 0]}},
+                {"sampling": {"initial_pose": {
+                    "radius": {"minimum": 10, "maximum": 10},
+                    "orientation": {"method": "fixed", "rotation_deg": [value, 0, 0]},
+                }}},
+            ):
+                with self.subTest(value=value, updates=updates):
+                    with self.assertRaises(ValidationError):
+                        design(**updates)
+
+    def test_dihedral_axis_orthogonality_is_independent_of_vector_scale(self) -> None:
+        for scale in (1e-4, 1.0, 1e4):
+            with self.subTest(scale=scale):
+                with self.assertRaisesRegex(ValidationError, "perpendicular"):
+                    design(symmetry={
+                        "id": "D3", "axis": [scale, 0, 0],
+                        "secondary_axis": [scale, 0, 0],
+                    })
+                self.assertEqual(design(symmetry={
+                    "id": "D3", "axis": [scale, 0, 0],
+                    "secondary_axis": [0, scale, 0],
+                }).symmetry.id, "D3")
+
     def test_public_design_defaults_to_site_independent_direct_profile(
         self,
     ) -> None:

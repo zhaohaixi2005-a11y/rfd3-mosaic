@@ -118,6 +118,56 @@ class LocalSymmetryNeighbourhoodTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot be negative"):
             select_local_transform_ids("C12", neighbour_radius=-1)
 
+    def test_native_and_permuted_dihedral_frames_select_actual_cyclic_neighbours(self):
+        from rfd3.inference.symmetry.frames import get_dihedral_frames
+
+        native = get_dihedral_frames(10)
+        for order in (tuple(range(20)), (0, 7, 12, 3, 10, 15, 6, 19, 2, 13, 4, 17, 8, 11, 14, 5, 16, 1, 18, 9)):
+            features = self._cyclic_features(20)
+            features["sym_transform"] = {
+                str(index): (torch.tensor(native[source][0]), torch.tensor(native[source][1], dtype=torch.float64))
+                for index, source in enumerate(order)
+            }
+            full = torch.zeros((1, 40, 3), dtype=torch.float64)
+            view = build_local_symmetry_neighbourhood(
+                features, "D10", like=full, neighbour_radius=1,
+                include_dihedral_mate=False,
+            )
+            # Native frames interleave R_i and R_i F. The true ring neighbours
+            # of identity are R_1 and R_9, irrespective of their integer IDs.
+            assert {order[index] for index in view.selected_transform_ids} == {0, 2, 18}
+
+    def test_permuted_cyclic_frames_select_neighbours_of_nonzero_master_id(self):
+        features = self._cyclic_features(12)
+        original = features["sym_transform"]
+        permutation = (5, 8, 2, 0, 9, 4, 10, 1, 11, 7, 3, 6)
+        features["sym_transform"] = {
+            str(index): original[str(source)] for index, source in enumerate(permutation)
+        }
+        features["is_sym_asu"] = features["sym_transform_id"] == 3
+        view = build_local_symmetry_neighbourhood(
+            features, "C12", like=torch.zeros((1, 24, 3), dtype=torch.float64),
+            neighbour_radius=1,
+        )
+        assert {permutation[index] for index in view.selected_transform_ids} == {0, 1, 11}
+
+    def test_translated_high_order_float32_registry_preserves_neighbour_identity(self):
+        from rfd3_mosaic.geometry import build_cyclic_registry
+
+        registry = build_cyclic_registry(200, center=(100.0, 200.0, 30.0))
+        features = self._cyclic_features(200)
+        features["sym_transform"] = {
+            str(index): (
+                torch.tensor(registry.transform(name)[:3, :3], dtype=torch.float32),
+                torch.tensor(registry.transform(name)[:3, 3], dtype=torch.float32),
+            )
+            for index, name in enumerate(registry.transform_ids)
+        }
+        view = build_local_symmetry_neighbourhood(
+            features, "C200", like=torch.zeros((1, 400, 3)), neighbour_radius=1,
+        )
+        assert view.selected_transform_ids == (0, 199, 1)
+
     def test_local_prediction_rebuilds_the_complete_c12_orbit(self) -> None:
         features = self._cyclic_features(12)
         full = torch.zeros((1, 24, 3), dtype=torch.float64)
@@ -366,6 +416,7 @@ class LocalSymmetryNeighbourhoodTestCase(unittest.TestCase):
                 symmetry_state_mode="orbit_average",
                 symmetry_noise_mode="coupled",
                 enable_orbit_rigid_motif_mobility=True,
+                motif_mobility_proposal_source="scaffold_boundary",
             )
 
 

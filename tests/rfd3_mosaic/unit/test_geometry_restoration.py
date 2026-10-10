@@ -3,11 +3,21 @@ import unittest
 import torch
 from rfd3.inference.symmetry.geometry_restoration import restore_generated_geometry
 from rfd3.inference.symmetry.scaffold_core_guidance import (
-    ScaffoldCoreGuidanceConfig, build_scaffold_core_topology,
+    ScaffoldCoreGuidanceConfig,
+    build_scaffold_core_topology,
 )
 
 
 class GeometryRestorationTests(unittest.TestCase):
+    def test_nan_geometry_cannot_be_reported_as_within_tolerance(self):
+        topology = self.topology(torch.zeros(4, dtype=torch.bool))
+        for value in (float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite coordinates"):
+                restore_generated_geometry(
+                    torch.full((1, 4, 3), value), topology,
+                    ScaffoldCoreGuidanceConfig(), projector=lambda v: v,
+                )
+
     def topology(self, fixed):
         return build_scaffold_core_topology({
             "atom_to_token_map": torch.arange(4),

@@ -17,12 +17,17 @@ An expert may independently request a soft *excess* penalty through
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass, fields, replace
 from typing import Any, Callable
 
 import torch
 
-from .generated_routes import route_deficits_from_config, route_nonregression_check, route_tolerance
+from .generated_routes import (
+    route_deficits_from_config,
+    route_nonregression_check,
+    route_tolerance,
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,13 @@ class ScaffoldCoreGuidanceConfig:
     line_search_contraction: float = 0.5
 
     def __post_init__(self) -> None:
+        for parameter in fields(self):
+            if not math.isfinite(float(getattr(self, parameter.name))):
+                raise ValueError(f"{parameter.name} must be finite")
+        for name in ("sequence_separation", "line_search_steps"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{name} must be an integer")
         for name in (
             "intra_chain_weight",
             "inter_chain_weight",
@@ -1234,7 +1246,12 @@ def scaffold_geometry_deficits(
                         & torch.triu(torch.ones_like(relevant), diagonal=1)
                     )
                 distances = torch.cdist(
-                    xyz[left.ca_atom_indices], xyz[right.ca_atom_indices]
+                    xyz[left.ca_atom_indices],
+                    xyz[right.ca_atom_indices],
+                    # Deficits enter hard acceptance checks. The default MM
+                    # path subtracts squared coordinate norms and can report
+                    # false overlap changes under a rigid translation.
+                    compute_mode="donot_use_mm_for_euclid_dist",
                 )
                 ca.append(torch.relu(config.clash_distance - distances[relevant]))
                 if left is right:
@@ -1287,20 +1304,38 @@ def scaffold_geometry_guard(
     independent validation. Fixed-fixed pairs are excluded from optimization.
     Route ownership preserves satisfied pairs, squared sum and maximum;
     already violated route pairs may trade within those bounds.
+
+    Evaluate the actual supplied coordinates in float64, on their own device,
+    without changing the candidate or the 1e-6 Angstrom physical tolerance.
+    Float32 distance/segment roundoff must not decide whether a pose commits.
     """
 
+    if not torch.isfinite(coordinates).all():
+        raise ValueError("Scaffold geometry guard requires finite coordinates")
 
+    def evaluate(value):
+        with torch.autocast(device_type=value.device.type, enabled=False):
+            return scaffold_geometry_deficits(
+                value.detach().to(dtype=torch.float64), topology, config
+            )
+
+    reference = getattr(topology, "scaffold_contract", None)
+    physical_guard = None
+    if reference is not None and reference.backbone_atom_indices is not None:
+        from .contract_feasibility import backbone_physical_nonregression_guard
+        physical_guard = backbone_physical_nonregression_guard(coordinates, topology)
     with torch.no_grad():
-        before = scaffold_geometry_deficits(coordinates.detach(), topology, config)
+        before = evaluate(coordinates)
 
     def validate(candidate: torch.Tensor) -> dict[str, Any]:
         with torch.no_grad():
             if (
                 candidate.shape != coordinates.shape
+                or candidate.device != coordinates.device
                 or not torch.isfinite(candidate).all()
             ):
                 return {"accepted": False, "reason": "invalid_coordinates"}
-            after = scaffold_geometry_deficits(candidate, topology, config)
+            after = evaluate(candidate)
             checks = []
             for name, original in before.items():
                 if name == "route_ownership":
@@ -1323,6 +1358,8 @@ def scaffold_geometry_guard(
                         "passed": finite and bool(torch.all(increase <= 1e-6)),
                     }
                 )
+            if physical_guard is not None:
+                checks.append(physical_guard(candidate))
             return {
                 "accepted": all(item["passed"] for item in checks),
                 "checks": checks,
@@ -1460,6 +1497,18 @@ def apply_scaffold_core_guidance(
                 .cpu()
                 .item()
             )
+            # Sequential pair corrections can disturb an earlier edge. A
+            # finite number of sweeps is not a certificate of the declared
+            # peptide-vector bound. This uniform final contraction preserves
+            # fixed tokens and makes every adjacent difference satisfy it.
+            if maximum_adjacent_difference > config.maximum_adjacent_token_step_difference:
+                token_step *= (
+                    config.maximum_adjacent_token_step_difference
+                    / maximum_adjacent_difference
+                )
+                maximum_adjacent_difference = float(torch.linalg.vector_norm(
+                    token_step[left] - token_step[right], dim=-1
+                ).max().detach().item())
         atom_step = token_step[topology.atom_to_token][None, ...]
 
     accepted = False
@@ -1484,6 +1533,28 @@ def apply_scaffold_core_guidance(
         trial_record["geometry_guard"] = safety
         if not safety["accepted"]:
             trial_record["first_rejection_reason"] = "geometry_regression"
+            continue
+        # The projector is part of the proposal, so check the displacement
+        # actually accepted rather than only the unprojected token step.
+        displacement = candidate - coordinates
+        actual_maximum_step = torch.linalg.vector_norm(displacement, dim=-1).max()
+        ca_pairs = topology.adjacent_ca_atom_pairs
+        actual_adjacent = (
+            torch.linalg.vector_norm(
+                displacement[:, ca_pairs[:, 0]] - displacement[:, ca_pairs[:, 1]], dim=-1
+            ).max() if len(ca_pairs) else displacement.new_zeros(())
+        )
+        bounded = bool(
+            actual_maximum_step <= config.maximum_token_step * window + 1e-5
+            and actual_adjacent <= config.maximum_adjacent_token_step_difference + 1e-5
+        )
+        trial_record["actual_maximum_atom_step"] = float(actual_maximum_step)
+        trial_record["actual_maximum_adjacent_step_difference"] = float(actual_adjacent)
+        if not bounded:
+            trial_record["first_rejection_reason"] = "projected_step_exceeds_trust_region"
+            continue
+        if not torch.equal(candidate[:, ~topology.generated_atom_mask], coordinates[:, ~topology.generated_atom_mask]):
+            trial_record["first_rejection_reason"] = "fixed_coordinates_changed"
             continue
         if not torch.isfinite(trial.total):
             trial_record["first_rejection_reason"] = "nonfinite_total"

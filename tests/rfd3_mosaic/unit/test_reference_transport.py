@@ -125,7 +125,7 @@ def test_reference_transaction_preserves_seed_and_moves_generated_region_and_rep
     )
     np.testing.assert_allclose(
         [r["reference_backbone"] for r in final["residues"]],
-        moved.numpy().reshape(44, 4, 3),
+        moved.detach().cpu().numpy().reshape(44, 4, 3),
         atol=1e-10,
     )
     assert len(runtime.accepted) == 1
@@ -144,6 +144,43 @@ def test_reference_transaction_preserves_seed_and_moves_generated_region_and_rep
     tampered["accepted_transitions"] = []
     with pytest.raises(ValueError, match="accepted transport history"):
         replay_reference_transport(contract, plan, tampered)
+
+
+def test_transport_guard_checks_moving_scaffold_instead_of_frozen_junctions():
+    from rfd3.inference.symmetry.scaffold_core_guidance import (
+        ScaffoldCoreGuidanceConfig,
+        scaffold_geometry_guard,
+    )
+    from rfd3.inference.symmetry.scaffold_transport import ScaffoldReferenceTransport
+
+    contract, _, _, features, topology = transport_fixture()
+    original = features["motif_pos"][None].clone()
+    target = original.clone()
+    # A shared axial translation commutes with the C2 operation. Every chain
+    # can move rigidly, so its peptide junctions and internal geometry survive.
+    target[:, :, 2] += 1.0
+    frozen_trial = torch.where(
+        topology.generated_atom_mask[None, :, None], original, target
+    )
+    physical_guard = scaffold_geometry_guard(
+        original, topology, ScaffoldCoreGuidanceConfig()
+    )
+    assert not physical_guard(frozen_trial)["accepted"]
+    runtime = ScaffoldReferenceTransport(features, topology)
+    validate = runtime.candidate_validator(
+        original, projector=lambda candidate, target: candidate,
+        geometry_guard=physical_guard,
+    )
+    report = validate(frozen_trial)
+    assert report["accepted"], report
+    assert report["evaluation_state"] == "transported_seed_reference_scaffold"
+    # Trial evaluation has no commit side effects, and still rejects a
+    # deformed seed instead of accepting every rigid-body-looking request.
+    assert runtime.accepted == []
+    assert runtime.reference.contract == contract
+    invalid = frozen_trial.clone()
+    invalid[0, 0] += 1.0
+    assert not validate(invalid)["accepted"]
 
 
 @pytest.mark.parametrize("kind", ["asymmetric", "out_of_bounds", "locked"])
@@ -174,7 +211,9 @@ def test_replay_requires_matching_plan_even_when_no_movement():
 
 
 @pytest.mark.parametrize("valid", [True, False])
-def test_native_sampler_coupled_commit_or_rollback_and_final_audit(monkeypatch, valid):
+def test_native_sampler_coupled_commit_or_rollback_and_final_audit(
+    monkeypatch, valid
+):
     from rfd3.model.inference_sampler import SampleDiffusionWithSymmetry
     from test_symmetry_motif_finalization import _RecordingScaffoldController
 
@@ -199,11 +238,11 @@ def test_native_sampler_coupled_commit_or_rollback_and_final_audit(monkeypatch, 
             "is_motif_atom_with_fixed_coord": fixed,
             "ref_element": torch.zeros(176, dtype=torch.long),
             "partial_t": 2.0,
+            "token_bonds": torch.zeros((44, 44)),
         }
     )
     proposed = original.clone()
-    proposed[:, :88, 0] += 0.1
-    proposed[:, 88:, 0] -= 0.1
+    proposed[:, :, 2] += 1.0
     if not valid:
         proposed[0, 0] += 1.0  # deforms a fixed joint seed
 
@@ -213,14 +252,25 @@ def test_native_sampler_coupled_commit_or_rollback_and_final_audit(monkeypatch, 
             self.fixed_target = proposed.clone()
             return self.fixed_target
 
+        def update_orbits_from_scaffold(self, coordinates, *, progress, **kwargs):
+            frozen_trial = torch.where(fixed[None, :, None], proposed, coordinates)
+            report = kwargs["candidate_validator"](frozen_trial)
+            assert report["evaluation_state"] == "transported_seed_reference_scaffold"
+            if not report["accepted"]:
+                self.last_update_applied = False
+                return self.fixed_target
+            return self.update(coordinates, progress=progress)
+
     controller = Controller(original)
     controller.motifs[0].group_atom_indices = tuple(
         torch.tensor(features["mosaic_transport_fixed_atom_indices"])[g["atom_indices"]]
         for g in plan["groups"].values()
     )
+    controller.motifs[0].master_atom_indices = controller.motifs[0].group_atom_indices[0]
+    controller.motifs[0].template_master = original[:, controller.motifs[0].master_atom_indices]
     monkeypatch.setattr(
         "rfd3.model.inference_sampler.OrbitRigidMotifController.from_features",
-        lambda *a, **k: controller,
+        controller.bind_runtime_frames,
     )
     observed = []
 
@@ -245,9 +295,10 @@ def test_native_sampler_coupled_commit_or_rollback_and_final_audit(monkeypatch, 
         symmetry_state_mode="orbit_average",
         symmetry_noise_mode="coupled",
         enable_orbit_rigid_motif_mobility=True,
-        motif_mobility_proposal_source="denoiser",
+        motif_mobility_proposal_source="scaffold_boundary",
         motif_mobility_apply_updates=True,
         motif_mobility_target_update_count=0,
+        motif_mobility_update_interval=1,
     )
     monkeypatch.setattr(
         sampler,
@@ -270,7 +321,12 @@ def test_native_sampler_coupled_commit_or_rollback_and_final_audit(monkeypatch, 
     assert bool(trace["accepted_transitions"]) is valid, str(
         trace["rejected_proposals"]
     )
-    assert bool(trace["rejected_proposals"]) is not valid
+    # Invalid objective-driven trials are rejected by the transported
+    # candidate validator before they become outer transaction proposals.
+    assert not trace["rejected_proposals"]
+    assert len(trace["proposal_attempts"]) == 3
+    assert any(attempt["committed"] for attempt in trace["proposal_attempts"]) is valid
+    assert not all(attempt["proposed"] for attempt in trace["proposal_attempts"])
     expected = proposed if valid else original
     torch.testing.assert_close(result["X_L"][:, fixed], expected[:, fixed])
     torch.testing.assert_close(observed[-1][fixed], expected[0, fixed])

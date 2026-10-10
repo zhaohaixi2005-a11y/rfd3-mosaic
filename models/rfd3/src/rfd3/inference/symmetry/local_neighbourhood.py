@@ -10,6 +10,7 @@ therefore be tested independently before the initializer and denoiser are
 switched from the explicit all-copy representation.
 """
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -94,9 +95,9 @@ def select_local_transform_ids(
 ) -> tuple[int, ...]:
     """Select master-adjacent transforms without scaling with group order.
 
-    Foundry orders Cn transforms as one cyclic coset and Dn transforms as two
-    cyclic cosets of size ``n``.  A Dn local view contains the master coset and,
-    by default, the corresponding neighbourhood in the paired coset.
+    These are canonical indices: Cn is one cyclic coset and Dn is two cyclic
+    cosets of size ``n``. Runtime transform IDs need not use this order;
+    ``build_local_symmetry_neighbourhood`` resolves their actual group action.
     """
 
     kind, order = _parse_finite_symmetry_id(symmetry_id)
@@ -122,6 +123,67 @@ def select_local_transform_ids(
             if transform_id not in selected:
                 selected.append(transform_id)
     return tuple(selected)
+
+
+def _canonical_transform_order(layout, symmetry_id):
+    """Resolve cyclic neighbours from transforms, never integer-ID proximity.
+
+    Native Foundry Dn frames interleave cyclic/flip elements; Mosaic registries
+    group cosets, and declared registries may reorder either. Both describe
+    the same local relationships. The sign of the cyclic generator is
+    immaterial because neighbourhood offsets are symmetric.
+    """
+    kind, order = _parse_finite_symmetry_id(symmetry_id)
+    expected = order if kind == "C" else 2 * order
+    transforms = layout.sym_transforms
+    if len(transforms) != expected:
+        raise ValueError("Local neighbourhood requires the complete Cn/Dn group")
+    matrices = {}
+    for index, (rotation, _translation) in transforms.items():
+        # Finite proper rotational groups have one unique rotation per
+        # element. Translations encode the common centre, not the coset
+        # identity; repeated homogeneous powers needlessly accumulate centre
+        # error in translated high-order float32 registries.
+        matrices[index] = rotation.to(torch.float64)
+    identity = torch.eye(3, dtype=next(iter(matrices.values())).dtype,
+                         device=next(iter(matrices.values())).device)
+
+    def identify(matrix):
+        matches = [index for index, value in matrices.items()
+                   if torch.allclose(value, matrix, atol=2e-4, rtol=1e-5)]
+        if len(matches) != 1:
+            raise ValueError("Local neighbourhood frames do not resolve one finite group action")
+        return matches[0]
+
+    identity_id = identify(identity)
+    if order == 1:
+        return (identity_id,)
+    expected_angle = 2.0 * math.pi / order
+    def rotation_angle(rotation):
+        antisymmetric = torch.stack((
+            rotation[2, 1] - rotation[1, 2],
+            rotation[0, 2] - rotation[2, 0],
+            rotation[1, 0] - rotation[0, 1],
+        ))
+        return float(torch.atan2(
+            0.5 * torch.linalg.vector_norm(antisymmetric),
+            (torch.trace(rotation) - 1.0) / 2.0,
+        ))
+    generators = [index for index in sorted(matrices)
+                  if index != identity_id and abs(
+                      rotation_angle(matrices[index]) - expected_angle
+                  ) < 1e-5]
+    if not generators:
+        raise ValueError("Local neighbourhood cannot identify its cyclic generator")
+    generator = matrices[generators[0]]
+    powers = [torch.linalg.matrix_power(generator, exponent) for exponent in range(order)]
+    cyclic = tuple(identify(power) for power in powers)
+    if len(set(cyclic)) != order:
+        raise ValueError("Local neighbourhood cyclic generator has the wrong order")
+    if kind == "C":
+        return cyclic
+    flip = matrices[next(index for index in sorted(matrices) if index not in cyclic)]
+    return cyclic + tuple(identify(flip @ power) for power in powers)
 
 
 def build_local_symmetry_neighbourhood(
@@ -152,12 +214,14 @@ def build_local_symmetry_neighbourhood(
             "shared local network view"
         )
     master_transform_id = next(iter(asu_transform_ids))
-    selected_transform_ids = select_local_transform_ids(
+    canonical_order = _canonical_transform_order(resolved_layout, symmetry_id)
+    canonical_selected = select_local_transform_ids(
         symmetry_id,
-        master_transform_id=master_transform_id,
+        master_transform_id=canonical_order.index(master_transform_id),
         neighbour_radius=neighbour_radius,
         include_dihedral_mate=include_dihedral_mate,
     )
+    selected_transform_ids = tuple(canonical_order[index] for index in canonical_selected)
 
     available_transform_ids = set(resolved_layout.sym_transforms)
     missing = set(selected_transform_ids) - available_transform_ids

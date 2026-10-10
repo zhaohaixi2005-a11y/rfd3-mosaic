@@ -179,6 +179,34 @@ class ConstraintRuntimeTestCase(unittest.TestCase):
             0,
         )
 
+    def test_failed_projection_cannot_publish_a_proposed_target(self):
+        target = torch.zeros((1, 2, 3))
+        synchronized = []
+        def validate(coordinates, label):
+            if torch.any(coordinates[:, 0] != 0):
+                raise ValueError("candidate violates closure")
+        projector = UnifiedJointProjector(
+            project_symmetry=lambda value: value,
+            restore_constraints=lambda value, target, mask: torch.where(
+                mask[None, :, None], target, value
+            ),
+            validate_closure=validate,
+        )
+        runtime = MosaicConstraintRuntime(
+            projector=projector, fixed_target=target,
+            fixed_mask=torch.tensor([True, False]),
+            proposal_hook=lambda value, progress: ConstraintProposalResult(
+                target=torch.ones_like(target), applied=True,
+            ),
+            synchronize_conditioning=lambda value: synchronized.append(value.clone()),
+        )
+        runtime.initialize_state(target)
+        with self.assertRaisesRegex(ValueError, "candidate violates closure"):
+            runtime.process_model_prediction(target, step_num=0, total_steps=1)
+        self.assertTrue(torch.equal(runtime.fixed_target, target))
+        self.assertEqual(synchronized, [])
+        self.assertEqual(runtime.diagnostics()["phase_counts"]["proposal_applied"], 0)
+
     def test_joint_proposal_commits_target_and_scaffold_coordinates(self) -> None:
         target = torch.zeros((1, 2, 3))
 

@@ -11,8 +11,8 @@ parameter provenance. The implementation is in
 
 The controller minimizes an explicit inference-time geometry objective. Its
 energy is **not** a physical free energy, an RFD3 confidence, a folding score,
-or evidence that a final backbone is designable. One accepted update proves
-only this narrower statement:
+or evidence that a final backbone is designable. For scaffold-objective
+proposals, one accepted update proves only this narrower statement:
 
 > On one fixed current denoised-backbone snapshot, replacing the current
 > rigid-component pose by the candidate pose lowers the declared local
@@ -22,6 +22,18 @@ The comparison holds the scaffold snapshot fixed. It therefore does not
 confound a pose change with a different diffusion-noise realization. Later
 RFD3 steps may change the scaffold again; final continuity, clash, symmetry,
 motif and interface observations are reported by separate audits.
+
+For complete-scaffold transport, this frozen-scaffold objective is a proposal
+surrogate. The final geometric validator evaluates the jointly transported
+seed, reference and generated scaffold. It does not make the surrogate a
+differentiable objective of that transported state; useful motion and design
+quality still require matched generation experiments.
+
+The optional denoiser-fit proposal estimates a rigid pose from the network
+prediction instead of minimizing that scaffold objective. Its updates enforce
+step and cumulative bounds and publish all orbit fits atomically; they do not
+by themselves certify a decrease in scaffold energy. Numerically unchanged
+fits are recorded as no motion.
 
 ## Coordinate state and exact invariants
 
@@ -133,23 +145,26 @@ condition, not a sufficient foldability test and not a quality ranking.  A
 relaxed diagnostic compilation may still write the report, but cannot be used
 as an executable run input.
 
-## Generated-chain route ownership
+## Optional generated-chain route ownership
 
-Rigid-component motion alone cannot prevent a generated path from crossing
-into another chain's natural route after diffusion.  For every generated run
+New ordinary tasks compile this straight-chord prior as advisory
+(enabled:false), because valid folded reference backbones can violate it.
+Explicit native enabled:true retains the opt-in required policy. A complete
+scaffold uses its separate reference contract, which remains required.
+For every generated run
 \(c\) bounded by compiler-declared fixed anchors \(a_c,b_c\), define its chord
 \(L_c=[a_c,b_c]\).  For generated CA coordinate \(x\), Mosaic evaluates
 
 \[
 d_c(x)=\operatorname{dist}(x,L_c),\qquad
-d_{-c}(x)=\min_{k\ne c}\operatorname{dist}(x,L_k),
+d_k(x)=\operatorname{dist}(x,L_k),
 \]
 
 and the relative routing excess
 
 \[
-r_c(x)=\operatorname{ReLU}\left(
-\frac{d_c(x)-d_{-c}(x)}{\ell_{CA}}
+r_{c,k}(x)=\operatorname{ReLU}\left(
+\frac{m(s)+d_c(x)-d_k(x)}{\ell_{CA}}
 \right).
 \]
 
@@ -157,12 +172,15 @@ The differentiable route-ownership term is
 
 \[
 E_{\mathrm{route}}=
-\frac{1}{|\mathcal G|}\sum_{(c,x)\in\mathcal G}r_c(x)^2,
+\frac{1}{|\mathcal G|}\sum_{(c,k,x)\in\mathcal G}r_{c,k}(x)^2,
 \]
 
-where \(\mathcal G\) contains generated CA coordinates in two-fixed-anchor
-runs.  It penalizes a generated residue only when it is closer to another
-chain's endpoint chord than its own.  It does **not** pull the chain onto a
+where \(\mathcal G\) contains generated CA coordinates and adjacent bond
+midpoints in two-fixed-anchor runs, paired with every competing run on other
+chains. For a run of \(n\) residues, the margin is
+\(m(s)=c\min(1,s/\tau,(n+1-s)/\tau)\), with defaults \(c=3.2\) Å and
+\(\tau=2\) residues. Thus ties also incur a positive penalty away from anchors.
+It does **not** pull the chain onto a
 straight line, choose an inward or outward ring curvature, repel all
 inter-chain contacts, or move fixed atoms.  Literal cross-chain CA-segment
 collision remains a separate barrier, and continuity projection remains a
@@ -430,7 +448,7 @@ compensate for a bad movable pose by becoming a long loop. Pre-RFD3 hard
 feasibility, objective descent, line search and transaction safety can accept
 a smaller update or no update.
 
-The objective calibration used by the ordinary scaffold controller is:
+The heuristic defaults used by the ordinary scaffold controller are:
 
 | Parameter | Current default |
 | --- | ---: |
@@ -445,6 +463,12 @@ The objective calibration used by the ordinary scaffold controller is:
 Every resolved run records the effective values. Changing a default requires
 both a code change and a provenance-visible configuration change; old
 snapshots retain the values actually used.
+
+These coefficients have not been established as optimal by a matched
+generation benchmark. Junction and clash terms are in squared distance units;
+tilt and the normalized pose prior are dimensionless. Equal coefficients do
+not imply equal influence. Use the recorded weighted term values and allowed
+pose gradients to identify dominant forces before testing coefficient changes.
 
 ## Time-normalized capture, settle and polish schedule
 
@@ -482,19 +506,26 @@ runs share the same semantics.
 
 ## Backtracking line search and local acceptance
 
-For line-search scales \(\alpha\in(1,0.5,0.25)\), Mosaic evaluates
+Mosaic first tests scales \(\alpha\in(1,0.5,0.25)\). If no feasible
+improving candidate exists in this coarse round, it tests six further halvings
+from \(1/8\) to \(1/256\). An explicitly supplied scale sequence is used
+exactly, without automatic extension. At each scale it evaluates
 
 \[
 Q_\alpha=(\exp(\alpha\Delta\omega)R,\;t+\alpha\Delta t)
 \]
 
-on the same scaffold snapshot. The first finite candidate satisfying
+followed by projection onto cumulative bounds, on the same scaffold snapshot.
+The actual increment after projection is checked against the step bounds:
+SO(3) projection across the pi branch can increase that increment. A current
+pose already outside its declared cumulative bound is rejected at entry.
+The first finite candidate satisfying
 
 \[
 E(Q_\alpha;S)<E(Q;S)
 \]
 
-is accepted. During `capture`, this comparison is applied to the gradient
+and passing the geometry validator is eligible. During `capture`, this comparison is applied to the gradient
 direction and all deterministic multi-start probes. Let
 \(\Delta E_*=E_0-E_*\) be the gain of the best improving candidate. The
 eligible near-optimal pool is
@@ -504,7 +535,11 @@ eligible near-optimal pool is
 \]
 
 One member of \(\mathcal P\) is selected reproducibly from the design's
-diffusion seed and a step/orbit-specific substream. Consequently, independent
+diffusion seed, controller update count and stable orbit identity (SHA-256,
+mixed modulo \(2^{64}\)). Reordering named orbits does not reassign their
+random streams. A rejected complete-scaffold transaction rolls back its copied
+controller counter, so a later attempt can reuse that counter; it is not
+guaranteed to be a distinct substream at every diffusion step. Independent
 designs need not collapse to the same local minimum, while no non-improving
 candidate can be accepted. Without a selection seed, the minimum-energy member
 is retained for backward compatibility. During `settle` and `polish`, the
@@ -520,9 +555,15 @@ E_{\mathrm{joint}}(Q'_1,\ldots,Q'_n;S)
 <E_{\mathrm{joint}}(Q_1,\ldots,Q_n;S)-10^{-12}.
 \]
 
+If the combined proposal fails, all proposed increments are scaled together
+by successive halves, down to \(1/256\), on the same snapshot. Rotations use
+SO(3) interpolation. Every trial rechecks step/total bounds, geometry and the
+joint objective; only one complete candidate is committed. Inter-orbit clash
+energy participates in both local gradients and the joint decision.
+
 The \(10^{-12}\) margin is numerical tie-breaking, not a scientific quality
-threshold. A rejection rolls every orbit back; orbit ordering cannot leave a
-partially updated assembly.
+threshold. Exhausting this bounded search rolls every orbit back; no ordered
+subset is committed. Failure does not prove that no feasible pose exists.
 
 ## Packing-coupled transaction acceptance
 
@@ -560,6 +601,9 @@ record includes:
 - proposed translation vector, translation norm and rotation angle;
 - every backtracking trial scale, candidate energy, finiteness and improvement
   decision;
+- weighted term values, allowed translation/rotation derivatives and their
+  first-order step sensitivities (an optimizer diagnostic, not a quality score);
+- joint backtracking trials and actual committed increments;
 - local `accepted`, joint `accepted`, transaction `committed` and rollback
   outcome;
 - current cumulative translation/rotation and the configured per-update and
@@ -572,15 +616,28 @@ back for violating a protected condition. The written trajectory, rather than
 the mere existence of a generated CIF, answers why a particular update moved,
 was shortened, or remained unchanged.
 
-## Denoiser-fit compatibility proposal
+After outer packing rollback, `applied`, per-orbit `committed`, committed
+increments and saved orbit poses describe the restored state. The provisional
+inner decision remains separately available as `pose_proposal_accepted`.
+`scaffold_pose_search_summary` counts local rejection reasons and committed
+movement. Its path length is a sum of increments across orbits, not final
+displacement; geometry failure counts can overlap.
 
-The alternative `denoiser_fit` backend does not minimize the scaffold energy
-above. It maps every predicted symmetry copy back into the canonical master
-frame, averages the copies, and fits one proper rigid transform by Kabsch/SVD.
-The transform is response-scaled and clipped by the same phase, per-step and
-cumulative constraints. Reflections are forbidden. This backend follows the
-RFD3 prediction; `scaffold_objectives` is the interpretable gradient backend
-used when explicit scaffold-driven pose correction is requested.
+## Native RFD3 mobile proposal compatibility
+
+Use `pose.proposal: scaffold_objectives` for native RFD3 mobile components.
+New `bounded_mobile` declarations that omit `proposal` select this backend.
+An explicit legacy `denoiser_fit` request is retained during parsing and
+rejected by native sampler construction, before weights or GPU generation.
+Fixed components retain their existing behavior.
+
+The generic controller still implements inverse orbit averaging and a proper
+Kabsch fit for denoisers that provide a pose signal. Native RFD3 EDM does not
+provide that signal on fixed atoms: their effective noise level is zero, so
+the output scaling gives `X_out_fixed = X_input_fixed` independently of the
+network update. Fitting these fixed atoms back to their template can accumulate
+numerical drift but cannot optimize their pose from a learned prediction.
+The model's fixed mask and pretrained output scaling have not been altered.
 
 ## Parameter provenance
 
@@ -591,7 +648,7 @@ used when explicit scaffold-driven pose correction is requested.
 | 40/40/20 and 1.0/0.5/0.2 | coarse-to-fine runtime policy | Mosaic engineering default; configurable, not a published biological law |
 | 3.8 A junction reference | local CA-neighbour geometry target | differentiable peptide-geometry reference; not a final pass cutoff |
 | 3.0 A controller clash radius | soft proposal exclusion | Mosaic safety default; final audits are separate |
-| objective weights and tilt interval | optimization calibration | Mosaic defaults; recorded in runtime provenance |
+| objective weights and tilt interval | heuristic optimization settings | Mosaic defaults; not empirically optimal; recorded in runtime provenance |
 | RF-style broad contact prior | early generated-interface capture | public RFdiffusion potential and schedule |
 | RFD3 denoiser prediction | learned backbone signal | loaded RFD3 checkpoint |
 | line-search and atomic rollback tolerances | numerical stability | software contract, not scientific screening |

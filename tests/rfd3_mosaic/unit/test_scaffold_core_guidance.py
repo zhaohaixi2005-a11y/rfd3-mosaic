@@ -722,6 +722,33 @@ class ScaffoldCoreGuidanceTestCase(unittest.TestCase):
             config.maximum_adjacent_token_step_difference + 1e-6,
         )
 
+    def test_adjacent_step_bound_survives_sequential_edge_corrections(self):
+        fixed = torch.zeros(16, dtype=torch.bool)
+        fixed[[0, 7, 8, 15]] = True
+        topology = build_scaffold_core_topology(features(), fixed)
+        config = ScaffoldCoreGuidanceConfig(
+            intra_chain_weight=30.0, sequence_separation=2,
+            clash_distance=0.001, backbone_tolerance=100.0,
+            maximum_token_step=2.0,
+            maximum_adjacent_token_step_difference=0.01,
+        )
+        generator = torch.Generator().manual_seed(1)
+        coordinates = torch.randn(1, 16, 3, generator=generator) * 10
+        guided, report = apply_scaffold_core_guidance(
+            coordinates, topology, progress=0.5, config=config,
+            projector=lambda value: value,
+        )
+        assert report["accepted"]
+        displacement = guided - coordinates
+        pairs = topology.adjacent_ca_atom_pairs
+        observed = torch.linalg.vector_norm(
+            displacement[:, pairs[:, 0]] - displacement[:, pairs[:, 1]], dim=-1
+        ).max()
+        # Before the final contraction, this actual accepted perturbation was
+        # 0.2185 A even though the requested hard per-edge bound was 0.01 A.
+        assert observed <= config.maximum_adjacent_token_step_difference + 1e-5
+        assert torch.equal(guided[:, fixed], coordinates[:, fixed])
+
     def test_audit_reports_metrics_without_hard_coding_lhd_contact_counts(
         self,
     ) -> None:

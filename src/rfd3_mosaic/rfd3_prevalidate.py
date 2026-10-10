@@ -11,7 +11,58 @@ from rfd3_mosaic.rfd3_runtime_preflight import (
     default_preflight_sampler,
     isolated_preflight_random_state,
     resolve_preflight_pipeline,
+    source_inference_training_config,
 )
+
+
+def _resolve_sampler_constructor_config(overrides, resolved_training_config=None):
+    """Bind the checkpoint/source sampler, native CLI preset, and worker flags.
+
+    RFD3InferenceEngine overlays its inference_sampler mapping onto the training
+    model.net.inference_sampler before RFD3 constructs ConditionalDiffusionSampler.
+    Read the same shipped preset rather than inventing a gamma_0 or bypassing the
+    conditional dispatcher. No network, checkpoint, trainer or model is loaded.
+    """
+    import rfd3
+    from omegaconf import OmegaConf
+
+    package = Path(rfd3.__file__).resolve().parent
+    candidates = (package / "configs", package.parent.parent / "configs")
+    config_root = next(
+        (root for root in candidates if (root / "inference_engine/rfdiffusion3.yaml").is_file()),
+        None,
+    )
+    if config_root is None:
+        raise FileNotFoundError("Native RFD3 inference sampler preset is unavailable")
+    if resolved_training_config is None:
+        training = source_inference_training_config()
+    elif isinstance(resolved_training_config, (str, Path)):
+        training = OmegaConf.load(resolved_training_config)
+    else:
+        training = OmegaConf.create(resolved_training_config)
+    training_sampler = OmegaConf.select(training, "model.net.inference_sampler")
+    sampler_source = "provided_training_configuration"
+    if training_sampler is None:
+        training_sampler = OmegaConf.load(config_root / "model/samplers/edm.yaml")
+        sampler_source = "shipped_model_sampler_configuration"
+    preset_path = config_root / "inference_engine/rfdiffusion3.yaml"
+    preset = OmegaConf.load(preset_path).inference_sampler
+    combined = OmegaConf.merge(training_sampler, preset, overrides)
+    # Keep the full model namespace until resolving sigma_data and other
+    # checkpoint interpolations, exactly as the native engine's overlay does.
+    config = OmegaConf.merge(training, {"model": {"net": {"inference_sampler": combined}}})
+    parameters = OmegaConf.to_container(config.model.net.inference_sampler, resolve=True)
+    if not isinstance(parameters, dict):
+        raise ValueError("Resolved native inference sampler must be a mapping")
+    return parameters, {
+        "passed": False,
+        "constructor_attempted": False,
+        "training_sampler_source": sampler_source,
+        "inference_preset": str(preset_path),
+        "resolved_parameters": parameters,
+        "checkpoint_loaded": False,
+        "model_forward_validated": False,
+    }
 
 
 def _to_numpy(value):
@@ -1055,7 +1106,7 @@ def prevalidate_rfd3_input(
         else 0
     )
     report: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "status": "pending",
         "input_path": str(path),
         "example_id": selected_id,
@@ -1159,6 +1210,8 @@ def prevalidate_rfd3_input(
     report.update(
         atom_array_validated=not failures,
         sampler_compatibility_validated=False,
+        sampler_dispatch_validated=False,
+        sampler_constructor_validated=False,
         runtime_features_validated=False,
         checkpoint_compatibility_validated=False,
         model_forward_validated=False,
@@ -1172,25 +1225,53 @@ def prevalidate_rfd3_input(
         ),
     )
     if not failures:
+        from rfd3.model.inference_sampler import ConditionalDiffusionSampler
         from rfd3.utils.inference import ensure_inference_sampler_matches_design_spec
 
-        effective_sampler = (
-            default_preflight_sampler(raw_spec)
-            if inference_sampler is None
-            else dict(inference_sampler)
-        )
-        report["inference_sampler"] = effective_sampler
+        from rfd3_mosaic.experiment_worker import _sampler_dispatch_overrides
+
         try:
+            effective_sampler = (
+                _sampler_dispatch_overrides(
+                    {"sampler": default_preflight_sampler(raw_spec),
+                     "execution_backend": "explicit_all_copy"},
+                    raw_spec,
+                )
+                if inference_sampler is None
+                else dict(inference_sampler)
+            )
+            report["inference_sampler"] = effective_sampler
+            parameters, constructor_audit = _resolve_sampler_constructor_config(
+                effective_sampler, resolved_training_config
+            )
+            report["sampler_constructor_audit"] = constructor_audit
             ensure_inference_sampler_matches_design_spec(
-                {selected_id: raw_spec}, effective_sampler
+                {selected_id: raw_spec}, parameters
+            )
+            report["sampler_dispatch_validated"] = True
+            report["validation_scope"].append("native_sampler_dispatch")
+            constructor_audit["constructor_attempted"] = True
+            # RFD3.__init__ consumes cfg_features itself, then delegates all
+            # other parameters to this dispatcher (including native filtering).
+            sampler = ConditionalDiffusionSampler(
+                **{key: value for key, value in parameters.items() if key != "cfg_features"}
+            )
+            constructor_audit.update(
+                passed=True,
+                dispatcher="rfd3.model.inference_sampler.ConditionalDiffusionSampler",
+                sampler_class=type(sampler.sampler).__name__,
             )
         except Exception as error:  # noqa: BLE001 -- persist failure, then raise below
+            report.setdefault("sampler_constructor_audit", {}).update(
+                passed=False, error_type=type(error).__name__, error=str(error)
+            )
             failures.append(
                 f"Native sampler compatibility: {type(error).__name__}: {error}"
             )
         else:
             report["sampler_compatibility_validated"] = True
-            report["validation_scope"].append("native_sampler_dispatch")
+            report["sampler_constructor_validated"] = True
+            report["validation_scope"].append("native_sampler_constructor")
     if not failures:
         try:
             pipeline, configuration_audit = resolve_preflight_pipeline(

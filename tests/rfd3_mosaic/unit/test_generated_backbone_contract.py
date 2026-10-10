@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from test_scaffold_builder import _reference
 
 from rfd3_mosaic.validation.generated_backbone import (
     audit_generated_backbone,
@@ -13,7 +14,6 @@ from rfd3_mosaic.validation.scaffold_contract import (
     audit_scaffold_contract,
     validate_scaffold_contract,
 )
-from test_scaffold_builder import _reference
 
 
 def backbone_contract_fixture():
@@ -286,9 +286,10 @@ def test_legacy_ca_contract_is_explicitly_marked_not_backbone_evaluated():
 
 
 def test_final_structure_adapter_requires_actual_backbone_after_chain_rename(tmp_path):
+    import json
     from dataclasses import replace
     from types import SimpleNamespace
-    import json
+
     from rfd3_mosaic.rfd3_scaffold_audit import _audit_final_generated_route_ownership
     from rfd3_mosaic.structure.pdb import AtomRecord
 

@@ -9,7 +9,6 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from biotite.structure import AtomArray
-
 from rfd3.engine import RFD3InferenceEngine
 
 

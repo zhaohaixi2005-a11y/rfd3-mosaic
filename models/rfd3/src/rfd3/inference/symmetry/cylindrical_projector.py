@@ -13,14 +13,18 @@ class CylindricalCoordinateProjector:
 
     ``keep_mask`` has shape ``[L, 3]`` in ``(radius, azimuth, axial)``
     order.  The reference and sampled coordinates have shape ``[D, L, 3]``.
-    Unselected coordinates are retained from the sampled state; this is not
-    a rigid-component mobility approximation.
+    Unselected coordinates are retained unless a protein atom map and CA mask
+    request rigid residue translation for CA-only constraints. This transports
+    the sampled residue; it does not copy a reference conformation.
     """
 
     reference: torch.Tensor
     keep_mask: torch.Tensor
     axis: torch.Tensor
     center: torch.Tensor
+    atom_to_token_map: torch.Tensor | None = None
+    is_ca: torch.Tensor | None = None
+    fixed_mask: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         reference = torch.as_tensor(self.reference)
@@ -71,6 +75,29 @@ class CylindricalCoordinateProjector:
         object.__setattr__(self, "keep_mask", keep)
         object.__setattr__(self, "axis", axis)
         object.__setattr__(self, "center", center)
+        # A protein CA is a spatial handle for its whole residue. Transport
+        # its unconstrained atoms together, preserving all intra-residue
+        # covalent geometry and sidechains. This does not certify peptide
+        # junctions or nonlocal packing; those need full-backbone acceptance.
+        anchors = torch.full((reference.shape[1],), -1, dtype=torch.long, device=reference.device)
+        if (self.atom_to_token_map is None) != (self.is_ca is None):
+            raise ValueError("Cylindrical residue transport requires both atom map and CA mask")
+        if self.atom_to_token_map is not None:
+            mapping = torch.as_tensor(self.atom_to_token_map, dtype=torch.long, device=reference.device)
+            ca = torch.as_tensor(self.is_ca, dtype=torch.bool, device=reference.device)
+            fixed = torch.zeros_like(ca) if self.fixed_mask is None else torch.as_tensor(self.fixed_mask, dtype=torch.bool, device=reference.device)
+            if mapping.shape != anchors.shape or ca.shape != anchors.shape or fixed.shape != anchors.shape or torch.any(mapping < 0):
+                raise ValueError("Cylindrical residue transport annotations must have shape [L]")
+            active = keep.any(dim=1)
+            for token in torch.unique(mapping[active & ca]).tolist():
+                token_mask = mapping == token
+                selected = torch.nonzero(token_mask & active, as_tuple=False).flatten()
+                ca_indices = torch.nonzero(token_mask & ca, as_tuple=False).flatten()
+                if selected.numel() == 1 and ca_indices.numel() == 1 and selected[0] == ca_indices[0]:
+                    if torch.any(token_mask & fixed):
+                        raise ValueError("CA cylindrical residue transport cannot move a fixed-XYZ residue")
+                    anchors[token_mask] = selected[0]
+        object.__setattr__(self, "_transport_anchors", anchors)
 
     def _parts(
         self,
@@ -133,7 +160,16 @@ class CylindricalCoordinateProjector:
             + resolved_axial[..., None] * self.axis
         )
         active = self.keep_mask.any(dim=1)[None, :, None]
-        return torch.where(active, projected, value)
+        projected = torch.where(active, projected, value)
+        anchors = self._transport_anchors
+        if torch.any(anchors >= 0):
+            anchor_indices = anchors.clamp_min(0)
+            displacement = projected[:, anchor_indices] - value[:, anchor_indices]
+            transported = value + displacement
+            # Preserve the direct target calculation at constrained CA atoms.
+            transported = torch.where(active, projected, transported)
+            projected = torch.where((anchors >= 0)[None, :, None], transported, projected)
+        return projected
 
     def maximum_error(self, coordinates: torch.Tensor) -> float:
         projected = self.project(coordinates)

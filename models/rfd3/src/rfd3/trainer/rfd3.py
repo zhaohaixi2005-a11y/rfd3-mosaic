@@ -37,6 +37,13 @@ _SAMPLER_DIAGNOSTIC_KEYS = (
     "generated_polymer_continuity_diagnostics",
     "constraint_runtime_diagnostics",
     "scaffold_contract_diagnostics",
+    "scaffold_feasibility_diagnostics",
+    "phase_feasibility_trace",
+    "interface_observation_trace",
+    "peptide_geometry_repair_diagnostics",
+    "covalent_geometry_repair_diagnostics",
+    "final_output_geometry_diagnostics",
+    "partial_cylindrical_conditioning_diagnostics",
 )
 
 
@@ -50,8 +57,23 @@ def _copy_sampler_diagnostics(
         diagnostics = network_output.get(key)
         if diagnostics is None:
             continue
-        for metadata in metadata_dict.values():
-            metadata[key] = diagnostics
+        for batch_index, metadata in metadata_dict.items():
+            if key == "final_output_geometry_diagnostics":
+                # This metadata becomes one design's result JSON. Keep its
+                # own final chemical record, never the whole diffusion batch.
+                valid = (isinstance(diagnostics, list)
+                         and len(diagnostics) == len(metadata_dict)
+                         and type(batch_index) is int
+                         and 0 <= batch_index < len(diagnostics)
+                         and isinstance(diagnostics[batch_index], dict))
+                metadata[key] = [diagnostics[batch_index]] if valid else []
+                metadata["final_output_geometry_diagnostic_scope"] = {
+                    "binding": "per_design" if valid else "unresolved",
+                    "batch_index": batch_index,
+                    "batch_count": len(metadata_dict),
+                }
+            else:
+                metadata[key] = diagnostics
 
 
 class AADesignTrainer(FabricTrainer):
@@ -122,7 +144,9 @@ class AADesignTrainer(FabricTrainer):
         network_input = {
             "X_noisy_L": example["coord_atom_lvl_to_be_noised"] + example["noise"],
             "t": example["t"],
-            "f": example["feats"],
+            "f": {**example["feats"],
+                  "final_output_association_scheme": self.association_scheme,
+                  "final_output_uses_sequence_head": bool(self.allow_sequence_outputs and self.read_sequence_from_sequence_head)},
         }
 
         try:
@@ -468,6 +492,19 @@ class AADesignTrainer(FabricTrainer):
                     compute_non_clash_metrics_for_diffused_region_only=self.compute_non_clash_metrics_for_diffused_region_only,
                 )
 
+            if self.cleanup_virtual_atoms and "final_output_geometry_diagnostics" in network_output:
+                from rfd3.inference.symmetry.output_geometry_guard import audit_exported_geometry
+                metadata_dict[i]["final_export_geometry_diagnostics"] = audit_exported_geometry(atom_array)
+                from rfd3.inference.symmetry.final_candidate_adapter import verify_actual_export
+                scoped = metadata_dict[i].get("final_output_geometry_diagnostics", [])
+                binding = verify_actual_export(atom_array, scoped[0]) if len(scoped) == 1 else None
+                if binding is not None:
+                    metadata_dict[i]["final_export_geometry_diagnostics"]["refinement_native_binding"] = binding
+                    if not binding["accepted"]:
+                        metadata_dict[i]["final_export_geometry_diagnostics"].update(
+                            accepted=False, reason="refinement_actual_export_identity_mismatch")
+
+
             if (
                 "active_donor" in atom_array.get_annotation_categories()
                 or "active_acceptor" in atom_array.get_annotation_categories()
@@ -475,7 +512,7 @@ class AADesignTrainer(FabricTrainer):
                 metadata_dict[i]["metrics"] |= get_hbond_metrics(atom_array)
 
             if "partial_t" in f:
-                # Try calcualte a CA RMSD to input:
+                # Calculate a CA RMSD to the input when residue counts match.
                 aa_in = example["atom_array"]
                 xyz_ca_input = aa_in.coord[np.isin(aa_in.atom_name, "CA")]
                 xyz_ca_output = atom_array.coord[np.isin(atom_array.atom_name, "CA")]
@@ -483,7 +520,7 @@ class AADesignTrainer(FabricTrainer):
                 # Align ca and calculate RMSD:
                 if xyz_ca_input.shape == xyz_ca_output.shape:
                     try:
-                        from rfd3.utils.alignment import weighted_rigid_align
+                        from foundry.utils.alignment import weighted_rigid_align
 
                         xyz_ca_output_aligned = (
                             weighted_rigid_align(

@@ -3104,11 +3104,14 @@ def compile_assembly_rfd3_input(
             "tolerance": 0.5,
             "projection_iterations": 64,
         },
-        # Spatial ownership is distinct from clash detection. All competitor
-        # corridors receive a positive-clearance hinge, tapered near anchors;
-        # final output is independently audited, including bond midpoints.
+        # A straight endpoint corridor is a diagnostic geometric prior, not
+        # a polymer/topology invariant: valid folded linkers may leave it.
+        # Keep its measurements available without applying force or gating
+        # ordinary designs. Explicit native enabled:true remains opt-in;
+        # prepared scaffold contracts carry their own reference constraints.
         "generated_cross_chain_topology_guidance": {
-            "enabled": symmetry_multiplicity > 1 and bool(compiled_links),
+            "enabled": False,
+            "policy": "advisory",
             "scope": "two_fixed_anchor_generated_runs",
             "routing_ownership_weight": 1.0,
             "normalization_distance": 3.8,

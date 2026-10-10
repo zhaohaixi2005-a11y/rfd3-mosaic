@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import tempfile
@@ -88,8 +89,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
                             "effective_update_interval": 1,
                             "target_update_count": 24,
                             "scheduled_proposal_count": 50,
-                            "scheduled_active_proposal_counts": [20]
-                            * mobile_count,
+                            "scheduled_active_proposal_counts": [20] * mobile_count,
                         },
                         "constraint_runtime": {
                             "schema_version": 1,
@@ -237,9 +237,7 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
             10.0,
         )
         self.assertEqual(
-            report["summary"]["proposal_schedule"][
-                "effective_update_interval"
-            ],
+            report["summary"]["proposal_schedule"]["effective_update_interval"],
             1,
         )
 
@@ -520,6 +518,252 @@ class ComponentMobilityAuditTestCase(unittest.TestCase):
             1,
         )
         self.assertIsNone(artifact["trajectory"][0]["minimum_distance"])
+
+    def _transport_case(self, root, *, commit):
+        from rfd3_mosaic.validation.reference_transport import transport_fingerprint
+
+        compiled, result = self._write_inputs(
+            root,
+            mobile_count=2,
+            translation=0.1 if commit else 0.0,
+            rotation=0.5 if commit else 0.0,
+        )
+        example = json.loads(compiled.read_text())
+        plan = {"schema_version": 1, "test_plan": "complete-scaffold"}
+        example["example"]["extra"]["mosaic_reference_transport"] = plan
+        compiled.write_text(json.dumps(example))
+        payload = json.loads(result.read_text())
+        diagnostics = payload["motif_mobility_diagnostics"]
+        template = diagnostics["trajectory"][0]
+        attempts, retained, transitions = [], [], []
+        for index, progress in enumerate((0.1, 0.3, 0.5, 0.7)):
+            step = copy.deepcopy(template)
+            step["progress"] = progress
+            committed = commit and index == 1
+            attempts.append(
+                {
+                    "progress": progress,
+                    "proposed": True,
+                    "committed": committed,
+                    "reason": None if committed else "transport geometry rejected",
+                    "controller_update_calls": 1,
+                    "attempted_controller_trajectory": [step],
+                }
+            )
+            if committed:
+                retained.append(step)
+                transitions.append({"progress": progress})
+        diagnostics.update(
+            update_calls=len(retained),
+            active_window_calls=len(retained),
+            conditioning_refresh_count=1 + len(retained),
+            trajectory=retained,
+        )
+        runtime = diagnostics["constraint_runtime"]
+        runtime["conditioning_refresh_count"] = 1 + len(retained)
+        runtime["phase_counts"].update(proposal=4, proposal_applied=len(retained))
+        payload["constraint_runtime_diagnostics"] = copy.deepcopy(runtime)
+        payload["scaffold_contract_diagnostics"] = {
+            "reference_transport": {
+                "plan_sha256": transport_fingerprint(plan),
+                "proposal_attempts": attempts,
+                "accepted_transitions": transitions,
+            }
+        }
+        result.write_text(json.dumps(payload))
+        return compiled, result
+
+    def test_transport_attempts_are_distinct_from_committed_controller_calls(self):
+        for commit in (False, True):
+            with (
+                self.subTest(commit=commit),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                compiled, result = self._transport_case(Path(temporary), commit=commit)
+                report = audit_component_mobility(
+                    compiled_input=compiled, result_json=result
+                )
+            self.assertTrue(report["passed"])
+            summary = report["summary"]
+            self.assertEqual(summary["update_calls"], int(commit))
+            self.assertEqual(
+                summary["transport_attempt_evidence"]["attempted_update_calls"], 4
+            )
+            self.assertEqual(summary["applied_proposal_count"], int(commit))
+            self.assertEqual(summary["nonzero_motion_observed"], commit)
+            self.assertEqual(summary["valid_joint_trajectory_steps"], 4)
+
+    def test_transport_audit_rejects_missing_or_inconsistent_attempt_evidence(self):
+        for mutation in (
+            "missing",
+            "omitted_attempt",
+            "wrong_plan",
+            "false_commit",
+            "changed_retained",
+            "nan_inner_objective",
+        ):
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                compiled, result = self._transport_case(Path(temporary), commit=True)
+                payload = json.loads(result.read_text())
+                transport = payload["scaffold_contract_diagnostics"][
+                    "reference_transport"
+                ]
+                if mutation == "missing":
+                    del transport["proposal_attempts"]
+                elif mutation == "omitted_attempt":
+                    transport["proposal_attempts"].pop()
+                elif mutation == "wrong_plan":
+                    transport["plan_sha256"] = "wrong"
+                elif mutation == "false_commit":
+                    transport["proposal_attempts"][0]["committed"] = True
+                elif mutation == "changed_retained":
+                    payload["motif_mobility_diagnostics"]["trajectory"][0][
+                        "progress"
+                    ] = 0.4
+                else:
+                    transport["proposal_attempts"][0][
+                        "attempted_controller_trajectory"
+                    ][0]["initial_energy"]["total"] = float("nan")
+                result.write_text(json.dumps(payload))
+                report = audit_component_mobility(
+                    compiled_input=compiled, result_json=result
+                )
+                self.assertFalse(report["passed"])
+
+    def test_transport_rejects_invalid_progress_weights_and_boolean_flags(self):
+        mutations = (
+            "negative_progress",
+            "progress_above_one",
+            "repeated_progress",
+            "window_above_one",
+            "negative_window",
+            "string_applied",
+            "integer_applied",
+            "string_accepted",
+            "string_orbit_active",
+            "integer_orbit_committed",
+        )
+        for mutation in mutations:
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                compiled, result = self._transport_case(Path(directory), commit=False)
+                payload = json.loads(result.read_text())
+                attempts = payload["scaffold_contract_diagnostics"][
+                    "reference_transport"
+                ]["proposal_attempts"]
+                for attempt in attempts:
+                    step = attempt["attempted_controller_trajectory"][0]
+                    if mutation == "negative_progress":
+                        attempt["progress"] -= 1.0
+                        step["progress"] = attempt["progress"]
+                    elif mutation == "progress_above_one":
+                        attempt["progress"] += 1.0
+                        step["progress"] = attempt["progress"]
+                    elif mutation == "repeated_progress":
+                        attempt["progress"] = step["progress"] = 0.5
+                    elif mutation == "window_above_one":
+                        step["window_weight"] = 2.0
+                    elif mutation == "negative_window":
+                        step["window_weight"] = -0.1
+                    elif mutation in ("string_applied", "integer_applied"):
+                        attempt["proposed"] = False
+                        step["applied"] = "false" if mutation == "string_applied" else 1
+                    elif mutation == "string_accepted":
+                        step["accepted"] = "false"
+                    elif mutation == "string_orbit_active":
+                        step["orbit_proposals"][0]["active"] = "true"
+                    else:
+                        step["orbit_proposals"][0]["committed"] = 1
+                result.write_text(json.dumps(payload))
+                report = audit_component_mobility(
+                    compiled_input=compiled, result_json=result
+                )
+                self.assertFalse(report["passed"])
+
+    def test_zero_transport_commits_require_well_formed_identity_pose(self):
+        mutations = (
+            "translation",
+            "rotation",
+            "vector",
+            "missing_vector",
+            "mismatched_batch",
+            "negative_norm",
+            "nan_vector",
+            "boolean_rotation",
+        )
+        for mutation in mutations:
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                compiled, result = self._transport_case(Path(directory), commit=False)
+                payload = json.loads(result.read_text())
+                orbit = payload["motif_mobility_diagnostics"]["orbits"][0]
+                if mutation == "translation":
+                    orbit["translation_norms"] = [2.0]
+                elif mutation == "rotation":
+                    orbit["rotation_degrees"] = [8.0]
+                elif mutation == "vector":
+                    orbit["translation_vectors"] = [[1.0, 0.0, 0.0]]
+                elif mutation == "missing_vector":
+                    del orbit["translation_vectors"]
+                elif mutation == "mismatched_batch":
+                    orbit["translation_norms"] = [0.0, 0.0]
+                elif mutation == "negative_norm":
+                    orbit["translation_norms"] = [-1.0]
+                elif mutation == "nan_vector":
+                    orbit["translation_vectors"] = [[float("nan"), 0.0, 0.0]]
+                else:
+                    orbit["rotation_degrees"] = [False]
+                result.write_text(json.dumps(payload))
+                report = audit_component_mobility(
+                    compiled_input=compiled, result_json=result
+                )
+                self.assertFalse(report["passed"])
+                self.assertFalse(
+                    report["summary"]["transport_attempt_evidence"][
+                        "zero_commit_pose_identity_valid"
+                    ]
+                )
+
+    def test_zero_commit_identity_uses_requested_finite_tolerance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            compiled, result = self._transport_case(Path(directory), commit=False)
+            payload = json.loads(result.read_text())
+            for orbit in payload["motif_mobility_diagnostics"]["orbits"]:
+                orbit.update(
+                    translation_norms=[5e-7],
+                    translation_vectors=[[5e-7, 0.0, 0.0]],
+                    rotation_degrees=[5e-7],
+                )
+            result.write_text(json.dumps(payload))
+            report = audit_component_mobility(
+                compiled_input=compiled, result_json=result, tolerance=1e-6
+            )
+            self.assertTrue(report["passed"])
+            self.assertTrue(
+                report["summary"]["transport_attempt_evidence"][
+                    "zero_commit_pose_identity_valid"
+                ]
+            )
+            self.assertFalse(
+                audit_component_mobility(
+                    compiled_input=compiled, result_json=result, tolerance=1e-8
+                )["passed"]
+            )
+            for tolerance in (float("nan"), float("inf"), -1.0, True):
+                with (
+                    self.subTest(tolerance=tolerance),
+                    self.assertRaisesRegex(ValueError, "finite and nonnegative"),
+                ):
+                    audit_component_mobility(
+                        compiled_input=compiled, result_json=result, tolerance=tolerance
+                    )
 
 
 if __name__ == "__main__":

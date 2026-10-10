@@ -102,6 +102,14 @@ class SourceSnapshotTestCase(unittest.TestCase):
                 expected_manifest_sha256=identity["manifest_sha256"],
             )
 
+    def test_snapshot_tree_rejects_added_unrecorded_runtime_module(self):
+        identity, extracted = self._create_and_extract()
+        (extracted / "src" / "test_package" / "new_module.py").write_text("value = 2\n")
+        with self.assertRaisesRegex(RuntimeError, "inventory changed"):
+            verify_source_snapshot_tree(
+                extracted, expected_manifest_sha256=identity["manifest_sha256"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

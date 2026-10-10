@@ -5,10 +5,10 @@ exact motif/symmetry projector. It is not an all-atom relaxation or a proof
 that an arbitrary fixed-anchor problem is feasible.
 """
 
+import math
 from typing import Any, Callable
 
 import torch
-
 from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     ScaffoldCoreTopology,
@@ -24,6 +24,7 @@ def restore_generated_geometry(
     projector: Callable[[torch.Tensor], torch.Tensor],
     iterations: int = 64,
     segment_distance: float = 1.0,
+    observer: Callable | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Reduce violations without introducing new ones or trading categories.
 
@@ -33,9 +34,14 @@ def restore_generated_geometry(
     within these bounds; otherwise intersecting/broken chains can deadlock
     under a strictly pairwise monotonic correction. All residuals are logged.
     """
-    if coordinates.ndim != 3 or coordinates.shape[0] != 1:
+    if coordinates.ndim != 3 or coordinates.shape[0] != 1 or coordinates.shape[-1] != 3:
         raise ValueError("Geometry restoration requires [1, atoms, 3]")
-    if iterations < 0 or segment_distance <= 0:
+    if not torch.isfinite(coordinates).all():
+        raise ValueError("Geometry restoration requires finite coordinates")
+    if (
+        isinstance(iterations, bool) or not isinstance(iterations, int)
+        or iterations < 0 or not math.isfinite(segment_distance) or segment_distance <= 0
+    ):
         raise ValueError("Invalid geometry restoration limits")
 
     def evaluate(value):
@@ -56,8 +62,10 @@ def restore_generated_geometry(
     result = coordinates.detach().clone()
     with torch.no_grad():
         initial = summary(evaluate(result))
+    if observer is not None:
+        observer("restoration_input", result, -1)
     steps = []
-    for _ in range(iterations):
+    for iteration in range(iterations):
         with torch.enable_grad():
             source = result.detach().requires_grad_(True)
             before = evaluate(source)
@@ -66,6 +74,11 @@ def restore_generated_geometry(
             energy = sum(v.square().sum() for v in before.values())
             gradient = torch.autograd.grad(energy, source)[0][0]
         before = {k: v.detach() for k, v in before.items()}
+        reference = getattr(topology, "scaffold_contract", None)
+        physical_guard = None
+        if reference is not None and reference.backbone_atom_indices is not None:
+            from .contract_feasibility import backbone_physical_nonregression_guard
+            physical_guard = backbone_physical_nonregression_guard(result, topology)
         token_gradient = result.new_zeros((len(topology.generated_token_mask), 3))
         token_gradient.index_add_(0, topology.atom_to_token, gradient)
         token_gradient[~topology.generated_token_mask] = 0
@@ -92,8 +105,12 @@ def restore_generated_geometry(
                         and new.square().sum() <= old.square().sum() + 1e-10
                         and (not old.numel() or new.max() <= old.max() + 1e-6)
                     )
+                if physical_guard is not None:
+                    checks["full_backbone_physical"] = physical_guard(candidate)["passed"]
                 descent = float(sum(v.square().sum() for v in after.values())) < float(energy) - 1e-10
                 accepted = descent and all(checks.values())
+                if observer is not None:
+                    observer("restoration_trial", candidate, iteration, scale=scale, accepted=accepted, categories=checks, descent=descent)
                 trials.append({"scale": scale, "accepted": accepted, "descent": descent, "categories": checks})
                 if accepted:
                     result = candidate.detach()

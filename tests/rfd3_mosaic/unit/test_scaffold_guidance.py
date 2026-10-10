@@ -1,8 +1,12 @@
 import math
 import unittest
+from dataclasses import replace
 
 import torch
 from rfd3.inference.symmetry.scaffold_guidance import (
+    ScaffoldGuidanceConfig,
+    _rotation_axis_angle,
+    _rotation_from_vector,
     build_boundary_topology,
     expand_master_orbit,
     extract_cyclic_axis,
@@ -345,6 +349,58 @@ class CyclicAxisTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "share one cyclic axis"):
             extract_cyclic_axis(_dihedral_transforms(3))
 
+    def test_primary_axis_uses_native_dihedral_actions_not_transform_ids(self):
+        from rfd3.inference.symmetry.frames import get_dihedral_frames
+
+        frame_rotation = _y_rotation(37.0) @ _z_rotation(19.0)
+        center = torch.tensor([4.2, -3.1, 2.7], dtype=torch.float64)
+        for order in (3, 4, 10):
+            native = get_dihedral_frames(order)
+            for dtype in (torch.float32, torch.float64):
+                # Moving identity away from zero and interleaving both cosets
+                # must not change the physical axis or the selected subgroup.
+                permutation = tuple(range(1, 2 * order)) + (0,)
+                transforms = {}
+                for index, source in enumerate(permutation):
+                    rotation = frame_rotation @ torch.as_tensor(
+                        native[source][0], dtype=torch.float64
+                    ) @ frame_rotation.T
+                    transforms[str(index)] = (
+                        rotation.to(dtype), (center - rotation @ center).to(dtype)
+                    )
+                with self.subTest(order=order, dtype=dtype):
+                    axis = extract_symmetry_primary_axis(
+                        transforms, symmetry_id=f"D{order}"
+                    )
+                    self.assertEqual(
+                        {permutation[i] for i in axis.transform_ids},
+                        set(range(0, 2 * order, 2)),
+                    )
+                    expected_direction = frame_rotation[:, 2].to(dtype)
+                    self.assertAlmostEqual(
+                        abs(float(torch.dot(axis.direction, expected_direction))),
+                        1.0, places=5,
+                    )
+                    offset = axis.point - center.to(dtype)
+                    self.assertLess(float(torch.linalg.vector_norm(
+                        offset - torch.dot(offset, axis.direction) * axis.direction
+                    )), 1e-4)
+
+    def test_d2_retains_declared_primary_axis_convention(self):
+        axis = extract_symmetry_primary_axis(_dihedral_transforms(2), symmetry_id="D2")
+        self.assertEqual(axis.transform_ids, (0, 1))
+        self.assertAlmostEqual(abs(float(axis.direction[2])), 1.0)
+
+    def test_axis_rejects_nonfinite_tolerance(self):
+        for tolerance in (float("nan"), float("inf"), -float("inf")):
+            with self.subTest(tolerance=tolerance):
+                with self.assertRaisesRegex(ValueError, "finite and positive"):
+                    extract_cyclic_axis(_cyclic_transforms(3), tolerance=tolerance)
+                with self.assertRaisesRegex(ValueError, "finite and positive"):
+                    extract_symmetry_primary_axis(
+                        _dihedral_transforms(3), symmetry_id="D3", tolerance=tolerance
+                    )
+
 
 class CyclicMasterExpansionTestCase(unittest.TestCase):
     def test_master_is_expanded_by_each_c3_and_c5_group_action(
@@ -526,6 +582,179 @@ class ScaffoldOrbitEnergyTestCase(unittest.TestCase):
 
 
 class BoundedSE3ProposalTestCase(unittest.TestCase):
+    def test_total_rotation_projection_cannot_jump_across_step_bound(self):
+        current, target = _z_rotation(170.0), _z_rotation(190.0)
+        proposal = propose_bounded_se3_step(
+            current,
+            torch.zeros(3, dtype=torch.float64),
+            lambda r, t: (r - target).square().sum(),
+            maximum_step_translation=0.0,
+            maximum_step_rotation_degrees=15.0,
+            maximum_total_translation=0.0,
+            maximum_total_rotation_degrees=170.0,
+        )
+        actual = math.degrees(
+            float(_rotation_axis_angle(proposal.rotation @ current.T)[1])
+        )
+        self.assertLessEqual(actual, 15.0 + 1e-5)
+
+    def test_initial_pose_outside_total_bound_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "current pose.*bound"):
+            propose_bounded_se3_step(
+                torch.eye(3, dtype=torch.float64),
+                torch.tensor([5.0, 0.0, 0.0]),
+                lambda r, t: t.square().sum(),
+                maximum_step_translation=0.1,
+                maximum_step_rotation_degrees=1.0,
+                maximum_total_translation=2.0,
+                maximum_total_rotation_degrees=10.0,
+            )
+
+    def test_rotation_step_measurement_preserves_zero_and_small_float32_angles(self):
+        rotation = _rotation_from_vector(torch.tensor([0.05, 0.025, 0.05 / 3]))
+        self.assertLess(float(_rotation_axis_angle(rotation @ rotation.T)[1]), 1e-7)
+        for angle in (0.0001, 0.03, math.pi):
+            with self.subTest(angle=angle):
+                value = _rotation_from_vector(torch.tensor([angle, 0.0, 0.0]))
+                self.assertAlmostEqual(
+                    float(_rotation_axis_angle(value)[1]), angle, places=6
+                )
+
+    def test_invalid_current_pose_is_not_returned_as_a_valid_noop(self):
+        identity = torch.eye(3, dtype=torch.float64)
+        zero = torch.zeros(3, dtype=torch.float64)
+        for rotation, translation in (
+            (identity * float("nan"), zero),
+            (identity, zero + float("inf")),
+            (-identity, zero),
+            (2.0 * identity, zero),
+        ):
+            with self.subTest(rotation=rotation, translation=translation):
+                with self.assertRaises(ValueError):
+                    propose_bounded_se3_step(
+                        rotation,
+                        translation,
+                        lambda r, t: torch.tensor(0.0),
+                        maximum_step_translation=0.1,
+                        maximum_step_rotation_degrees=1.0,
+                        maximum_total_translation=2.0,
+                        maximum_total_rotation_degrees=10.0,
+                    )
+
+    def test_weight_diagnostics_expose_opposing_forces_at_a_stalled_pose(self):
+        topology, axis, motif, scaffold = ScaffoldOrbitEnergyTestCase._energy_case()
+        template = scaffold_orbit_energy(motif, scaffold, topology, axis)
+
+        def objective(rotation, translation):
+            terms = {
+                "left": (translation[0] + 1.0).square(),
+                "right": (translation[0] - 1.0).square(),
+            }
+            return replace(template, total=sum(terms.values()), weighted_terms=terms)
+
+        proposal = propose_bounded_se3_step(
+            torch.eye(3, dtype=torch.float64),
+            torch.zeros(3, dtype=torch.float64),
+            objective,
+            maximum_step_translation=0.1,
+            maximum_step_rotation_degrees=1.0,
+            maximum_total_translation=2.0,
+            maximum_total_rotation_degrees=10.0,
+        )
+        self.assertFalse(proposal.accepted)
+        self.assertEqual(proposal.translation_gradient_norm, 0.0)
+        terms = proposal.objective_gradients
+        self.assertEqual(
+            terms["left"]["allowed_translation_gradient_vector"], [2.0, 0.0, 0.0]
+        )
+        self.assertEqual(
+            terms["right"]["allowed_translation_gradient_vector"], [-2.0, 0.0, 0.0]
+        )
+
+    def test_constant_objective_is_a_valid_noop(self):
+        rotation = torch.eye(3, dtype=torch.float64)
+        translation = torch.zeros(3, dtype=torch.float64)
+        proposal = propose_bounded_se3_step(
+            rotation,
+            translation,
+            lambda r, t: torch.tensor(4.0, dtype=t.dtype),
+            maximum_step_translation=0.1,
+            maximum_step_rotation_degrees=1.0,
+            maximum_total_translation=2.0,
+            maximum_total_rotation_degrees=10.0,
+        )
+        self.assertFalse(proposal.accepted)
+        self.assertTrue(torch.equal(proposal.rotation, rotation))
+        self.assertTrue(torch.equal(proposal.translation, translation))
+        self.assertEqual(proposal.translation_gradient_norm, 0.0)
+
+    def test_weight_diagnostics_distinguish_large_constants_from_allowed_force(self):
+        topology, axis, motif, scaffold = ScaffoldOrbitEnergyTestCase._energy_case()
+        template = scaffold_orbit_energy(motif, scaffold, topology, axis)
+
+        def objective(rotation, translation):
+            terms = {
+                "constant": translation.sum() * 0.0 + 1000.0,
+                "drive": 2.0 * (translation[0] - 0.2).square(),
+                "blocked": 5.0 * (translation[1] - 1.0).square(),
+            }
+            return replace(template, total=sum(terms.values()), weighted_terms=terms)
+
+        proposal = propose_bounded_se3_step(
+            torch.eye(3, dtype=torch.float64),
+            torch.zeros(3, dtype=torch.float64),
+            objective,
+            maximum_step_translation=1.0,
+            maximum_step_rotation_degrees=0.0,
+            maximum_total_translation=2.0,
+            maximum_total_rotation_degrees=0.0,
+            translation_basis=torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float64),
+        )
+        self.assertTrue(proposal.accepted)
+        report = proposal.objective_gradients
+        self.assertEqual(report["constant"]["weighted_energy"], 1000.0)
+        self.assertEqual(report["constant"]["linear_step_sensitivity"], 0.0)
+        self.assertEqual(report["blocked"]["linear_step_sensitivity"], 0.0)
+        self.assertAlmostEqual(
+            report["drive"]["allowed_translation_gradient_per_angstrom"], 0.8
+        )
+        for trial in proposal.line_search_trials:
+            terms = trial["objective_terms"]
+            self.assertAlmostEqual(
+                sum(v for k, v in terms.items() if k.startswith("weighted_")),
+                trial["energy"],
+            )
+
+    def test_small_feasible_descent_is_not_lost_below_quarter_step(self):
+        for multistart in (False, True):
+            with self.subTest(multistart=multistart):
+                proposal = propose_bounded_se3_step(
+                    torch.eye(3, dtype=torch.float64),
+                    torch.zeros(3, dtype=torch.float64),
+                    lambda rotation, translation: (translation[0] - 0.04).square(),
+                    maximum_step_translation=1.0,
+                    maximum_step_rotation_degrees=0.0,
+                    maximum_total_translation=2.0,
+                    maximum_total_rotation_degrees=0.0,
+                    deterministic_multistart=multistart,
+                    candidate_validator=lambda rotation, translation: {
+                        "accepted": float(translation[0]) <= 0.05,
+                    },
+                )
+                self.assertTrue(proposal.accepted)
+                self.assertGreater(float(proposal.translation[0]), 0.0)
+                self.assertLessEqual(float(proposal.translation[0]), 0.05)
+                self.assertLess(
+                    float(proposal.proposed_energy), float(proposal.initial_energy)
+                )
+
+    def test_nonfinite_penalty_coefficients_are_rejected(self):
+        for field in ("junction_weight", "prior_weight", "translation_prior_scale"):
+            for value in (float("nan"), float("inf")):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        ScaffoldGuidanceConfig(**{field: value})
+
     def test_unsafe_full_step_backtracks_to_safe_improving_pose(self):
         proposal = propose_bounded_se3_step(
             torch.eye(3, dtype=torch.float64),
@@ -586,6 +815,19 @@ class BoundedSE3ProposalTestCase(unittest.TestCase):
         )
         self.assertEqual(float(replay.translation[0]), observed[7])
         self.assertEqual(set(observed.values()), {-0.25, 0.25})
+
+        overflow_replay = propose_bounded_se3_step(
+            identity,
+            torch.zeros(3, dtype=torch.float64),
+            symmetric_double_well,
+            maximum_step_translation=0.25,
+            maximum_step_rotation_degrees=0.0,
+            maximum_total_translation=1.0,
+            maximum_total_rotation_degrees=0.0,
+            deterministic_multistart=True,
+            selection_seed=(1 << 64) + 7,
+        )
+        self.assertEqual(float(overflow_replay.translation[0]), observed[7])
 
     def test_capture_multistart_escapes_zero_gradient_pose(self) -> None:
         identity = torch.eye(3, dtype=torch.float64)

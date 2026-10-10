@@ -14,6 +14,8 @@ from rfd3.inference.symmetry.constraint_runtime import (
 from rfd3.inference.symmetry.cylindrical_projector import (
     CylindricalCoordinateProjector,
 )
+from rfd3.inference.symmetry.generated_routes import apply_generated_route_guidance
+from rfd3.inference.symmetry.geometry_restoration import restore_generated_geometry
 from rfd3.inference.symmetry.graph_interface_guidance import (
     GraphInterfaceGuidanceConfig,
     GraphInterfacePatchState,
@@ -36,8 +38,6 @@ from rfd3.inference.symmetry.local_neighbourhood import (
 from rfd3.inference.symmetry.motif_mobility import (
     OrbitRigidMotifController,
 )
-from rfd3.inference.symmetry.geometry_restoration import restore_generated_geometry
-from rfd3.inference.symmetry.generated_routes import apply_generated_route_guidance
 from rfd3.inference.symmetry.scaffold_core_guidance import (
     ScaffoldCoreGuidanceConfig,
     apply_scaffold_core_guidance,
@@ -273,6 +273,12 @@ class SampleDiffusionConfig:
     graph_interface_guidance_maximum_token_step: float = 0.25
     graph_interface_guidance_unsatisfied_step_fraction: float = 0.50
     graph_interface_guidance_final_polish_steps: int = 12
+    graph_interface_guidance_terminal_kinematic_proposals: bool = True
+    enable_generated_peptide_geometry_repair: bool = True
+    enable_generated_covalent_geometry_repair: bool = True
+    enable_final_covalent_graph_refinement: bool = False
+    final_covalent_graph_refinement_steps: int = 1
+    enable_partial_cylindrical_network_conditioning: bool = False
     graph_interface_guidance_token_smoothing_weight: float = 0.5
     graph_interface_guidance_token_smoothing_passes: int = 1
     graph_interface_guidance_continuity_softness: float = 0.75
@@ -446,6 +452,9 @@ class SampleDiffusionWithMotif(SampleDiffusionConfig):
         ref_initializer_outputs: dict[str, Any] | None,
         f_ref: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        if self.enable_final_covalent_graph_refinement:
+            from rfd3.inference.symmetry.final_candidate_adapter import validate_refinement_scope
+            validate_refinement_scope(self, f, diffusion_batch_size)
         # Motif setup to recenter the motif at every step
         is_motif_atom_with_fixed_coord = f["is_motif_atom_with_fixed_coord"]
 
@@ -829,6 +838,16 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 "motif_mobility_proposal_source must be one of "
                 f"{sorted(valid_proposal_sources)}"
             )
+        if (
+            self.enable_orbit_rigid_motif_mobility
+            and self.motif_mobility_proposal_source == "denoiser"
+        ):
+            raise ValueError(
+                "Native RFD3 EDM denoiser_fit mobility has no learned pose signal: "
+                "fixed atoms have zero diffusion time and their denoised output "
+                "equals the input coordinates. Use pose.proposal=scaffold_objectives "
+                "(sampler motif_mobility_proposal_source=scaffold_boundary)."
+            )
         if int(self.motif_mobility_update_interval) <= 0:
             raise ValueError("motif_mobility_update_interval must be positive")
         if int(self.motif_mobility_target_update_count) < 0:
@@ -1046,6 +1065,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 self.graph_interface_guidance_unsatisfied_step_fraction
             ),
             final_polish_steps=int(self.graph_interface_guidance_final_polish_steps),
+            terminal_kinematic_proposals=bool(self.graph_interface_guidance_terminal_kinematic_proposals),
             token_smoothing_weight=float(
                 self.graph_interface_guidance_token_smoothing_weight
             ),
@@ -1245,6 +1265,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             fixed_target[:, None, :, :].expand(-1, membership.shape[0], -1, -1).clone()
         )
 
+    def _proposal_joint_projector(self, features, target, fixed_mask):
+        """Restore candidate targets from private conditioning, without publication."""
+        proposal_features = dict(features)
+        self._synchronize_mobile_motif_conditioning(proposal_features, target, fixed_mask)
+        return self._joint_projector(proposal_features)
+
     @staticmethod
     def _symmetry_features(f: dict[str, Any]) -> dict[str, Any]:
         required = {
@@ -1355,8 +1381,19 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         # axial coordinate are invariant to shifting the chosen centre along
         # that axis line.
         center = torch.stack(translations, dim=0).mean(dim=0)
+        preserved = f.get("cylindrical_reference")
+        if preserved is None:
+            raise ValueError("Cylindrical hard projection requires preserved source reference coordinates")
+        preserved = torch.as_tensor(preserved, dtype=reference.dtype, device=reference.device)
+        if preserved.shape != reference.shape[1:]:
+            raise ValueError("Cylindrical source reference must have shape [L, 3]")
+        if not torch.isfinite(preserved).all():
+            raise ValueError("Cylindrical source reference contains NaN or Inf")
         return CylindricalCoordinateProjector(
-            reference=reference,
+            reference=preserved.unsqueeze(0).expand(reference.shape[0], -1, -1),
+            atom_to_token_map=f.get("atom_to_token_map"),
+            is_ca=f.get("is_ca"),
+            fixed_mask=f.get("is_motif_atom_with_fixed_coord"),
             keep_mask=torch.as_tensor(
                 keep_mask,
                 dtype=torch.bool,
@@ -1782,11 +1819,127 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             X_exists_L=is_motif_atom_with_fixed_coord,
         )
 
+    def _finalize_physical_output(self, X_L, f, outs, constraint_runtime,
+            scaffold_core_topology, scaffold_core_guidance_config,
+            graph_interface_topology, graph_interface_guidance_config,
+            graph_interface_patch_state, record_feasibility, step_num,
+            is_motif_atom_with_fixed_coord, coord_atom_lvl_to_be_noised):
+        """Actual terminal sampler caller, separately testable without NN replay."""
+        if self.enable_final_covalent_graph_refinement:
+            from rfd3.inference.symmetry.final_candidate_adapter import snapshot
+            original_observer = record_feasibility
+            def record_feasibility(stage, coordinates, step, **extra):
+                # Logging must never obtain a live accepted coordinate tensor
+                # or mutable decision dictionary from the terminal caller.
+                original_observer(stage, coordinates.detach().clone(), step, **snapshot(extra))
+        from rfd3.inference.symmetry.predicted_output_binding import bind_predicted_output
+        from rfd3.inference.symmetry.output_geometry_guard import audit_bound_geometry
+        final_sequence_indices = outs.get("sequence_indices_I") if f.get("final_output_uses_sequence_head", True) and outs.get("sequence_logits_I") is not None else None
+        final_output_bindings = [bind_predicted_output(f, final_sequence_indices, batch=b,
+            association_scheme=f.get("final_output_association_scheme", "dense")) for b in range(len(X_L))]
+        pre_geometry_repair = X_L.clone()
+        adapter = None
+        if self.enable_final_covalent_graph_refinement:
+            from rfd3.inference.symmetry.final_candidate_adapter import FinalCandidateAdapter, validate_refinement_scope
+            validate_refinement_scope(self, f, len(X_L))
+            if constraint_runtime is None:
+                raise ValueError("Final refinement requires the constraint runtime")
+            adapter = FinalCandidateAdapter(self, f, X_L, constraint_runtime,
+                graph_interface_topology, graph_interface_guidance_config,
+                graph_interface_patch_state, scaffold_core_topology,
+                scaffold_core_guidance_config or self._scaffold_core_guidance_config())
+        final_output_geometry_diagnostics = None
+        peptide_geometry_repair_diagnostics = None
+        covalent_geometry_repair_diagnostics = None
+        if self.enable_generated_peptide_geometry_repair and constraint_runtime is not None:
+            from rfd3.inference.symmetry.peptide_geometry_repair import repair_native_generated_peptides
+            from rfd3.inference.symmetry.graph_interface_guidance import graph_interface_proposal_acceptable
+            physical_baseline = X_L
+            ca_guard = (
+                scaffold_geometry_guard(X_L, scaffold_core_topology,
+                    scaffold_core_guidance_config or self._scaffold_core_guidance_config())
+                if scaffold_core_topology is not None else None
+            )
+            def physical_task_guard(candidate):
+                record_feasibility("physical_geometry_repair_candidate", candidate.detach().clone() if adapter is not None else candidate, step_num)
+                ca = ca_guard(candidate) if ca_guard is not None else {"accepted": True}
+                if graph_interface_topology is not None:
+                    config = replace(graph_interface_guidance_config, contact_prior_weight=0.0)
+                    assignments = graph_interface_patch_state.assignments if graph_interface_patch_state is not None else None
+                    before = graph_interface_energy(physical_baseline, graph_interface_topology, config, patch_assignments=assignments)
+                    after = graph_interface_energy(candidate, graph_interface_topology, config, patch_assignments=assignments)
+                    decision = {}
+                    accepted = graph_interface_proposal_acceptable(before, after, config, decision=decision, evaluate_all=True)
+                    return {"accepted": bool(ca["accepted"] and accepted), "ca_guard": ca, "original_graph_acceptance": decision}
+                return {"accepted": bool(ca["accepted"]), "ca_guard": ca}
+            record_feasibility("pre_peptide_geometry_repair", X_L, step_num)
+            X_L, peptide_geometry_repair_diagnostics = repair_native_generated_peptides(
+                X_L, f,
+                projector=lambda candidate: constraint_runtime._project(candidate, label="Final generated peptide geometry repair"),
+                candidate_validator=physical_task_guard,
+            )
+            peptide_sidechain_checks = []
+            for b,(bound,binding) in enumerate(final_output_bindings):
+                check = audit_bound_geometry(X_L[b:b+1], bound, pre_geometry_repair[b:b+1]) if bound is not None else {"accepted":False,"reason":binding["reason"]}
+                peptide_sidechain_checks.append(check)
+                if not check["accepted"]:
+                    X_L[b:b+1] = pre_geometry_repair[b:b+1]
+            peptide_geometry_repair_diagnostics["final_identity_sidechain_checks"] = peptide_sidechain_checks
+            if not all(c["accepted"] for c in peptide_sidechain_checks):
+                peptide_geometry_repair_diagnostics.update(applied=False, absolute_backbone_passed=False, reason="final_identity_sidechain_guard_rejected")
+            record_feasibility("post_peptide_geometry_repair", X_L, step_num, diagnostic=peptide_geometry_repair_diagnostics)
+            if self.enable_generated_covalent_geometry_repair and (
+                not peptide_geometry_repair_diagnostics.get("absolute_backbone_passed", False)
+                or (self.enable_final_covalent_graph_refinement and any(
+                    not check.get("absolute_sidechain_geometry_passed", False)
+                    or check.get("nonadjacent_allheavy_clash_pair_count", 0) != 0
+                    for check in peptide_sidechain_checks
+                ))
+            ):
+                from rfd3.inference.symmetry.covalent_geometry_repair import repair_native_covalent_geometry
+                record_feasibility("pre_covalent_geometry_repair", X_L, step_num)
+                X_L, covalent_geometry_repair_diagnostics = repair_native_covalent_geometry(
+                    X_L, f,
+                    projector=lambda candidate: constraint_runtime._project(candidate, label="Final generated covalent geometry repair"),
+                    candidate_validator=physical_task_guard,
+                    candidate_transformer=adapter.transform if adapter is not None else None,
+                    per_sample_candidate_validator=adapter.validate_original_policy if adapter is not None else None,
+                    sequence_indices=final_sequence_indices,
+                    association_scheme=f.get("final_output_association_scheme", "dense"),
+                    require_absolute_clearance=self.enable_final_covalent_graph_refinement,
+                )
+                record_feasibility("post_covalent_geometry_repair", X_L, step_num, diagnostic=covalent_geometry_repair_diagnostics)
+
+        record_feasibility("pre_finalize", X_L, step_num)
+        from rfd3.inference.symmetry.final_output_geometry import finalize_generated_output
+        def final_output_projector(candidate):
+            if constraint_runtime is not None:
+                if adapter is not None:
+                    return adapter.prepare_final(candidate)
+                return constraint_runtime.finalize(candidate)
+            if torch.any(is_motif_atom_with_fixed_coord) and self.allow_realignment:
+                return self._finalize_with_fixed_motif(candidate, coord_atom_lvl_to_be_noised, is_motif_atom_with_fixed_coord, f)
+            return candidate
+        X_L, final_output_geometry_diagnostics = finalize_generated_output(
+            X_L, pre_geometry_repair, final_output_bindings,
+            finalizer=final_output_projector,
+            isolate_batches=adapter is not None,
+            peptide_diagnostics=peptide_geometry_repair_diagnostics,
+            covalent_diagnostics=covalent_geometry_repair_diagnostics,
+        )
+
+        if adapter is not None:
+            X_L = constraint_runtime.finalize_verified(X_L)
+            adapter.bind_final_diagnostics(X_L, final_output_geometry_diagnostics,
+                covalent_geometry_repair_diagnostics)
+        return X_L, final_output_geometry_diagnostics, peptide_geometry_repair_diagnostics, covalent_geometry_repair_diagnostics
+
     def sample_diffusion_like_af3(
         self,
         *,
         f: dict[str, Any],
         network_f: dict[str, Any] | None = None,
+        feature_initializer=None,
         local_symmetry_context: LocalSymmetryRuntimeContext | None = None,
         diffusion_module: torch.nn.Module,
         diffusion_batch_size: int,
@@ -1796,6 +1949,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         f_ref: dict[str, Any] | None,
         **_,
     ) -> dict[str, Any]:
+        if self.enable_final_covalent_graph_refinement:
+            from rfd3.inference.symmetry.final_candidate_adapter import validate_refinement_scope
+            validate_refinement_scope(self, f, diffusion_batch_size)
         # Motif setup to recenter the motif at every step
         is_motif_atom_with_fixed_coord = torch.as_tensor(
             f["is_motif_atom_with_fixed_coord"],
@@ -1833,6 +1989,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
         # replace motif_pos in this mapping, and the chunked denoiser must
         # consume that same mapping rather than the original input features.
         denoiser_f = f if network_f is None else network_f
+        partial_cylindrical_conditioning_diagnostics = []
+        if self.enable_partial_cylindrical_network_conditioning:
+            if local_symmetry_context is not None or f_ref is not None:
+                raise ValueError("Experimental partial cylindrical conditioning currently requires explicit_all_copy without classifier-free guidance")
+            if feature_initializer is None:
+                raise ValueError("Experimental partial cylindrical conditioning requires the model initializer callback")
+
         fixed_target = coord_atom_lvl_to_be_noised.clone()
         motif_mobility_controller = None
         scaffold_guidance_topology = None
@@ -1947,7 +2110,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     routing_tolerance=tolerance,
                 )
             if f.get("mosaic_reference_transport") is not None:
-                from rfd3.inference.symmetry.scaffold_transport import ScaffoldReferenceTransport
+                from rfd3.inference.symmetry.scaffold_transport import (
+                    ScaffoldReferenceTransport,
+                )
                 reference_transport = ScaffoldReferenceTransport(f, scaffold_core_topology)
             ranked_logger.info(
                 "Scaffold intra/inter guidance initialized: "
@@ -1991,6 +2156,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 motif_mobility_controller = OrbitRigidMotifController.from_features(
                     f,
                     fixed_target,
+                    normalized_symmetry_transforms=(
+                        self._exact_symmetry_orbit_layout.sym_transforms
+                    ),
                     start_fraction=float(self.motif_mobility_start_fraction),
                     end_fraction=float(self.motif_mobility_end_fraction),
                     response=float(self.motif_mobility_response),
@@ -2062,7 +2230,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     )
                     if uses_primary_axis:
                         scaffold_guidance_axis = extract_symmetry_primary_axis(
-                            f["sym_transform"],
+                            motif_mobility_controller.sym_transforms,
                             symmetry_id=f.get("symmetry_id"),
                         )
                         scaffold_guidance_principal_axes = tuple(
@@ -2108,6 +2276,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 def legacy_proposal_hook(
                     proposal_coordinates: torch.Tensor,
                     progress: float,
+                    *,
+                    transported_candidate_validator=None,
+                    transported_state_resolver=None,
                 ) -> ConstraintProposalResult:
                     if self.motif_mobility_proposal_source == "scaffold_boundary":
                         if (
@@ -2218,13 +2389,14 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                                 additional_state_energy=core_state_energy,
                                 proposal_selection_seed=int(torch.initial_seed()),
                                 candidate_validator=(
-                                    scaffold_geometry_guard(
+                                    transported_candidate_validator or scaffold_geometry_guard(
                                         proposal_coordinates,
                                         scaffold_core_topology,
                                         scaffold_core_guidance_config
                                         or self._scaffold_core_guidance_config(),
                                     ) if scaffold_core_topology is not None else None
                                 ),
+                                candidate_state_resolver=transported_state_resolver,
                             )
                             packing_step = dict(joint_diagnostics["packing_step"])
                             packing_step.update(
@@ -2254,11 +2426,16 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         if core_state_energy is not None:
 
                             def core_pose_energy(candidate_target):
-                                candidate_state = torch.where(
-                                    scaffold_core_topology.generated_atom_mask[:, None],
-                                    proposal_coordinates[0],
-                                    candidate_target,
-                                )
+                                if transported_state_resolver is not None:
+                                    candidate_state = transported_state_resolver(
+                                        candidate_target, proposal_coordinates[0]
+                                    )
+                                else:
+                                    candidate_state = torch.where(
+                                        scaffold_core_topology.generated_atom_mask[:, None],
+                                        proposal_coordinates[0],
+                                        candidate_target,
+                                    )
                                 return core_state_energy(candidate_state)
 
                         scaffold_update_arguments = {
@@ -2280,9 +2457,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                         # intra guidance cannot alter established jobs.
                         if core_pose_energy is not None:
                             scaffold_update_arguments["pose_energy"] = core_pose_energy
+                        if transported_state_resolver is not None:
+                            scaffold_update_arguments["candidate_state_resolver"] = transported_state_resolver
                         if scaffold_core_topology is not None:
                             scaffold_update_arguments["candidate_validator"] = (
-                                scaffold_geometry_guard(
+                                transported_candidate_validator or scaffold_geometry_guard(
                                     proposal_coordinates,
                                     scaffold_core_topology,
                                     scaffold_core_guidance_config
@@ -2308,51 +2487,199 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     def proposal_hook(proposal_coordinates, progress):
                         nonlocal motif_mobility_controller, graph_interface_patch_state
                         nonlocal graph_interface_diagnostics, scaffold_core_topology, scaffold_core_guidance_config
-                        # Existing controllers propose with their original objectives
+                        # Controllers score the same transported coordinates
+                        # as the final transaction, retaining their objectives
                         # and bounds. Their mutable state is isolated until the
                         # coupled seed/reference/generated transaction is accepted.
-                        old_controller = motif_mobility_controller
-                        old_patch = graph_interface_patch_state
-                        old_diagnostics = graph_interface_diagnostics
-                        old_topology = scaffold_core_topology
-                        old_config = scaffold_core_guidance_config
-                        motif_mobility_controller = copy.deepcopy(old_controller)
-                        graph_interface_patch_state = copy.deepcopy(old_patch)
-                        graph_interface_diagnostics = list(old_diagnostics)
-                        scaffold_core_topology = replace(old_topology, scaffold_contract=None)
-                        scaffold_core_guidance_config = replace(old_config, routing_ownership_weight=0.0)
+                        before_reference = (
+                            reference_transport.reference, reference_transport.transforms,
+                            reference_transport.motions, len(reference_transport.accepted),
+                            len(reference_transport.proposal_attempts), len(reference_transport.rejected),
+                        )
+
+                        def restore_reference():
+                            (reference_transport.reference, reference_transport.transforms,
+                             reference_transport.motions, accepted_count, attempt_count,
+                             rejected_count) = before_reference
+                            del reference_transport.accepted[accepted_count:]
+                            del reference_transport.proposal_attempts[attempt_count:]
+                            del reference_transport.rejected[rejected_count:]
+
+                        try:
+                            old_controller = motif_mobility_controller
+                            old_patch = graph_interface_patch_state
+                            old_diagnostics = graph_interface_diagnostics
+                            old_topology = scaffold_core_topology
+                            old_config = scaffold_core_guidance_config
+                            def transport_projector(candidate, target):
+                                proposal_features = dict(f)
+                                self._synchronize_mobile_motif_conditioning(
+                                    proposal_features, target, is_motif_atom_with_fixed_coord)
+                                projector = self._joint_projector(proposal_features)
+                                result = projector.project(candidate, constraint_target=target,
+                                    constraint_mask=is_motif_atom_with_fixed_coord, restore=True,
+                                    label="Coupled scaffold reference transport")
+                                if constraint_runtime.cylindrical_projector is not None:
+                                    result = constraint_runtime.cylindrical_projector.project(result)
+                                    projector.validate_closure(result, "Transport after cylindrical projection")
+                                return result
+
+                            transported_validator = reference_transport.candidate_validator(
+                                proposal_coordinates,
+                                projector=transport_projector,
+                                geometry_guard=scaffold_geometry_guard(
+                                    proposal_coordinates, old_topology,
+                                    replace(old_config, routing_ownership_weight=0.0),
+                                ),
+                            )
+                            def transported_state_resolver(target, scaffold):
+                                return reference_transport.candidate_coordinates(
+                                    target, scaffold, projector=transport_projector,
+                                    before=proposal_coordinates[0],
+                                )
+
+                            # Allocate the entire private state before rebinding any
+                            # live closure variable. Keep the shared immutable frame
+                            # registry identical to the exact projector's registry.
+                            candidate_controller = copy.deepcopy(
+                                old_controller,
+                                {id(old_controller.sym_transforms): old_controller.sym_transforms},
+                            )
+                            candidate_patch = copy.deepcopy(old_patch)
+                            candidate_diagnostics = list(old_diagnostics)
+                            candidate_topology = replace(old_topology, scaffold_contract=None)
+                            candidate_config = replace(old_config, routing_ownership_weight=0.0)
+                            try:
+                                motif_mobility_controller = candidate_controller
+                                graph_interface_patch_state = candidate_patch
+                                graph_interface_diagnostics = candidate_diagnostics
+                                scaffold_core_topology = candidate_topology
+                                scaffold_core_guidance_config = candidate_config
+                                proposal = legacy_proposal_hook(
+                                    proposal_coordinates, progress,
+                                    transported_candidate_validator=transported_validator,
+                                    transported_state_resolver=transported_state_resolver,
+                                )
+                                candidate_controller = motif_mobility_controller
+                                candidate_patch = graph_interface_patch_state
+                                candidate_diagnostics = graph_interface_diagnostics
+                            finally:
+                                motif_mobility_controller = old_controller
+                                graph_interface_patch_state = old_patch
+                                graph_interface_diagnostics = old_diagnostics
+                                scaffold_core_topology = old_topology
+                                scaffold_core_guidance_config = old_config
+                            if not proposal.applied:
+                                reference_transport.record_proposal_attempt(
+                                    progress=progress, before=old_controller,
+                                    after=candidate_controller, proposed=False,
+                                    committed=False, reason="proposal_generator_did_not_apply",
+                                )
+                                return ConstraintProposalResult(
+                                    target=constraint_runtime.fixed_target, applied=False,
+                                    rollback=restore_reference,
+                                )
+                            try:
+                                prepared = reference_transport.prepare(proposal_coordinates, proposal, projector=transport_projector)
+                            except ValueError as error:
+                                reference_transport.rejected.append({"progress": float(progress), "reason": str(error)})
+                                reference_transport.record_proposal_attempt(
+                                    progress=progress, before=old_controller,
+                                    after=candidate_controller, proposed=True,
+                                    committed=False, reason=str(error),
+                                )
+                                return ConstraintProposalResult(
+                                    target=constraint_runtime.fixed_target, applied=False,
+                                    rollback=restore_reference,
+                                )
+                            old_features = dict(f)
+                            old_reference_state = before_reference
+
+                            def validate_final(candidate, target):
+                                if not torch.equal(candidate, prepared[0]):
+                                    raise ValueError("Runtime changed the scored transport candidate")
+                                _, _, _, guard = reference_transport._restore_geometry(
+                                    proposal_coordinates[0], candidate[0], prepared[1], target[0], None,
+                                )
+                                physical = scaffold_geometry_guard(
+                                    proposal_coordinates, old_topology,
+                                    replace(old_config, routing_ownership_weight=0.0),
+                                )(candidate)
+                                if not guard["passed"] or not physical["accepted"]:
+                                    raise ValueError("Final transport candidate fails geometry guards")
+
+                            def commit():
+                                nonlocal motif_mobility_controller, graph_interface_patch_state
+                                nonlocal graph_interface_diagnostics, scaffold_core_topology
+                                reference_transport.commit(prepared, progress=progress)
+                                reference_transport.record_proposal_attempt(
+                                    progress=progress, before=old_controller,
+                                    after=candidate_controller, proposed=True, committed=True,
+                                )
+                                motif_mobility_controller = candidate_controller
+                                graph_interface_patch_state = candidate_patch
+                                graph_interface_diagnostics = candidate_diagnostics
+                                scaffold_core_topology = replace(old_topology, scaffold_contract=reference_transport.reference)
+                                f["mosaic_scaffold_contract"] = reference_transport.reference.contract
+
+                            def rollback():
+                                nonlocal motif_mobility_controller, graph_interface_patch_state
+                                nonlocal graph_interface_diagnostics, scaffold_core_topology
+                                (reference_transport.reference, reference_transport.transforms,
+                                 reference_transport.motions, accepted_count, attempt_count,
+                                 rejected_count) = old_reference_state
+                                del reference_transport.accepted[accepted_count:]
+                                del reference_transport.proposal_attempts[attempt_count:]
+                                del reference_transport.rejected[rejected_count:]
+                                motif_mobility_controller = old_controller
+                                graph_interface_patch_state = old_patch
+                                graph_interface_diagnostics = old_diagnostics
+                                scaffold_core_topology = old_topology
+                                f.clear()
+                                f.update(old_features)
+
+                            return ConstraintProposalResult(
+                                target=proposal.target, coordinates=prepared[0], applied=True,
+                                coordinates_final=True, validate_final=validate_final,
+                                commit=commit, rollback=rollback,
+                            )
+                        except BaseException:
+                            restore_reference()
+                            raise
+
+                else:
+                    def proposal_hook(proposal_coordinates, progress):
+                        # The full-noise controller retains its established
+                        # in-place success/diagnostic behavior. On any failure
+                        # through runtime publication, restore the whole state,
+                        # including updates made before the proposal returns.
+                        controller = motif_mobility_controller
+                        controller_state = copy.deepcopy(
+                            controller.__dict__,
+                            {id(controller.sym_transforms): controller.sym_transforms},
+                        )
+                        patch_state = graph_interface_patch_state
+                        patch_snapshot = (
+                            copy.deepcopy(patch_state.__dict__)
+                            if patch_state is not None else None
+                        )
+                        diagnostics_count = len(graph_interface_diagnostics)
+                        old_features = dict(f)
+
+                        def rollback():
+                            controller.__dict__ = controller_state
+                            if patch_state is not None:
+                                patch_state.__dict__ = patch_snapshot
+                            del graph_interface_diagnostics[diagnostics_count:]
+                            f.clear()
+                            f.update(old_features)
+
                         try:
                             proposal = legacy_proposal_hook(proposal_coordinates, progress)
-                            candidate_controller = motif_mobility_controller
-                            candidate_patch = graph_interface_patch_state
-                            candidate_diagnostics = graph_interface_diagnostics
-                        finally:
-                            motif_mobility_controller = old_controller
-                            graph_interface_patch_state = old_patch
-                            graph_interface_diagnostics = old_diagnostics
-                            scaffold_core_topology = old_topology
-                            scaffold_core_guidance_config = old_config
-                        if not proposal.applied:
-                            return ConstraintProposalResult(target=constraint_runtime.fixed_target, applied=False)
-                        def transport_projector(candidate, target):
-                            proposal_features = dict(f)
-                            self._synchronize_mobile_motif_conditioning(
-                                proposal_features, target, is_motif_atom_with_fixed_coord)
-                            return self._joint_projector(proposal_features).project(candidate, constraint_target=target,
-                                constraint_mask=is_motif_atom_with_fixed_coord, restore=True,
-                                label="Coupled scaffold reference transport")
-                        try:
-                            prepared = reference_transport.prepare(proposal_coordinates, proposal, projector=transport_projector)
-                        except ValueError as error:
-                            reference_transport.rejected.append({"progress": float(progress), "reason": str(error)})
-                            return ConstraintProposalResult(target=constraint_runtime.fixed_target, applied=False)
-                        reference_transport.commit(prepared, progress=progress)
-                        motif_mobility_controller = candidate_controller
-                        graph_interface_patch_state = candidate_patch
-                        graph_interface_diagnostics = candidate_diagnostics
-                        scaffold_core_topology = replace(old_topology, scaffold_contract=reference_transport.reference)
-                        f["mosaic_scaffold_contract"] = reference_transport.reference.contract
-                        return ConstraintProposalResult(target=proposal.target, coordinates=prepared[0], applied=True)
+                            return replace(proposal, rollback=rollback)
+                        except BaseException:
+                            rollback()
+                            raise
 
             conditioning_synchronizer = None
             if motif_mobility_controller is not None:
@@ -2376,6 +2703,11 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 proposal_interval=effective_motif_mobility_update_interval,
                 proposal_hook=proposal_hook,
                 synchronize_conditioning=conditioning_synchronizer,
+                proposal_projector_factory=(
+                    lambda target: self._proposal_joint_projector(
+                        f, target, is_motif_atom_with_fixed_coord,
+                    )
+                ),
             )
             if motif_mobility_controller is not None:
                 constraint_runtime.synchronize_initial_conditioning()
@@ -2398,6 +2730,43 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 is_motif_atom_with_fixed_coord=(is_motif_atom_with_fixed_coord),
             )  # (D, L, 3)
 
+        from rfd3.inference.symmetry.phase_feasibility_trace import PhaseFeasibilityTrace
+        feasibility_trace = PhaseFeasibilityTrace.from_environment(seed=torch.initial_seed())
+        from rfd3.inference.symmetry.interface_observation_trace import InterfaceObservationTrace
+        interface_observation = InterfaceObservationTrace.from_environment(seed=torch.initial_seed(), features=f)
+        scaffold_feasibility_diagnostics = []
+
+        def enforce_scaffold_feasibility(stage, coordinates, step):
+            if not reference_scaffold_active:
+                return coordinates
+            # Legacy CA-only references retain their existing sampler behavior.
+            # Complete-backbone feasibility requires the explicit v2 binding.
+            if (scaffold_core_topology is not None
+                    and scaffold_core_topology.scaffold_contract is not None
+                    and scaffold_core_topology.scaffold_contract.backbone_atom_indices is None):
+                return coordinates
+            from rfd3.inference.symmetry.contract_feasibility import project_explicit_scaffold_feasibility
+            if constraint_runtime is None or scaffold_core_topology is None:
+                raise RuntimeError("Explicit scaffold feasibility requires the hard runtime and topology")
+            candidate, diagnostic = project_explicit_scaffold_feasibility(
+                coordinates, scaffold_core_topology,
+                projector=lambda value: constraint_runtime._project(value, label=f"Scaffold feasibility {stage} step {step}"),
+            )
+            diagnostic.update(stage=stage, step_num=step, coordinate_space="clean_prediction" if stage == "model_prediction" else "final_noise_zero_state")
+            scaffold_feasibility_diagnostics.append(diagnostic)
+            record_feasibility("post_scaffold_feasibility_" + stage, candidate, step, diagnostic=diagnostic)
+            return candidate
+
+        def record_feasibility(stage, coordinates, step=-1, **extra):
+            if interface_observation is not None:
+                interface_observation.record(stage, coordinates, step=step, **extra)
+            if feasibility_trace is not None and scaffold_core_topology is not None:
+                feasibility_trace.record(
+                    stage, coordinates, reference=scaffold_core_topology.scaffold_contract,
+                    fixed_mask=is_motif_atom_with_fixed_coord, step=step, **extra,
+                )
+
+        record_feasibility("initial_noisy_state", X_L)
         X_noisy_L_traj = []
         X_denoised_L_traj = []
         sequence_entropy_traj = []
@@ -2455,6 +2824,19 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 f,
                 label=f"Noisy diffusion state at step {step_num}",
             )
+
+            if self.enable_partial_cylindrical_network_conditioning:
+                from rfd3.inference.symmetry.partial_cylindrical_conditioning import condition_partial_cylindrical_cas
+                X_noisy_L, denoiser_f, observation = condition_partial_cylindrical_cas(
+                    X_noisy_L, f,
+                    target_ca_distance=float(self.generated_polymer_continuity_target_ca_distance),
+                    ca_tolerance=float(self.generated_polymer_continuity_tolerance),
+                )
+                observation["step_num"] = step_num
+                partial_cylindrical_conditioning_diagnostics.append(observation)
+                if observation["applicable"]:
+                    self._assert_symmetry_orbit_closed(X_noisy_L, f, label=f"Partial cylindrical conditional observations at step {step_num}")
+                    initializer_outputs = feature_initializer(denoiser_f)
 
             # Denoise either the complete assembly or the bounded local view.
             denoiser_X_noisy_L = X_noisy_L
@@ -2522,6 +2904,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     outs["sequence_indices_I"] = diffusion_module.sequence_head.decode(
                         outs["sequence_logits_I"]
                     )
+            if "X_L" in outs:
+                record_feasibility("raw_denoiser_prediction", outs["X_L"], step_num)
+                outs["X_L"] = enforce_scaffold_feasibility("model_prediction", outs["X_L"], step_num)
             if "X_L" in outs and constraint_runtime is not None:
                 outs["X_L"] = constraint_runtime.process_model_prediction(
                     outs["X_L"],
@@ -2538,6 +2923,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )
 
             X_denoised_L = outs["X_L"] if "X_L" in outs else outs
+            record_feasibility("post_runtime_mobility", X_denoised_L, step_num)
 
             # Geometric objectives describe clean structures, not the noisy
             # diffusion state. Correct the denoised estimate inside its bounded
@@ -2607,6 +2993,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     config=graph_interface_guidance_config,
                     projector=graph_projector,
                     patch_state=graph_interface_patch_state,
+                    observer=(lambda stage, coordinates, **extra: interface_observation.record(stage, coordinates, step=step_num, **extra)) if interface_observation is not None else None,
                     candidate_validator=(
                         scaffold_geometry_guard(
                             X_denoised_L,
@@ -2622,6 +3009,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     step_num=step_num, coordinate_space="denoised_prediction"
                 )
                 graph_interface_diagnostics.append(interface_step)
+                record_feasibility("post_graph_guidance", X_denoised_L if interface_step.get("coordinate_space") == "denoised_prediction" else X_L, step_num, diagnostic=interface_step)
 
             if scaffold_core_active:
                 if scaffold_core_topology is None:
@@ -2667,6 +3055,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     step_num=step_num, coordinate_space="denoised_prediction"
                 )
                 scaffold_core_diagnostics.append(core_step)
+                record_feasibility("post_core_guidance", X_denoised_L, step_num)
 
             # Route ownership is a separate objective and remains active through
             # the LAST clean prediction, even after core guidance's time window.
@@ -2682,6 +3071,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 )
                 route_step["step_num"] = step_num
                 generated_route_diagnostics.append(route_step)
+                record_feasibility("post_route_guidance", X_denoised_L, step_num)
 
             # Compute the delta between the noisy and denoised coordinates, scaled by t_hat
             delta_L = (
@@ -2719,6 +3109,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     is_motif_atom_with_fixed_coord,
                     X_noisy_L,
                 )
+            record_feasibility("post_euler_state", X_L, step_num, noise_time=float(c_t))
+            if reference_scaffold_active and float(c_t) == 0.0:
+                X_L = enforce_scaffold_feasibility("noise_zero_euler", X_L, step_num)
             # Append the results to the trajectory (for visualization of the diffusion process)
             X_noisy_L_scaled = (
                 self.sigma_data * X_noisy_L / torch.sqrt(t_hat**2 + self.sigma_data**2)
@@ -2727,6 +3120,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             X_denoised_L_traj.append(X_denoised_L)
             t_hats.append(t_hat)
 
+        record_feasibility("final_euler_state", X_L, step_num)
         final_geometry_restoration = None
         # Repair the actual final state before packing polish. Diffusion can
         # reintroduce violations after a locally guarded guidance step.
@@ -2749,7 +3143,9 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                 ),
                 projector=geometry_projector,
                 iterations=int(self.generated_polymer_continuity_iterations),
+                observer=(lambda stage, coordinates, iteration, **extra: record_feasibility(stage, coordinates, iteration, **extra)) if feasibility_trace is not None else None,
             )
+            record_feasibility("post_final_geometry_restoration", X_L, step_num)
 
         final_graph_interface_energy = None
         final_graph_interface_quality_satisfied = None
@@ -2837,6 +3233,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     config=graph_interface_guidance_config,
                     projector=graph_projector,
                     patch_state=graph_interface_patch_state,
+                    observer=(lambda stage, coordinates, **extra: interface_observation.record(stage, coordinates, step=step_num, **extra)) if interface_observation is not None else None,
                     candidate_validator=(
                         scaffold_geometry_guard(
                             X_L,
@@ -2857,6 +3254,7 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     }
                 )
                 graph_interface_diagnostics.append(interface_step)
+                record_feasibility("post_graph_guidance", X_denoised_L if interface_step.get("coordinate_space") == "denoised_prediction" else X_L, step_num, diagnostic=interface_step)
 
         if polymer_continuity_active:
             if scaffold_core_topology is None:
@@ -2904,17 +3302,16 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             )
             final_continuity_step["phase"] = "final_only"
             polymer_continuity_diagnostics.append(final_continuity_step)
+            record_feasibility("post_final_continuity", X_L, step_num)
 
-        if constraint_runtime is not None:
-            X_L = constraint_runtime.finalize(X_L)
-        elif torch.any(is_motif_atom_with_fixed_coord) and self.allow_realignment:
-            X_L = self._finalize_with_fixed_motif(
-                X_L,
-                coord_atom_lvl_to_be_noised,
-                is_motif_atom_with_fixed_coord,
-                f,
-            )
+        X_L, final_output_geometry_diagnostics, peptide_geometry_repair_diagnostics, covalent_geometry_repair_diagnostics = self._finalize_physical_output(
+            X_L, f, outs, constraint_runtime, scaffold_core_topology,
+            scaffold_core_guidance_config, graph_interface_topology,
+            graph_interface_guidance_config, graph_interface_patch_state,
+            record_feasibility, step_num, is_motif_atom_with_fixed_coord,
+            coord_atom_lvl_to_be_noised)
 
+        record_feasibility("post_finalize", X_L, step_num)
         if graph_interface_topology is not None:
             if graph_interface_guidance_config is None:
                 raise RuntimeError(
@@ -2960,6 +3357,13 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
             sequence_indices_I=outs.get("sequence_indices_I"),  # (D, I, 32)
             sequence_entropy_traj=sequence_entropy_traj,  # list[Tensor[D, I]]
         )
+        result["final_output_geometry_diagnostics"] = final_output_geometry_diagnostics
+        if partial_cylindrical_conditioning_diagnostics:
+            result["partial_cylindrical_conditioning_diagnostics"] = partial_cylindrical_conditioning_diagnostics
+        if peptide_geometry_repair_diagnostics is not None:
+            result["peptide_geometry_repair_diagnostics"] = peptide_geometry_repair_diagnostics
+        if covalent_geometry_repair_diagnostics is not None:
+            result["covalent_geometry_repair_diagnostics"] = covalent_geometry_repair_diagnostics
         if constraint_runtime is not None:
             result["constraint_runtime_diagnostics"] = constraint_runtime.diagnostics()
         if motif_mobility_controller is not None:
@@ -3177,6 +3581,12 @@ class SampleDiffusionWithSymmetry(SampleDiffusionWithMotif):
                     for step in polymer_continuity_diagnostics
                 ),
             }
+        if feasibility_trace is not None:
+            result["phase_feasibility_trace"] = feasibility_trace.diagnostics()
+        if interface_observation is not None:
+            result["interface_observation_trace"] = interface_observation.diagnostics()
+        if reference_scaffold_active:
+            result["scaffold_feasibility_diagnostics"] = {"schema_version": 1, "scope": "actual clean predictions and noise-zero Euler state only; noisy diffusion states unchanged", "steps": scaffold_feasibility_diagnostics}
         if reference_scaffold_active:
             from rfd3_mosaic.validation.scaffold_contract import audit_scaffold_contract
             reference = scaffold_core_topology.scaffold_contract
@@ -3229,6 +3639,7 @@ class ConditionalDiffusionSampler:
             ):
                 unsupported.append("symmetry_execution_backend")
             for flag in (
+                "enable_final_covalent_graph_refinement",
                 "preserve_fixed_motif_during_symmetry",
                 "require_motif_constraint_groups",
                 "enable_orbit_rigid_motif_mobility",
