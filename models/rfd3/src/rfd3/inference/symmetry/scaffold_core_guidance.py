@@ -22,6 +22,7 @@ from dataclasses import dataclass, fields, replace
 from typing import Any, Callable
 
 import torch
+from .scalar_metrics import detached_scalar_metrics
 
 from .generated_routes import (
     route_deficits_from_config,
@@ -178,8 +179,8 @@ class ScaffoldCoreEnergy:
     maximum_routing_ownership_excess: torch.Tensor
 
     def detached_dict(self) -> dict[str, float]:
-        return {
-            name: float(getattr(self, name).detach().cpu().item())
+        return detached_scalar_metrics({
+            name: getattr(self, name)
             for name in (
                 "total",
                 "long_range_contacts",
@@ -200,7 +201,7 @@ class ScaffoldCoreEnergy:
                 "routing_ownership_violation_fraction",
                 "maximum_routing_ownership_excess",
             )
-        }
+        })
 
 
 def _tensor(
@@ -1454,16 +1455,18 @@ def apply_scaffold_core_guidance(
             token_step[~topology.generated_token_mask] = 0.0
         maximum_adjacent_difference = 0.0
         if len(topology.adjacent_token_pairs):
+            # Topology is immutable during this proposal. Transfer its discrete
+            # metadata once, rather than synchronizing CUDA for each endpoint
+            # in every sequential sweep. Keep the correction order unchanged:
+            # neighboring updates depend on the preceding pair's result.
+            adjacent_pairs = topology.adjacent_token_pairs.tolist()
+            generated_tokens = topology.generated_token_mask.tolist()
             for _ in range(3):
-                for left_value, right_value in topology.adjacent_token_pairs.tolist():
+                for left_value, right_value in adjacent_pairs:
                     left_index = int(left_value)
                     right_index = int(right_value)
-                    left_generated = bool(
-                        topology.generated_token_mask[left_index].item()
-                    )
-                    right_generated = bool(
-                        topology.generated_token_mask[right_index].item()
-                    )
+                    left_generated = bool(generated_tokens[left_index])
+                    right_generated = bool(generated_tokens[right_index])
                     if left_generated and right_generated:
                         midpoint = 0.5 * (
                             token_step[left_index] + token_step[right_index]

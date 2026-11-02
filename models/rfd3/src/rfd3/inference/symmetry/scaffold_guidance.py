@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import torch
+from .scalar_metrics import detached_scalar_metrics
 
 
 @dataclass(frozen=True)
@@ -95,24 +96,16 @@ class ScaffoldGuidanceEnergy:
     weighted_terms: dict[str, torch.Tensor] = field(default_factory=dict)
 
     def detached_dict(self) -> dict[str, float]:
-        return {
-            "total": float(self.total.detach().cpu().item()),
-            "junction": float(self.junction.detach().cpu().item()),
-            "clash": float(self.clash.detach().cpu().item()),
-            "tilt": float(self.tilt.detach().cpu().item()),
-            "prior": float(self.prior.detach().cpu().item()),
-            "maximum_junction_error": float(
-                self.maximum_junction_error.detach().cpu().item()
-            ),
-            "minimum_clash_distance": float(
-                self.minimum_clash_distance.detach().cpu().item()
-            ),
-            "tilt_degrees": float(self.tilt_degrees.detach().cpu().item()),
+        return detached_scalar_metrics({
+            **{name: getattr(self, name) for name in (
+                "total", "junction", "clash", "tilt", "prior",
+                "maximum_junction_error", "minimum_clash_distance", "tilt_degrees",
+            )},
             **{
-                "weighted_" + name: float(value.detach().cpu().item())
+                "weighted_" + name: value
                 for name, value in self.weighted_terms.items()
             },
-        }
+        })
 
 
 @dataclass(frozen=True)
