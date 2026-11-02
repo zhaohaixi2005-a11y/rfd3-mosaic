@@ -1382,7 +1382,9 @@ def apply_scaffold_core_guidance(
     if coordinates.ndim != 3 or coordinates.shape[0] != 1:
         raise ValueError("Scaffold core guidance requires coordinates [1, L, 3]")
     window = scaffold_core_window(progress, config)
-    with torch.enable_grad():
+    # Outside the update window the energy is returned only as detached
+    # diagnostics. Preserve those values without building an unused graph.
+    with torch.set_grad_enabled(window > 0.0):
         source = coordinates.detach().clone().requires_grad_(True)
         initial = scaffold_core_energy(source[0], topology, config)
         if window <= 0.0 or float(initial.total.detach().item()) == 0.0:
