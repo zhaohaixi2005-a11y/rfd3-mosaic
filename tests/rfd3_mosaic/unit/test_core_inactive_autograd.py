@@ -31,7 +31,6 @@ class InactiveCoreAutogradTest(unittest.TestCase):
             with self.subTest(progress=progress), patch.object(core, 'scaffold_core_energy', inspect):
                 result, diagnostics = core.apply_scaffold_core_guidance(
                     x, topology, progress=progress, config=config,
-                    record_rejected_trial_energies=False,
                 )
             self.assertTrue(torch.equal(result, x))
             self.assertEqual(diagnostics['initial'], expected)

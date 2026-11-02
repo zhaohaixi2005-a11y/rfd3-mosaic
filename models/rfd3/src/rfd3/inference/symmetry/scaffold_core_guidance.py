@@ -18,11 +18,12 @@ An expert may independently request a soft *excess* penalty through
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, Callable
 
 import torch
 from .scalar_metrics import detached_scalar_metrics
+from .topology_index_cache import TopologyIndexCache
 
 from .generated_routes import (
     route_deficits_from_config,
@@ -39,6 +40,9 @@ class ScaffoldCoreChain:
     generated_ca_mask: torch.Tensor
     ca_segment_atom_pairs: torch.Tensor
     generated_segment_mask: torch.Tensor
+    _pair_index_cache: TopologyIndexCache = field(
+        default_factory=TopologyIndexCache, init=False, repr=False, compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -967,6 +971,31 @@ def _segment_to_segment_distances(
     )
 
 
+def _core_energy_pair_indices(chain, count, device, sequence_separation):
+    def build():
+        sequence_gap = torch.abs(
+            chain.residue_indices[:, None] - chain.residue_indices[None, :]
+        )
+        upper = torch.triu(
+            torch.ones((count, count), dtype=torch.bool, device=device), diagonal=1,
+        )
+        generated = chain.generated_ca_mask
+        relevant = generated[:, None] | generated[None, :]
+        return tuple(
+            torch.nonzero(mask, as_tuple=True)
+            for mask in (
+                upper & (sequence_gap >= sequence_separation) & relevant,
+                (sequence_gap == 1) & upper & relevant,
+                upper & (sequence_gap > 1) & relevant,
+            )
+        )
+
+    return chain._pair_index_cache.get_or_compute(
+        (chain.ca_atom_indices, chain.residue_indices, chain.generated_ca_mask),
+        (chain.asym_id, count, device, sequence_separation), build,
+    )
+
+
 def scaffold_core_energy(
     coordinates: torch.Tensor,
     topology: ScaffoldCoreTopology,
@@ -1004,19 +1033,9 @@ def scaffold_core_energy(
         )
 
         distances = torch.cdist(xyz, xyz)
-        sequence_gap = torch.abs(
-            chain.residue_indices[:, None] - chain.residue_indices[None, :]
+        (left, right), (a_left, a_right), (c_left, c_right) = _core_energy_pair_indices(
+            chain, count, xyz.device, config.sequence_separation,
         )
-        upper = torch.triu(
-            torch.ones((count, count), dtype=torch.bool, device=xyz.device),
-            diagonal=1,
-        )
-        pair_mask = (
-            upper
-            & (sequence_gap >= config.sequence_separation)
-            & (generated[:, None] | generated[None, :])
-        )
-        left, right = torch.nonzero(pair_mask, as_tuple=True)
         support = torch.zeros(count, dtype=xyz.dtype, device=xyz.device)
         if len(left):
             contacts = _soft_contacts(distances[left, right], config)
@@ -1061,20 +1080,12 @@ def scaffold_core_energy(
             )
 
         if count > 1:
-            adjacent = sequence_gap == 1
-            adjacent = adjacent & torch.triu(torch.ones_like(adjacent), diagonal=1)
-            adjacent = adjacent & (generated[:, None] | generated[None, :])
-            a_left, a_right = torch.nonzero(adjacent, as_tuple=True)
             if len(a_left):
                 errors = torch.relu(
                     torch.abs(distances[a_left, a_right] - config.backbone_distance)
                     - config.backbone_tolerance
                 )
                 continuity_terms.append(torch.mean(torch.square(errors)))
-        clash_mask = (
-            upper & (sequence_gap > 1) & (generated[:, None] | generated[None, :])
-        )
-        c_left, c_right = torch.nonzero(clash_mask, as_tuple=True)
         if len(c_left):
             clash_terms.append(
                 torch.mean(

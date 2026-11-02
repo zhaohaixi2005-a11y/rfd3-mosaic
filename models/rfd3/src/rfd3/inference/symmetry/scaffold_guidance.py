@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import torch
 from .scalar_metrics import detached_scalar_metrics
+from .topology_index_cache import TopologyIndexCache
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,9 @@ class BoundaryTopology:
     fixed_ca_atom_indices: torch.Tensor
     generated_ca_atom_indices: torch.Tensor
     generated_atom_mask: torch.Tensor
+    _pair_index_cache: TopologyIndexCache = field(
+        default_factory=TopologyIndexCache, init=False, repr=False, compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -715,19 +719,26 @@ def scaffold_orbit_energy(
         motif[fixed_ca],
         scaffold[generated_ca],
     )
-    bonded = torch.zeros_like(clash_distances, dtype=torch.bool)
-    fixed_lookup = {
-        int(atom_index): row for row, atom_index in enumerate(fixed_ca.tolist())
-    }
-    generated_lookup = {
-        int(atom_index): column
-        for column, atom_index in enumerate(generated_ca.tolist())
-    }
-    for pair in junction_pairs.tolist():
-        fixed_row = fixed_lookup.get(int(pair[0]))
-        generated_column = generated_lookup.get(int(pair[1]))
-        if fixed_row is not None and generated_column is not None:
-            bonded[fixed_row, generated_column] = True
+    def build_bonded_mask():
+        bonded = torch.zeros_like(clash_distances, dtype=torch.bool)
+        fixed_lookup = {
+            int(atom_index): row for row, atom_index in enumerate(fixed_ca.tolist())
+        }
+        generated_lookup = {
+            int(atom_index): column
+            for column, atom_index in enumerate(generated_ca.tolist())
+        }
+        for pair in junction_pairs.tolist():
+            fixed_row = fixed_lookup.get(int(pair[0]))
+            generated_column = generated_lookup.get(int(pair[1]))
+            if fixed_row is not None and generated_column is not None:
+                bonded[fixed_row, generated_column] = True
+        return bonded
+
+    bonded = topology._pair_index_cache.get_or_compute(
+        (fixed_ca, generated_ca, junction_pairs),
+        (clash_distances.shape, device), build_bonded_mask,
+    )
     nonbonded_distances = clash_distances[~bonded]
     if nonbonded_distances.numel():
         clash_penalty = torch.relu(config.clash_distance - nonbonded_distances)
