@@ -221,6 +221,50 @@ class ChunkedPairwiseEmbedder:
         self._sm_cached = self.process_single_m(C_L)  # [L, c_atompair]
         self._Z_proc_cached = self.process_z(Z_init_II)  # [I, I, c_atompair]
 
+    def _add_position_pairs(
+        self,
+        destination: torch.Tensor,
+        indices: torch.Tensor,
+        positions: torch.Tensor,
+        fixed_mask: torch.Tensor,
+        embedder: ChunkedSinusoidalDistEmbed | ChunkedPositionPairDistEmbedder,
+        ref_space_uid: torch.Tensor | None = None,
+    ) -> None:
+        """Add the original sparse position terms in bounded query batches.
+
+        Flattening the batch/query axes reuses the trained pair embedder without
+        materializing an L-by-L tensor. A query is active when any batch member
+        has a valid key, exactly as in the former scalar query loop. Queries are
+        unique, so the indexed addition never reduces multiple query results.
+        FP32 is preserved; GPU GEMM grouping may change last-bit rounding.
+        """
+        batch, _, neighbours = indices.shape
+        rows = torch.where(fixed_mask)[0]
+        for offset in range(0, rows.numel(), 128):
+            queries = rows[offset : offset + 128]
+            keys = indices[:, queries, :]
+            valid = fixed_mask[keys]
+            if ref_space_uid is not None:
+                valid = valid & (
+                    ref_space_uid[keys] == ref_space_uid[queries][None, :, None]
+                )
+            # Preserve the old skip for all-invalid rows, including nonfinite
+            # unused coordinates and batches with different valid neighbours.
+            active = torch.where(valid.any(dim=(0, 2)))[0]
+            queries, keys, valid = queries[active], keys[:, active], valid[:, active]
+            count = queries.numel()
+            if count == 0:
+                continue
+            query_positions = positions[queries][None].expand(batch, -1, -1)
+            pairs = embedder.compute_pairs_chunked(
+                query_positions.reshape(batch * count, 3),
+                positions[keys].reshape(batch * count, neighbours, 3),
+                valid.unsqueeze(-1).float().reshape(batch * count, neighbours, 1),
+            )
+            destination[:, queries] += pairs.reshape(
+                batch, count, neighbours, self.c_atompair
+            )
+
     def forward_chunked(
         self,
         f: dict,
@@ -270,52 +314,20 @@ class ChunkedPairwiseEmbedder:
                 C_L.shape[0], -1, -1
             )  # [B, L, k]
 
-        # 1. Motif position embedding (if exists)
+        # Read conditioning positions on every call: mobile motifs can change
+        # them between diffusion steps. Only the learned static projections below
+        # may be cached.
         if self.motif_pos_embedder is not None and "motif_pos" in f:
-            motif_pos = f["motif_pos"]  # [L, 3]
-            is_motif = f["is_motif_atom_with_fixed_coord"]  # [L]
-            is_motif_idx = torch.where(is_motif)[0]
-            # For each query position
-            for l in is_motif_idx:
-                key_indices = valid_indices[:, l, :]  # [B, k] - use clamped indices
-                key_pos = motif_pos[key_indices]  # [B, k, 3]
-                query_pos = motif_pos[l].unsqueeze(0).expand(B, -1)  # [B, 3]
-
-                # Valid mask: both query and keys must be motif
-                key_is_motif = is_motif[key_indices]  # [B, k]
-                valid_mask = key_is_motif.unsqueeze(-1).float()  # [B, k, 1]
-
-                if valid_mask.sum() > 0:
-                    motif_pairs = self.motif_pos_embedder.compute_pairs_chunked(
-                        query_pos, key_pos, valid_mask
-                    )
-                    P_LL_sparse[:, l, :, :] += motif_pairs
-
-        # 2. Reference position embedding (if exists)
+            self._add_position_pairs(
+                P_LL_sparse, valid_indices, f["motif_pos"],
+                f["is_motif_atom_with_fixed_coord"], self.motif_pos_embedder,
+            )
         if self.ref_pos_embedder is not None and "ref_pos" in f:
-            ref_pos = f["ref_pos"]  # [L, 3]
-            ref_space_uid = f["ref_space_uid"]  # [L]
-            is_motif_seq = f["is_motif_atom_with_fixed_seq"]  # [L]
-            is_motif_seq_idx = torch.where(is_motif_seq)[0]
-            for l in is_motif_seq_idx:
-                key_indices = valid_indices[:, l, :]  # [B, k] - use clamped indices
-                key_pos = ref_pos[key_indices]  # [B, k, 3]
-                query_pos = ref_pos[l].unsqueeze(0).expand(B, -1)  # [B, 3]
-
-                # Valid mask: same token and both have sequence
-                key_space_uid = ref_space_uid[key_indices]  # [B, k]
-                key_is_motif_seq = is_motif_seq[key_indices]  # [B, k]
-
-                same_token = key_space_uid == ref_space_uid[l]  # [B, k]
-                valid_mask = (
-                    (same_token & key_is_motif_seq).unsqueeze(-1).float()
-                )  # [B, k, 1]
-
-                if valid_mask.sum() > 0:
-                    ref_pairs = self.ref_pos_embedder.compute_pairs_chunked(
-                        query_pos, key_pos, valid_mask
-                    )
-                    P_LL_sparse[:, l, :, :] += ref_pairs
+            self._add_position_pairs(
+                P_LL_sparse, valid_indices, f["ref_pos"],
+                f["is_motif_atom_with_fixed_seq"], self.ref_pos_embedder,
+                ref_space_uid=f["ref_space_uid"],
+            )
 
         # 3. Single embedding terms
         if self._sl_cached is not None:
