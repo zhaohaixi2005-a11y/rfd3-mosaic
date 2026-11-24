@@ -282,19 +282,12 @@ def _parser() -> argparse.ArgumentParser:
 
     prepare = commands.add_parser(
         "prepare-poses",
-        help="Select distinct feasible starting poses and write one task YAML per pose.",
+        help="Prepare fresh Ho-Yeung LHD101 C3 starts for Mosaic, one draw per design.",
     )
     prepare.add_argument("config", type=Path)
     prepare.add_argument("--output-dir", required=True, type=Path)
     prepare.add_argument("--count", type=int, default=4)
-    prepare.add_argument("--candidates", type=int, default=32)
     prepare.add_argument("--seed", type=int, default=0)
-    prepare.add_argument(
-        "--minimum-separation",
-        type=float,
-        default=1.0,
-        help="Minimum RMS difference of inter-seed CA distance spectra, in angstroms.",
-    )
 
     scaffold = commands.add_parser(
         "prepare-scaffold",
@@ -1979,30 +1972,22 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"Evidence: {arguments.output_dir / 'preparation_report.json'}")
         return
     if arguments.command == "prepare-poses":
-        from rfd3_mosaic.pose_tasks import prepare_pose_tasks
+        from rfd3_mosaic.hoyeung_initialization import prepare_hoyeung_poses
 
         try:
-            result = prepare_pose_tasks(
-                arguments.config,
-                arguments.output_dir,
-                count=arguments.count,
-                candidates=arguments.candidates,
-                seed=arguments.seed,
-                minimum_separation=arguments.minimum_separation,
-                progress=print,
+            result = prepare_hoyeung_poses(
+                arguments.config, arguments.output_dir,
+                count=arguments.count, seed=arguments.seed,
             )
-        except (OSError, ValueError, NotImplementedError) as error:
+        except (OSError, ValueError) as error:
             raise SystemExit(str(error)) from error
-        print(
-            f"Prepared {result['selected_tasks']}/{result['requested_tasks']} pose tasks"
-        )
-        for task in result["tasks"]:
-            print(f"rfd3-mosaic run {task['task']}")
+        ready = [row for row in result["attempts"] if row["status"] == "staged"]
+        print(f"Prepared {len(ready)}/{result['requested_count']} Ho-Yeung pose tasks")
+        for row in ready:
+            print(f"rfd3-mosaic run {row['task']}")
         print(f"Evidence: {arguments.output_dir / 'pose_tasks.json'}")
-        if result["selected_tasks"] < result["requested_tasks"]:
-            print(
-                "Insufficient distinct feasible poses; the requested separation was preserved."
-            )
+        if len(ready) != result["requested_count"]:
+            raise SystemExit(2)
         return
     if arguments.command == "capabilities":
         _print_capabilities(output_format=arguments.format)
